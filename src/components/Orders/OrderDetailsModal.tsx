@@ -1273,7 +1273,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
           const { data: savedResult, error: resultError } = await supabase
             .from("results")
-            .insert(resultData)
+            .upsert(resultData, { onConflict: "order_id,test_name", ignoreDuplicates: false })
             .select()
             .single();
           if (resultError) throw resultError;

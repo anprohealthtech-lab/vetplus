@@ -1,0 +1,206 @@
+import React, { useEffect, useMemo, useState } from 'react';
+
+interface PlaceholderOption {
+  id: string;
+  label: string;
+  placeholder: string;
+  unit?: string | null;
+  referenceRange?: string | null;
+  group?: 'lab' | 'test' | 'patient';
+}
+
+interface PlaceholderPickerProps {
+  options: PlaceholderOption[];
+  onInsert: (placeholder: string) => void;
+  onClose: () => void;
+  loading?: boolean;
+  errorMessage?: string | null;
+}
+
+const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert, onClose, loading = false, errorMessage = null }) => {
+  const grouped = useMemo(() => {
+    const result: Record<'lab' | 'test' | 'patient', PlaceholderOption[]> = {
+      lab: [],
+      test: [],
+      patient: [],
+    };
+    options.forEach((option) => {
+      const bucket = option.group ?? 'lab';
+      result[bucket].push(option);
+    });
+    return result;
+  }, [options]);
+
+  const [activeOption, setActiveOption] = useState<PlaceholderOption | null>(null);
+  const [copyState, setCopyState] = useState<'success' | 'error' | null>(null);
+
+  useEffect(() => {
+    setActiveOption(options.length ? options[0] : null);
+    setCopyState(null);
+  }, [options]);
+
+  const handleSelect = (option: PlaceholderOption) => {
+    setActiveOption(option);
+    setCopyState(null);
+  };
+
+  const handleCopy = async () => {
+    if (!activeOption) {
+      return;
+    }
+
+    try {
+      if (!navigator?.clipboard) {
+        throw new Error('Clipboard API unavailable');
+      }
+      await navigator.clipboard.writeText(activeOption.placeholder);
+      setCopyState('success');
+      window.setTimeout(() => setCopyState(null), 2000);
+    } catch (err) {
+      console.warn('Failed to copy placeholder:', err);
+      setCopyState('error');
+      window.setTimeout(() => setCopyState(null), 3000);
+    }
+  };
+
+  const handleInsert = () => {
+    if (!activeOption) {
+      return;
+    }
+    onInsert(activeOption.placeholder);
+  };
+
+  const renderGroup = (groupKey: 'lab' | 'test' | 'patient', emptyText: string) => {
+    const bucket = grouped[groupKey];
+    if (!bucket.length) {
+      return (
+        <div className="rounded-md border border-dashed border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500">
+          {emptyText}
+        </div>
+      );
+    }
+
+    return (
+      <ul className="max-h-48 space-y-2 overflow-y-auto">
+        {bucket.map((option) => {
+          const isActive = activeOption?.placeholder === option.placeholder;
+          return (
+            <li key={`${groupKey}-${option.id}`}>
+              <button
+                type="button"
+                onClick={() => handleSelect(option)}
+                className={`w-full rounded-md border px-3 py-2 text-left text-xs transition focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 ${
+                  isActive
+                    ? 'border-blue-400 bg-blue-50 text-blue-900'
+                    : 'border-gray-200 bg-white text-gray-700 hover:border-blue-300 hover:bg-blue-50'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-medium">{option.label}</span>
+                  <code className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">{option.placeholder}</code>
+                </div>
+                {(option.unit || option.referenceRange) && (
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    {option.unit ? `Unit: ${option.unit}` : ''}
+                    {option.unit && option.referenceRange ? ' · ' : ''}
+                    {option.referenceRange ? `Reference: ${option.referenceRange}` : ''}
+                  </p>
+                )}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4">
+      <div className="w-full max-w-xl rounded-lg border border-gray-200 bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">Insert Placeholder</h2>
+            <p className="text-[11px] text-gray-500">Choose a placeholder to insert into the template.</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100"
+          >
+            Close
+          </button>
+        </div>
+        {loading && (
+          <div className="border-b border-dashed border-gray-200 bg-gray-50 px-4 py-2 text-[11px] text-gray-500">
+            Loading lab and test placeholders…
+          </div>
+        )}
+        {errorMessage && (
+          <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-[11px] text-red-600">
+            {errorMessage}
+          </div>
+        )}
+        <div className="grid gap-4 px-4 py-4 sm:grid-cols-3">
+          <section className="sm:col-span-1">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Lab</h3>
+            {renderGroup('lab', 'No lab-level analytes available.')}
+          </section>
+          <section className="sm:col-span-1">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Test Group</h3>
+            {renderGroup('test', 'Select a test group to view analytes.')}
+          </section>
+          <section className="sm:col-span-1">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Patient</h3>
+            {renderGroup('patient', 'Patient-specific placeholders appear here.')}
+          </section>
+        </div>
+        <div className="border-t border-gray-200 bg-gray-50 px-4 py-4">
+          {activeOption ? (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="text-sm font-semibold text-gray-900">{activeOption.label}</div>
+                <code className="mt-1 inline-block rounded bg-gray-200 px-2 py-1 text-xs text-gray-800">
+                  {activeOption.placeholder}
+                </code>
+                <div className="mt-2 space-y-1 text-[11px] text-gray-500">
+                  {activeOption.unit ? <div>Unit: {activeOption.unit}</div> : null}
+                  {activeOption.referenceRange ? <div>Reference: {activeOption.referenceRange}</div> : null}
+                  <div>Group: {activeOption.group || 'lab'}</div>
+                </div>
+                <p className="mt-2 text-[11px] text-gray-500">
+                  Copy the placeholder and paste it wherever you need inside the template editor.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:items-end">
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  className="min-w-[160px] rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-100"
+                >
+                  Copy Placeholder
+                </button>
+                <button
+                  type="button"
+                  onClick={handleInsert}
+                  className="min-w-[160px] rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-blue-700"
+                >
+                  Insert into Editor
+                </button>
+                {copyState === 'success' && (
+                  <span className="text-[11px] text-emerald-600">Copied!</span>
+                )}
+                {copyState === 'error' && (
+                  <span className="text-[11px] text-red-600">Copy failed. Copy manually.</span>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs text-gray-500">Select a placeholder to view details.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export type { PlaceholderOption };
+export default PlaceholderPicker;

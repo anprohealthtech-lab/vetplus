@@ -26,3 +26,6 @@ dist-ssr
 
 # Check git status first
 # Then add and commit all changes
+
+# Local Netlify folder
+.netlify

@@ -353,9 +353,11 @@ CREATE TABLE public.invoice_items (
   discount_amount numeric,
   discount_reason text,
   lab_id uuid NOT NULL,
+  order_id uuid,
   CONSTRAINT invoice_items_pkey PRIMARY KEY (id),
   CONSTRAINT invoice_items_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id),
   CONSTRAINT invoice_items_order_test_id_fkey FOREIGN KEY (order_test_id) REFERENCES public.order_tests(id),
+  CONSTRAINT invoice_items_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
   CONSTRAINT invoice_items_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
 CREATE TABLE public.invoices (
@@ -425,8 +427,54 @@ CREATE TABLE public.lab_analytes (
   low_critical numeric,
   high_critical numeric,
   CONSTRAINT lab_analytes_pkey PRIMARY KEY (id),
-  CONSTRAINT lab_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
-  CONSTRAINT lab_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+  CONSTRAINT lab_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT lab_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
+);
+CREATE TABLE public.lab_template_versions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  template_id uuid NOT NULL,
+  version_number integer NOT NULL,
+  gjs_html text,
+  gjs_css text,
+  gjs_components jsonb,
+  gjs_styles jsonb,
+  gjs_project jsonb,
+  version_name character varying,
+  version_notes text,
+  created_at timestamp with time zone DEFAULT now(),
+  created_by uuid,
+  CONSTRAINT lab_template_versions_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_template_versions_template_id_fkey FOREIGN KEY (template_id) REFERENCES public.lab_templates(id),
+  CONSTRAINT lab_template_versions_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.lab_templates (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  template_name character varying NOT NULL,
+  template_description text,
+  test_group_id uuid,
+  category character varying DEFAULT 'general'::character varying,
+  gjs_html text,
+  gjs_css text,
+  gjs_components jsonb,
+  gjs_styles jsonb,
+  gjs_project jsonb,
+  is_active boolean DEFAULT true,
+  is_default boolean DEFAULT false,
+  template_version integer DEFAULT 1,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  created_by uuid,
+  updated_by uuid,
+  ai_verification_status text DEFAULT 'not_reviewed'::text,
+  ai_verification_summary text,
+  ai_verification_details jsonb,
+  ai_verification_checked_at timestamp with time zone,
+  CONSTRAINT lab_templates_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_templates_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT lab_templates_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT lab_templates_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT lab_templates_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.labs (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -653,6 +701,7 @@ CREATE TABLE public.payments (
   created_at timestamp with time zone DEFAULT now(),
   location_id uuid,
   lab_id uuid,
+  notes text,
   CONSTRAINT payments_pkey PRIMARY KEY (id),
   CONSTRAINT payments_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id),
   CONSTRAINT payments_received_by_fkey FOREIGN KEY (received_by) REFERENCES public.users(id),
@@ -699,7 +748,7 @@ CREATE TABLE public.result_values (
   analyte_id uuid,
   parameter character varying NOT NULL,
   value character varying,
-  unit character varying NOT NULL,
+  unit character varying,
   reference_range text NOT NULL,
   flag character varying,
   created_at timestamp with time zone DEFAULT now(),
@@ -717,6 +766,8 @@ CREATE TABLE public.result_values (
   verified_at timestamp with time zone,
   verify_status text NOT NULL DEFAULT 'pending'::text CHECK (verify_status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text])),
   verify_note text,
+  ai_confidence text,
+  extracted_by_ai boolean,
   CONSTRAINT result_values_pkey PRIMARY KEY (id),
   CONSTRAINT result_values_result_id_fkey FOREIGN KEY (result_id) REFERENCES public.results(id),
   CONSTRAINT result_values_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
@@ -829,6 +880,16 @@ CREATE TABLE public.samples (
   CONSTRAINT samples_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT samples_collected_by_fkey FOREIGN KEY (collected_by) REFERENCES public.users(id)
 );
+CREATE TABLE public.system_config (
+  id bigint NOT NULL DEFAULT nextval('system_config_id_seq'::regclass),
+  key character varying NOT NULL UNIQUE,
+  value text,
+  description text,
+  category character varying,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT system_config_pkey PRIMARY KEY (id)
+);
 CREATE TABLE public.task_runs (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   workflow_result_id uuid NOT NULL,
@@ -885,6 +946,7 @@ CREATE TABLE public.test_workflow_map (
   analyte_id uuid,
   priority integer DEFAULT 100,
   conditions jsonb,
+  description text,
   CONSTRAINT test_workflow_map_pkey PRIMARY KEY (id),
   CONSTRAINT test_workflow_map_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id),
   CONSTRAINT test_workflow_map_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
@@ -905,6 +967,12 @@ CREATE TABLE public.users (
   updated_at timestamp with time zone DEFAULT now(),
   department_id uuid,
   lab_id uuid,
+  whatsapp_user_id uuid,
+  whatsapp_sync_status character varying DEFAULT 'pending'::character varying CHECK (whatsapp_sync_status::text = ANY (ARRAY['pending'::character varying, 'synced'::character varying, 'failed'::character varying, 'disabled'::character varying]::text[])),
+  whatsapp_last_sync timestamp with time zone,
+  whatsapp_sync_error text,
+  whatsapp_config jsonb DEFAULT '{}'::jsonb,
+  whatsapp_auto_sync boolean DEFAULT true,
   CONSTRAINT users_pkey PRIMARY KEY (id),
   CONSTRAINT users_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT users_department_id_fkey FOREIGN KEY (department_id) REFERENCES public.departments(id)
@@ -986,6 +1054,7 @@ CREATE TABLE public.workflow_versions (
   definition jsonb NOT NULL,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   active boolean,
+  description text,
   CONSTRAINT workflow_versions_pkey PRIMARY KEY (id),
   CONSTRAINT workflow_versions_workflow_id_fkey FOREIGN KEY (workflow_id) REFERENCES public.workflows(id)
 );

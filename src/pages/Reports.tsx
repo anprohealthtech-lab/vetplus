@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { supabase } from '../utils/supabase';
+import { supabase, database } from '../utils/supabase';
 import { 
   FileText, 
   Download, 
@@ -19,7 +19,8 @@ import {
   XCircle,
   Loader2,
   SortAsc,
-  SortDesc
+  SortDesc,
+  Wand2
 } from 'lucide-react';
 import {
   format,
@@ -31,9 +32,16 @@ import {
   startOfMonth,
   endOfMonth,
 } from 'date-fns';
-import { viewPDFReport } from '../utils/pdfService';
+import {
+  viewPDFReport,
+  generateTemplatePreviewPDF,
+  createReportDataFromContext,
+  selectTemplateForContext,
+} from '../utils/pdfService';
+import type { LabTemplateRecord, ReportData } from '../utils/pdfService';
 import PDFProgressModal from '../components/PDFProgressModal';
 import { usePDFGeneration, isOrderReportReady } from '../hooks/usePDFGeneration';
+import QuickSendReport from '../components/WhatsApp/QuickSendReport';
 
 // Helper function to safely format dates
 const safeFormatDate = (dateValue: string | null | undefined, formatString: string = 'MMM d, yyyy'): string => {
@@ -100,29 +108,7 @@ interface OrderGroup {
   is_report_ready?: boolean;
 }
 
-type PreparedReport = {
-  patient: {
-    name: string;
-    id: string;
-    age: number;
-    gender: string;
-    referredBy: string;
-  };
-  report: {
-    reportId: string;
-    collectionDate: string;
-    reportDate: string;
-    reportType: string;
-  };
-  testResults: {
-    parameter: string;
-    result: string;
-    unit: string;
-    referenceRange: string;
-    flag?: string;
-  }[];
-  interpretation: string;
-};
+type PreparedReport = ReportData;
 
 const Reports: React.FC = () => {
   const [approvedResults, setApprovedResults] = useState<ApprovedResult[]>([]);
@@ -136,6 +122,8 @@ const Reports: React.FC = () => {
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [showFilters, setShowFilters] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
+  const [isTestingTemplate, setIsTestingTemplate] = useState(false);
+  const [previewingOrderId, setPreviewingOrderId] = useState<string | null>(null);
 
   // PDF generation hook
   const { isGenerating, stage, progress, generatePDF, resetState } = usePDFGeneration();
@@ -195,6 +183,26 @@ const Reports: React.FC = () => {
           existingReports = (reportsData as any[]) || [];
         }
 
+        const patientPhoneMap = new Map<string, string>();
+        const patientIds = Array.from(
+          new Set((data as ApprovedResult[]).map((r) => r.patient_id).filter(Boolean))
+        );
+
+        if (patientIds.length > 0) {
+          const { data: patientsData, error: patientsError } = await supabase
+            .from('patients')
+            .select('id, phone')
+            .in('id', patientIds);
+
+          if (!patientsError && patientsData) {
+            for (const patient of patientsData as Array<{ id: string; phone?: string | null }>) {
+              if (patient?.id) {
+                patientPhoneMap.set(patient.id, patient.phone || '');
+              }
+            }
+          }
+        }
+
         // Since there's only one report per order due to unique constraint,
         // we need to check the report_type to determine draft vs final status
         const reportMap = new Map(
@@ -205,6 +213,7 @@ const Reports: React.FC = () => {
           (data as ApprovedResult[]).map(async (result) => {
             const report = reportMap.get(result.order_id);
             const isReady = await isOrderReportReady(result.order_id);
+            const resolvedPhone = result.phone || patientPhoneMap.get(result.patient_id) || '';
             
             // Debug logging to track report status
             if (report) {
@@ -225,7 +234,8 @@ const Reports: React.FC = () => {
               has_draft_report: report?.report_type === 'draft' && !!report.pdf_url,
               has_final_report: report?.report_type === 'final' && !!report.pdf_url,
               draft_report: report?.report_type === 'draft' ? report : null,
-              final_report: report?.report_type === 'final' ? report : null
+              final_report: report?.report_type === 'final' ? report : null,
+              phone: resolvedPhone
             };
           })
         );
@@ -416,75 +426,34 @@ const Reports: React.FC = () => {
   }, [generatePDF, loadApprovedResults]);
 
   const prepareReportData = async (group: OrderGroup): Promise<PreparedReport> => {
-    const analyteRows: {
-      parameter: string;
-      result: string;
-      unit: string;
-      referenceRange: string;
-      flag?: string;
-    }[] = [];
+    const { data: context, error } = await database.reports.getTemplateContext(group.order_id);
+    if (error || !context) {
+      console.error('Failed to load report context for order', group.order_id, error);
+      throw new Error('Could not load report data for this order');
+    }
 
-    // Deduplicate results by result_id to prevent processing the same result multiple times
-    const uniqueResults = group.results.filter((result, index, self) => 
-      index === self.findIndex(r => r.result_id === result.result_id)
-    );
+    if (!Array.isArray(context.analytes) || context.analytes.length === 0) {
+      throw new Error('No analyte data is available for this order');
+    }
 
-    for (const r of uniqueResults) {
-      try {
-        const { data: values, error } = await supabase
-          .from('result_values')
-          .select('parameter, value, unit, reference_range, flag')
-          .eq('result_id', r.result_id);
+    const isDraft = context.meta?.allAnalytesApproved !== true;
 
-        if (error) {
-          console.warn('Failed to fetch result values for', r.result_id, error);
-        } else {
-          (values || []).forEach((v: any) => {
-            // Additional check to prevent duplicate parameters within the same test
-            const parameterKey = `${r.test_name} - ${v.parameter}`;
-            const existingParam = analyteRows.find(row => row.parameter === parameterKey);
-            
-            if (!existingParam) {
-              analyteRows.push({
-                parameter: parameterKey,
-                result: v.value,
-                unit: v.unit || '',
-                referenceRange: v.reference_range || '',
-                flag: v.flag || ''
-              });
-            } else {
-              console.warn(`Duplicate parameter detected and skipped: ${parameterKey}`);
-            }
-          });
-        }
-      } catch (e) {
-        console.warn('get_result_values failed for', r.result_id, e);
+    let selectedTemplate: LabTemplateRecord | null = null;
+    try {
+      const { data: templates, error: templateError } = await database.labTemplates.list();
+      if (templateError) {
+        console.warn('Unable to load lab templates for report preparation:', templateError);
+      } else if (Array.isArray(templates) && templates.length > 0) {
+        selectedTemplate = selectTemplateForContext(templates as LabTemplateRecord[], context);
       }
+    } catch (templateFetchError) {
+      console.warn('Unexpected error fetching lab templates:', templateFetchError);
     }
 
-    if (analyteRows.length === 0) {
-      group.test_names.forEach((tn) =>
-        analyteRows.push({ parameter: tn, result: '—', unit: '', referenceRange: '' })
-      );
-    }
-
-    return {
-      patient: {
-        name: group.patient_full_name,
-        id: group.patient_id,
-        age: group.age,
-        gender: group.gender,
-        referredBy: group.results[0]?.doctor || 'Self'
-      },
-      report: {
-        reportId: group.order_id,
-        collectionDate: group.order_date,
-        reportDate: new Date().toISOString(),
-        reportType: 'Lab Tests'
-      },
-      testResults: analyteRows,
-      interpretation: 'Auto-generated report based on approved lab results.'
-    };
+    return createReportDataFromContext(context, {
+      template: selectedTemplate,
+      isDraft,
+    });
   };
 
   const toggleOrderSelection = (orderId: string) => {
@@ -574,6 +543,149 @@ const Reports: React.FC = () => {
     } catch (e) {
       console.error('Error generating reports:', e);
       alert('An error occurred while generating reports');
+    }
+  };
+
+  const handleTemplatePreview = async () => {
+    if (isTestingTemplate) {
+      return;
+    }
+
+    let previewWindow: Window | null = null;
+    let navigated = false;
+
+    try {
+      setIsTestingTemplate(true);
+
+      previewWindow = window.open('', '_blank', 'noopener,noreferrer');
+      if (previewWindow) {
+        previewWindow.document.write(
+          '<html><body style="font-family:Arial,sans-serif;padding:16px;">Generating template preview…</body></html>'
+        );
+      }
+
+      const { data: templates, error } = await database.labTemplates.list();
+      if (error) {
+        console.error('Failed to load lab templates:', error);
+        alert('Unable to load saved templates. Please try again.');
+        return;
+      }
+
+      const typedTemplates: LabTemplateRecord[] = Array.isArray(templates)
+        ? (templates as LabTemplateRecord[])
+        : [];
+
+      if (typedTemplates.length === 0) {
+        alert('No saved templates found. Please create one in Template Studio first.');
+        return;
+      }
+
+      const templateRecord = typedTemplates.find((tpl) => tpl.is_default) ?? typedTemplates[0];
+      if (!templateRecord?.gjs_html) {
+        alert('The selected template has no HTML content yet. Save your template in Template Studio before testing.');
+        return;
+      }
+
+      const pdfUrl = await generateTemplatePreviewPDF(templateRecord);
+      if (pdfUrl) {
+        if (previewWindow) {
+          previewWindow.location.replace(pdfUrl);
+          navigated = true;
+        } else {
+          window.open(pdfUrl, '_blank', 'noopener');
+        }
+      } else {
+        alert('Failed to generate template preview.');
+      }
+    } catch (error) {
+      console.error('Template preview failed:', error);
+      alert('Failed to generate template preview. Please try again.');
+    } finally {
+      setIsTestingTemplate(false);
+      if (previewWindow && !navigated) {
+        previewWindow.close();
+      }
+    }
+  };
+
+  const handleOrderTemplatePreview = async (group: OrderGroup) => {
+    if (previewingOrderId) {
+      return;
+    }
+
+    let previewWindow: Window | null = null;
+    let navigated = false;
+
+    try {
+      setPreviewingOrderId(group.order_id);
+
+      previewWindow = window.open('', '_blank', 'noopener,noreferrer');
+      if (previewWindow) {
+        previewWindow.document.write(
+          '<html><body style="font-family:Arial,sans-serif;padding:16px;">Preparing patient template preview…</body></html>'
+        );
+      }
+
+      const { data: templates, error } = await database.labTemplates.list();
+      if (error) {
+        console.error('Failed to load lab templates:', error);
+        alert('Unable to load saved templates. Please try again.');
+        return;
+      }
+
+      const typedTemplates: LabTemplateRecord[] = Array.isArray(templates)
+        ? (templates as LabTemplateRecord[])
+        : [];
+
+      if (typedTemplates.length === 0) {
+        alert('No saved templates found. Please create one in Template Studio first.');
+        return;
+      }
+
+      const { data: context, error: contextError } = await database.reports.getTemplateContext(group.order_id);
+      if (contextError || !context) {
+        console.error('Failed to load template context for preview:', contextError);
+        alert('Unable to load report data for this order. Please try again.');
+        return;
+      }
+
+      if (!Array.isArray(context.analytes) || context.analytes.length === 0) {
+        alert('No analyte data is available for this order yet. Capture result values before generating a template preview.');
+        return;
+      }
+
+      const templateRecord = selectTemplateForContext(typedTemplates, context);
+      if (!templateRecord || !templateRecord.gjs_html) {
+        alert('No saved template with HTML content was found. Please create or update a template in the Template Studio.');
+        return;
+      }
+
+      const pdfUrl = await generateTemplatePreviewPDF(templateRecord, {
+        context,
+        overrides: {
+          preview_mode: true,
+          preview_generated_at: new Date().toISOString(),
+          report_is_draft: context.meta?.allAnalytesApproved !== true,
+        },
+      });
+      if (pdfUrl) {
+        if (previewWindow) {
+          previewWindow.location.replace(pdfUrl);
+          navigated = true;
+        } else {
+          window.open(pdfUrl, '_blank', 'noopener');
+        }
+      } else {
+        alert('Failed to generate patient-specific template preview.');
+      }
+    } catch (error) {
+      console.error('Order template preview failed:', error);
+      alert('Failed to generate patient-specific template preview. Please try again.');
+    } finally {
+      setPreviewingOrderId(null);
+      if (previewWindow && !navigated) {
+        previewWindow.close();
+      }
     }
   };
 
@@ -702,14 +814,32 @@ const Reports: React.FC = () => {
             </div>
           </div>
 
-          <button
-            onClick={loadApprovedResults}
-            className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            disabled={loading}
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            <span>Refresh</span>
-          </button>
+          <div className="flex items-center space-x-3">
+            <button
+              onClick={handleTemplatePreview}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${
+                isTestingTemplate
+                  ? 'bg-purple-400 text-white cursor-not-allowed opacity-80'
+                  : 'bg-purple-600 text-white hover:bg-purple-700'
+              }`}
+              disabled={isTestingTemplate}
+            >
+              {isTestingTemplate ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Wand2 className="w-4 h-4" />
+              )}
+              <span>{isTestingTemplate ? 'Generating…' : 'Preview Saved Template'}</span>
+            </button>
+            <button
+              onClick={loadApprovedResults}
+              className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+              disabled={loading}
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1074,21 +1204,38 @@ const Reports: React.FC = () => {
                           {group.is_report_ready ? (
                             <>
                               {!(group.results[0] as ApprovedResult)?.has_final_report ? (
-                                <button
-                                  className={`flex items-center space-x-1 px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors ${
-                                    isGenerating ? 'opacity-50 cursor-not-allowed' : ''
-                                  }`}
-                                  onClick={() => handleDownload(group.order_id, false)}
-                                  disabled={isGenerating}
-                                  title="Generate final report"
-                                >
-                                  {isGenerating ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                  ) : (
-                                    <Download className="w-4 h-4" />
-                                  )}
-                                  <span>Generate Final</span>
-                                </button>
+                                <>
+                                  <button
+                                    className={`flex items-center space-x-1 px-3 py-1.5 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors ${
+                                      previewingOrderId === group.order_id ? 'opacity-80 cursor-not-allowed' : ''
+                                    }`}
+                                    onClick={() => handleOrderTemplatePreview(group)}
+                                    disabled={previewingOrderId === group.order_id}
+                                    title="Preview using saved template"
+                                  >
+                                    {previewingOrderId === group.order_id ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <Wand2 className="w-4 h-4" />
+                                    )}
+                                    <span>Template Preview</span>
+                                  </button>
+                                  <button
+                                    className={`flex items-center space-x-1 px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors ${
+                                      isGenerating ? 'opacity-50 cursor-not-allowed' : ''
+                                    }`}
+                                    onClick={() => handleDownload(group.order_id, false)}
+                                    disabled={isGenerating}
+                                    title="Generate final report"
+                                  >
+                                    {isGenerating ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <Download className="w-4 h-4" />
+                                    )}
+                                    <span>Generate Final</span>
+                                  </button>
+                                </>
                               ) : (
                                 <button
                                   className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
@@ -1108,6 +1255,43 @@ const Reports: React.FC = () => {
                                   <span>Download Final</span>
                                 </button>
                               )}
+                              
+                              {/* WhatsApp Send Button - Show if final report exists */}
+                              {(() => {
+                                const result = group.results[0] as ApprovedResult;
+                                const finalReport = result?.final_report;
+                                const hasFinalReport = result?.has_final_report;
+                                const reportUrl = finalReport?.pdf_url;
+                                
+                                // Debug logging
+                                console.log('WhatsApp button check:', {
+                                  orderId: group.order_id,
+                                  hasFinalReport,
+                                  finalReport,
+                                  reportUrl
+                                });
+                                
+                                // Show WhatsApp button if there's a final report (even without URL for now)
+                                if (hasFinalReport || finalReport) {
+                                  return (
+                                    <QuickSendReport
+                                      reportUrl={reportUrl || `#demo-report-${group.order_id}`}
+                                      reportName={`${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                      patientName={group.patient_full_name}
+                                      patientPhone={result?.phone}
+                                      testName={group.test_names.join(', ')}
+                                      onSent={(result) => {
+                                        if (result.success) {
+                                          alert('Report sent successfully via WhatsApp!');
+                                        } else {
+                                          alert('Failed to send report: ' + result.message);
+                                        }
+                                      }}
+                                    />
+                                  );
+                                }
+                                return null;
+                              })()}
                             </>
                           ) : (
                             <button
@@ -1188,37 +1372,86 @@ const Reports: React.FC = () => {
                           {group.is_report_ready ? (
                             <>
                               {!(group.results[0] as ApprovedResult)?.has_final_report ? (
-                                <button
-                                  className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors ${
-                                    isGenerating ? 'opacity-50 cursor-not-allowed' : ''
-                                  }`}
-                                  onClick={() => handleDownload(group.order_id, false)}
-                                  disabled={isGenerating}
-                                  title="Generate final report"
-                                >
-                                  {isGenerating ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                  ) : (
-                                    <Download className="w-4 h-4" />
-                                  )}
-                                  <span>Generate Final</span>
-                                </button>
+                                <>
+                                  <button
+                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors ${
+                                      previewingOrderId === group.order_id ? 'opacity-80 cursor-not-allowed' : ''
+                                    }`}
+                                    onClick={() => handleOrderTemplatePreview(group)}
+                                    disabled={previewingOrderId === group.order_id}
+                                    title="Preview using saved template"
+                                  >
+                                    {previewingOrderId === group.order_id ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <Wand2 className="w-4 h-4" />
+                                    )}
+                                    <span>Template</span>
+                                  </button>
+                                  <button
+                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors ${
+                                      isGenerating ? 'opacity-50 cursor-not-allowed' : ''
+                                    }`}
+                                    onClick={() => handleDownload(group.order_id, false)}
+                                    disabled={isGenerating}
+                                    title="Generate final report"
+                                  >
+                                    {isGenerating ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <Download className="w-4 h-4" />
+                                    )}
+                                    <span>Final</span>
+                                  </button>
+                                </>
                               ) : (
-                                <button
-                                  className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
-                                  onClick={() => {
-                                    const finalReport = (group.results[0] as ApprovedResult)?.final_report;
-                                    if (finalReport?.pdf_url) {
-                                      window.open(finalReport.pdf_url, '_blank');
-                                    } else {
-                                      handleDownload(group.order_id, false);
+                                <>
+                                  <button
+                                    className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+                                    onClick={() => {
+                                      const finalReport = (group.results[0] as ApprovedResult)?.final_report;
+                                      if (finalReport?.pdf_url) {
+                                        window.open(finalReport.pdf_url, '_blank');
+                                      } else {
+                                        handleDownload(group.order_id, false);
+                                      }
+                                    }}
+                                    title="Download final report"
+                                  >
+                                    <Download className="w-4 h-4" />
+                                    <span>Download</span>
+                                  </button>
+                                  
+                                  {/* WhatsApp Send Button for Mobile */}
+                                  {(() => {
+                                    const result = group.results[0] as ApprovedResult;
+                                    const finalReport = result?.final_report;
+                                    const hasFinalReport = result?.has_final_report;
+                                    const reportUrl = finalReport?.pdf_url;
+                                    
+                                    if (hasFinalReport || finalReport || reportUrl) {
+                                      return (
+                                        <div className="flex-1">
+                                          <QuickSendReport
+                                            reportUrl={reportUrl || `#demo-report-${group.order_id}`}
+                                            reportName={`${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                            patientName={group.patient_full_name}
+                                            patientPhone={result?.phone}
+                                            testName={group.test_names.join(', ')}
+                                            onSent={(result) => {
+                                              if (result.success) {
+                                                alert('Report sent successfully via WhatsApp!');
+                                              } else {
+                                                alert('Failed to send report: ' + result.message);
+                                              }
+                                            }}
+                                          />
+                                        </div>
+                                      );
                                     }
-                                  }}
-                                  title="Download final report"
-                                >
-                                  <Download className="w-4 h-4" />
-                                  <span>Download Final</span>
-                                </button>
+                                    return null;
+                                  })()}
+                                </>
                               )}
                             </>
                           ) : (

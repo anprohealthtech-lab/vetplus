@@ -1,0 +1,4 @@
+- [x] Fix duplicate candidatePayload declaration in template-editor function
+- [x] Ensure TemplateStudio header and AI controls stay visible
+- [x] Extend Supabase helpers to fetch lab/test/patient parameter lists
+- [ ] Add TemplateStudio placeholder picker UI for inserting scoped parameters

@@ -21,6 +21,9 @@ import ResultVerificationConsole from './pages/ResultVerificationConsole';
 import { WorkflowManagement } from './pages/WorkflowManagement';
 import WorkflowDemo from './pages/WorkflowDemo';
 import OrderDetail from './pages/OrderDetail';
+import WhatsApp from './pages/WhatsApp';
+import WhatsAppUserSyncManager from './components/WhatsApp/WhatsAppUserSyncManager';
+import { useWhatsAppAutoSync } from './hooks/useWhatsAppAutoSync';
 import "./styles/print.css";
 
 // ⬇️ New modern dashboard page
@@ -32,9 +35,13 @@ import Result2 from './pages/result2';
 // ⬇️ Master Data Components
 import DoctorMaster from './components/Masters/DoctorMaster';
 import LocationMaster from './components/Masters/LocationMaster';
+import TemplateStudio from './pages/TemplateStudio';
 
 const AppRoutes: React.FC = () => {
   const { user, loading } = useAuth();
+  
+  // Initialize WhatsApp auto-sync when user is authenticated
+  useWhatsAppAutoSync();
 
   // Show loading state while auth is initializing
   if (loading) {
@@ -85,6 +92,10 @@ const AppRoutes: React.FC = () => {
                 <Route path="/workflows" element={<WorkflowManagement />} />
                 <Route path="/workflow-demo" element={<WorkflowDemo />} />
                 <Route path="/orders/:id" element={<OrderDetail />} />
+                <Route path="/template-studio" element={<TemplateStudio />} />
+                {/* WhatsApp Integration */}
+                <Route path="/whatsapp" element={<WhatsApp />} />
+                <Route path="/whatsapp/sync" element={<WhatsAppUserSyncManager />} />
                 {/* Master Data Routes */}
                 <Route path="/masters/doctors" element={<DoctorMaster />} />
                 <Route path="/masters/locations" element={<LocationMaster />} />

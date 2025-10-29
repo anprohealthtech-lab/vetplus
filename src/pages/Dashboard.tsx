@@ -122,6 +122,7 @@ const Dashboard: React.FC = () => {
 
   const [orders, setOrders] = useState<CardOrder[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [isCollapsedView, setIsCollapsedView] = useState(false); // New collapsed view state
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"All" | OrderStatus>("All");
   
@@ -456,14 +457,28 @@ const Dashboard: React.FC = () => {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Test Orders</h1>
-        <button
-          onClick={() => setShowOrderForm(true)}
-          className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-        >
-          <Plus className="h-5 w-5 mr-2" />
-          Create Order
-        </button>
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Test Orders</h1>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setIsCollapsedView(!isCollapsedView)}
+            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+              isCollapsedView 
+                ? 'bg-blue-600 text-white' 
+                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+            }`}
+          >
+            {isCollapsedView ? 'Expand Cards' : 'Collapse Cards'}
+          </button>
+          <button
+            onClick={() => setShowOrderForm(true)}
+            className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            <Plus className="h-5 w-5 mr-2" />
+            Create Order
+          </button>
+        </div>
       </div>
 
       {/* Overview cards */}
@@ -626,16 +641,67 @@ const Dashboard: React.FC = () => {
                   <div className="text-sm text-gray-500">{g.orders.length} order{g.orders.length !== 1 ? "s" : ""}</div>
                 </div>
 
-                <div className="space-y-4">
-                  {g.orders.map((o) => {
-                    const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
-                    return (
-                      <div
-                        key={o.id}
-                        role="button"
-                        onClick={() => openDetails(o)}
-                        className="w-full p-4 border-2 rounded-lg hover:shadow-md transition-all cursor-pointer border-gray-200 bg-white"
-                      >
+                {isCollapsedView ? (
+                  /* Collapsed View - One Line Summary */
+                  <div className="space-y-2">
+                    {g.orders.map((o) => {
+                      const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
+                      return (
+                        <div
+                          key={o.id}
+                          role="button"
+                          onClick={() => openDetails(o)}
+                          className="w-full p-3 border rounded-lg hover:shadow-md transition-all cursor-pointer border-gray-200 bg-white flex items-center justify-between"
+                        >
+                          <div className="flex items-center space-x-4 flex-1 min-w-0">
+                            <div className="flex items-center justify-center w-6 h-6 bg-blue-100 text-blue-700 rounded-full font-bold text-xs border border-blue-200">
+                              {String(getDailySeq(o)).padStart(3, "0")}
+                            </div>
+                            <User className="h-4 w-4 text-blue-600 shrink-0" />
+                            <span className="font-medium text-gray-900 truncate">{o.patient?.name || o.patient_name}</span>
+                            <span className="text-sm text-gray-600 truncate">
+                              {(o.patient?.age || "N/A") + "y"} • {o.patient?.gender || "N/A"}
+                            </span>
+                            <span className="text-xs text-gray-500">{o.sample_id ? `#${String(o.sample_id).split("-").pop()}` : 'No Sample'}</span>
+                          </div>
+                          <div className="flex items-center space-x-3 flex-shrink-0">
+                            <div className="text-xs text-gray-600">
+                              {pct}% ({o.enteredTotal}/{o.expectedTotal})
+                            </div>
+                            <span className={`inline-flex items-center px-2 py-1 rounded-lg text-xs font-bold ${
+                              o.status === "Completed" || o.status === "Delivered" ? 'bg-green-100 text-green-800' :
+                              o.status === "Pending Approval" ? 'bg-yellow-100 text-yellow-800' :
+                              o.status === "In Progress" ? 'bg-blue-100 text-blue-800' :
+                              'bg-gray-100 text-gray-800'
+                            }`}>
+                              {o.status === "In Progress" ? "In Process" : o.status}
+                            </span>
+                            {getBillingBadge(o)}
+                            <span className="text-sm font-bold text-green-600">₹{Number(o.total_amount || 0).toLocaleString()}</span>
+                            {o.priority !== 'Normal' && (
+                              <span className={`px-2 py-1 text-xs rounded-full ${
+                                o.priority === 'Urgent' ? 'bg-orange-100 text-orange-800' : 'bg-red-100 text-red-800'
+                              }`}>
+                                {o.priority}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  /* Expanded View - Full Cards */
+                  <div className="space-y-4">
+                    {g.orders.map((o) => {
+                      const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
+                      return (
+                        <div
+                          key={o.id}
+                          role="button"
+                          onClick={() => openDetails(o)}
+                          className="w-full p-4 border-2 rounded-lg hover:shadow-md transition-all cursor-pointer border-gray-200 bg-white"
+                        >
                         {/* Top row */}
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex items-center gap-3">
@@ -868,7 +934,8 @@ const Dashboard: React.FC = () => {
                       </div>
                     );
                   })}
-                </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>

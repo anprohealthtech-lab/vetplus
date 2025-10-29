@@ -15,8 +15,12 @@ import {
   CheckCircle2,
   Workflow,
   UserCheck,
-  Building
-} from 'lucide-react';interface SidebarProps {
+  Building,
+  MessageCircle,
+  Palette,
+} from 'lucide-react';
+
+interface SidebarProps {
   isOpen: boolean;
   onToggle: () => void;
 }
@@ -38,6 +42,9 @@ const navigation = [
   { name: 'Billing', href: '/billing', icon: Receipt, category: 'business' },
   { name: 'Cash Reconciliation', href: '/cash-reconciliation', icon: DollarSign, category: 'business' },
   
+  // Communication
+  { name: 'WhatsApp Integration', href: '/whatsapp', icon: MessageCircle, category: 'communication' },
+  
   // Master Data Management
   { name: 'Doctor Master', href: '/masters/doctors', icon: UserCheck, category: 'masters' },
   { name: 'Location Master', href: '/masters/locations', icon: Building, category: 'masters' },
@@ -45,6 +52,7 @@ const navigation = [
   // Advanced Tools
   { name: 'AI Tools', href: '/ai-tools', icon: Brain, category: 'tools' },
   { name: 'Workflow Demo', href: '/workflow-demo', icon: Workflow, category: 'tools' },
+  { name: 'Template Studio', href: '/template-studio', icon: Palette, category: 'tools' },
   { name: 'Settings', href: '/settings', icon: Settings, category: 'tools' },
 ];
 
@@ -60,7 +68,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
       
       {/* Sidebar */}
       <div className={`
-        fixed inset-y-0 left-0 z-30 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out
+        fixed inset-y-0 left-0 z-30 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out overflow-y-auto
         lg:translate-x-0 lg:static lg:inset-0
         ${isOpen ? 'translate-x-0' : '-translate-x-full'}
       `}>
@@ -156,6 +164,34 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
                   onClick={() => window.innerWidth < 1024 && onToggle()}
                 >
                   <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-purple-700' : 'text-gray-400'}`} />
+                  {item.name}
+                </Link>
+              );
+            })}
+          </div>
+
+          {/* Communication */}
+          <div className="mb-6">
+            <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+              💬 Communication
+            </h3>
+            {navigation.filter(item => item.category === 'communication').map((item) => {
+              const isActive = location.pathname === item.href;
+              return (
+                <Link
+                  key={item.name}
+                  to={item.href}
+                  className={`
+                    flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+                    border-l-4 border-l-sky-500
+                    ${isActive
+                      ? 'bg-sky-50 text-sky-700 border-l-sky-700'
+                      : 'text-gray-600 hover:bg-sky-50 hover:text-sky-700 border-l-transparent hover:border-l-sky-300'
+                    }
+                  `}
+                  onClick={() => window.innerWidth < 1024 && onToggle()}
+                >
+                  <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-sky-700' : 'text-gray-400'}`} />
                   {item.name}
                 </Link>
               );

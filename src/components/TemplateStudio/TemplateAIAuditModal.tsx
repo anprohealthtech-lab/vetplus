@@ -1,0 +1,275 @@
+import React from 'react';
+import clsx from 'clsx';
+
+export interface TemplateAuditResult {
+  status: 'pass' | 'attention' | 'fail';
+  summary: string;
+  patientMetadata?: {
+    tablePresent?: boolean;
+    missingColumns?: string[];
+  };
+  headerFooter?: {
+    headerImage?: boolean;
+    footerImage?: boolean;
+    signatureBlock?: boolean;
+  };
+  placeholders?: {
+    requiredMissing?: string[];
+    unknownPlaceholders?: string[];
+    duplicates?: string[];
+  };
+  analyteCoverage?: {
+    referencedButUnknown?: string[];
+    missingFromTemplate?: string[];
+  };
+  recommendations?: string[];
+}
+
+interface TemplateAIAuditModalProps {
+  open: boolean;
+  onClose: () => void;
+  loading: boolean;
+  result: TemplateAuditResult | null;
+  error: string | null;
+  lastCheckedAt?: string | null;
+  onImplement?: () => void;
+  implementing?: boolean;
+  disableImplement?: boolean;
+  onRevert?: () => void;
+  canRevert?: boolean;
+  successMessage?: string | null;
+}
+
+const statusBadges: Record<string, { label: string; classes: string }> = {
+  pass: {
+    label: 'Pass',
+    classes: 'bg-emerald-100 text-emerald-700 border border-emerald-200',
+  },
+  attention: {
+    label: 'Needs Attention',
+    classes: 'bg-amber-100 text-amber-700 border border-amber-200',
+  },
+  fail: {
+    label: 'Failed',
+    classes: 'bg-red-100 text-red-700 border border-red-200',
+  },
+};
+
+const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
+  open,
+  onClose,
+  loading,
+  result,
+  error,
+  lastCheckedAt,
+  onImplement,
+  implementing = false,
+  disableImplement,
+  onRevert,
+  canRevert,
+  successMessage,
+}) => {
+  if (!open) {
+    return null;
+  }
+
+  const statusBadge = result ? statusBadges[result.status] : null;
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-start justify-center bg-black/40 px-4 py-8">
+      <div className="max-h-full w-full max-w-2xl overflow-hidden rounded-lg bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">AI Template Audit</h2>
+            {lastCheckedAt ? (
+              <p className="text-xs text-gray-500">Last checked {new Date(lastCheckedAt).toLocaleString()}</p>
+            ) : null}
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="max-h-[70vh] overflow-y-auto px-4 py-4 text-sm text-gray-700">
+          {successMessage ? (
+            <div className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              {successMessage}
+            </div>
+          ) : null}
+          {loading ? (
+            <div className="flex items-center justify-center py-10 text-sm text-gray-600">
+              Running AI audit…
+            </div>
+          ) : error ? (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          ) : result ? (
+            <div className="space-y-4">
+              {onImplement ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-purple-200 bg-purple-50 px-3 py-2 text-xs text-purple-800">
+                  <p className="font-medium">Generate a patch to fix these findings automatically.</p>
+                  <div className="flex items-center gap-2">
+                    {onRevert && canRevert ? (
+                      <button
+                        type="button"
+                        onClick={onRevert}
+                        className="rounded-md border border-gray-300 px-2.5 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-100"
+                      >
+                        Revert AI Changes
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={onImplement}
+                      disabled={implementing || disableImplement}
+                      className="rounded-md bg-purple-600 px-3 py-1 text-[11px] font-medium text-white shadow-sm hover:bg-purple-700 disabled:cursor-not-allowed disabled:bg-purple-400"
+                    >
+                      {implementing ? 'Applying…' : 'Implement Changes'}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              <div className="flex items-center gap-2">
+                {statusBadge ? (
+                  <span className={clsx('rounded-full px-2.5 py-0.5 text-xs font-medium', statusBadge.classes)}>
+                    {statusBadge.label}
+                  </span>
+                ) : null}
+                <p className="text-sm text-gray-800">{result.summary}</p>
+              </div>
+
+              <section>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Patient Metadata</h3>
+                <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                  <p>
+                    Table detected:{' '}
+                    <span className={result.patientMetadata?.tablePresent ? 'text-emerald-600' : 'text-red-600'}>
+                      {result.patientMetadata?.tablePresent ? 'Yes' : 'No'}
+                    </span>
+                  </p>
+                  {result.patientMetadata?.missingColumns?.length ? (
+                    <p className="mt-1 text-sm text-amber-700">
+                      Missing columns: {result.patientMetadata.missingColumns.join(', ')}
+                    </p>
+                  ) : null}
+                </div>
+              </section>
+
+              <section>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Header &amp; Footer</h3>
+                <div className="mt-1 grid gap-2 sm:grid-cols-3">
+                  <AuditCheckCard label="Header image" active={!!result.headerFooter?.headerImage} />
+                  <AuditCheckCard label="Footer image" active={!!result.headerFooter?.footerImage} />
+                  <AuditCheckCard label="Signature block" active={!!result.headerFooter?.signatureBlock} />
+                </div>
+              </section>
+
+              <section>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Placeholders</h3>
+                <div className="mt-1 space-y-2 text-sm">
+                  {result.placeholders?.requiredMissing?.length ? (
+                    <AuditList title="Missing required" items={result.placeholders.requiredMissing} tone="warning" />
+                  ) : null}
+                  {result.placeholders?.unknownPlaceholders?.length ? (
+                    <AuditList title="Unknown placeholders" items={result.placeholders.unknownPlaceholders} tone="info" />
+                  ) : null}
+                  {result.placeholders?.duplicates?.length ? (
+                    <AuditList title="Duplicates" items={result.placeholders.duplicates} tone="info" />
+                  ) : null}
+                  {!result.placeholders?.requiredMissing?.length &&
+                  !result.placeholders?.unknownPlaceholders?.length &&
+                  !result.placeholders?.duplicates?.length ? (
+                    <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-sm text-emerald-700">
+                      All placeholders look good.
+                    </p>
+                  ) : null}
+                </div>
+              </section>
+
+              <section>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Analyte Coverage</h3>
+                <div className="mt-1 space-y-2 text-sm">
+                  {result.analyteCoverage?.referencedButUnknown?.length ? (
+                    <AuditList
+                      title="Referenced but not in test group"
+                      items={result.analyteCoverage.referencedButUnknown}
+                      tone="danger"
+                    />
+                  ) : null}
+                  {result.analyteCoverage?.missingFromTemplate?.length ? (
+                    <AuditList
+                      title="Test group analytes missing in template"
+                      items={result.analyteCoverage.missingFromTemplate}
+                      tone="warning"
+                    />
+                  ) : null}
+                  {!result.analyteCoverage?.referencedButUnknown?.length &&
+                  !result.analyteCoverage?.missingFromTemplate?.length ? (
+                    <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-sm text-emerald-700">
+                      Template and test group are aligned.
+                    </p>
+                  ) : null}
+                </div>
+              </section>
+
+              {result.recommendations?.length ? (
+                <section>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Recommendations</h3>
+                  <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-gray-700">
+                    {result.recommendations.map((item, idx) => (
+                      <li key={idx}>{item}</li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
+            </div>
+          ) : (
+            <div className="text-sm text-gray-600">No audit has been executed yet.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const AuditCheckCard: React.FC<{ label: string; active: boolean }> = ({ label, active }) => (
+  <div
+    className={clsx(
+      'rounded-md border px-3 py-2 text-sm',
+      active
+        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+        : 'border-red-200 bg-red-50 text-red-700'
+    )}
+  >
+    {label}: {active ? 'Present' : 'Missing'}
+  </div>
+);
+
+const AuditList: React.FC<{ title: string; items: string[]; tone: 'warning' | 'info' | 'danger' }> = ({
+  title,
+  items,
+  tone,
+}) => {
+  const toneClasses = {
+    warning: 'border-amber-200 bg-amber-50 text-amber-700',
+    info: 'border-blue-200 bg-blue-50 text-blue-700',
+    danger: 'border-red-200 bg-red-50 text-red-700',
+  };
+
+  return (
+    <div className={clsx('rounded-md border px-3 py-2', toneClasses[tone])}>
+      <p className="text-sm font-medium">{title}</p>
+      <ul className="mt-1 list-disc space-y-1 pl-4 text-sm">
+        {items.map((item, idx) => (
+          <li key={idx}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+export default TemplateAIAuditModal;

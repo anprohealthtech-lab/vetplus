@@ -50,6 +50,7 @@ const Result2: React.FC = () => {
   const [selectedRange, setSelectedRange] = useState<'today' | 'yesterday' | 'last7' | 'all'>('today');
   const [selectedTestGroup, setSelectedTestGroup] = useState<TestGroupProgress | null>(null);
   const [showWorkflowPanel, setShowWorkflowPanel] = useState(false);
+  const [isCollapsedView, setIsCollapsedView] = useState(false); // New collapsed view state
   
   // Add state for OrderDetailsModal
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
@@ -453,11 +454,25 @@ const Result2: React.FC = () => {
   const dateGroups = groupByDate();
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6">
-      <div className="max-w-7xl mx-auto">
+    <div className="bg-gray-50">
+      <div className="max-w-7xl mx-auto p-6">
         <div className="mb-6">
-          <h1 className="text-3xl font-bold text-gray-900">Results Entry Dashboard</h1>
-          <p className="text-gray-600 mt-2">Test group wise result entry with workflow integration</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900">Results Entry Dashboard</h1>
+              <p className="text-gray-600 mt-2">Test group wise result entry with workflow integration</p>
+            </div>
+            <button
+              onClick={() => setIsCollapsedView(!isCollapsedView)}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                isCollapsedView 
+                  ? 'bg-blue-600 text-white' 
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              {isCollapsedView ? 'Expand Cards' : 'Collapse Cards'}
+            </button>
+          </div>
         </div>
 
         {/* Date Range Filter */}
@@ -538,17 +553,61 @@ const Result2: React.FC = () => {
                 </div>
 
                 {/* Test Group Cards */}
-                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                  {dateGroup.testGroups.map(testGroup => {
-                    const statusConfig = getStatusColor(testGroup.panel_status, testGroup.order_status);
-                    const StatusIcon = statusConfig.icon;
+                {isCollapsedView ? (
+                  /* Collapsed View - One Line Summary */
+                  <div className="space-y-2">
+                    {dateGroup.testGroups.map(testGroup => {
+                      const statusConfig = getStatusColor(testGroup.panel_status, testGroup.order_status);
+                      const StatusIcon = statusConfig.icon;
 
-                    return (
-                      <div
-                        key={`${testGroup.order_id}-${testGroup.test_group_id}`}
-                        className={`border-2 rounded-lg p-4 cursor-pointer transition-all hover:shadow-lg ${statusConfig.border} ${statusConfig.bg}`}
-                        onClick={() => handleTestGroupClick(testGroup)}
-                      >
+                      return (
+                        <div
+                          key={`${testGroup.order_id}-${testGroup.test_group_id}`}
+                          className={`border rounded-lg p-3 cursor-pointer transition-all hover:shadow-md ${statusConfig.border} ${statusConfig.bg} flex items-center justify-between`}
+                          onClick={() => handleTestGroupClick(testGroup)}
+                        >
+                          <div className="flex items-center space-x-4 flex-1 min-w-0">
+                            <StatusIcon className={`h-4 w-4 ${statusConfig.text} flex-shrink-0`} />
+                            <span className="font-medium text-gray-900 truncate">{testGroup.patient_name}</span>
+                            <span className="text-sm text-gray-600 truncate">{testGroup.test_group_name}</span>
+                            <span className="text-xs text-gray-500">{testGroup.sample_id || 'No Sample'}</span>
+                          </div>
+                          <div className="flex items-center space-x-3 flex-shrink-0">
+                            <div className="text-xs text-gray-600">
+                              {testGroup.completion_percentage}% ({testGroup.completed_analytes}/{testGroup.total_analytes})
+                            </div>
+                            {testGroup.workflow_eligible && testGroup.panel_status === 'not_started' && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleWorkflowExecute(testGroup);
+                                }}
+                                className="px-2 py-1 bg-purple-600 text-white text-xs rounded hover:bg-purple-700 transition-colors"
+                              >
+                                Workflow
+                              </button>
+                            )}
+                            {testGroup.priority === 'urgent' && (
+                              <span className="px-2 py-1 bg-red-100 text-red-800 text-xs rounded-full">Urgent</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  /* Expanded View - Full Cards */
+                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                    {dateGroup.testGroups.map(testGroup => {
+                      const statusConfig = getStatusColor(testGroup.panel_status, testGroup.order_status);
+                      const StatusIcon = statusConfig.icon;
+
+                      return (
+                        <div
+                          key={`${testGroup.order_id}-${testGroup.test_group_id}`}
+                          className={`border-2 rounded-lg p-4 cursor-pointer transition-all hover:shadow-lg ${statusConfig.border} ${statusConfig.bg}`}
+                          onClick={() => handleTestGroupClick(testGroup)}
+                        >
                         {/* Header */}
                         <div className="flex items-start justify-between mb-3">
                           <div className="flex-1">
@@ -632,7 +691,8 @@ const Result2: React.FC = () => {
                       </div>
                     );
                   })}
-                </div>
+                  </div>
+                )}
               </div>
             ))}
 

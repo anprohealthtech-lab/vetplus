@@ -1,465 +1,750 @@
-Looking at the OrderDetailsModal-based Result Page code and comparing it with the current Results.tsx implementation, here are the key features that need to be added or changed:
+# WhatsApp Integration Implementation Guide for Different Databases
 
-## Missing Features from OrderDetailsModal that need to be added:
+## Overview
+This document provides a comprehensive guide to implement WhatsApp integration in any LIMS system, regardless of the database technology used. It outlines all WhatsApp-related functions, APIs, database tables, and implementation files.
 
-### 1. **Sample Collection Toggles**
-```typescript
-// Add to ManualEntryForm.tsx
-const handleMarkSampleCollected = useCallback(async () => {
-  const result = await markSampleCollected(order.id);
-  if (result.success) {
-    toast.success('Sample marked as collected');
-    // Refresh UI
-  }
-}, [order.id]);
+## Core WhatsApp Integration Components
 
-const handleMarkSampleNotCollected = useCallback(async () => {
-  const result = await database.orders.markSampleNotCollected(order.id);
-  if (result.success) {
-    toast.success('Sample collection status removed');
-    // Refresh UI
-  }
-}, [order.id]);
-```
+### 1. Database Schema Requirements
 
-### 2. **QR Code Generation & Label Printing**
-```typescript
-// Add to AIUploadPanel.tsx or create new component
-import QRCodeLib from 'qrcode';
-
-const generateQRCode = async (qrData: string) => {
-  try {
-    const qrImage = await QRCodeLib.toDataURL(qrData, {
-      width: 200,
-      margin: 2,
-      color: { dark: '#000000', light: '#FFFFFF' }
-    });
-    return qrImage;
-  } catch (error) {
-    console.error('QR generation failed:', error);
-    return '';
-  }
-};
-
-// Print label function
-const printSampleLabel = (order: Order) => {
-  const printWindow = window.open('', '_blank');
-  if (!printWindow) return;
-  
-  // Generate print HTML with QR code
-  printWindow.document.write(`
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Sample Label - ${order.sample_id}</title>
-        <style>
-          /* Print styles from OrderDetailsModal */
-        </style>
-      </head>
-      <body>
-        <!-- Label content with QR code -->
-      </body>
-    </html>
-  `);
-  printWindow.document.close();
-  printWindow.print();
-};
-```
-
-### 3. **Result Audit Modal**
-```typescript
-// Create components/Results/ResultAudit.tsx
-interface ResultAuditProps {
-  orderId: string;
-  onClose: () => void;
-}
-
-export const ResultAudit: React.FC<ResultAuditProps> = ({ orderId, onClose }) => {
-  // Implement audit trail display
-  // Show result history, modifications, timestamps, users
-};
-```
-
-### 4. **Attachment Preview with Multiple File Support**
-```typescript
-// Update AIUploadPanel.tsx
-const [attachments, setAttachments] = useState<any[]>([]);
-const [activeAttachment, setActiveAttachment] = useState<any | null>(null);
-
-// Add attachment preview section
-const AttachmentPreview = ({ attachment }: { attachment: any }) => {
-  if (attachment.file_type?.startsWith('image/')) {
-    return <img src={attachment.file_url} alt={attachment.original_filename} />;
-  }
-  if (attachment.file_type === 'application/pdf') {
-    return <iframe src={`${attachment.file_url}#view=FitH`} />;
-  }
-  return <div>Preview not available</div>;
-};
-```
-
-### 5. **Per-Panel Progress Tracking**
-```typescript
-// Add to Results.tsx
-interface TestGroupProgress {
-  test_group_id: string;
-  test_group_name: string;
-  total_analytes: number;
-  completed_analytes: number;
-  completion_percentage: number;
-  panel_status: 'not_started' | 'in_progress' | 'completed';
-}
-
-// Progress chip component
-const ProgressChip = ({ progress }: { progress: TestGroupProgress }) => (
-  <div className="flex items-center space-x-2">
-    <span className="text-sm">{progress.completed_analytes}/{progress.total_analytes}</span>
-    <div className="w-24 bg-gray-200 rounded-full h-2">
-      <div 
-        className="bg-blue-600 h-2 rounded-full"
-        style={{ width: `${progress.completion_percentage}%` }}
-      />
-    </div>
-  </div>
-);
-```
-
-### 6. **Scope Selection (Order vs Test-specific)**
-```typescript
-// Add to AIUploadPanel.tsx
-const [uploadScope, setUploadScope] = useState<'order' | 'test'>('order');
-const [selectedTestId, setSelectedTestId] = useState<string>('');
-
-// Radio buttons for scope selection
-<div className="flex items-center space-x-4 mb-3">
-  <label className="flex items-center text-sm">
-    <input
-      type="radio"
-      value="order"
-      checked={uploadScope === 'order'}
-      onChange={(e) => setUploadScope(e.target.value as 'order' | 'test')}
-    />
-    <span className="ml-2">Order Level</span>
-  </label>
-  <label className="flex items-center text-sm">
-    <input
-      type="radio"
-      value="test"
-      checked={uploadScope === 'test'}
-      onChange={(e) => setUploadScope(e.target.value as 'order' | 'test')}
-    />
-    <span className="ml-2">Test Specific</span>
-  </label>
-</div>
-```
-
-### 7. **Existing Result Display (Read-only)**
-```typescript
-// Add to ManualEntryForm.tsx
-const [readonlyResults, setReadonlyResults] = useState<Record<string, any[]>>({});
-
-// Fetch and display existing results
-const fetchExistingResults = async (orderId: string) => {
-  const { data } = await supabase
-    .from('results')
-    .select(`
-      id, test_group_id, status,
-      result_values (id, analyte_name, value, unit, reference_range, flag)
-    `)
-    .eq('order_id', orderId)
-    .order('created_at', { ascending: false });
+#### Primary WhatsApp Tables
+```sql
+-- WhatsApp Sessions Table (Required)
+CREATE TABLE whatsapp_sessions (
+    id VARCHAR(255) PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,
+    session_id VARCHAR(255) NOT NULL,
+    is_authenticated BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
+    phone_number VARCHAR(50),
+    session_data TEXT,
+    qr_code_data TEXT,
+    strategy VARCHAR(50) DEFAULT 'on_demand',
+    last_activity TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
-  // Group by test group
-  const grouped = data?.reduce((acc, result) => {
-    const key = result.test_group_id;
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(...(result.result_values || []));
-    return acc;
-  }, {});
-  
-  setReadonlyResults(grouped || {});
-};
+    -- Optional fields for advanced features
+    last_disconnect_code INTEGER,
+    reconnect_attempts INTEGER DEFAULT 0,
+    
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Messages Queue Table (Required)
+CREATE TABLE messages (
+    id VARCHAR(255) PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,
+    session_id VARCHAR(255),
+    to_number VARCHAR(50) NOT NULL,
+    message_text TEXT,
+    message_type VARCHAR(50) DEFAULT 'text', -- 'text', 'image', 'document'
+    file_path VARCHAR(500),
+    file_name VARCHAR(255),
+    file_size INTEGER,
+    
+    -- Message Status Tracking
+    status VARCHAR(50) DEFAULT 'pending', -- 'pending', 'sent', 'delivered', 'read', 'failed'
+    whatsapp_message_id VARCHAR(255),
+    delivery_status VARCHAR(50),
+    
+    -- Metadata
+    template_used VARCHAR(255),
+    patient_name VARCHAR(255),
+    test_name VARCHAR(255),
+    doctor_name VARCHAR(255),
+    lab_name VARCHAR(255),
+    
+    -- Timestamps
+    scheduled_at TIMESTAMP,
+    sent_at TIMESTAMP,
+    delivered_at TIMESTAMP,
+    read_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES whatsapp_sessions(id) ON DELETE SET NULL
+);
+
+-- System Logs Table (Recommended)
+CREATE TABLE system_logs (
+    id VARCHAR(255) PRIMARY KEY,
+    level VARCHAR(20) NOT NULL, -- 'info', 'warning', 'error'
+    message TEXT NOT NULL,
+    service VARCHAR(50), -- 'whatsapp', 'file', 'message'
+    user_id VARCHAR(255),
+    metadata TEXT, -- JSON string
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- Users Table (Must have these WhatsApp-related columns)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS whatsapp_integration_available BOOLEAN DEFAULT TRUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS max_sessions INTEGER DEFAULT 2;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS session_preferences TEXT; -- JSON
 ```
 
-### 8. **Flag Selection Dropdown**
+### 2. Core Service Files
+
+#### A. Multi-User WhatsApp Service
+**File**: `services/MultiUserWhatsAppService.ts` or equivalent
+**Purpose**: Main WhatsApp Web integration service
+**Key Functions**:
 ```typescript
-// Add to ManualEntryForm.tsx
-const FLAG_OPTIONS = [
-  { value: '', label: 'Normal' },
-  { value: 'H', label: 'High' },
-  { value: 'L', label: 'Low' },
-  { value: 'C', label: 'Critical' }
-];
-
-// In the table row
-<select
-  value={value.flag || ''}
-  onChange={(e) => updateFlag(index, e.target.value)}
-  className="w-full px-2 py-2 border rounded"
->
-  {FLAG_OPTIONS.map(option => (
-    <option key={option.value} value={option.value}>
-      {option.label}
-    </option>
-  ))}
-</select>
+class MultiUserWhatsAppService {
+    // Session Management
+    async createUserSession(userId: string): Promise<SessionResult>
+    async getOrCreateUserSession(userId: string): Promise<UserSession>
+    async cleanupUserSession(userId: string): Promise<void>
+    
+    // Connection Management
+    async connectUser(userId: string): Promise<ConnectionResult>
+    async disconnectUser(userId: string): Promise<void>
+    async getUserConnectionStatus(userId: string): Promise<ConnectionStatus>
+    
+    // Message Operations
+    async sendMessage(userId: string, to: string, message: string): Promise<MessageResult>
+    async sendDocument(userId: string, to: string, filePath: string, caption?: string): Promise<MessageResult>
+    async sendImage(userId: string, to: string, imagePath: string, caption?: string): Promise<MessageResult>
+    
+    // QR Code Generation
+    private handleQRCode(userId: string, qr: string): void
+    
+    // Connection Event Handlers
+    private handleUserConnectionUpdate(userId: string, update: ConnectionUpdate): void
+    private handleUserReady(userId: string, user: WhatsAppUser): void
+    
+    // Database Cleanup (New)
+    private async performDatabaseCleanup(): Promise<void>
+    private async cleanupFailedSessions(): Promise<number>
+    private scheduleDailyDatabaseCleanup(): void
+}
 ```
 
-## Key Changes Needed:
-
-### 1. **Update ManualEntryForm.tsx**
-- Add sample collection toggles
-- Add read-only result display below editable rows
-- Add flag dropdown instead of auto-calculation only
-- Add progress tracking per test group
-- Fix the "Save Draft" to properly map analytes by ID
-
-### 2. **Update AIUploadPanel.tsx**
-- Add scope selection (order vs test)
-- Add attachment list with preview
-- Fix the save path to use proper result structure
-- Add QR code generation and label printing
-
-### 3. **Create New Components**
-- `ResultAudit.tsx` - Audit trail modal
-- `SampleLabel.tsx` - QR code label component
-- `AttachmentPreview.tsx` - File preview component
-
-### 4. **Update Results.tsx**
-- Add proper test group filtering
-- Add progress tracking view
-- Fix the order structure to include all needed fields
-- Add proper error handling
-
-Here's the implementation plan:
-
-````typescript
-import React, { useState, useEffect } from 'react';
-import { X } from 'lucide-react';
-import { supabase } from '../../utils/supabase';
-
-interface ResultAuditProps {
-  orderId: string;
-  onClose: () => void;
+#### B. Message Service
+**File**: `services/MessageService.ts` or equivalent
+**Purpose**: Message queue management and template processing
+**Key Functions**:
+```typescript
+class MessageService {
+    // Queue Management
+    async queueMessage(messageData: MessageData): Promise<string>
+    async processMessageQueue(): Promise<void>
+    async getMessageHistory(userId: string, filters?: MessageFilters): Promise<Message[]>
+    
+    // Template Processing
+    private processMessageTemplate(template: string, data: TemplateData): string
+    
+    // Status Updates
+    async updateMessageStatus(messageId: string, status: MessageStatus): Promise<void>
+    async handleDeliveryUpdate(messageId: string, deliveryData: DeliveryData): Promise<void>
 }
+```
 
-export const ResultAudit: React.FC<ResultAuditProps> = ({ orderId, onClose }) => {
-  const [auditEntries, setAuditEntries] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+#### C. File Service
+**File**: `services/FileService.ts` or equivalent
+**Purpose**: File upload and management for WhatsApp attachments
+**Key Functions**:
+```typescript
+class FileService {
+    // File Operations
+    async saveUploadedFile(file: MulterFile, userId: string): Promise<FileInfo>
+    async validateFile(file: MulterFile, type: 'document' | 'image'): Promise<ValidationResult>
+    async cleanupOldFiles(): Promise<number>
+    
+    // File Path Management
+    getFilePath(filename: string): string
+    generateUniqueFilename(originalName: string): string
+}
+```
 
-  useEffect(() => {
-    fetchAuditTrail();
-  }, [orderId]);
+### 3. API Endpoints Implementation
 
-  const fetchAuditTrail = async () => {
+#### A. WhatsApp Connection APIs
+```typescript
+// File: routes/whatsapp.ts or controllers/WhatsAppController.ts
+
+// QR Code Generation & Connection
+POST /api/users/:userId/whatsapp/connect
+GET  /api/users/:userId/whatsapp/status
+POST /api/users/:userId/whatsapp/disconnect
+
+// QR Code WebSocket Events
+WebSocket: /ws
+Events: 'user-qr-code', 'user-connected', 'user-disconnected'
+```
+
+**Implementation Example**:
+```typescript
+// Connect endpoint - generates QR code
+router.post('/users/:userId/whatsapp/connect', async (req, res) => {
     try {
-      const { data, error } = await supabase
-        .from('result_audit_trail')
-        .select(`
-          *,
-          users (email, full_name)
-        `)
-        .eq('order_id', orderId)
-        .order('created_at', { ascending: false });
-
-      if (!error) {
-        setAuditEntries(data || []);
-      }
-    } catch (error) {
-      console.error('Error fetching audit trail:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-          <h2 className="text-xl font-semibold">Result Audit Trail</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X className="h-6 w-6" />
-          </button>
-        </div>
+        const { userId } = req.params;
+        const result = await multiUserWhatsAppService.createUserSession(userId);
         
-        <div className="p-6 overflow-y-auto max-h-[calc(90vh-80px)]">
-          {loading ? (
-            <div>Loading audit trail...</div>
-          ) : auditEntries.length === 0 ? (
-            <div>No audit entries found</div>
-          ) : (
-            <div className="space-y-4">
-              {auditEntries.map((entry) => (
-                <div key={entry.id} className="border-l-4 border-blue-400 pl-4">
-                  <div className="text-sm text-gray-600">
-                    {new Date(entry.created_at).toLocaleString()}
-                  </div>
-                  <div className="font-medium">{entry.action}</div>
-                  <div className="text-sm text-gray-700">{entry.details}</div>
-                  <div className="text-xs text-gray-500">
-                    By: {entry.users?.full_name || entry.users?.email || 'Unknown'}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-````
+        if (result.success) {
+            res.json({
+                success: true,
+                sessionId: result.sessionId,
+                message: result.qrCode ? 'QR code generated' : 'Session reused'
+            });
+        } else {
+            res.status(400).json({
+                success: false,
+                message: result.error
+            });
+        }
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Connection failed',
+            error: error.message
+        });
+    }
+});
 
-````typescript
-import React, { useState, useEffect } from 'react';
-import { TestTube2, QrCode, Printer } from 'lucide-react';
-import QRCodeLib from 'qrcode';
+// Status endpoint
+router.get('/users/:userId/whatsapp/status', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const status = await multiUserWhatsAppService.getUserConnectionStatus(userId);
+        res.json(status);
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Failed to get status'
+        });
+    }
+});
+```
 
-interface SampleTrackingProps {
-  order: {
-    id: string;
-    patient_name: string;
-    sample_id?: string;
-    color_code?: string;
-    color_name?: string;
-    qr_code_data?: string;
-    order_date: string;
-    tests: string[];
-  };
+#### B. Message Sending APIs
+```typescript
+// File: routes/messages.ts or controllers/MessageController.ts
+
+// Text Messages
+POST /api/send-message
+POST /api/users/:userId/whatsapp/send-message
+
+// File Messages (Reports/Images)
+POST /api/send-report
+POST /api/users/:userId/whatsapp/send-document
+POST /api/users/:userId/whatsapp/send-image
+
+// Message History
+GET /api/messages
+GET /api/users/:userId/messages
+```
+
+**Implementation Example**:
+```typescript
+// Send text message
+router.post('/send-message', async (req, res) => {
+    try {
+        const { userId, to, message, templateData } = req.body;
+        
+        // Validate input
+        if (!userId || !to || !message) {
+            return res.status(400).json({
+                success: false,
+                message: 'Missing required fields'
+            });
+        }
+        
+        // Process template if provided
+        let processedMessage = message;
+        if (templateData) {
+            processedMessage = processMessageTemplate(message, templateData);
+        }
+        
+        // Send message
+        const result = await multiUserWhatsAppService.sendMessage(userId, to, processedMessage);
+        
+        res.json({
+            success: result.success,
+            messageId: result.messageId,
+            message: result.success ? 'Message sent successfully' : result.error
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Failed to send message',
+            error: error.message
+        });
+    }
+});
+
+// Send document/report
+router.post('/send-report', upload.single('file'), async (req, res) => {
+    try {
+        const { userId, to, caption, patientName, testName } = req.body;
+        const file = req.file;
+        
+        if (!file || !userId || !to) {
+            return res.status(400).json({
+                success: false,
+                message: 'Missing required fields or file'
+            });
+        }
+        
+        // Save file
+        const fileInfo = await fileService.saveUploadedFile(file, userId);
+        
+        // Send document
+        const result = await multiUserWhatsAppService.sendDocument(
+            userId, 
+            to, 
+            fileInfo.path, 
+            caption
+        );
+        
+        // Queue message record
+        await messageService.queueMessage({
+            userId,
+            to,
+            messageType: 'document',
+            filePath: fileInfo.path,
+            fileName: fileInfo.name,
+            caption,
+            templateData: { patientName, testName }
+        });
+        
+        res.json({
+            success: result.success,
+            messageId: result.messageId,
+            message: result.success ? 'Report sent successfully' : result.error
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Failed to send report',
+            error: error.message
+        });
+    }
+});
+```
+
+### 4. Frontend Integration Files
+
+#### A. WhatsApp Dashboard Component
+**File**: `components/WhatsAppDashboard.tsx` or equivalent
+**Purpose**: Real-time WhatsApp connection management
+**Key Features**:
+- QR code display
+- Connection status
+- Session management
+- Real-time updates via WebSocket
+
+```typescript
+interface WhatsAppDashboardProps {
+    userId: string;
 }
 
-export const SampleTracking: React.FC<SampleTrackingProps> = ({ order }) => {
-  const [qrCodeImage, setQrCodeImage] = useState<string>('');
-
-  useEffect(() => {
-    generateQRCode();
-  }, [order.qr_code_data]);
-
-  const generateQRCode = async () => {
-    if (!order.qr_code_data) return;
-    try {
-      const qrImage = await QRCodeLib.toDataURL(order.qr_code_data, {
-        width: 200,
-        margin: 2,
-        color: { dark: '#000000', light: '#FFFFFF' }
-      });
-      setQrCodeImage(qrImage);
-    } catch (error) {
-      console.error('QR generation failed:', error);
-    }
-  };
-
-  const printLabel = () => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
-
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Sample QR Code - ${order.sample_id || ''}</title>
-          <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <style>
-            body { font-family: Arial, sans-serif; margin: 20px; text-align: center; }
-            .qr-container { border: 2px solid #000; padding: 20px; display: inline-block; margin: 20px; }
-            .qr-code { width: 200px; height: 200px; margin: 10px auto; }
-            .sample-info { margin-top: 20px; text-align: left; }
-            .sample-info div { margin: 5px 0; }
-            .color-indicator { width: 30px; height: 30px; border-radius: 50%; display: inline-block; margin-right: 10px; vertical-align: middle; border: 2px solid #333; }
-            @media print { body { margin: 0; } }
-          </style>
-        </head>
-        <body>
-          <div class="qr-container">
-            <h2>Sample Tracking Label</h2>
-            <img src="${qrCodeImage}" alt="QR Code" class="qr-code" />
-            <div class="sample-info">
-              <div><strong>Sample ID:</strong> ${order.sample_id || 'N/A'}</div>
-              <div><strong>Patient:</strong> ${order.patient_name}</div>
-              <div><strong>Order ID:</strong> ${order.id.slice(0, 8)}</div>
-              <div>
-                <strong>Sample Tube:</strong> 
-                <span class="color-indicator" style="background-color: ${order.color_code}"></span>
-                ${order.color_name || ''}
-              </div>
-              <div><strong>Order Date:</strong> ${new Date(order.order_date).toLocaleDateString()}</div>
-              <div><strong>Tests:</strong> ${order.tests.join(', ')}</div>
-            </div>
-          </div>
-          <script>
-            window.onload = () => {
-              window.print();
-              window.onafterprint = () => window.close();
+const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ userId }) => {
+    const [connectionStatus, setConnectionStatus] = useState('disconnected');
+    const [qrCode, setQrCode] = useState<string | null>(null);
+    const [isConnecting, setIsConnecting] = useState(false);
+    
+    // WebSocket connection for real-time updates
+    useEffect(() => {
+        const ws = new WebSocket('/ws');
+        
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            
+            switch (data.event) {
+                case 'user-qr-code':
+                    if (data.userId === userId) {
+                        setQrCode(data.qrCode);
+                        setConnectionStatus('pairing');
+                    }
+                    break;
+                    
+                case 'user-connected':
+                    if (data.userId === userId) {
+                        setConnectionStatus('connected');
+                        setQrCode(null);
+                        setIsConnecting(false);
+                    }
+                    break;
+                    
+                case 'user-disconnected':
+                    if (data.userId === userId) {
+                        setConnectionStatus('disconnected');
+                        setQrCode(null);
+                        setIsConnecting(false);
+                    }
+                    break;
             }
-          </script>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
-  };
-
-  if (!order.sample_id) return null;
-
-  return (
-    <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-      <h3 className="text-lg font-semibold mb-4 flex items-center">
-        <TestTube2 className="h-5 w-5 mr-2 text-green-600" />
-        Sample Tracking Information
-      </h3>
-      
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="flex items-center space-x-4">
-          <div
-            className="w-12 h-12 rounded-full border-4 border-gray-300 flex-shrink-0"
-            style={{ backgroundColor: order.color_code }}
-            title={`Sample Color: ${order.color_name}`}
-          />
-          <div>
-            <div className="text-sm font-medium text-gray-700">Sample ID</div>
-            <div className="text-lg font-bold text-green-900">{order.sample_id}</div>
-            <div className="text-sm text-green-700">{order.color_name} Tube</div>
-          </div>
-        </div>
-
-        <div>
-          <div className="text-sm font-medium text-gray-700 mb-2 flex items-center justify-between">
-            <div className="flex items-center">
-              <QrCode className="h-4 w-4 mr-1" />
-              QR Code
+        };
+        
+        return () => ws.close();
+    }, [userId]);
+    
+    const handleConnect = async () => {
+        setIsConnecting(true);
+        try {
+            const response = await fetch(`/api/users/${userId}/whatsapp/connect`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            
+            if (!result.success) {
+                console.error('Connection failed:', result.message);
+                setIsConnecting(false);
+            }
+        } catch (error) {
+            console.error('Connection error:', error);
+            setIsConnecting(false);
+        }
+    };
+    
+    return (
+        <div className="whatsapp-dashboard">
+            <div className="connection-status">
+                Status: {connectionStatus}
             </div>
-            {order.qr_code_data && (
-              <button
-                onClick={printLabel}
-                className="flex items-center px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
-              >
-                <Printer className="h-3 w-3 mr-1" />
-                Print Label
-              </button>
+            
+            {connectionStatus === 'disconnected' && (
+                <button onClick={handleConnect} disabled={isConnecting}>
+                    {isConnecting ? 'Connecting...' : 'Connect WhatsApp'}
+                </button>
             )}
-          </div>
-          <div className="bg-white border-2 border-green-300 rounded-lg p-4 text-center">
-            {qrCodeImage ? (
-              <img src={qrCodeImage} alt="Sample QR Code" className="w-32 h-32 mx-auto" />
-            ) : (
-              <div className="text-sm text-gray-400">No QR data</div>
+            
+            {qrCode && (
+                <div className="qr-code-section">
+                    <h3>Scan QR Code with WhatsApp</h3>
+                    <img src={qrCode} alt="WhatsApp QR Code" />
+                </div>
             )}
-          </div>
         </div>
-      </div>
-    </div>
-  );
+    );
 };
-````
+```
 
-The key differences to implement:
+#### B. Message History Component
+**File**: `components/MessageHistory.tsx` or equivalent
+```typescript
+interface MessageHistoryProps {
+    userId: string;
+}
 
-1. **Add proper sample tracking with QR codes**
-2. **Add Result Audit modal functionality**
-3. **Fix the save draft/submit to use proper result structure**
-4. **Add attachment preview functionality**
-5. **Add per-panel progress tracking**
-6. **Add scope selection for uploads**
-7. **Add flag dropdown selection**
-8. **Add existing result display**
+const MessageHistory: React.FC<MessageHistoryProps> = ({ userId }) => {
+    const [messages, setMessages] = useState<Message[]>([]);
+    const [loading, setLoading] = useState(true);
+    
+    useEffect(() => {
+        fetchMessages();
+    }, [userId]);
+    
+    const fetchMessages = async () => {
+        try {
+            const response = await fetch(`/api/users/${userId}/messages`);
+            const result = await response.json();
+            setMessages(result.data || []);
+        } catch (error) {
+            console.error('Failed to fetch messages:', error);
+        } finally {
+            setLoading(false);
+        }
+    };
+    
+    return (
+        <div className="message-history">
+            <h3>Message History</h3>
+            {loading ? (
+                <div>Loading...</div>
+            ) : (
+                <div className="message-list">
+                    {messages.map(message => (
+                        <div key={message.id} className="message-item">
+                            <div className="message-info">
+                                <span className="recipient">To: {message.toNumber}</span>
+                                <span className="status">{message.status}</span>
+                                <span className="timestamp">{new Date(message.createdAt).toLocaleString()}</span>
+                            </div>
+                            <div className="message-content">
+                                {message.messageText || `${message.messageType}: ${message.fileName}`}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
+```
 
-These changes will make the Results page match the OrderDetailsModal functionality while maintaining the page-based layout.
+### 5. Configuration Files
+
+#### A. Environment Variables
+```env
+# WhatsApp Configuration
+WHATSAPP_MAX_SESSIONS=10
+WHATSAPP_MAX_SESSIONS_PER_USER=3
+WHATSAPP_CONNECTION_TIMEOUT=60000
+WHATSAPP_QR_TIMEOUT=300000
+WHATSAPP_KEEP_ALIVE_INTERVAL=25000
+
+# Rate Limiting
+ENABLE_RATE_LIMITING=true
+RATE_LIMIT_INTERVAL=15000
+
+# File Upload
+MAX_FILE_SIZE=10485760
+ALLOWED_FILE_TYPES=pdf,jpg,jpeg,png
+UPLOAD_DIR=./uploads
+
+# Cleanup Configuration
+SESSION_CLEANUP_INTERVAL=300000
+INACTIVE_SESSION_TIMEOUT=300000
+FILE_CLEANUP_INTERVAL=86400000
+
+# Database
+DATABASE_URL=your_database_connection_string
+
+# Logging
+LOG_LEVEL=info
+BAILEYS_LOG_LEVEL=error
+```
+
+#### B. WhatsApp Service Configuration
+**File**: `config/whatsapp.ts` or equivalent
+```typescript
+export const whatsappConfig = {
+    maxGlobalSessions: parseInt(process.env.WHATSAPP_MAX_SESSIONS || '10'),
+    maxUserSessions: parseInt(process.env.WHATSAPP_MAX_SESSIONS_PER_USER || '3'),
+    connectionTimeout: parseInt(process.env.WHATSAPP_CONNECTION_TIMEOUT || '60000'),
+    qrTimeout: parseInt(process.env.WHATSAPP_QR_TIMEOUT || '300000'),
+    keepAliveInterval: parseInt(process.env.WHATSAPP_KEEP_ALIVE_INTERVAL || '25000'),
+    authBaseDir: './server/auth',
+    uploadsDir: process.env.UPLOAD_DIR || './uploads',
+    
+    // Browser configuration for WhatsApp Web
+    browser: {
+        name: 'LIMS WhatsApp Integration',
+        version: '1.0.0'
+    },
+    
+    // Message templates
+    templates: {
+        reportDelivery: 'Hello [PatientName], your [TestName] report from [LabName] is ready. Please find it attached.',
+        appointmentReminder: 'Hello [PatientName], this is a reminder for your appointment with [DoctorName] on [AppointmentDate].',
+        reviewRequest: 'Hello [PatientName], we hope you are satisfied with our service. Please leave us a review: [ReviewLink]'
+    }
+};
+```
+
+### 6. Database Storage Interface
+
+#### A. Storage Interface Definition
+**File**: `interfaces/Storage.ts` or equivalent
+```typescript
+interface IStorage {
+    // WhatsApp Sessions
+    createWhatsAppSession(data: WhatsAppSessionData): Promise<string>;
+    getWhatsAppSessionsByUserId(userId: string): Promise<WhatsAppSession[]>;
+    updateUserWhatsAppSession(userId: string, data: Partial<WhatsAppSession>): Promise<void>;
+    deleteWhatsAppSession(sessionId: string): Promise<void>;
+    deleteWhatsAppSessionsByUserId(userId: string, exceptSessionId?: string): Promise<number>;
+    getAllWhatsAppSessions(): Promise<WhatsAppSession[]>;
+    
+    // Session Cleanup Methods
+    cleanupFailedSessions(): Promise<number>;
+    cleanupOrphanedSessions(maxAgeDays?: number): Promise<number>;
+    deactivateOtherUserSessions(userId: string, currentSessionId: string): Promise<void>;
+    
+    // Messages
+    createMessage(data: MessageData): Promise<string>;
+    getMessagesByUserId(userId: string, filters?: MessageFilters): Promise<Message[]>;
+    updateMessage(messageId: string, data: Partial<Message>): Promise<void>;
+    getMessageById(messageId: string): Promise<Message | null>;
+    
+    // System Logs
+    createSystemLog(data: SystemLogData): Promise<void>;
+    getSystemLogs(filters?: LogFilters): Promise<SystemLog[]>;
+    
+    // Users
+    getUser(userId: string): Promise<User | null>;
+    updateUser(userId: string, data: Partial<User>): Promise<void>;
+}
+```
+
+### 7. Message Template System
+
+#### A. Template Processing
+**File**: `utils/messageTemplates.ts` or equivalent
+```typescript
+interface TemplateData {
+    patientName?: string;
+    testName?: string;
+    doctorName?: string;
+    labName?: string;
+    reportDate?: string;
+    appointmentDate?: string;
+    reviewLink?: string;
+    [key: string]: string | undefined;
+}
+
+export function processMessageTemplate(template: string, data: TemplateData): string {
+    let processed = template;
+    
+    // Replace all template variables
+    Object.entries(data).forEach(([key, value]) => {
+        if (value) {
+            const placeholder = `[${key.charAt(0).toUpperCase() + key.slice(1)}]`;
+            processed = processed.replace(new RegExp(placeholder, 'g'), value);
+        }
+    });
+    
+    return processed;
+}
+
+export const defaultTemplates = {
+    reportDelivery: 'Hello [PatientName], your [TestName] report from [LabName] is ready.',
+    appointmentReminder: 'Reminder: [PatientName], your appointment with [DoctorName] is on [AppointmentDate].',
+    reviewRequest: 'Hello [PatientName], please share your feedback: [ReviewLink]'
+};
+```
+
+### 8. WebSocket Integration
+
+#### A. WebSocket Server Setup
+**File**: `server/websocket.ts` or equivalent
+```typescript
+import { WebSocketServer } from 'ws';
+
+export function setupWebSocketServer(server: any) {
+    const wss = new WebSocketServer({ server, path: '/ws' });
+    
+    wss.on('connection', (ws) => {
+        console.log('WebSocket client connected');
+        
+        ws.on('close', () => {
+            console.log('WebSocket client disconnected');
+        });
+    });
+    
+    // Broadcast function for WhatsApp events
+    const broadcast = (event: string, data: any) => {
+        const message = JSON.stringify({ event, ...data });
+        wss.clients.forEach(client => {
+            if (client.readyState === client.OPEN) {
+                client.send(message);
+            }
+        });
+    };
+    
+    return { wss, broadcast };
+}
+
+// Event types to broadcast
+export interface WhatsAppEvents {
+    'user-qr-code': {
+        userId: string;
+        sessionId: string;
+        qrCode: string;
+        userName: string;
+        clinicName: string;
+    };
+    
+    'user-connected': {
+        userId: string;
+        sessionId: string;
+        phoneNumber: string;
+        userName: string;
+        clinicName: string;
+    };
+    
+    'user-disconnected': {
+        userId: string;
+        sessionId: string;
+        userName: string;
+        shouldReconnect: boolean;
+    };
+    
+    'message-sent': {
+        userId: string;
+        messageId: string;
+        to: string;
+        status: string;
+    };
+    
+    'message-delivered': {
+        messageId: string;
+        deliveredAt: string;
+    };
+}
+```
+
+### 9. Implementation Checklist
+
+#### Phase 1: Database Setup
+- [ ] Create `whatsapp_sessions` table
+- [ ] Create `messages` table  
+- [ ] Create `system_logs` table
+- [ ] Add WhatsApp columns to `users` table
+- [ ] Create necessary indexes for performance
+
+#### Phase 2: Core Services
+- [ ] Implement `MultiUserWhatsAppService` class
+- [ ] Implement `MessageService` class
+- [ ] Implement `FileService` class
+- [ ] Set up database storage interface
+- [ ] Configure WhatsApp Web integration (Baileys library)
+
+#### Phase 3: API Endpoints
+- [ ] WhatsApp connection endpoints (`/connect`, `/status`, `/disconnect`)
+- [ ] Message sending endpoints (`/send-message`, `/send-report`)
+- [ ] Message history endpoints (`/messages`)
+- [ ] File upload handling with Multer
+
+#### Phase 4: Frontend Integration
+- [ ] WhatsApp dashboard component with QR code display
+- [ ] Message history component
+- [ ] Real-time status updates via WebSocket
+- [ ] File upload interface for reports
+
+#### Phase 5: Advanced Features
+- [ ] Database cleanup system (daily scheduled + immediate)
+- [ ] Message template processing
+- [ ] File cleanup automation
+- [ ] Comprehensive logging and monitoring
+- [ ] Error handling and recovery mechanisms
+
+#### Phase 6: Production Setup
+- [ ] Environment variable configuration
+- [ ] WebSocket server setup
+- [ ] Authentication directory structure
+- [ ] File upload directory setup
+- [ ] Production deployment configuration
+
+### 10. Integration Dependencies
+
+#### Required NPM Packages
+```json
+{
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.x.x",
+    "qrcode": "^1.5.3",
+    "multer": "^1.4.5",
+    "ws": "^8.x.x",
+    "uuid": "^9.x.x"
+  },
+  "devDependencies": {
+    "@types/multer": "^1.4.7",
+    "@types/ws": "^8.x.x",
+    "@types/uuid": "^9.x.x"
+  }
+}
+```
+
+#### System Requirements
+- Node.js 18+ 
+- Chrome/Chromium browser (for WhatsApp Web automation)
+- Sufficient memory (>512MB for WhatsApp sessions)
+- Persistent storage for session data and file uploads
+
+This comprehensive guide provides all the necessary components to implement WhatsApp integration in any LIMS system. Adapt the database queries and ORM syntax to match your specific database technology while maintaining the same logical structure and functionality.

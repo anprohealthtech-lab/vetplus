@@ -13,6 +13,8 @@ import { supabase } from "../utils/supabase";
 import { ResultIntake } from "../components/Orders/ResultIntake";
 import { ResultAudit } from "../components/Orders/ResultAudit";
 import { useOrderStatusSync } from "../hooks/useOrderStatusSync";
+import { useAuth } from "../contexts/AuthContext";
+import WhatsAppSendButton from "../components/WhatsApp/WhatsAppSendButton";
 
 // ===========================================================
 // #region Types
@@ -57,6 +59,7 @@ interface Order {
   patient_name?: string;
   patient_dob?: string;
   patient_gender?: string;
+  patient_phone?: string;
   test_group_name?: string;
   sample_id?: string;
   test_groups?: TestGroupForOrder[];
@@ -72,6 +75,7 @@ export default function OrderDetail() {
   // =========================================================
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
@@ -277,6 +281,7 @@ export default function OrderDetail() {
         patient_name: data.patients?.name,
         patient_dob: data.patients?.dob,
         patient_gender: data.patients?.gender,
+        patient_phone: data.patients?.phone,
         test_groups: merged,
         sample_id: data.samples?.[0]?.barcode || data.samples?.[0]?.id,
       };
@@ -436,15 +441,42 @@ export default function OrderDetail() {
 
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">Order #{order.order_number}</h1>
-          <span className={getStatusBadge(order.status)}>
-            {order.status === "pending_collection"
-              ? "Pending Collection"
-              : order.status === "in_process"
-              ? "In Process"
-              : order.status === "pending_approval"
-              ? "Pending Approval"
-              : order.status}
-          </span>
+          <div className="flex items-center space-x-3">
+            <span className={getStatusBadge(order.status)}>
+              {order.status === "pending_collection"
+                ? "Pending Collection"
+                : order.status === "in_process"
+                ? "In Process"
+                : order.status === "pending_approval"
+                ? "Pending Approval"
+                : order.status}
+            </span>
+            
+            {/* WhatsApp Send Button - Show for completed orders */}
+            {(order.status === 'completed' || order.status === 'delivered') && (
+              <WhatsAppSendButton
+                // Use enhanced mode for direct sending with connection management
+                enhanced={true}
+                userId={user?.id}
+                labId={order.lab_id}
+                fileUrl={`https://your-report-service.com/reports/${order.id}/download`} // Replace with actual report URL
+                fileName={`Order_${order.order_number}_Report.pdf`}
+                phoneNumber={order.patient_phone}
+                patientName={order.patient_name}
+                testName={order.test_group_name || 'Laboratory Tests'}
+                variant="button"
+                size="sm"
+                onSuccess={(messageId) => {
+                  console.log(`Report sent successfully via WhatsApp! Message ID: ${messageId || 'N/A'}`);
+                  // You could show a success toast here instead of alert
+                }}
+                onError={(error) => {
+                  console.error(`Failed to send report: ${error}`);
+                  // You could show an error toast here instead of alert
+                }}
+              />
+            )}
+          </div>
         </div>
       </div>
 

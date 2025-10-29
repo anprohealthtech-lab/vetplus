@@ -152,15 +152,4 @@ export class StatusSyncService {
       return { isConsistent: true, recommendedStatus: order.status };
     }
   }
-
-  useEffect(() => {
-    loadOrder();
-  }, [orderId]);
-
-  return {
-    order,
-    loading,
-    error,
-    reload: loadOrder
-  };
-};
+}

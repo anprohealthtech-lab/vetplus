@@ -10,6 +10,62 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+export interface ReportTemplateContextMeta {
+  orderNumber: string;
+  orderDate: string | null;
+  status: string;
+  totalAmount: number | null;
+  createdAt: string | null;
+  allAnalytesApproved: boolean | null;
+}
+
+export interface ReportTemplatePatient {
+  name: string;
+  displayId: string;
+  age: number | null;
+  gender: string;
+  phone: string;
+  dateOfBirth: string | null;
+  registrationDate: string | null;
+}
+
+export interface ReportTemplateOrder {
+  sampleCollectedAt: string | null;
+  sampleCollectedBy: string;
+  sampleId: string;
+  locationId: string;
+  locationName: string;
+  referringDoctorId: string;
+  referringDoctorName: string;
+  approvedAt: string | null;
+}
+
+export interface ReportTemplateAnalyteRow {
+  result_id?: string;
+  analyte_id?: string;
+  parameter?: string;
+  value?: string;
+  unit?: string;
+  reference_range?: string;
+  flag?: string;
+  verify_status?: string;
+  test_name?: string;
+  test_group_id?: string;
+}
+
+export interface ReportTemplateContext {
+  orderId: string;
+  patientId: string | null;
+  labId: string | null;
+  meta: ReportTemplateContextMeta;
+  patient: ReportTemplatePatient;
+  order: ReportTemplateOrder;
+  analytes: ReportTemplateAnalyteRow[];
+  analyteParameters: string[];
+  testGroupIds: string[];
+  placeholderValues: Record<string, string | number | boolean | null>;
+}
+
 // File upload utilities
 export const uploadFile = async (
   file: File, 
@@ -308,22 +364,20 @@ export const database = {
               };
               
               const { data: orderResult, error: orderError } = await database.orders.create(orderData);
-              
+
               if (orderError) {
-                console.error('Error creating order:', orderError);
-                // Don't fail patient creation if order creation fails
+                console.error('Order creation failed:', orderError);
               } else {
                 console.log('Order created successfully:', orderResult?.id);
-                // Add order info to the response
-                return { 
-                  data: { 
-                    ...data, 
-                    order_created: true, 
+                return {
+                  data: {
+                    ...data,
+                    order_created: true,
                     order_id: orderResult?.id,
                     matched_tests: matchedTests.length,
-                    total_tests: requestedTests.length
-                  }, 
-                  error: null 
+                    total_tests: requestedTests.length,
+                  },
+                  error: null,
                 };
               }
             }
@@ -369,6 +423,93 @@ export const database = {
   },
   
   reports: {
+    getTemplateContext: async (orderId: string) => {
+      if (!orderId) {
+        return { data: null, error: new Error('orderId is required') };
+      }
+
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError) {
+        console.error('Failed to load session for template context:', sessionError);
+        return { data: null, error: sessionError };
+      }
+
+      const accessToken = session?.access_token;
+      if (!accessToken) {
+        return { data: null, error: new Error('No active session found for current user') };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch('/.netlify/functions/get-template-context', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: supabaseAnonKey,
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ orderId }),
+        });
+      } catch (networkError) {
+        console.error('Network error fetching report template context:', networkError);
+        return { data: null, error: networkError instanceof Error ? networkError : new Error('Network error') };
+      }
+
+      let payload: { success?: boolean; context?: ReportTemplateContext; error?: string } | null = null;
+      try {
+        payload = (await response.json()) as typeof payload;
+      } catch (parseError) {
+        console.error('Failed to parse template context response:', parseError);
+        return {
+          data: null,
+          error: new Error('Invalid response from template context endpoint'),
+        };
+      }
+
+      if (!response.ok) {
+        const message = payload?.error || `Template context request failed with status ${response.status}`;
+        return { data: null, error: new Error(message) };
+      }
+
+      if (!payload?.success) {
+        const message = payload?.error || 'Failed to load report context';
+        return { data: null, error: new Error(message) };
+      }
+
+      const context = payload.context;
+
+      if (!context) {
+        return { data: null, error: new Error('No context returned for order') };
+      }
+
+      const placeholderValues = context.placeholderValues;
+      const normalizedPlaceholderValues: Record<string, string | number | boolean | null> =
+        placeholderValues && typeof placeholderValues === 'object' && !Array.isArray(placeholderValues)
+          ? (placeholderValues as Record<string, string | number | boolean | null>)
+          : {};
+
+      const normalized: ReportTemplateContext = {
+        ...context,
+        orderId: context.orderId ? String(context.orderId) : '',
+        patientId: context.patientId ? String(context.patientId) : null,
+        labId: context.labId ? String(context.labId) : null,
+        analyteParameters: Array.isArray(context.analyteParameters)
+          ? context.analyteParameters.map((param) => (param == null ? '' : String(param))).filter((param) => param.length > 0)
+          : [],
+        testGroupIds: Array.isArray(context.testGroupIds)
+          ? context.testGroupIds.map((id) => (id == null ? '' : String(id))).filter((id) => id.length > 0)
+          : [],
+  analytes: Array.isArray(context.analytes) ? (context.analytes as ReportTemplateAnalyteRow[]) : [],
+        placeholderValues: normalizedPlaceholderValues,
+      };
+
+      return { data: normalized, error: null };
+    },
+
     getAll: async () => {
       const { data, error } = await supabase
         .from('reports')
@@ -412,6 +553,383 @@ export const database = {
         .eq('id', id);
       return { error };
     }
+  },
+
+  labTemplates: {
+    list: async (labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: [], error: new Error('No lab_id found for current user') };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_templates')
+        .select('*')
+        .eq('lab_id', labId)
+        .order('template_name', { ascending: true });
+
+      return { data: (data as any[]) || [], error };
+    },
+
+    getById: async (templateId: string, labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_templates')
+        .select('*')
+        .eq('lab_id', labId)
+        .eq('id', templateId)
+        .single();
+
+      return { data, error };
+    },
+
+    create: async (params: {
+      labId?: string;
+      name: string;
+      description?: string | null;
+      category?: string | null;
+      testGroupId?: string | null;
+      project?: any;
+      html?: string | null;
+      css?: string | null;
+      components?: any;
+      styles?: any;
+      userId?: string | null;
+      isDefault?: boolean;
+    }) => {
+      const labId = params.labId || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const payload = {
+        lab_id: labId,
+        template_name: params.name,
+        template_description: params.description ?? null,
+        test_group_id: params.testGroupId ?? null,
+        category: params.category ?? 'general',
+        gjs_project: params.project ?? null,
+        gjs_html: params.html ?? null,
+        gjs_css: params.css ?? null,
+        gjs_components: params.components ?? null,
+        gjs_styles: params.styles ?? null,
+        is_default: params.isDefault ?? false,
+        created_by: params.userId ?? null,
+        updated_by: params.userId ?? null,
+      };
+
+      const { data, error } = await supabase
+        .from('lab_templates')
+        .insert([payload])
+        .select('*')
+        .single();
+
+      if (error || !data) {
+        return { data: null, error };
+      }
+
+      await supabase
+        .from('lab_template_versions')
+        .insert({
+          template_id: data.id,
+          version_number: 1,
+          gjs_project: params.project ?? null,
+          gjs_html: params.html ?? null,
+          gjs_css: params.css ?? null,
+          gjs_components: params.components ?? null,
+          gjs_styles: params.styles ?? null,
+          created_by: params.userId ?? null,
+          version_name: 'Initial',
+        });
+
+      return { data, error: null };
+    },
+
+    saveProject: async (params: {
+      templateId: string;
+      labId?: string;
+      project: any;
+      html?: string | null;
+      css?: string | null;
+      components?: any;
+      styles?: any;
+      userId?: string | null;
+    }) => {
+      const labId = params.labId || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const existing = await supabase
+        .from('lab_templates')
+        .select('template_version')
+        .eq('lab_id', labId)
+        .eq('id', params.templateId)
+        .single();
+
+      if (existing.error) {
+        return { data: null, error: existing.error };
+      }
+
+      const currentVersion = (existing.data?.template_version as number | null) ?? 1;
+      const nextVersion = currentVersion + 1;
+
+      const { data, error } = await supabase
+        .from('lab_templates')
+        .update({
+          gjs_project: params.project ?? null,
+          gjs_html: params.html ?? null,
+          gjs_css: params.css ?? null,
+          gjs_components: params.components ?? null,
+          gjs_styles: params.styles ?? null,
+          template_version: nextVersion,
+          updated_by: params.userId ?? null,
+        })
+        .eq('lab_id', labId)
+        .eq('id', params.templateId)
+        .select('*')
+        .single();
+
+      if (error || !data) {
+        return { data: null, error };
+      }
+
+      await supabase
+        .from('lab_template_versions')
+        .insert({
+          template_id: params.templateId,
+          version_number: nextVersion,
+          gjs_project: params.project ?? null,
+          gjs_html: params.html ?? null,
+          gjs_css: params.css ?? null,
+          gjs_components: params.components ?? null,
+          gjs_styles: params.styles ?? null,
+          created_by: params.userId ?? null,
+          version_name: `v${nextVersion}`,
+        });
+
+      return { data, error: null };
+    },
+
+    updateMetadata: async (params: {
+      templateId: string;
+      labId?: string;
+      name?: string;
+      description?: string | null;
+      category?: string | null;
+      testGroupId?: string | null;
+      isDefault?: boolean;
+      userId?: string | null;
+    }) => {
+      const labId = params.labId || (await database.getCurrentUserLabId());
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const updates: Record<string, any> = {
+        updated_by: params.userId ?? null,
+      };
+
+      if (typeof params.name === 'string') {
+        updates.template_name = params.name;
+      }
+      if (params.description !== undefined) {
+        updates.template_description = params.description;
+      }
+      if (params.category !== undefined) {
+        updates.category = params.category ?? null;
+      }
+      if (params.testGroupId !== undefined) {
+        updates.test_group_id = params.testGroupId ?? null;
+      }
+      if (typeof params.isDefault === 'boolean') {
+        updates.is_default = params.isDefault;
+      }
+
+      const { data, error } = await supabase
+        .from('lab_templates')
+        .update(updates)
+        .eq('lab_id', labId)
+        .eq('id', params.templateId)
+        .select('*')
+        .single();
+
+      return { data, error };
+    },
+
+    updateVerification: async (params: {
+      templateId: string;
+      labId?: string;
+      status: string;
+      summary?: string | null;
+      details?: Record<string, any> | null;
+      checkedAt?: string;
+      userId?: string | null;
+    }) => {
+      const labId = params.labId || (await database.getCurrentUserLabId());
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const updates: Record<string, any> = {
+        ai_verification_status: params.status,
+        ai_verification_summary: params.summary ?? null,
+        ai_verification_details: params.details ?? null,
+        ai_verification_checked_at: params.checkedAt ?? new Date().toISOString(),
+        updated_by: params.userId ?? null,
+      };
+
+      const { data, error } = await supabase
+        .from('lab_templates')
+        .update(updates)
+        .eq('lab_id', labId)
+        .eq('id', params.templateId)
+        .select('*')
+        .single();
+
+      return { data, error };
+    },
+  },
+
+  templateParameters: {
+    listLabParameters: async (labIdOverride?: string) => {
+      const labId = labIdOverride || (await database.getCurrentUserLabId());
+      if (!labId) {
+        return { data: [], error: new Error('No lab_id found for current user') };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_analytes')
+        .select(
+          `
+            id,
+            analyte_id,
+            lab_specific_name,
+            lab_specific_unit,
+            lab_specific_reference_range,
+            lab_specific_interpretation_low,
+            lab_specific_interpretation_normal,
+            lab_specific_interpretation_high,
+            name,
+            unit,
+            reference_range,
+            interpretation_low,
+            interpretation_normal,
+            interpretation_high,
+            analytes:analytes!inner ( id, name, unit, reference_range )
+          `
+        )
+        .eq('lab_id', labId)
+        .eq('is_active', true)
+        .eq('visible', true)
+  .order('lab_specific_name', { ascending: true, nullsFirst: false })
+  .order('name', { ascending: true, nullsFirst: false });
+
+      if (error) {
+        return { data: [], error };
+      }
+
+      const mapped = (data || []).map((row: any) => {
+        const baseAnalyte = row.analytes || {};
+        const label = (row.lab_specific_name || row.name || baseAnalyte.name || 'Analyte').trim();
+        const slug = label.replace(/[^a-zA-Z0-9]+/g, ' ').trim().replace(/\s+/g, '');
+
+        return {
+          id: row.analyte_id || row.id || baseAnalyte.id,
+          label,
+          placeholder: `{{${slug || 'Analyte'}}}`,
+          unit: row.lab_specific_unit || row.unit || baseAnalyte.unit || null,
+          referenceRange:
+            row.lab_specific_reference_range ||
+            row.reference_range ||
+            baseAnalyte.reference_range ||
+            null,
+        };
+      });
+
+      return { data: mapped, error: null };
+    },
+
+    listTestGroupParameters: async (testGroupId: string) => {
+      if (!testGroupId) {
+        return { data: [], error: new Error('testGroupId is required') };
+      }
+
+      const { data, error } = await supabase
+        .from('test_group_analytes')
+        .select(
+          `analyte_id,
+           analytes ( id, name, unit, reference_range )`
+        )
+        .eq('test_group_id', testGroupId)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        return { data: [], error };
+      }
+
+      const mapped = (data || []).map((row: any) => {
+        const analyte = row.analytes || {};
+        const label = analyte.name || 'Unnamed Analyte';
+        const baseSlug = label
+          .replace(/[^a-zA-Z0-9]+/g, ' ')
+          .trim()
+          .replace(/\s+/g, '');
+        const finalSlug = baseSlug.replace(/^(\d+)/, 'n$1');
+        return {
+          id: analyte.id || row.analyte_id,
+          label,
+          placeholder: `{{${finalSlug}}}`,
+          unit: analyte.unit || null,
+          referenceRange: analyte.reference_range || null,
+        };
+      });
+
+      return { data: mapped, error: null };
+    },
+
+    listPatientParameters: async (patientId: string) => {
+      if (!patientId) {
+        return { data: [], error: new Error('patientId is required') };
+      }
+
+      const { data, error } = await supabase
+        .from('patients')
+        .select(`
+          id,
+          name,
+          gender,
+          date_of_birth,
+          default_doctor_id,
+          default_location_id
+        `)
+        .eq('id', patientId)
+        .single();
+
+      if (error || !data) {
+        return { data: [], error: error || new Error('Patient not found') };
+      }
+
+      const placeholders = [
+        { key: 'patientName', label: 'Patient Name', value: data.name || '' },
+        { key: 'patientGender', label: 'Patient Gender', value: data.gender || '' },
+        { key: 'patientDOB', label: 'Patient Date of Birth', value: data.date_of_birth || '' },
+        { key: 'patientId', label: 'Patient ID', value: data.id },
+      ];
+
+      const mapped = placeholders.map((item) => ({
+        id: item.key,
+        label: item.label,
+        placeholder: `{{${item.key}}}`,
+        value: item.value,
+      }));
+
+      return { data: mapped, error: null };
+    },
   },
   
   orders: {
@@ -1774,6 +2292,22 @@ export const database = {
   },
 
   testGroups: {
+    listByLab: async (labIdOverride?: string) => {
+      const labId = labIdOverride || (await database.getCurrentUserLabId());
+      if (!labId) {
+        return { data: [], error: new Error('No lab_id found for current user') };
+      }
+
+      const { data, error } = await supabase
+        .from('test_groups')
+        .select('id, name, category, lab_id')
+        .eq('is_active', true)
+        .or(`lab_id.eq.${labId},lab_id.is.null`)
+        .order('name', { ascending: true });
+
+      return { data: (data as any[]) || [], error };
+    },
+
     getAll: async () => {
       const { data, error } = await supabase
         .from('test_groups')

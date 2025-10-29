@@ -1,8 +1,227 @@
 import { supabase } from './supabase';
+import type { ReportTemplateContext, ReportTemplateAnalyteRow } from './supabase';
+import nunjucks from 'nunjucks';
 
 // PDF.co API configuration
 const PDFCO_API_KEY = import.meta.env.VITE_PDFCO_API_KEY || 'landinquiryfirm@gmail.com_AEu7lrDUacQsWOHuJ757dQDYPrJz6XbsYQcX2HrSVXf1LX8cvBn94TPzmfpeVgrT';
 const PDFCO_API_URL = 'https://api.pdf.co/v1/pdf/convert/from/html';
+
+const nunjucksEnv = nunjucks.configure({
+  autoescape: true,
+  throwOnUndefined: false,
+  trimBlocks: true,
+  lstripBlocks: true,
+});
+
+export interface LabTemplateRecord {
+  id: string;
+  lab_id: string;
+  template_name: string;
+  template_description?: string | null;
+  test_group_id?: string | null;
+  category?: string | null;
+  gjs_html?: string | null;
+  gjs_css?: string | null;
+  gjs_project?: any;
+  is_default?: boolean | null;
+}
+
+const buildDefaultTemplateContext = (): Record<string, string> => ({
+  labName: 'MediLab Diagnostics',
+  labAddress: '123 Health Street, Medical District, City - 560001',
+  labPhone: '+91 80 1234 5678',
+  labEmail: 'reports@medilab.com',
+  patientName: 'Ravi Mehta',
+  patientID: 'PTX100256',
+  age: '45',
+  sex: 'Male',
+  collectionDate: '2025-06-28',
+  reportDate: '2025-06-29',
+  doctorName: 'Dr. Anjali Desai',
+  interpretationNotes: 'All parameters are within expected ranges for the provided demographic profile.',
+  hemoglobin: '14.2',
+  hematocrit: '42',
+  rbcCount: '5.10',
+  mcv: '88',
+  mch: '30',
+  mchc: '34',
+  rdw: '12.5',
+  wbcCount: '6.2',
+  neutrophilsPct: '58',
+  lymphocytesPct: '32',
+  monocytesPct: '6',
+  eosinophilsPct: '3',
+  basophilsPct: '1',
+  plateletCount: '245',
+});
+
+export const buildSampleTemplateContext = (overrides: Record<string, any> = {}): Record<string, any> => ({
+  ...buildDefaultTemplateContext(),
+  ...overrides,
+});
+
+const normalizeDateValue = (value: string | null | undefined): string => {
+  if (!value) {
+    return '';
+  }
+
+  try {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toISOString();
+  } catch (error) {
+    console.warn('Failed to normalize date value:', value, error);
+    return value ?? '';
+  }
+};
+
+const buildContextFromReportTemplate = (context: ReportTemplateContext): Record<string, any> => {
+  const patient = context.patient ?? ({} as ReportTemplateContext['patient']);
+  const order = context.order ?? ({} as ReportTemplateContext['order']);
+  const meta = context.meta ?? ({} as ReportTemplateContext['meta']);
+
+  const derived: Record<string, any> = {
+    orderId: context.orderId,
+    orderNumber: meta?.orderNumber ?? context.orderId,
+    labId: context.labId ?? '',
+    patientId: context.patientId ?? patient?.displayId ?? '',
+    patientName: patient?.name ?? '',
+    patientDisplayId: patient?.displayId ?? '',
+    patientPhone: patient?.phone ?? '',
+    age: patient?.age ?? '',
+    sex: patient?.gender ?? '',
+    gender: patient?.gender ?? '',
+    dateOfBirth: patient?.dateOfBirth ? normalizeDateValue(patient.dateOfBirth) : '',
+    patientRegistrationDate: patient?.registrationDate ? normalizeDateValue(patient.registrationDate) : '',
+    sampleId: order?.sampleId ?? '',
+    sampleCollectedAt: order?.sampleCollectedAt ? normalizeDateValue(order.sampleCollectedAt) : '',
+    sampleCollectedBy: order?.sampleCollectedBy ?? '',
+    locationName: order?.locationName ?? '',
+    referringDoctorName: order?.referringDoctorName ?? '',
+    doctorName: order?.referringDoctorName ?? '',
+    approvedAt: order?.approvedAt ? normalizeDateValue(order.approvedAt) : '',
+    reportDate: meta?.createdAt ? normalizeDateValue(meta.createdAt) : new Date().toISOString(),
+    orderDate: meta?.orderDate ? normalizeDateValue(meta.orderDate) : '',
+    orderStatus: meta?.status ?? '',
+    totalAmount: meta?.totalAmount ?? '',
+    allAnalytesApproved: meta?.allAnalytesApproved ?? false,
+  };
+
+  return Object.fromEntries(
+    Object.entries(derived).filter(([, value]) => value !== undefined && value !== null)
+  );
+};
+
+export interface TemplateRenderOptions {
+  context?: ReportTemplateContext | null;
+  overrides?: Record<string, any>;
+}
+
+const ensureHtmlDocument = (html: string, css?: string | null): string => {
+  const trimmedCss = css?.trim();
+  let finalHtml = html;
+  const hasHtmlRoot = /<html[\s>]/i.test(finalHtml);
+
+  if (!hasHtmlRoot) {
+    finalHtml = `<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n${finalHtml}\n</body>\n</html>`;
+  }
+
+  if (trimmedCss && !finalHtml.includes(trimmedCss)) {
+    finalHtml = finalHtml.replace(/<head([\s>])/i, `<head$1\n<style>${trimmedCss}</style>\n`);
+  }
+
+  return finalHtml;
+};
+
+const renderTemplateWithContext = (html: string, context: Record<string, any>): string => {
+  try {
+    return nunjucksEnv.renderString(html, context);
+  } catch (error) {
+    console.error('Failed to render lab template with nunjucks:', error);
+    return html;
+  }
+};
+
+const sendHtmlToPdfCo = async (htmlContent: string, filename: string): Promise<string> => {
+  if (!PDFCO_API_KEY) {
+    throw new Error('PDF.co API key not configured');
+  }
+
+  const requestBody = {
+    name: filename,
+    html: htmlContent,
+    async: false,
+    margins: '15mm',
+    paperSize: 'A4',
+    orientation: 'portrait',
+    printBackground: true,
+    scale: 1.0,
+    mediaType: 'print',
+    displayHeaderFooter: false,
+  };
+
+  const response = await fetch(PDFCO_API_URL, {
+    method: 'POST',
+    headers: {
+      'x-api-key': PDFCO_API_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    throw new Error(`PDF.co API error: ${response.status} ${response.statusText}`);
+  }
+
+  const result = await response.json();
+
+  if (result.error) {
+    throw new Error(`PDF.co API error: ${result.message}`);
+  }
+
+  console.log('PDF generated successfully:', result.url);
+  return result.url;
+};
+
+export const renderLabTemplateHtml = (
+  template: LabTemplateRecord,
+  options: TemplateRenderOptions = {}
+): string => {
+  if (!template?.gjs_html) {
+    throw new Error('Template is missing HTML content');
+  }
+
+  const baseContext = buildSampleTemplateContext();
+  let renderContext: Record<string, any> = { ...baseContext };
+
+  if (options.context) {
+    const derivedContext = buildContextFromReportTemplate(options.context);
+    const placeholderValues = options.context.placeholderValues ?? {};
+    renderContext = {
+      ...renderContext,
+      ...derivedContext,
+      ...placeholderValues,
+    };
+  }
+
+  if (options.overrides) {
+    renderContext = {
+      ...renderContext,
+      ...options.overrides,
+    };
+  }
+
+  const rendered = renderTemplateWithContext(template.gjs_html, renderContext);
+  return ensureHtmlDocument(rendered, template.gjs_css);
+};
+
+export const generateTemplatePreviewPDF = async (
+  template: LabTemplateRecord,
+  options: TemplateRenderOptions = {}
+): Promise<string> => {
+  const htmlDocument = renderLabTemplateHtml(template, options);
+  const filename = `${template.template_name?.replace(/\s+/g, '_') || 'Template'}_Preview.pdf`;
+  return sendHtmlToPdfCo(htmlDocument, filename);
+};
 
 // Interfaces from pdfGenerator.ts
 export interface LabTemplate {
@@ -56,6 +275,9 @@ export interface ReportData {
   testResults: TestResult[];
   interpretation?: string;
   template?: LabTemplate;
+  labTemplateRecord?: LabTemplateRecord | null;
+  templateContext?: ReportTemplateContext | null;
+  placeholderOverrides?: Record<string, any>;
 }
 
 // Default lab template
@@ -78,6 +300,206 @@ export const defaultLabTemplate: LabTemplate = {
     secondaryColor: '#64748b',
     fontFamily: 'Arial, sans-serif',
   },
+};
+
+const normalizeString = (value: string | null | undefined): string => {
+  return value ? value.toLowerCase().trim() : '';
+};
+
+const createTestResultLabel = (row: ReportTemplateAnalyteRow): string => {
+  const parameter = row.parameter?.trim();
+  const testName = row.test_name?.trim();
+
+  if (parameter && testName) {
+    const normalizedParameter = parameter.toLowerCase();
+    const normalizedTestName = testName.toLowerCase();
+    if (normalizedParameter.includes(normalizedTestName)) {
+      return parameter;
+    }
+    return `${testName} - ${parameter}`;
+  }
+
+  return parameter || testName || 'Analyte';
+};
+
+const buildTestResultsFromAnalytes = (
+  analytes: ReportTemplateAnalyteRow[],
+  includeUnapproved = true
+): TestResult[] => {
+  const filtered = includeUnapproved
+    ? analytes
+    : analytes.filter((row) => !row.verify_status || row.verify_status === 'approved');
+
+  if (!filtered.length) {
+    return [];
+  }
+
+  const seenKeys = new Set<string>();
+
+  return filtered.reduce<TestResult[]>((results, row) => {
+    const label = createTestResultLabel(row);
+    const dedupeKey = `${row.result_id ?? ''}::${label}`;
+    if (seenKeys.has(dedupeKey)) {
+      return results;
+    }
+
+    seenKeys.add(dedupeKey);
+
+    results.push({
+      parameter: label,
+      result: row.value ?? '—',
+      unit: row.unit ?? '',
+      referenceRange: row.reference_range ?? '',
+      flag: row.flag ?? '',
+    });
+
+    return results;
+  }, []);
+};
+
+export const selectTemplateForContext = (
+  templates: LabTemplateRecord[],
+  context: ReportTemplateContext
+): LabTemplateRecord | null => {
+  if (!Array.isArray(templates) || !templates.length) {
+    return null;
+  }
+
+  const templatesWithHtml = templates.filter((tpl) => tpl?.gjs_html);
+  if (!templatesWithHtml.length) {
+    return null;
+  }
+
+  const testGroupIds = Array.isArray(context.testGroupIds) ? context.testGroupIds : [];
+  if (testGroupIds.length) {
+    const byGroup = templatesWithHtml.find(
+      (tpl) => tpl.test_group_id && testGroupIds.includes(tpl.test_group_id)
+    );
+    if (byGroup) {
+      return byGroup;
+    }
+  }
+
+  const analyteNames = new Set(
+    (context.analytes || [])
+      .map((row) => normalizeString(row.test_name || row.parameter))
+      .filter(Boolean)
+  );
+
+  if (analyteNames.size) {
+    const byName = templatesWithHtml.find((tpl) => {
+      const templateName = normalizeString(tpl.template_name ?? '');
+      if (!templateName) {
+        return false;
+      }
+      return Array.from(analyteNames).some((name) => templateName.includes(name));
+    });
+
+    if (byName) {
+      return byName;
+    }
+  }
+
+  const defaultTemplate = templatesWithHtml.find((tpl) => tpl.is_default);
+  return defaultTemplate ?? templatesWithHtml[0];
+};
+
+interface CreateReportDataOptions {
+  template?: LabTemplateRecord | null;
+  isDraft?: boolean;
+}
+
+const coerceNumber = (value: unknown): number => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+};
+
+const resolveReportType = (
+  context: ReportTemplateContext,
+  isDraft: boolean | undefined
+): string => {
+  const placeholders = context.placeholderValues ?? {};
+  const preferredValue =
+    placeholders['report_type'] ??
+    placeholders['reportType'] ??
+    placeholders['report_title'] ??
+    placeholders['reportTitle'] ??
+    placeholders['test_panel_name'];
+
+  const baseType = typeof preferredValue === 'string' && preferredValue.trim()
+    ? preferredValue.trim()
+    : 'Lab Tests';
+
+  if (isDraft) {
+    return `${baseType} (DRAFT)`;
+  }
+
+  return baseType;
+};
+
+const resolveInterpretation = (
+  context: ReportTemplateContext,
+  isDraft: boolean | undefined
+): string => {
+  const placeholders = context.placeholderValues ?? {};
+  const interpretationValue =
+    placeholders['report_interpretation'] ??
+    placeholders['reportInterpretation'] ??
+    placeholders['interpretation_summary'] ??
+    placeholders['interpretationSummary'] ??
+    placeholders['interpretation'];
+
+  if (typeof interpretationValue === 'string' && interpretationValue.trim()) {
+    return interpretationValue.trim();
+  }
+
+  if (isDraft) {
+    return 'DRAFT REPORT: Some results may still be pending verification.';
+  }
+
+  return 'Final report based on approved lab results.';
+};
+
+export const createReportDataFromContext = (
+  context: ReportTemplateContext,
+  options: CreateReportDataOptions = {}
+): ReportData => {
+  const patient = context.patient ?? ({} as ReportTemplateContext['patient']);
+  const order = context.order ?? ({} as ReportTemplateContext['order']);
+  const isDraft = options.isDraft ?? false;
+
+  const testResults = buildTestResultsFromAnalytes(context.analytes || [], isDraft);
+
+  const reportData: ReportData = {
+    patient: {
+      name: patient?.name ?? 'Patient',
+      id: context.patientId ?? patient?.displayId ?? 'Unknown',
+      age: coerceNumber(patient?.age),
+      gender: patient?.gender ?? 'Unknown',
+      referredBy: order?.referringDoctorName ?? 'Self',
+    },
+    report: {
+      reportId: context.orderId,
+      collectionDate: order?.sampleCollectedAt ?? context.meta?.orderDate ?? '',
+      reportDate: new Date().toISOString(),
+      reportType: resolveReportType(context, isDraft),
+    },
+    testResults: testResults.length ? testResults : [
+      {
+        parameter: 'No analytes available',
+        result: '—',
+        unit: '',
+        referenceRange: '',
+      },
+    ],
+    interpretation: resolveInterpretation(context, isDraft),
+    template: options.template ? undefined : defaultLabTemplate,
+    labTemplateRecord: options.template ?? null,
+    templateContext: context,
+    placeholderOverrides: { ...(context.placeholderValues ?? {}) },
+  };
+
+  return reportData;
 };
 
 // Template management functions
@@ -490,49 +912,20 @@ const generateUniversalHTMLTemplate = (data: ReportData, isDraft = false): strin
 // Enhanced PDF generation with PDF.co API
 export const generatePDFWithAPI = async (reportData: ReportData, isDraft = false): Promise<string> => {
   console.log('Generating PDF with PDF.co API...', isDraft ? '(DRAFT)' : '(FINAL)');
-  
-  if (!PDFCO_API_KEY) {
-    throw new Error('PDF.co API key not configured');
-  }
-
-  const htmlContent = generateUniversalHTMLTemplate(reportData, isDraft);
+  const htmlContent = reportData.labTemplateRecord?.gjs_html && reportData.templateContext
+    ? renderLabTemplateHtml(reportData.labTemplateRecord, {
+        context: reportData.templateContext,
+        overrides: {
+          ...(reportData.placeholderOverrides ?? {}),
+          report_is_draft: isDraft,
+          report_generated_at: new Date().toISOString(),
+        },
+      })
+    : generateUniversalHTMLTemplate(reportData, isDraft);
   const filename = `${reportData.patient.name.replace(/\s+/g, '_')}_${reportData.report.reportId}${isDraft ? '_DRAFT' : ''}.pdf`;
 
-  const requestBody = {
-    name: filename,
-    html: htmlContent,
-    async: false,
-    margins: "15mm",
-    paperSize: "A4",
-    orientation: "portrait",
-    printBackground: true,
-    scale: 1.0,
-    mediaType: "print",
-    displayHeaderFooter: false
-  };
-
   try {
-    const response = await fetch(PDFCO_API_URL, {
-      method: 'POST',
-      headers: {
-        'x-api-key': PDFCO_API_KEY,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(requestBody),
-    });
-
-    if (!response.ok) {
-      throw new Error(`PDF.co API error: ${response.status} ${response.statusText}`);
-    }
-
-    const result = await response.json();
-    
-    if (result.error) {
-      throw new Error(`PDF.co API error: ${result.message}`);
-    }
-
-    console.log('PDF generated successfully:', result.url);
-    return result.url;
+    return await sendHtmlToPdfCo(htmlContent, filename);
   } catch (error) {
     console.error('PDF.co generation failed:', error);
     throw error;
@@ -542,8 +935,16 @@ export const generatePDFWithAPI = async (reportData: ReportData, isDraft = false
 // Fallback PDF generation using browser print
 export const generatePDFWithBrowser = (reportData: ReportData): string => {
   console.log('Generating PDF with browser fallback...');
-  
-  const htmlContent = generateUniversalHTMLTemplate(reportData);
+
+  const htmlContent = reportData.labTemplateRecord?.gjs_html && reportData.templateContext
+    ? renderLabTemplateHtml(reportData.labTemplateRecord, {
+        context: reportData.templateContext,
+        overrides: {
+          ...(reportData.placeholderOverrides ?? {}),
+          report_generated_at: new Date().toISOString(),
+        },
+      })
+    : generateUniversalHTMLTemplate(reportData);
   const blob = new Blob([htmlContent], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
   
@@ -1043,7 +1444,7 @@ export async function generateAndSavePDFReport(orderId: string, reportData: Repo
 
     // Try PDF.co API - this is the only method we should use
     try {
-      pdfUrl = await generatePDFWithAPI(reportData);
+  pdfUrl = await generatePDFWithAPI(reportData, isDraft);
       console.log('✅ PDF.co URL received:', pdfUrl);
       
       if (pdfUrl && (pdfUrl.includes('pdf.co') || pdfUrl.includes('s3.us-west-2.amazonaws.com'))) {
