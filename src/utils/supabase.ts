@@ -66,6 +66,56 @@ export interface ReportTemplateContext {
   placeholderValues: Record<string, string | number | boolean | null>;
 }
 
+// Branding & Signature System Interfaces
+export interface LabBrandingAsset {
+  id: string;
+  lab_id: string;
+  asset_type: 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead';
+  asset_name: string;
+  file_url: string;
+  file_path: string;
+  file_type: string;
+  file_size?: number;
+  dimensions?: { width: number; height: number };
+  variants?: Record<string, string> | null;
+  imagekit_url?: string | null;
+  imagekit_file_id?: string | null;
+  is_active: boolean;
+  is_default: boolean;
+  description?: string;
+  usage_context?: string[];
+  created_by?: string;
+  updated_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LabUserSignature {
+  id: string;
+  lab_id: string;
+  user_id: string;
+  signature_type: 'digital' | 'handwritten' | 'stamp' | 'text';
+  signature_name: string;
+  file_url?: string;
+  file_path?: string;
+  file_type?: string;
+  file_size?: number;
+  dimensions?: { width: number; height: number };
+  variants?: Record<string, string> | null;
+  imagekit_url?: string | null;
+  imagekit_file_id?: string | null;
+  text_signature?: string;
+  signature_data?: Record<string, any>;
+  is_active: boolean;
+  is_default: boolean;
+  description?: string;
+  usage_context?: string[];
+  created_by?: string;
+  updated_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 // File upload utilities
 export const uploadFile = async (
   file: File, 
@@ -112,6 +162,28 @@ export const generateFilePath = (
   } else {
     return `${category}/${timestamp}_${sanitizedFileName}`;
   }
+};
+
+// Generate branding asset file path
+export const generateBrandingFilePath = (
+  labId: string,
+  assetType: 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead',
+  fileName: string
+): string => {
+  const timestamp = Date.now();
+  const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+  return `attachments/labs/${labId}/branding/${assetType}/${timestamp}_${sanitizedFileName}`;
+};
+
+// Generate user signature file path
+export const generateSignatureFilePath = (
+  labId: string,
+  userId: string,
+  fileName: string
+): string => {
+  const timestamp = Date.now();
+  const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+  return `attachments/labs/${labId}/users/${userId}/signature/${timestamp}_${sanitizedFileName}`;
 };
 
 // Auth helper functions
@@ -3976,5 +4048,409 @@ const masterDataAPI = {
   // (Merged into main cashRegister object above)
 };
 
+// Branding & Signature System API
+const brandingSignatureAPI = {
+  // Lab Branding Assets
+  labBrandingAssets: {
+    getAll: async (labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: [], error: new Error('No lab_id found for current user') };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_branding_assets')
+        .select('*')
+        .eq('lab_id', labId)
+        .eq('is_active', true)
+        .order('asset_type')
+        .order('is_default', { ascending: false })
+        .order('created_at', { ascending: false });
+
+      return { data: (data as LabBrandingAsset[]) || [], error };
+    },
+
+    getByType: async (assetType: string, labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: [], error: new Error('No lab_id found for current user') };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_branding_assets')
+        .select('*')
+        .eq('lab_id', labId)
+        .eq('asset_type', assetType)
+        .eq('is_active', true)
+        .order('is_default', { ascending: false })
+        .order('created_at', { ascending: false });
+
+      return { data: (data as LabBrandingAsset[]) || [], error };
+    },
+
+    getDefault: async (assetType: string, labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_branding_assets')
+        .select('*')
+        .eq('lab_id', labId)
+        .eq('asset_type', assetType)
+        .eq('is_default', true)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      return { data: data as LabBrandingAsset | null, error };
+    },
+
+    create: async (assetData: {
+      asset_type: 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead';
+      asset_name: string;
+      file: File;
+      description?: string;
+      usage_context?: string[];
+      is_default?: boolean;
+      dimensions?: { width: number; height: number };
+    }) => {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = user?.id;
+
+      // Generate file path
+      const filePath = generateBrandingFilePath(labId, assetData.asset_type, assetData.file.name);
+
+      // Upload file to storage
+      const { error: uploadError } = await supabase.storage
+        .from('attachments')
+        .upload(filePath, assetData.file);
+
+      if (uploadError) {
+        return { data: null, error: uploadError };
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('attachments')
+        .getPublicUrl(filePath);
+
+      // Create database record
+      const { data, error } = await supabase
+        .from('lab_branding_assets')
+        .insert([{
+          lab_id: labId,
+          asset_type: assetData.asset_type,
+          asset_name: assetData.asset_name,
+          file_url: publicUrl,
+          file_path: filePath,
+          file_type: assetData.file.type,
+          file_size: assetData.file.size,
+          dimensions: assetData.dimensions,
+          description: assetData.description,
+          usage_context: assetData.usage_context || ['reports'],
+          is_default: assetData.is_default || false,
+          is_active: true,
+          created_by: userId,
+          updated_by: userId
+        }])
+        .select()
+        .single();
+
+      return { data: data as LabBrandingAsset | null, error };
+    },
+
+    update: async (assetId: string, updates: {
+      asset_name?: string;
+      description?: string;
+      usage_context?: string[];
+      is_active?: boolean;
+    }) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = user?.id;
+
+      const { data, error } = await supabase
+        .from('lab_branding_assets')
+        .update({
+          ...updates,
+          updated_by: userId,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', assetId)
+        .select()
+        .single();
+
+      return { data: data as LabBrandingAsset | null, error };
+    },
+
+    setDefault: async (assetId: string, labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      // Get asset to find its type
+      const { data: asset, error: assetError } = await supabase
+        .from('lab_branding_assets')
+        .select('asset_type')
+        .eq('id', assetId)
+        .single();
+
+      if (assetError || !asset) {
+        return { data: null, error: assetError || new Error('Asset not found') };
+      }
+
+      // Use RPC function to set default
+      const { data, error } = await supabase.rpc('set_default_branding_asset', {
+        p_asset_id: assetId,
+        p_lab_id: labId,
+        p_asset_type: asset.asset_type
+      });
+
+      return { data, error };
+    },
+
+    delete: async (assetId: string) => {
+      // Get asset file path
+      const { data: asset, error: fetchError } = await supabase
+        .from('lab_branding_assets')
+        .select('file_path')
+        .eq('id', assetId)
+        .single();
+
+      if (fetchError) {
+        return { error: fetchError };
+      }
+
+      // Delete from storage
+      if (asset?.file_path) {
+        await supabase.storage
+          .from('attachments')
+          .remove([asset.file_path]);
+      }
+
+      // Delete from database
+      const { error } = await supabase
+        .from('lab_branding_assets')
+        .delete()
+        .eq('id', assetId);
+
+      return { error };
+    }
+  },
+
+  // User Signatures
+  userSignatures: {
+    getAll: async (userIdOverride?: string, labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: [], error: new Error('No lab_id found for current user') };
+      }
+
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = userIdOverride || user?.id;
+
+      if (!userId) {
+        return { data: [], error: new Error('No user_id found') };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_user_signatures')
+        .select('*')
+        .eq('lab_id', labId)
+        .eq('user_id', userId)
+        .eq('is_active', true)
+        .order('is_default', { ascending: false })
+        .order('created_at', { ascending: false });
+
+      return { data: (data as LabUserSignature[]) || [], error };
+    },
+
+    getDefault: async (userIdOverride?: string, labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = userIdOverride || user?.id;
+
+      if (!userId) {
+        return { data: null, error: new Error('No user_id found') };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_user_signatures')
+        .select('*')
+        .eq('lab_id', labId)
+        .eq('user_id', userId)
+        .eq('is_default', true)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      return { data: data as LabUserSignature | null, error };
+    },
+
+    create: async (signatureData: {
+      signature_type: 'digital' | 'handwritten' | 'stamp' | 'text';
+      signature_name: string;
+      file?: File;
+      text_signature?: string;
+      signature_data?: Record<string, any>;
+      description?: string;
+      usage_context?: string[];
+      is_default?: boolean;
+      dimensions?: { width: number; height: number };
+    }) => {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = user?.id;
+
+      if (!userId) {
+        return { data: null, error: new Error('No user_id found') };
+      }
+
+      let filePath: string | undefined;
+      let fileUrl: string | undefined;
+      let fileType: string | undefined;
+      let fileSize: number | undefined;
+
+      // Upload file if provided (for digital/handwritten/stamp signatures)
+      if (signatureData.file) {
+        filePath = generateSignatureFilePath(labId, userId, signatureData.file.name);
+
+        const { error: uploadError } = await supabase.storage
+          .from('attachments')
+          .upload(filePath, signatureData.file);
+
+        if (uploadError) {
+          return { data: null, error: uploadError };
+        }
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('attachments')
+          .getPublicUrl(filePath);
+
+        fileUrl = publicUrl;
+        fileType = signatureData.file.type;
+        fileSize = signatureData.file.size;
+      }
+
+      // Create database record
+      const { data, error } = await supabase
+        .from('lab_user_signatures')
+        .insert([{
+          lab_id: labId,
+          user_id: userId,
+          signature_type: signatureData.signature_type,
+          signature_name: signatureData.signature_name,
+          file_url: fileUrl,
+          file_path: filePath,
+          file_type: fileType,
+          file_size: fileSize,
+          dimensions: signatureData.dimensions,
+          text_signature: signatureData.text_signature,
+          signature_data: signatureData.signature_data,
+          description: signatureData.description,
+          usage_context: signatureData.usage_context || ['reports'],
+          is_default: signatureData.is_default || false,
+          is_active: true,
+          created_by: userId,
+          updated_by: userId
+        }])
+        .select()
+        .single();
+
+      return { data: data as LabUserSignature | null, error };
+    },
+
+    update: async (signatureId: string, updates: {
+      signature_name?: string;
+      text_signature?: string;
+      signature_data?: Record<string, any>;
+      description?: string;
+      usage_context?: string[];
+      is_active?: boolean;
+    }) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = user?.id;
+
+      const { data, error } = await supabase
+        .from('lab_user_signatures')
+        .update({
+          ...updates,
+          updated_by: userId,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', signatureId)
+        .select()
+        .single();
+
+      return { data: data as LabUserSignature | null, error };
+    },
+
+    setDefault: async (signatureId: string, userIdOverride?: string, labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = userIdOverride || user?.id;
+
+      if (!userId) {
+        return { data: null, error: new Error('No user_id found') };
+      }
+
+      // Use RPC function to set default
+      const { data, error } = await supabase.rpc('set_default_user_signature', {
+        p_signature_id: signatureId,
+        p_user_id: userId,
+        p_lab_id: labId
+      });
+
+      return { data, error };
+    },
+
+    delete: async (signatureId: string) => {
+      // Get signature file path
+      const { data: signature, error: fetchError } = await supabase
+        .from('lab_user_signatures')
+        .select('file_path')
+        .eq('id', signatureId)
+        .single();
+
+      if (fetchError) {
+        return { error: fetchError };
+      }
+
+      // Delete from storage if file exists
+      if (signature?.file_path) {
+        await supabase.storage
+          .from('attachments')
+          .remove([signature.file_path]);
+      }
+
+      // Delete from database
+      const { error } = await supabase
+        .from('lab_user_signatures')
+        .delete()
+        .eq('id', signatureId);
+
+      return { error };
+    }
+  }
+};
+
 // Merge master data APIs into main database object
-Object.assign(database, masterDataAPI);
+
+Object.assign(database, masterDataAPI, brandingSignatureAPI);

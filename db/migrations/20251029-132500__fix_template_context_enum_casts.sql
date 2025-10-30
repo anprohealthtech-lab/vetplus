@@ -73,15 +73,22 @@ BEGIN
           WHEN trimmed_parameter ~ '^[0-9]' THEN 'n' || trimmed_parameter
           ELSE trimmed_parameter
         END AS slug,
+        CASE
+          WHEN alias_raw IS NULL OR alias_raw = '' THEN NULL
+          WHEN alias_raw ~ '^[0-9]' THEN 'N' || alias_raw
+          ELSE alias_raw
+        END AS alias_key,
         rv.value,
         rv.unit,
         rv.reference_range,
         rv.flag,
-        rv.verify_status::text AS verify_status
+        rv.verify_status::text AS verify_status,
+        rv.parameter AS original_parameter
       FROM (
         SELECT
           rv.*,
-          regexp_replace(lower(coalesce(rv.parameter, '')), '[^a-z0-9]+', '', 'g') AS trimmed_parameter
+          regexp_replace(lower(coalesce(rv.parameter, '')), '[^a-z0-9]+', '', 'g') AS trimmed_parameter,
+          regexp_replace(coalesce(rv.parameter, ''), '[^A-Za-z0-9]+', '', 'g') AS alias_raw
         FROM public.result_values rv
         WHERE rv.order_id = ctx_record.order_id
       ) AS rv
@@ -105,6 +112,26 @@ BEGIN
     SELECT slug || '_status', coalesce(verify_status, '')
     FROM normalized
     WHERE slug IS NOT NULL AND verify_status IS NOT NULL
+    UNION ALL
+    SELECT alias_key, coalesce(value, '')
+    FROM normalized
+    WHERE alias_key IS NOT NULL AND (slug IS NULL OR alias_key <> slug) AND value IS NOT NULL
+    UNION ALL
+    SELECT alias_key || '_unit', coalesce(unit, '')
+    FROM normalized
+    WHERE alias_key IS NOT NULL AND (slug IS NULL OR alias_key <> slug) AND unit IS NOT NULL
+    UNION ALL
+    SELECT alias_key || '_reference', coalesce(reference_range, '')
+    FROM normalized
+    WHERE alias_key IS NOT NULL AND (slug IS NULL OR alias_key <> slug) AND reference_range IS NOT NULL
+    UNION ALL
+    SELECT alias_key || '_flag', coalesce(flag, '')
+    FROM normalized
+    WHERE alias_key IS NOT NULL AND (slug IS NULL OR alias_key <> slug) AND flag IS NOT NULL
+    UNION ALL
+    SELECT alias_key || '_status', coalesce(verify_status, '')
+    FROM normalized
+    WHERE alias_key IS NOT NULL AND (slug IS NULL OR alias_key <> slug) AND verify_status IS NOT NULL
   ) AS entry;
 
   RETURN jsonb_strip_nulls(jsonb_build_object(

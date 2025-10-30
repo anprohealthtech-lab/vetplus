@@ -18,6 +18,7 @@ import {
   Building,
   MessageCircle,
   Palette,
+  Image,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -53,6 +54,7 @@ const navigation = [
   { name: 'AI Tools', href: '/ai-tools', icon: Brain, category: 'tools' },
   { name: 'Workflow Demo', href: '/workflow-demo', icon: Workflow, category: 'tools' },
   { name: 'Template Studio', href: '/template-studio', icon: Palette, category: 'tools' },
+  { name: 'Branding & Signatures', href: '/settings/branding', icon: Image, category: 'tools' },
   { name: 'Settings', href: '/settings', icon: Settings, category: 'tools' },
 ];
 

@@ -3,7 +3,7 @@ import StudioEditor from '@grapesjs/studio-sdk/react';
 import '@grapesjs/studio-sdk/style';
 
 import { useAuth } from '../contexts/AuthContext';
-import { database } from '../utils/supabase';
+import { database, LabBrandingAsset, LabUserSignature } from '../utils/supabase';
 import TemplateAIConsole from '../components/TemplateStudio/TemplateAIConsole';
 import TemplateAIAuditModal, { TemplateAuditResult } from '../components/TemplateStudio/TemplateAIAuditModal';
 import PlaceholderPicker, { PlaceholderOption } from '../components/TemplateStudio/PlaceholderPicker';
@@ -51,6 +51,72 @@ const REQUIRED_PLACEHOLDERS: Record<string, string> = {
 };
 
 const PLACEHOLDER_REGEX = /{{\s*([^{}]+)\s*}}/g;
+
+const BRANDING_TYPE_LABELS: Record<LabBrandingAsset['asset_type'], string> = {
+  logo: 'Logo',
+  header: 'Header',
+  footer: 'Footer',
+  watermark: 'Watermark',
+  letterhead: 'Letterhead',
+};
+
+const VARIANT_LABEL_OVERRIDES: Record<string, string> = {
+  optimized: 'Optimized',
+  preview1x: 'Preview 1x',
+  preview2x: 'Preview 2x',
+  webp: 'WebP',
+};
+
+const toTitleCase = (value: string) =>
+  value
+    .replace(/[_-]+/g, ' ')
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+
+const parseVariantMap = (value: unknown): Record<string, string> => {
+  if (!value) {
+    return {};
+  }
+
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return Object.entries(parsed as Record<string, unknown>).reduce<Record<string, string>>((acc, [key, url]) => {
+          if (typeof url === 'string' && url.length) {
+            acc[key] = url;
+          }
+          return acc;
+        }, {});
+      }
+    } catch (err) {
+      console.warn('Failed to parse variant JSON', err);
+    }
+    return {};
+  }
+
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return Object.entries(value as Record<string, unknown>).reduce<Record<string, string>>((acc, [key, url]) => {
+      if (typeof url === 'string' && url.length) {
+        acc[key] = url;
+      }
+      return acc;
+    }, {});
+  }
+
+  return {};
+};
+
+const formatVariantLabel = (variantKey: string) =>
+  VARIANT_LABEL_OVERRIDES[variantKey] ||
+  toTitleCase(
+    variantKey
+      .replace(/([a-z])([0-9])/g, '$1 $2')
+      .replace(/([0-9])x/i, '$1x')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+  );
 
 const extractPlaceholders = (html: string): string[] => {
   const tokens = new Set<string>();
@@ -250,16 +316,103 @@ const TemplateStudio: React.FC = () => {
     const aggregated: PlaceholderOption[] = [...LAB_META_PLACEHOLDER_OPTIONS];
 
     if (labId) {
-      const { data: labParams, error: labError } = await database.templateParameters.listLabParameters(labId);
-      if (labError) {
-        console.warn('Lab parameter fetch failed:', labError);
-      } else if (labParams?.length) {
-        aggregated.push(
-          ...labParams.map((item) => ({
-            ...item,
-            group: 'lab' as const,
-          }))
-        );
+      try {
+        const [labParamsResult, brandingResult, signatureResult] = await Promise.all([
+          database.templateParameters.listLabParameters(labId),
+          database.labBrandingAssets.getAll(labId),
+          database.userSignatures.getAll(user?.id, labId),
+        ]);
+
+        if (labParamsResult.error) {
+          console.warn('Lab parameter fetch failed:', labParamsResult.error);
+        } else if (labParamsResult.data?.length) {
+          aggregated.push(
+            ...labParamsResult.data.map((item) => ({
+              ...item,
+              group: 'lab' as const,
+            }))
+          );
+        }
+
+        if (brandingResult.error) {
+          console.warn('Branding asset fetch failed:', brandingResult.error);
+        } else if (brandingResult.data?.length) {
+          const byType = new Map<LabBrandingAsset['asset_type'], LabBrandingAsset>();
+
+          brandingResult.data.forEach((asset) => {
+            if (!asset || !asset.file_url) {
+              return;
+            }
+            const current = byType.get(asset.asset_type);
+            if (!current || asset.is_default) {
+              byType.set(asset.asset_type, asset);
+            }
+          });
+
+          byType.forEach((asset, assetType) => {
+            const friendlyType = BRANDING_TYPE_LABELS[assetType] || toTitleCase(assetType);
+            const baseLabel = `Branding · ${friendlyType}`;
+            aggregated.push({
+              id: `branding-${asset.id}-original`,
+              label: `${baseLabel} (Original)`,
+              placeholder: asset.file_url,
+              group: 'branding',
+            });
+
+            const variantMap = parseVariantMap(asset.variants);
+
+            Object.entries(variantMap).forEach(([variantKey, url]) => {
+              aggregated.push({
+                id: `branding-${asset.id}-${variantKey}`,
+                label: `${baseLabel} (${formatVariantLabel(variantKey)})`,
+                placeholder: url,
+                group: 'branding',
+              });
+            });
+          });
+        }
+
+        if (signatureResult.error) {
+          console.warn('Signature fetch failed:', signatureResult.error);
+        } else if (signatureResult.data?.length) {
+          const signatures = signatureResult.data as LabUserSignature[];
+          const defaultSignature = signatures.find((sig) => sig.is_default) || signatures[0];
+
+          if (defaultSignature) {
+            const friendlyName = defaultSignature.signature_name || 'Signature';
+            const baseLabel = `Signature · ${friendlyName}`;
+
+            if (defaultSignature.file_url) {
+              aggregated.push({
+                id: `signature-${defaultSignature.id}-original`,
+                label: `${baseLabel} (Original)`,
+                placeholder: defaultSignature.file_url,
+                group: 'signature',
+              });
+
+              const variants = parseVariantMap(defaultSignature.variants);
+              Object.entries(variants).forEach(([variantKey, url]) => {
+                aggregated.push({
+                  id: `signature-${defaultSignature.id}-${variantKey}`,
+                  label: `${baseLabel} (${formatVariantLabel(variantKey)})`,
+                  placeholder: url,
+                  group: 'signature',
+                });
+              });
+            }
+
+            if (defaultSignature.text_signature) {
+              aggregated.push({
+                id: `signature-${defaultSignature.id}-text`,
+                label: `${baseLabel} (Text)`,
+                placeholder: defaultSignature.text_signature,
+                group: 'signature',
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to gather lab placeholders', err);
       }
 
       if (templateMeta?.test_group_id) {
@@ -298,7 +451,7 @@ const TemplateStudio: React.FC = () => {
     });
 
     return Array.from(uniqueByPlaceholder.values());
-  }, [LAB_META_PLACEHOLDER_OPTIONS, PATIENT_PLACEHOLDER_OPTIONS, labId, templateMeta?.test_group_id]);
+  }, [LAB_META_PLACEHOLDER_OPTIONS, PATIENT_PLACEHOLDER_OPTIONS, labId, templateMeta?.test_group_id, user?.id]);
 
   const loadPlaceholderOptions = useCallback(async () => {
     setPlaceholderLoading(true);

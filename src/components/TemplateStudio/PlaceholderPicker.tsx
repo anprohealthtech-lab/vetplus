@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
+type PlaceholderGroup = 'lab' | 'test' | 'patient' | 'branding' | 'signature';
+
 interface PlaceholderOption {
   id: string;
   label: string;
   placeholder: string;
   unit?: string | null;
   referenceRange?: string | null;
-  group?: 'lab' | 'test' | 'patient';
+  group?: PlaceholderGroup;
 }
 
 interface PlaceholderPickerProps {
@@ -19,14 +21,19 @@ interface PlaceholderPickerProps {
 
 const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert, onClose, loading = false, errorMessage = null }) => {
   const grouped = useMemo(() => {
-    const result: Record<'lab' | 'test' | 'patient', PlaceholderOption[]> = {
+    const result: Record<PlaceholderGroup, PlaceholderOption[]> = {
       lab: [],
       test: [],
       patient: [],
+      branding: [],
+      signature: [],
     };
     options.forEach((option) => {
       const bucket = option.group ?? 'lab';
-      result[bucket].push(option);
+      if (!result[bucket]) {
+        result[bucket as PlaceholderGroup] = [];
+      }
+      result[bucket as PlaceholderGroup].push(option);
     });
     return result;
   }, [options]);
@@ -70,7 +77,7 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
     onInsert(activeOption.placeholder);
   };
 
-  const renderGroup = (groupKey: 'lab' | 'test' | 'patient', emptyText: string) => {
+  const renderGroup = (groupKey: PlaceholderGroup, emptyText: string) => {
     const bucket = grouped[groupKey];
     if (!bucket.length) {
       return (
@@ -114,6 +121,14 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
     );
   };
 
+  const GROUP_META: Array<{ key: PlaceholderGroup; title: string; empty: string }> = [
+    { key: 'lab', title: 'Lab', empty: 'No lab-level analytes available.' },
+    { key: 'test', title: 'Test Group', empty: 'Select a test group to view analytes.' },
+    { key: 'patient', title: 'Patient', empty: 'Patient-specific placeholders appear here.' },
+    { key: 'branding', title: 'Branding Assets', empty: 'Upload and set a default branding asset to surface it here.' },
+    { key: 'signature', title: 'Signatures', empty: 'Add a default signature to reuse it inside templates.' },
+  ];
+
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4">
       <div className="w-full max-w-xl rounded-lg border border-gray-200 bg-white shadow-xl">
@@ -139,19 +154,13 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
             {errorMessage}
           </div>
         )}
-        <div className="grid gap-4 px-4 py-4 sm:grid-cols-3">
-          <section className="sm:col-span-1">
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Lab</h3>
-            {renderGroup('lab', 'No lab-level analytes available.')}
-          </section>
-          <section className="sm:col-span-1">
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Test Group</h3>
-            {renderGroup('test', 'Select a test group to view analytes.')}
-          </section>
-          <section className="sm:col-span-1">
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Patient</h3>
-            {renderGroup('patient', 'Patient-specific placeholders appear here.')}
-          </section>
+        <div className="grid gap-4 px-4 py-4 sm:grid-cols-2 lg:grid-cols-3">
+          {GROUP_META.map(({ key, title, empty }) => (
+            <section key={key} className="sm:col-span-1">
+              <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{title}</h3>
+              {renderGroup(key, empty)}
+            </section>
+          ))}
         </div>
         <div className="border-t border-gray-200 bg-gray-50 px-4 py-4">
           {activeOption ? (

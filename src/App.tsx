@@ -36,6 +36,7 @@ import Result2 from './pages/result2';
 import DoctorMaster from './components/Masters/DoctorMaster';
 import LocationMaster from './components/Masters/LocationMaster';
 import TemplateStudio from './pages/TemplateStudio';
+import { BrandingSettings } from './pages/BrandingSettings';
 
 const AppRoutes: React.FC = () => {
   const { user, loading } = useAuth();
@@ -88,6 +89,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/cash-reconciliation" element={<CashReconciliation />} />
                 <Route path="/ai-tools" element={<AITools />} />
                 <Route path="/settings" element={<Settings />} />
+                <Route path="/settings/branding" element={<BrandingSettings />} />
                 <Route path="/verification" element={<ResultVerificationConsole />} />
                 <Route path="/workflows" element={<WorkflowManagement />} />
                 <Route path="/workflow-demo" element={<WorkflowDemo />} />
