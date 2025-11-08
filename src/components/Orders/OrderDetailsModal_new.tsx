@@ -612,7 +612,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           visionResults: visionData,
           originalBase64Image: visionData.originalBase64Image,
           documentType: processingType === 'ocr_report' ? 'printed-report' : undefined,
-          testType: processingType === 'vision_card' ? 'test-card' : 
+          testType: processingType === 'vision_card' ? 'test-card' :
                    processingType === 'vision_color' ? 'color-analysis' : undefined,
           aiProcessingType: processingType,
           aiPromptOverride: customPrompt,

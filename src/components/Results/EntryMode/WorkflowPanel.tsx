@@ -284,6 +284,7 @@ const WorkflowPanel: React.FC<WorkflowPanelProps> = ({
         <div className="border rounded-lg bg-gray-50">
           <FlowManager
             orderId={order.id}
+            patientId={order.patient_id}
             testGroupId={testGroup.id}
             analyteIds={testGroup.analytes?.map(a => a.id) || []}
             labId={order.lab_id}

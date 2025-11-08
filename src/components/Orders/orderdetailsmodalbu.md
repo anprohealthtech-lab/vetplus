@@ -465,6 +465,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   } | null>(null);
 
   // Catalog & order analytes/test-groups
+  const [allAnalytes, setAllAnalytes] = useState<any[]>([]);
   const [orderAnalytes, setOrderAnalytes] = useState<any[]>([]);
   const [testGroups, setTestGroups] = useState<TestGroupResult[]>([]);
   const [selectedTestGroup, setSelectedTestGroup] = useState<string>();
@@ -557,6 +558,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
   // First-load data
   React.useEffect(() => {
+    fetchAllAnalytes();
     fetchOrderAnalytes();
     fetchProgressView();
     fetchReadonlyResults();
@@ -654,6 +656,20 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   // =========================================================
   // #region Data fetchers
   // =========================================================
+
+  const fetchAllAnalytes = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("analytes")
+        .select(
+          "id, name, unit, reference_range, low_critical, high_critical, category, ai_processing_type, ai_prompt_override"
+        )
+        .eq("is_active", true);
+      if (!error) setAllAnalytes(data || []);
+    } catch (err) {
+      console.error("Error fetching analytes:", err);
+    }
+  };
 
   const fetchOrderAnalytes = async () => {
     try {
@@ -1208,45 +1224,24 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           : undefined) ||
         testGroups[0];
 
-  const targetTestGroupId = targetTestGroup?.test_group_id || null;
+      const targetTestGroupId = targetTestGroup?.test_group_id || targetTestGroup?.id || null;
       const activeTestGroupKey = targetTestGroupId || 'order';
 
-      const orderScopedAnalytes = (targetTestGroup?.analytes?.length ? targetTestGroup.analytes : orderAnalytes) || [];
-
-      type AnalyteCatalogEntry = {
-        id: string;
-        name: string | null;
-        unit: string | null;
-        reference_range: string | null;
-        code: string | null;
-      };
-
-      const analyteCatalogMap = orderScopedAnalytes.reduce(
-        (catalog, analyte: any) => {
-          if (!analyte?.id || typeof analyte.id !== 'string') {
-            return catalog;
-          }
-
-          if (!catalog.has(analyte.id)) {
-            catalog.set(analyte.id, {
-              id: analyte.id,
-              name: analyte.name || analyte.analyte_name || null,
-              unit: analyte.unit || analyte.units || null,
-              reference_range: analyte.reference_range || null,
-              code: analyte.code || analyte.analyte_code || null,
-            });
-          }
-
-          return catalog;
-        },
-        new Map<string, AnalyteCatalogEntry>(),
-      );
-
-      const analyteCatalog: AnalyteCatalogEntry[] = Array.from(analyteCatalogMap.values());
-
-      const analyteIdsForVision = analyteCatalog
-        .map((entry) => entry.id)
-        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+      const analyteIdsForVision = targetTestGroup?.analytes
+        ? Array.from(
+            new Set(
+              (targetTestGroup.analytes || [])
+                .map((analyte: any) => analyte?.id)
+                .filter((id): id is string => typeof id === "string" && id.length > 0)
+            )
+          )
+        : Array.from(
+            new Set(
+              orderAnalytes
+                .map((analyte: any) => analyte?.id)
+                .filter((id): id is string => typeof id === "string" && id.length > 0)
+            )
+          );
 
       const resolvedBatchId =
         selectedBatchForAI?.batchId ||
@@ -1288,7 +1283,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       aiMark("vision", { status: "done", detail: (visionResponse.data?.fullText || "").slice(0,80) + "…" });
 
       aiMark("nlp", { status: "doing" });
-      const analytesToExtract = manualValues.filter(v => !v.value || (typeof v.value === 'string' && v.value.trim() === "")).map(v => v.parameter);
+      const analytesToExtract = manualValues.filter(v => v.value.trim()==="").map(v => v.parameter);
       
       // Prepare request body with multi-image support
       const requestBody = {
@@ -1297,7 +1292,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         originalBase64Image: visionResponse.data?.originalBase64Image,
         aiProcessingType: processingType,
         aiPromptOverride: customPrompt || (availableImagesForAI.length > 1 ? multiImageAIInstructions : undefined),
-        analyteCatalog,
+        allAnalytes,
         analytesToExtract: analytesToExtract.length ? analytesToExtract : undefined,
         orderId: order.id,
         testGroupId: visionPayload.testGroupId,
@@ -1557,7 +1552,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   };
 
   const handleSaveDraft = async () => {
-    const validResults = manualValues.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "");
+    const validResults = manualValues.filter((v) => v.value.trim() !== "");
     if (!validResults.length) {
       alert("Please enter at least one test result before saving draft.");
       return;
@@ -1620,7 +1615,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   };
 
   const handleSubmitResults = async () => {
-    const validResults = manualValues.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "");
+    const validResults = manualValues.filter((v) => v.value.trim() !== "");
     if (!validResults.length) {
       alert("Please enter at least one test result.");
       return;
@@ -1937,7 +1932,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     );
     
     const completedCount = React.useMemo(() => 
-      testGroupValues.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "").length,
+      testGroupValues.filter((v) => v.value.trim() !== "").length,
       [testGroupValues]
     );
 
@@ -2052,7 +2047,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       <button
                         onClick={() => openPopoutInput(globalIndex, 'value', value.value, value.parameter)}
                         className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${
-                          value.value && typeof value.value === 'string' && value.value.trim() 
+                          value.value.trim() 
                             ? 'border-green-300 bg-green-50 hover:bg-green-100 text-green-800' 
                             : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
                         }`}
@@ -2066,7 +2061,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       <button
                         onClick={() => openPopoutInput(globalIndex, 'unit', value.unit, value.parameter)}
                         className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${
-                          value.unit && typeof value.unit === 'string' && value.unit.trim()
+                          value.unit.trim()
                             ? 'border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-800'
                             : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
                         }`}
@@ -2080,7 +2075,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       <button
                         onClick={() => openPopoutInput(globalIndex, 'reference', value.reference, value.parameter)}
                         className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${
-                          value.reference && typeof value.reference === 'string' && value.reference.trim()
+                          value.reference.trim()
                             ? 'border-purple-300 bg-purple-50 hover:bg-purple-100 text-purple-800'
                             : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
                         }`}

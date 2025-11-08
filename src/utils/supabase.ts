@@ -3646,6 +3646,297 @@ export const database = {
 
 };
 
+// Attachment batch management helpers
+export const attachmentBatch = {
+  async uploadMultiple(files: File[], context: {
+    orderId: string;
+    testId?: string;
+    scope: 'order' | 'test';
+    labId: string;
+    patientId: string;
+    userId: string;
+    optimize?: boolean;
+    onOptimizationProgress?: (progress: number, fileName: string) => void;
+  }) {
+    const batchId = crypto.randomUUID();
+    
+    // Create batch record first
+    const { error: batchError } = await supabase
+      .from('attachment_batches')
+      .insert({
+        id: batchId,
+        order_id: context.orderId,
+        patient_id: context.patientId,
+        upload_type: context.scope,
+        total_files: files.length,
+        upload_context: {
+          testId: context.testId,
+          scope: context.scope
+        },
+        uploaded_by: context.userId,
+        lab_id: context.labId,
+        batch_status: 'uploading',
+        batch_description: `${context.scope === 'test' ? 'Test-specific' : 'Order-level'} batch upload of ${files.length} files`
+      });
+    
+    if (batchError) throw batchError;
+    
+    // Optimize images if enabled
+    let filesToUpload = files;
+    let totalOptimizationStats = null;
+    
+    if (context.optimize !== false) {
+      console.log(`Optimizing ${files.length} files for batch upload...`);
+      const { optimizeBatch } = await import('./imageOptimizer');
+      
+      const optimizationResult = await optimizeBatch(
+        files, 
+        context.onOptimizationProgress
+      );
+      
+      filesToUpload = optimizationResult.files;
+      totalOptimizationStats = optimizationResult.totalStats;
+      
+      if (totalOptimizationStats.savedBytes > 0) {
+        console.log(`Batch optimization complete: ${totalOptimizationStats.savedPercent}% reduction`);
+      }
+    }
+    
+    const uploadPromises = filesToUpload.map(async (file, index) => {
+      const sequence = index + 1;
+      const label = `Image ${sequence}`;
+      
+      // Generate unique path with batch info
+      const filePath = `${context.labId}/${new Date().getFullYear()}/${
+        new Date().getMonth() + 1
+      }/${batchId}/${sequence}_${file.name}`;
+      
+      try {
+        // Upload to storage
+        const { error: storageError } = await supabase.storage
+          .from('attachments')
+          .upload(filePath, file);
+        
+        if (storageError) throw storageError;
+        
+        // Get public URL
+        const { data: urlData } = supabase.storage
+          .from('attachments')
+          .getPublicUrl(filePath);
+        
+        // Create attachment record
+        const attachmentData = {
+          batch_id: batchId,
+          batch_sequence: sequence,
+          batch_total: files.length,
+          image_label: label,
+          file_path: filePath,
+          file_url: urlData.publicUrl,
+          original_filename: file.name,
+          file_size: file.size,
+          file_type: file.type,
+          related_table: 'orders',
+          related_id: context.orderId,
+          order_id: context.orderId,
+          patient_id: context.patientId,
+          lab_id: context.labId,
+          uploaded_by: context.userId,
+          description: `${label} from batch upload`,
+          batch_metadata: {
+            originalIndex: index + 1,
+            uploadContext: context
+          },
+          processing_status: 'pending'
+        };
+        
+        const { data: attachment, error: attachmentError } = await supabase
+          .from('attachments')
+          .insert(attachmentData)
+          .select()
+          .single();
+        
+        if (attachmentError) throw attachmentError;
+
+        if (attachment?.id) {
+          await queueImageKitProcessing({
+            attachmentId: attachment.id,
+            labId: context.labId,
+            storagePath: filePath,
+            fileName: file.name,
+            contentType: file.type,
+            assetType: context.scope === 'test' ? 'order-test-attachment' : 'order-attachment',
+          });
+
+          attachment.processing_status = 'processing';
+          attachment.resolved_file_url = attachment.imagekit_url || attachment.processed_url || attachment.file_url;
+        }
+        
+        return { success: true, data: attachment };
+      } catch (error) {
+        return { success: false, error, fileName: file.name };
+      }
+    });
+    
+    const results = await Promise.allSettled(uploadPromises);
+    
+    // Update batch status
+    const successful = results.filter(r => r.status === 'fulfilled' && r.value.success);
+    const failed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success));
+    
+    await supabase
+      .from('attachment_batches')
+      .update({ 
+        batch_status: failed.length > 0 ? 'failed' : 'completed',
+        batch_description: `Batch upload: ${successful.length} successful, ${failed.length} failed`
+      })
+      .eq('id', batchId);
+    
+    return {
+      batchId,
+      successful: successful.map(r => r.status === 'fulfilled' ? r.value.data : null).filter(Boolean),
+      failed: failed.map(r => r.status === 'fulfilled' ? r.value : { error: 'Unknown error' }),
+      totalFiles: files.length,
+      optimizationStats: totalOptimizationStats
+    };
+  },
+
+  async getBatch(batchId: string) {
+    // Get batch first
+    const { data: batch, error: batchError } = await supabase
+      .from('attachment_batches')
+      .select('*')
+      .eq('id', batchId)
+      .single();
+    
+    if (batchError) return { data: null, error: batchError };
+    
+    // Get attachments for this batch
+    const { data: attachments, error: attachError } = await supabase
+      .from('attachments')
+      .select('*')
+      .eq('batch_id', batchId)
+      .order('batch_sequence');
+    
+    if (attachError) return { data: null, error: attachError };
+    const normalized = (attachments || []).map((attachment) => ({
+      ...attachment,
+      resolved_file_url: attachment.imagekit_url || attachment.processed_url || attachment.file_url,
+    }));
+    
+    return { 
+      data: {
+        ...batch,
+        attachments: normalized
+      }, 
+      error: null 
+    };
+  },
+
+  async getBatchesByOrder(orderId: string) {
+    // Get batches first
+    const { data: batches, error: batchError } = await supabase
+      .from('attachment_batches')
+      .select('*')
+      .eq('order_id', orderId)
+      .order('created_at', { ascending: false });
+    
+    if (batchError) return { data: null, error: batchError };
+    
+    // Get attachments for each batch
+    if (batches && batches.length > 0) {
+      const batchIds = batches.map(b => b.id);
+      const { data: attachments, error: attachError } = await supabase
+        .from('attachments')
+        .select('id, batch_id, image_label, batch_sequence, file_url, file_type, original_filename, file_size, imagekit_url, processed_url, processing_status, variants, image_processed_at')
+        .in('batch_id', batchIds)
+        .order('batch_sequence');
+      
+      if (attachError) return { data: null, error: attachError };
+
+      const normalizedAttachments = (attachments || []).map((attachment) => ({
+        ...attachment,
+        resolved_file_url: attachment.imagekit_url || attachment.processed_url || attachment.file_url,
+      }));
+      
+      // Merge attachments with batches
+      const batchesWithAttachments = batches.map(batch => ({
+        ...batch,
+        attachments: normalizedAttachments.filter(att => att.batch_id === batch.id)
+      }));
+      
+      return { data: batchesWithAttachments, error: null };
+    }
+    
+    return { data: batches, error: null };
+  },
+
+  async updateBatchMetadata(batchId: string, metadata: Record<string, any>) {
+    const { data, error } = await supabase
+      .from('attachment_batches')
+      .update({ upload_context: metadata })
+      .eq('id', batchId)
+      .select()
+      .single();
+    
+    return { data, error };
+  }
+};
+
+const resolveImageKitFunctionUrl = (): string => {
+  const direct = import.meta.env.VITE_IMAGEKIT_PROCESS_ENDPOINT;
+  if (direct && typeof direct === 'string' && direct.trim().length > 0) {
+    return direct.trim();
+  }
+
+  const base = import.meta.env.VITE_NETLIFY_FUNCTIONS_BASE_URL;
+  if (base && typeof base === 'string' && base.trim().length > 0) {
+    return `${base.replace(/\/$/, '')}/.netlify/functions/imagekit-process`;
+  }
+
+  return '/.netlify/functions/imagekit-process';
+};
+
+const queueImageKitProcessing = async (payload: {
+  attachmentId: string;
+  labId: string;
+  storagePath: string;
+  fileName?: string;
+  contentType?: string;
+  assetType?: string;
+}) => {
+  if (typeof fetch !== 'function') {
+    return;
+  }
+
+  const endpoint = resolveImageKitFunctionUrl();
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-netlify-background': 'true',
+      },
+      body: JSON.stringify({
+        assetId: payload.attachmentId,
+        tableName: 'attachments',
+        labId: payload.labId,
+        storageBucket: 'attachments',
+        storagePath: payload.storagePath,
+        fileName: payload.fileName,
+        contentType: payload.contentType,
+        assetType: payload.assetType || 'order-attachment',
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn('ImageKit processing request failed', response.status);
+    }
+  } catch (error) {
+    console.warn('Failed to trigger ImageKit processing', error);
+  }
+};
+
 // Database helper functions for attachments
 export const attachments = {
   // Upload file with metadata including test-level support
@@ -3657,17 +3948,36 @@ export const attachments = {
     order_test_id?: string; // New field for test-level attachments
     description?: string;
     tag?: string;
+    optimize?: boolean; // Enable image optimization
   }) => {
     try {
+      // Import optimization function dynamically to avoid circular imports
+      const { smartOptimizeImage } = await import('./imageOptimizer');
+      
+      // Optimize image if enabled and it's an image file
+      let fileToUpload = file;
+      let optimizationStats = null;
+      
+      if (metadata.optimize !== false && file.type.startsWith('image/')) {
+        console.log(`Optimizing image: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+        const result = await smartOptimizeImage(file);
+        fileToUpload = result.file;
+        optimizationStats = result.stats;
+        
+        if (optimizationStats) {
+          console.log(`Image optimized: ${optimizationStats.savedPercent}% reduction`);
+        }
+      }
+      
       const labId = await database.getCurrentUserLabId();
       const timestamp = Date.now();
-      const fileName = `${timestamp}_${file.name}`;
+      const fileName = `${timestamp}_${fileToUpload.name}`;
       const filePath = `attachments/${labId}/${fileName}`;
 
       // Upload file to storage
       const { error: uploadError } = await supabase.storage
         .from('attachments')
-        .upload(filePath, file);
+        .upload(filePath, fileToUpload);
 
       if (uploadError) throw uploadError;
 
@@ -3686,20 +3996,35 @@ export const attachments = {
           order_id: metadata.order_id,
           order_test_id: metadata.order_test_id, // Save test association
           file_url: publicUrl,
-          file_type: file.type,
+          file_type: fileToUpload.type,
           file_path: filePath,
           original_filename: file.name,
           stored_filename: fileName,
-          file_size: file.size,
+          file_size: fileToUpload.size,
           description: metadata.description,
           tag: metadata.tag,
           lab_id: labId,
-          uploaded_by: (await supabase.auth.getUser()).data.user?.id
+          uploaded_by: (await supabase.auth.getUser()).data.user?.id,
+          processing_status: 'pending'
         })
         .select()
         .single();
 
       if (error) throw error;
+
+      if (data?.id) {
+        await queueImageKitProcessing({
+          attachmentId: data.id,
+          labId,
+          storagePath: filePath,
+          fileName: file.name,
+          contentType: file.type,
+          assetType: metadata.tag === 'test-specific' ? 'order-test-attachment' : 'order-attachment'
+        });
+
+        data.processing_status = 'processing';
+        data.resolved_file_url = data.imagekit_url || data.processed_url || data.file_url;
+      }
       return { data, error: null };
     } catch (error) {
       console.error('Error uploading attachment:', error);
@@ -3846,6 +4171,93 @@ export const attachments = {
       .delete()
       .eq('id', id);
     return { error };
+  },
+
+  // Delete entire batch
+  async deleteBatch(batchId: string) {
+    try {
+      // Get all attachments in the batch first
+      const { data: attachments, error: fetchError } = await supabase
+        .from('attachments')
+        .select('file_path, id')
+        .eq('batch_id', batchId);
+      
+      if (fetchError) return { error: fetchError };
+      
+      // Delete files from storage
+      if (attachments && attachments.length > 0) {
+        const filePaths = attachments
+          .map(att => att.file_path)
+          .filter(Boolean);
+        
+        if (filePaths.length > 0) {
+          const { error: storageError } = await supabase.storage
+            .from('attachments')
+            .remove(filePaths);
+          
+          if (storageError) {
+            console.warn('Some files failed to delete from storage:', storageError);
+          }
+        }
+      }
+      
+      // Delete attachments from database
+      const { error: attachmentsDeleteError } = await supabase
+        .from('attachments')
+        .delete()
+        .eq('batch_id', batchId);
+      
+      if (attachmentsDeleteError) return { error: attachmentsDeleteError };
+      
+      // Delete batch record
+      const { error: batchDeleteError } = await supabase
+        .from('attachment_batches')
+        .delete()
+        .eq('id', batchId);
+      
+      return { error: batchDeleteError };
+    } catch (error) {
+      console.error('Error deleting batch:', error);
+      return { error };
+    }
+  },
+
+  // Delete all batches for an order
+  async deleteAllBatchesForOrder(orderId: string) {
+    try {
+      // Get all batches for the order
+      const { data: batches, error: fetchError } = await supabase
+        .from('attachment_batches')
+        .select('id')
+        .eq('order_id', orderId);
+      
+      if (fetchError) return { error: fetchError };
+      
+      // Delete each batch
+      const deletePromises = batches?.map(batch => 
+        this.deleteBatch(batch.id)
+      ) || [];
+      
+      const results = await Promise.allSettled(deletePromises);
+      
+      // Check if any deletions failed
+      const failures = results.filter(result => 
+        result.status === 'rejected' || 
+        (result.status === 'fulfilled' && result.value.error)
+      );
+      
+      if (failures.length > 0) {
+        console.warn('Some batch deletions failed:', failures);
+        return { 
+          error: new Error(`Failed to delete ${failures.length} of ${batches?.length} batches`) 
+        };
+      }
+      
+      return { error: null };
+    } catch (error) {
+      console.error('Error deleting all batches for order:', error);
+      return { error };
+    }
   }
 };
 
@@ -5692,12 +6104,94 @@ export const testWorkflowMap = {
   }
 };
 
+const workflowAI = {
+  async queueProcessing(payload: {
+    workflow_instance_id: string;
+    order_id: string;
+    test_group_id?: string | null;
+    lab_id?: string | null;
+    workflow_data?: Record<string, unknown>;
+    image_attachments?: unknown[];
+    reference_images?: unknown[];
+  }) {
+    const insertPayload = {
+      workflow_instance_id: payload.workflow_instance_id,
+      order_id: payload.order_id,
+      test_group_id: payload.test_group_id ?? null,
+      lab_id: payload.lab_id ?? null,
+      workflow_data: payload.workflow_data ?? {},
+      image_attachments: payload.image_attachments ?? [],
+      reference_images: payload.reference_images ?? [],
+      processing_status: 'pending' as const
+    };
+
+    const { data, error } = await supabase
+      .from('workflow_ai_processing')
+      .upsert(insertPayload, { onConflict: 'workflow_instance_id' })
+      .select()
+      .single();
+
+    return { data, error };
+  },
+
+  async getByOrder(orderId: string) {
+    const { data, error } = await supabase
+      .from('workflow_ai_processing')
+      .select(`
+        *,
+        order_workflow_instances (
+          id,
+          workflow_name,
+          completed_at,
+          step_name
+        ),
+        test_groups (id, name)
+      `)
+      .eq('order_id', orderId)
+      .order('created_at', { ascending: false });
+
+    return { data, error };
+  },
+
+  async markStatus(
+    id: string,
+    status: 'pending' | 'processing' | 'completed' | 'failed',
+    patch: Record<string, unknown> = {}
+  ) {
+    const timestamps: Record<string, string> = {};
+
+    if (status === 'processing') {
+      timestamps.processing_started_at = new Date().toISOString();
+    }
+
+    if (status === 'completed') {
+      timestamps.processing_completed_at = new Date().toISOString();
+    }
+
+    const { data, error } = await supabase
+      .from('workflow_ai_processing')
+      .update({
+        processing_status: status,
+        updated_at: new Date().toISOString(),
+        ...timestamps,
+        ...patch
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    return { data, error };
+  }
+};
+
 // Add workflow helpers to database object
 Object.assign(database, {
   workflowVersions,
   workflows,
   aiProtocols,
-  testWorkflowMap
+  testWorkflowMap,
+  attachmentBatch,
+  workflowAI
 });
 
 async function syncLabBrandingDefaultsForLab(

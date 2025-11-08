@@ -9,6 +9,7 @@ interface FlowManagerProps {
   testGroupId: string;
   analyteIds: string[];
   labId: string;
+  patientId?: string;
   onComplete: (results: any) => void;
   className?: string;
 }
@@ -29,6 +30,7 @@ export const FlowManager: React.FC<FlowManagerProps> = ({
   testGroupId,
   analyteIds,
   labId,
+  patientId,
   onComplete,
   className = ''
 }) => {
@@ -266,6 +268,11 @@ export const FlowManager: React.FC<FlowManagerProps> = ({
       {currentFlow && currentFlowData && (
         <WorkflowRunner
           orderId={orderId}
+          patientId={patientId}
+          labId={labId}
+          testGroupId={testGroupId}
+          instanceId={currentFlowData.instanceId}
+          workflowVersionId={currentFlowData.workflowVersionId}
           workflowDefinition={currentFlowData.definition}
           onComplete={(results) => handleFlowComplete(currentFlow, results)}
         />

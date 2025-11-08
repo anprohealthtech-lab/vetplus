@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Model } from 'survey-core'
 import { Survey } from 'survey-react-ui'
 import 'survey-core/defaultV2.min.css'
-import { supabase } from '../../utils/supabase'
+import { supabase, database, uploadFile, generateFilePath } from '../../utils/supabase'
 
 interface SimpleWorkflowRunnerProps {
   workflowDefinition: any
@@ -15,9 +15,30 @@ interface SimpleWorkflowRunnerProps {
   sampleId?: string
   labId?: string
   testCode?: string
+  workflowVersionId?: string
+  workflowMapId?: string
 }
 
 type WorkflowStatus = 'loading' | 'ready' | 'running' | 'completed' | 'error'
+
+interface AnalyteCatalogEntry {
+  id: string | null
+  name: string | null
+  unit?: string | null
+  reference_range?: string | null
+  code?: string | null
+}
+
+type WorkflowAttachmentRecord = {
+  attachment_id: string
+  file_url: string
+  file_path: string
+  file_name: string
+  file_type: string
+  question_id: string
+  uploaded_at: string
+  metadata?: Record<string, unknown>
+}
 
 const SimpleWorkflowRunner: React.FC<SimpleWorkflowRunnerProps> = ({
   workflowDefinition,
@@ -29,14 +50,19 @@ const SimpleWorkflowRunner: React.FC<SimpleWorkflowRunnerProps> = ({
   testName,
   sampleId,
   labId,
-  testCode
+  testCode,
+  workflowVersionId,
+  workflowMapId
 }) => {
   const [survey, setSurvey] = useState<Model | null>(null)
   const [status, setStatus] = useState<WorkflowStatus>('loading')
   const [error, setError] = useState<string | null>(null)
   const [completionData, setCompletionData] = useState<any>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [instanceId] = useState(() => crypto.randomUUID())
+  const [instanceId, setInstanceId] = useState<string | null>(null)
+  const [initializingInstance, setInitializingInstance] = useState(false)
+  const [analyteCatalog, setAnalyteCatalog] = useState<AnalyteCatalogEntry[]>([])
+  const attachmentsRef = useRef<Record<string, WorkflowAttachmentRecord[]>>({})
 
   // Initialize Survey.js model
   useEffect(() => {
@@ -51,8 +77,16 @@ const SimpleWorkflowRunner: React.FC<SimpleWorkflowRunnerProps> = ({
         isPanelless: false
       })
 
+      // CRITICAL: Configure all file upload questions to NOT store base64
+      // This ensures files are uploaded to storage via onUploadFiles handler
+      surveyModel.getAllQuestions().forEach((question: any) => {
+        if (question.getType() === 'file') {
+          question.storeDataAsText = false // Force upload handler usage
+          console.log(`Configured file question "${question.name}" to use upload handler (storeDataAsText=false)`)
+        }
+      })
+
       setSurvey(surveyModel)
-      setStatus('ready')
     } catch (err) {
       console.error('Error initializing survey:', err)
       setError('Failed to initialize workflow')
@@ -76,6 +110,259 @@ const SimpleWorkflowRunner: React.FC<SimpleWorkflowRunnerProps> = ({
       };
     }
   }, [survey, orderId, testGroupId, patientId, patientName, testName, sampleId, labId, testCode]);
+
+  useEffect(() => {
+    if (!orderId || !workflowVersionId) {
+      return
+    }
+
+    let isActive = true
+
+    const ensureInstance = async () => {
+      setInitializingInstance(true)
+      try {
+        const { data: existingList, error: fetchError } = await supabase
+          .from('order_workflow_instances')
+          .select('id, workflow_version_id, status')
+          .eq('order_id', orderId)
+          .order('started_at', { ascending: false })
+          .limit(1)
+
+        if (fetchError) {
+          throw fetchError
+        }
+
+        const existing = existingList?.[0] || null
+
+        if (existing?.id) {
+          if (existing.workflow_version_id !== workflowVersionId) {
+            await supabase
+              .from('order_workflow_instances')
+              .update({
+                workflow_version_id: workflowVersionId,
+                status: 'in_progress',
+                completed_at: null,
+              })
+              .eq('id', existing.id)
+          }
+
+          if (isActive) {
+            setInstanceId(existing.id)
+          }
+          return
+        }
+
+        const generatedId = crypto.randomUUID()
+        const { data: created, error: insertError } = await supabase
+          .from('order_workflow_instances')
+          .insert({
+            id: generatedId,
+            order_id: orderId,
+            workflow_version_id: workflowVersionId,
+            current_step_id: 'survey_capture',
+            status: 'in_progress',
+            started_at: new Date().toISOString(),
+          })
+          .select()
+          .single()
+
+        if (insertError) {
+          throw insertError
+        }
+
+        if (isActive) {
+          setInstanceId(created.id)
+        }
+      } catch (instanceError) {
+        console.error('Failed to initialize workflow instance:', instanceError)
+        if (isActive) {
+          setError('Failed to initialize workflow instance')
+          setStatus('error')
+        }
+      } finally {
+        if (isActive) {
+          setInitializingInstance(false)
+        }
+      }
+    }
+
+    ensureInstance()
+
+    return () => {
+      isActive = false
+    }
+  }, [orderId, workflowVersionId])
+
+  useEffect(() => {
+    attachmentsRef.current = {}
+  }, [orderId, workflowVersionId])
+
+  useEffect(() => {
+    let isActive = true
+
+    const loadAnalyteCatalog = async () => {
+      console.log('Loading analyte catalog for testGroupId:', testGroupId)
+      
+      if (!testGroupId) {
+        console.warn('⚠️ No testGroupId provided - analyte catalog will be empty')
+        if (isActive) setAnalyteCatalog([])
+        return
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('test_group_analytes')
+          .select(`
+            analyte_id,
+            analytes (
+              id,
+              name,
+              unit,
+              reference_range
+            )
+          `)
+          .eq('test_group_id', testGroupId)
+
+        if (error) throw error
+
+        console.log('Raw analyte catalog data from DB:', data)
+
+        const catalog = (data ?? [])
+          .map((row: any) => {
+            const analyte = row.analytes ?? {}
+            const name: string | null = analyte?.name ?? null
+            if (!name || typeof name !== 'string' || name.trim().length === 0) {
+              return null
+            }
+            return {
+              id: (row.analyte_id ?? analyte?.id ?? null) as string | null,
+              name,
+              unit: analyte?.unit ?? null,
+              reference_range: analyte?.reference_range ?? null,
+              code: null, // analytes table doesn't have code column
+            } satisfies AnalyteCatalogEntry
+          })
+          .filter((entry): entry is AnalyteCatalogEntry => entry !== null)
+
+        console.log('✅ Loaded analyte catalog:', catalog.length, 'entries', catalog)
+
+        if (isActive) {
+          setAnalyteCatalog(catalog)
+        }
+      } catch (catalogError) {
+        console.error('❌ Failed to load workflow analyte catalog:', catalogError)
+        if (isActive) setAnalyteCatalog([])
+      }
+    }
+
+    loadAnalyteCatalog()
+
+    return () => {
+      isActive = false
+    }
+  }, [testGroupId])
+
+  useEffect(() => {
+    if (!survey || !instanceId) {
+      return
+    }
+
+    const handleUploadFiles = async (_: Model, options: any) => {
+      if (!labId || !orderId || !patientId) {
+        console.error('Missing context for workflow file upload')
+        options.callback('error')
+        return
+      }
+
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        const uploadedBy = user?.id ?? null
+        const questionName = options.question?.name as string | undefined
+
+        const uploadedPayload = []
+        const attachmentRecords: WorkflowAttachmentRecord[] = []
+
+        for (const file of options.files ?? []) {
+          const filePath = generateFilePath(file.name, patientId, labId, 'workflow')
+          const { path, publicUrl } = await uploadFile(file, filePath, { upsert: false })
+
+          const { data: attachment, error: attachmentError } = await supabase
+            .from('attachments')
+            .insert({
+              related_table: 'order_workflow_instances',
+              related_id: instanceId,
+              order_id: orderId,
+              patient_id: patientId,
+              lab_id: labId,
+              uploaded_by: uploadedBy,
+              file_path: path,
+              file_url: publicUrl,
+              original_filename: file.name,
+              file_type: file.type,
+              file_size: file.size,
+              description: `Workflow upload for ${questionName ?? 'workflow'}`,
+              metadata: JSON.stringify({
+                question_id: questionName,
+                workflow_version_id: workflowVersionId,
+                workflow_map_id: workflowMapId,
+                test_group_id: testGroupId,
+              }),
+            })
+            .select()
+            .single()
+
+          if (attachmentError || !attachment) {
+            throw attachmentError ?? new Error('Failed to save attachment record')
+          }
+
+          const attachmentRecord: WorkflowAttachmentRecord = {
+            attachment_id: attachment.id,
+            file_url: attachment.file_url,
+            file_path: attachment.file_path,
+            file_name: attachment.original_filename,
+            file_type: attachment.file_type,
+            question_id: questionName ?? 'workflow_upload',
+            uploaded_at: attachment.created_at ?? new Date().toISOString(),
+            metadata: attachment.metadata ?? undefined,
+          }
+
+          attachmentRecords.push(attachmentRecord)
+
+          // Survey.js expects this specific format in the callback
+          uploadedPayload.push({
+            file: file,
+            content: publicUrl,
+            name: file.name,
+            type: file.type,
+          })
+        }
+
+        // Store attachment records for later reference
+        if (questionName) {
+          const existing = attachmentsRef.current[questionName] ?? []
+          attachmentsRef.current[questionName] = [...existing, ...attachmentRecords]
+        }
+
+        // Call callback with the correct format Survey.js expects
+        options.callback('success', uploadedPayload)
+      } catch (uploadError) {
+        console.error('Workflow file upload failed:', uploadError)
+        options.callback('error')
+      }
+    }
+
+    survey.onUploadFiles.add(handleUploadFiles)
+
+    return () => {
+      survey.onUploadFiles.remove(handleUploadFiles)
+    }
+  }, [survey, instanceId, labId, orderId, patientId, workflowVersionId, workflowMapId, testGroupId])
+
+  useEffect(() => {
+    if (survey && instanceId && status === 'loading' && !initializingInstance) {
+      setStatus('ready')
+    }
+  }, [survey, instanceId, status, initializingInstance])
 
   // Extract measurement data from survey results
   const extractMeasurements = (results: any) => {
@@ -116,9 +403,33 @@ const SimpleWorkflowRunner: React.FC<SimpleWorkflowRunnerProps> = ({
         setError('No order ID provided. Please create an order first.')
         return
       }
+
+      if (!instanceId) {
+        setStatus('error')
+        setError('Workflow instance not initialized. Please try again.')
+        return
+      }
       
       // Get final results from survey
       const surveyResults = sender.data
+      const attachmentMap = attachmentsRef.current
+      const flattenedAttachments = Object.values(attachmentMap).flat()
+
+      const serializedAttachments: Record<string, any> = {}
+      for (const [questionId, records] of Object.entries(attachmentMap)) {
+        serializedAttachments[questionId] = records.map((record) => ({
+          attachment_id: record.attachment_id,
+          url: record.file_url,
+          file_name: record.file_name,
+          file_type: record.file_type,
+          uploaded_at: record.uploaded_at,
+        }))
+      }
+
+      const combinedResults = {
+        ...surveyResults,
+        ...serializedAttachments,
+      }
       
       // Build workflow_results record for direct API submission
       const workflowResult = {
@@ -147,12 +458,18 @@ const SimpleWorkflowRunner: React.FC<SimpleWorkflowRunnerProps> = ({
             patient_name: patientName,
             sample_id: sampleId,
             review_status: 'completed',
-            ...surveyResults,
+            ...combinedResults,
             test_name: testName || workflowDefinition?.title || workflowDefinition?.meta?.title || 'Workflow Test',
-            measurements: extractMeasurements(surveyResults),
-            qc_data: extractQCData(surveyResults)
-          }
-        }
+            measurements: extractMeasurements(combinedResults),
+            qc_data: extractQCData(combinedResults),
+            attachments: flattenedAttachments.map((record) => ({
+              question_id: record.question_id,
+              attachment_id: record.attachment_id,
+              file_name: record.file_name,
+              url: record.file_url,
+            })),
+          },
+        },
       }
 
       // Submit to Supabase REST API with correct conflict resolution using column names
@@ -175,78 +492,88 @@ const SimpleWorkflowRunner: React.FC<SimpleWorkflowRunnerProps> = ({
         throw new Error(errorData.message || 'Failed to submit workflow results')
       }
 
-      const result = await response.json()
-      console.log('Workflow submitted successfully:', result)
+  const result = await response.json()
+  console.log('Workflow submitted successfully:', result)
       
-      // Also save to regular results tables for consistency
-      if (orderId && labId) {
-        try {
-          // Create or update results entry
-          const resultData = {
+      try {
+        const instanceUpdate = supabase
+          .from('order_workflow_instances')
+          .update({
+            status: 'completed',
+            completed_at: new Date().toISOString(),
+            current_step_id: null,
+          })
+          .eq('id', instanceId)
+
+        if (labId) {
+          instanceUpdate.eq('lab_id', labId)
+        }
+
+        await instanceUpdate
+      } catch (instanceUpdateError) {
+        console.error('Failed to update workflow instance status:', instanceUpdateError)
+      }
+
+      try {
+        await database.workflowAI.queueProcessing({
+          workflow_instance_id: instanceId,
+          order_id: orderId,
+          test_group_id: testGroupId,
+          lab_id: labId,
+          workflow_data: {
+            ...combinedResults,
+            analyte_catalog: analyteCatalog,
+          },
+          image_attachments: flattenedAttachments,
+          reference_images: [],
+        })
+      } catch (queueError) {
+        console.error('Failed to queue workflow AI processing:', queueError)
+      }
+
+      try {
+        console.log('📊 About to call process-workflow-results with:', {
+          workflow_instance_id: instanceId,
+          order_id: orderId,
+          test_group_id: testGroupId,
+          lab_id: labId,
+          analyteCatalog_length: analyteCatalog?.length || 0,
+          analyteCatalog_first_3: analyteCatalog?.slice(0, 3),
+          has_testGroupId: !!testGroupId,
+        })
+
+        const { data: functionData, error: functionError } = await supabase.functions.invoke('process-workflow-results', {
+          body: {
+            workflow_instance_id: instanceId,
             order_id: orderId,
-            patient_id: patientId,
-            patient_name: patientName,
-            test_name: testName,
-            status: 'pending_verification',
-            entered_by: 'Workflow System',
-            entered_date: new Date().toISOString().split('T')[0],
             test_group_id: testGroupId,
             lab_id: labId,
-            extracted_by_ai: true,
-            workflow_instance_id: instanceId,
-          };
+            analyteCatalog,
+            analytesToExtract: analyteCatalog
+              .filter((entry) => entry.name != null && typeof entry.name === 'string')
+              .map((entry) => entry.name as string)
+              .filter((name) => name.trim().length > 0),
+          },
+        })
 
-          const { data: savedResult, error: resultError } = await supabase
-            .from('results')
-            .insert(resultData)
-            .select()
-            .single();
-
-          if (!resultError && savedResult) {
-            // Extract individual analyte values from workflow results
-            const resultValues = [];
-            
-            // Common urine analysis parameters
-            const urineParams = ['ph', 'sg', 'color', 'clarity', 'glucose', 'protein', 
-                               'ketone', 'bilirubin', 'nitrite', 'leukocyte', 'urobili'];
-            
-            for (const param of urineParams) {
-              if (surveyResults[param]) {
-                resultValues.push({
-                  result_id: savedResult.id,
-                  analyte_name: param.toUpperCase(),
-                  value: surveyResults[param],
-                  unit: param === 'sg' ? '' : param === 'ph' ? '' : '',
-                  reference_range: 'Normal',
-                  order_id: orderId,
-                  test_group_id: testGroupId,
-                  lab_id: labId,
-                });
-              }
-            }
-
-            if (resultValues.length > 0) {
-              const { error: valuesError } = await supabase
-                .from('result_values')
-                .insert(resultValues);
-
-              if (valuesError) {
-                console.error('Error saving result values:', valuesError);
-              }
-            }
-          }
-        } catch (additionalSaveError) {
-          console.error('Error saving to regular results tables:', additionalSaveError);
-          // Don't fail the whole operation if additional save fails
+        if (functionError) {
+          console.error('AI processing function error:', functionError)
+          throw functionError
         }
+
+        console.log('AI processing function succeeded:', functionData)
+      } catch (functionError) {
+        console.error('AI processing function invocation failed:', functionError)
+        // Show error to user
+        alert(`Warning: AI result processing failed. Results saved but may need manual review.\n\nError: ${functionError instanceof Error ? functionError.message : String(functionError)}`)
       }
       
       // Update local state
-      setCompletionData(surveyResults)
+  setCompletionData(combinedResults)
       setStatus('completed')
       
       // Notify parent component
-      onComplete?.(surveyResults)
+  onComplete?.(combinedResults)
       
     } catch (error) {
       console.error('Error submitting workflow results:', error)
@@ -329,6 +656,7 @@ const SimpleWorkflowRunner: React.FC<SimpleWorkflowRunnerProps> = ({
             onClick={() => {
               setStatus('ready')
               setCompletionData(null)
+              attachmentsRef.current = {}
               survey?.clear()
             }}
             className="px-4 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200"

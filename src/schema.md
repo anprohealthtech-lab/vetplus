@@ -124,6 +124,8 @@ CREATE TABLE public.ai_protocols (
   created_by uuid,
   updated_at timestamp with time zone DEFAULT now(),
   updated_by uuid,
+  status text,
+  lab_id uuid,
   CONSTRAINT ai_protocols_pkey PRIMARY KEY (id),
   CONSTRAINT ai_protocols_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id),
   CONSTRAINT ai_protocols_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES auth.users(id)
@@ -186,6 +188,24 @@ CREATE TABLE public.analytes (
   reference_range_female text,
   CONSTRAINT analytes_pkey PRIMARY KEY (id)
 );
+CREATE TABLE public.attachment_batches (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  order_id uuid,
+  patient_id uuid,
+  upload_type text NOT NULL CHECK (upload_type = ANY (ARRAY['order'::text, 'test'::text, 'patient'::text])),
+  total_files integer NOT NULL,
+  upload_context jsonb DEFAULT '{}'::jsonb,
+  uploaded_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  lab_id uuid NOT NULL,
+  batch_status text DEFAULT 'completed'::text CHECK (batch_status = ANY (ARRAY['uploading'::text, 'completed'::text, 'failed'::text])),
+  batch_description text,
+  CONSTRAINT attachment_batches_pkey PRIMARY KEY (id),
+  CONSTRAINT attachment_batches_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT attachment_batches_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
+  CONSTRAINT attachment_batches_uploaded_by_fkey FOREIGN KEY (uploaded_by) REFERENCES public.users(id),
+  CONSTRAINT attachment_batches_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
 CREATE TABLE public.attachments (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   patient_id uuid,
@@ -204,7 +224,7 @@ CREATE TABLE public.attachments (
   upload_timestamp timestamp with time zone DEFAULT now(),
   ai_processed boolean DEFAULT false,
   ai_confidence numeric,
-  processing_status text CHECK (processing_status = ANY (ARRAY['pending'::text, 'processed'::text, 'failed'::text])),
+  processing_status text DEFAULT 'pending'::text CHECK (processing_status = ANY (ARRAY['pending'::text, 'processing'::text, 'processed'::text, 'failed'::text])),
   ai_processed_at timestamp without time zone,
   ai_processing_type text,
   ai_metadata jsonb,
@@ -213,6 +233,17 @@ CREATE TABLE public.attachments (
   order_test_id uuid,
   file_name text,
   metadata text,
+  batch_id uuid,
+  batch_sequence integer,
+  batch_total integer,
+  image_label text,
+  batch_metadata jsonb DEFAULT '{}'::jsonb,
+  imagekit_url text,
+  imagekit_file_id text,
+  processed_url text,
+  variants jsonb DEFAULT '{}'::jsonb,
+  image_processed_at timestamp with time zone,
+  image_processing_error text,
   CONSTRAINT attachments_pkey PRIMARY KEY (id),
   CONSTRAINT attachments_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT attachments_uploaded_by_fkey FOREIGN KEY (uploaded_by) REFERENCES public.users(id),
@@ -430,6 +461,37 @@ CREATE TABLE public.lab_analytes (
   CONSTRAINT lab_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT lab_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
 );
+CREATE TABLE public.lab_branding_assets (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  asset_type character varying NOT NULL CHECK (asset_type::text = ANY (ARRAY['header'::character varying, 'footer'::character varying, 'watermark'::character varying, 'logo'::character varying, 'letterhead'::character varying]::text[])),
+  asset_name character varying NOT NULL,
+  file_url text NOT NULL,
+  file_path text NOT NULL,
+  file_type character varying NOT NULL,
+  file_size bigint,
+  dimensions jsonb,
+  is_active boolean DEFAULT true,
+  is_default boolean DEFAULT false,
+  description text,
+  usage_context ARRAY,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  storage_bucket text DEFAULT 'attachments'::text,
+  storage_path text,
+  status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'processing'::text, 'ready'::text, 'error'::text])),
+  imagekit_file_id text,
+  imagekit_url text,
+  variants jsonb DEFAULT '{}'::jsonb,
+  processed_at timestamp with time zone,
+  last_error text,
+  CONSTRAINT lab_branding_assets_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_branding_assets_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT lab_branding_assets_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT lab_branding_assets_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
+);
 CREATE TABLE public.lab_template_versions (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   template_id uuid NOT NULL,
@@ -476,6 +538,41 @@ CREATE TABLE public.lab_templates (
   CONSTRAINT lab_templates_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
   CONSTRAINT lab_templates_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
 );
+CREATE TABLE public.lab_user_signatures (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  signature_type character varying NOT NULL CHECK (signature_type::text = ANY (ARRAY['digital'::character varying, 'handwritten'::character varying, 'stamp'::character varying, 'text'::character varying]::text[])),
+  signature_name character varying NOT NULL,
+  file_url text,
+  file_path text,
+  file_type character varying,
+  file_size bigint,
+  dimensions jsonb,
+  text_signature text,
+  signature_data jsonb,
+  is_active boolean DEFAULT true,
+  is_default boolean DEFAULT false,
+  description text,
+  usage_context ARRAY,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  storage_bucket text DEFAULT 'attachments'::text,
+  storage_path text,
+  status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'processing'::text, 'ready'::text, 'error'::text])),
+  imagekit_file_id text,
+  imagekit_url text,
+  variants jsonb DEFAULT '{}'::jsonb,
+  processed_at timestamp with time zone,
+  last_error text,
+  CONSTRAINT lab_user_signatures_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_user_signatures_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT lab_user_signatures_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id),
+  CONSTRAINT lab_user_signatures_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT lab_user_signatures_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
+);
 CREATE TABLE public.labs (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   name character varying NOT NULL,
@@ -487,11 +584,12 @@ CREATE TABLE public.labs (
   phone character varying,
   email character varying,
   license_number character varying,
-  default_report_header_html text,
-  default_report_footer_html text,
   is_active boolean DEFAULT true,
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
+  registration_number text,
+  default_report_header_html text,
+  default_report_footer_html text,
   CONSTRAINT labs_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.locations (
@@ -556,15 +654,19 @@ CREATE TABLE public.order_tests (
 );
 CREATE TABLE public.order_workflow_instances (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
-  order_id uuid NOT NULL UNIQUE,
+  order_id uuid NOT NULL,
   workflow_version_id uuid NOT NULL,
   current_step_id text,
   started_at timestamp with time zone NOT NULL DEFAULT now(),
   completed_at timestamp with time zone,
   status text,
+  workflow_id uuid,
+  lab_id uuid,
   CONSTRAINT order_workflow_instances_pkey PRIMARY KEY (id),
   CONSTRAINT order_workflow_instances_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
-  CONSTRAINT order_workflow_instances_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id)
+  CONSTRAINT order_workflow_instances_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id),
+  CONSTRAINT order_workflow_instances_workflow_id_fkey FOREIGN KEY (workflow_id) REFERENCES public.workflows(id),
+  CONSTRAINT order_workflow_instances_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
 CREATE TABLE public.orders (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -741,8 +843,6 @@ CREATE TABLE public.reports (
   report_type character varying DEFAULT 'final'::character varying CHECK (report_type::text = ANY (ARRAY['draft'::character varying, 'final'::character varying]::text[])),
   print_pdf_url text,
   print_pdf_generated_at timestamp with time zone,
-  print_header_html text,
-  print_footer_html text,
   CONSTRAINT reports_pkey PRIMARY KEY (id),
   CONSTRAINT fk_reports_patient FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT fk_reports_result FOREIGN KEY (result_id) REFERENCES public.results(id),
@@ -953,6 +1053,7 @@ CREATE TABLE public.test_workflow_map (
   priority integer DEFAULT 100,
   conditions jsonb,
   description text,
+  is_active boolean,
   CONSTRAINT test_workflow_map_pkey PRIMARY KEY (id),
   CONSTRAINT test_workflow_map_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id),
   CONSTRAINT test_workflow_map_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
@@ -972,7 +1073,7 @@ CREATE TABLE public.users (
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
   department_id uuid,
-  lab_id uuid,
+  lab_id uuid CHECK (lab_id IS NOT NULL),
   whatsapp_user_id uuid,
   whatsapp_sync_status character varying DEFAULT 'pending'::character varying CHECK (whatsapp_sync_status::text = ANY (ARRAY['pending'::character varying, 'synced'::character varying, 'failed'::character varying, 'disabled'::character varying]::text[])),
   whatsapp_last_sync timestamp with time zone,
@@ -1005,6 +1106,31 @@ CREATE TABLE public.workflow_ai_configs (
   CONSTRAINT workflow_ai_configs_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id),
   CONSTRAINT workflow_ai_configs_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
 );
+CREATE TABLE public.workflow_ai_processing (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  workflow_instance_id uuid UNIQUE,
+  order_id uuid,
+  test_group_id uuid,
+  lab_id uuid,
+  workflow_data jsonb DEFAULT '{}'::jsonb,
+  image_attachments jsonb DEFAULT '[]'::jsonb,
+  reference_images jsonb DEFAULT '[]'::jsonb,
+  processing_status text DEFAULT 'pending'::text CHECK (processing_status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'failed'::text])),
+  processing_started_at timestamp with time zone,
+  processing_completed_at timestamp with time zone,
+  extracted_values jsonb,
+  ai_confidence numeric,
+  ai_metadata jsonb,
+  error_message text,
+  retry_count integer DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT workflow_ai_processing_pkey PRIMARY KEY (id),
+  CONSTRAINT workflow_ai_processing_workflow_instance_id_fkey FOREIGN KEY (workflow_instance_id) REFERENCES public.order_workflow_instances(id),
+  CONSTRAINT workflow_ai_processing_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT workflow_ai_processing_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT workflow_ai_processing_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
 CREATE TABLE public.workflow_results (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   workflow_instance_id uuid NOT NULL UNIQUE,
@@ -1026,7 +1152,8 @@ CREATE TABLE public.workflow_results (
   committed_at timestamp with time zone,
   error text,
   detail text,
-  CONSTRAINT workflow_results_pkey PRIMARY KEY (id)
+  CONSTRAINT workflow_results_pkey PRIMARY KEY (id),
+  CONSTRAINT workflow_results_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id)
 );
 CREATE TABLE public.workflow_step_events (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1056,13 +1183,16 @@ CREATE TABLE public.workflow_tasks (
 CREATE TABLE public.workflow_versions (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   workflow_id uuid NOT NULL,
-  version integer NOT NULL,
+  version text NOT NULL,
   definition jsonb NOT NULL,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   active boolean,
   description text,
+  name text,
+  test_group_id uuid,
   CONSTRAINT workflow_versions_pkey PRIMARY KEY (id),
-  CONSTRAINT workflow_versions_workflow_id_fkey FOREIGN KEY (workflow_id) REFERENCES public.workflows(id)
+  CONSTRAINT workflow_versions_workflow_id_fkey FOREIGN KEY (workflow_id) REFERENCES public.workflows(id),
+  CONSTRAINT workflow_versions_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
 );
 CREATE TABLE public.workflows (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1071,6 +1201,11 @@ CREATE TABLE public.workflows (
   lab_id uuid,
   active boolean NOT NULL DEFAULT true,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
+  category text,
+  description text,
+  is_active boolean,
+  type text,
+  updated_at timestamp with time zone,
   CONSTRAINT workflows_pkey PRIMARY KEY (id),
   CONSTRAINT workflows_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );

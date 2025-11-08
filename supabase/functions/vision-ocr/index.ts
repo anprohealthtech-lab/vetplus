@@ -11,6 +11,16 @@ interface VisionRequest {
   testType?: string;
   aiProcessingType?: string;
   analysisType?: 'text' | 'objects' | 'colors' | 'all';
+  orderId?: string;
+  testGroupId?: string;
+  analyteIds?: string[];
+  batchId?: string;
+  referenceImages?: Array<{
+    url: string;
+    type?: string;
+    description?: string;
+  }>;
+  customInstruction?: string;
 }
 
 interface VisionResponse {
@@ -19,6 +29,302 @@ interface VisionResponse {
   colors?: any[];
   confidence?: number;
   error?: string;
+}
+
+interface TestContext {
+  order?: {
+    id: string;
+    lab_id?: string | null;
+    patient?: {
+      id?: string;
+      age?: number | null;
+      gender?: string | null;
+    } | null;
+  };
+  testGroup?: {
+    id: string;
+    name?: string | null;
+    code?: string | null;
+    lab_id?: string | null;
+    ai_processing_type?: string | null;
+    ai_prompt_override?: string | null;
+  };
+  analytes?: Array<{
+    id?: string;
+    name?: string | null;
+    unit?: string | null;
+    reference_range?: string | null;
+    code?: string | null;
+    ai_processing_type?: string | null;
+    ai_prompt_override?: string | null;
+  }>;
+  labOverrides?: any[];
+}
+
+interface BatchImageReference {
+  sequence: number;
+  label?: string | null;
+  attachmentId: string;
+  fileUrl?: string | null;
+  description?: string | null;
+}
+
+async function getTestContext(orderId?: string, testGroupId?: string, analyteIds?: string[]): Promise<TestContext> {
+  const supabaseUrl = Deno.env.get('SUPABASE_URL');
+  const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+
+  if (!supabaseUrl || !supabaseServiceKey) {
+    return {};
+  }
+
+  const headers = {
+    'Authorization': `Bearer ${supabaseServiceKey}`,
+    'apikey': supabaseServiceKey,
+    'Content-Type': 'application/json',
+  };
+
+  const context: TestContext = {};
+  let labId: string | null = null;
+
+  try {
+    if (orderId) {
+      const orderParams = new URLSearchParams({
+        id: `eq.${orderId}`,
+        select: 'id,lab_id,patient_id',
+        limit: '1'
+      });
+
+      const orderResponse = await fetch(`${supabaseUrl}/rest/v1/orders?${orderParams.toString()}`, {
+        headers,
+      });
+
+      if (orderResponse.ok) {
+        const orders = await orderResponse.json();
+        if (Array.isArray(orders) && orders.length > 0) {
+          const orderRow = orders[0];
+          context.order = {
+            id: orderRow.id,
+            lab_id: orderRow.lab_id,
+            patient: orderRow.patient_id ? { id: orderRow.patient_id } : null,
+          };
+          labId = orderRow.lab_id || null;
+        }
+      } else {
+        console.warn('Failed to fetch order context', await orderResponse.text());
+      }
+    }
+
+    if (testGroupId) {
+      const select = 'id,name,code,lab_id,ai_processing_type,ai_prompt_override,test_group_analytes(analyte_id,analytes(id,name,unit,reference_range,ai_processing_type,ai_prompt_override))';
+      const tgParams = new URLSearchParams({
+        id: `eq.${testGroupId}`,
+        select,
+        limit: '1'
+      });
+
+      const tgResponse = await fetch(`${supabaseUrl}/rest/v1/test_groups?${tgParams.toString()}`, {
+        headers,
+      });
+
+      if (tgResponse.ok) {
+        const groups = await tgResponse.json();
+        if (Array.isArray(groups) && groups.length > 0) {
+          const group = groups[0];
+          context.testGroup = {
+            id: group.id,
+            name: group.name,
+            code: group.code,
+            lab_id: group.lab_id,
+            ai_processing_type: group.ai_processing_type,
+            ai_prompt_override: group.ai_prompt_override,
+          };
+
+          const analytesFromGroup = Array.isArray(group.test_group_analytes)
+            ? group.test_group_analytes.map((tga: any) => ({
+                id: tga.analytes?.id || tga.analyte_id,
+                name: tga.analytes?.name,
+                unit: tga.analytes?.unit,
+                reference_range: tga.analytes?.reference_range,
+                ai_processing_type: tga.analytes?.ai_processing_type,
+                ai_prompt_override: tga.analytes?.ai_prompt_override,
+              }))
+            : [];
+
+          if (analytesFromGroup.length) {
+            context.analytes = analytesFromGroup;
+          }
+
+          if (!labId && group.lab_id) {
+            labId = group.lab_id;
+          }
+        }
+      } else {
+        console.warn('Failed to fetch test group context', await tgResponse.text());
+      }
+    }
+
+    const analyteIdSet = new Set<string>();
+    if (Array.isArray(context.analytes)) {
+      context.analytes.forEach((a) => {
+        if (a?.id) analyteIdSet.add(a.id);
+      });
+    }
+    if (Array.isArray(analyteIds)) {
+      analyteIds.forEach((id) => {
+        if (id) analyteIdSet.add(id);
+      });
+    }
+
+    const analyteIdArray = Array.from(analyteIdSet);
+
+    if (analyteIdArray.length && (!context.analytes || context.analytes.length < analyteIdArray.length)) {
+      const analyteParams = new URLSearchParams({
+        select: 'id,name,unit,reference_range,code',
+        id: `in.(${analyteIdArray.join(',')})`
+      });
+
+      const analyteResponse = await fetch(`${supabaseUrl}/rest/v1/analytes?${analyteParams.toString()}`, {
+        headers,
+      });
+
+      if (analyteResponse.ok) {
+        const analyteRows = await analyteResponse.json();
+        if (Array.isArray(analyteRows)) {
+          const existing = new Map<string, any>();
+          (context.analytes || []).forEach((a) => {
+            if (a?.id) existing.set(a.id, a);
+          });
+
+          analyteRows.forEach((row: any) => {
+            if (!row?.id) return;
+            if (!existing.has(row.id)) {
+              existing.set(row.id, {
+                id: row.id,
+                name: row.name,
+                unit: row.unit,
+                reference_range: row.reference_range,
+                code: row.code,
+              });
+            } else {
+              const current = existing.get(row.id);
+              if (current) {
+                current.name = current.name || row.name;
+                current.unit = current.unit || row.unit;
+                current.reference_range = current.reference_range || row.reference_range;
+                current.code = current.code || row.code;
+              }
+            }
+          });
+
+          context.analytes = Array.from(existing.values());
+        }
+      } else {
+        console.warn('Failed to fetch analyte context', await analyteResponse.text());
+      }
+    }
+
+    if (labId && analyteIdArray.length) {
+      const labParams = new URLSearchParams({
+        select: '*',
+        lab_id: `eq.${labId}`,
+        analyte_id: `in.(${analyteIdArray.join(',')})`
+      });
+
+      const labResponse = await fetch(`${supabaseUrl}/rest/v1/lab_analytes?${labParams.toString()}`, {
+        headers,
+      });
+
+      if (labResponse.ok) {
+        const labRows = await labResponse.json();
+        if (Array.isArray(labRows) && labRows.length) {
+          context.labOverrides = labRows;
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Failed to build test context:', error);
+  }
+
+  return context;
+}
+
+async function getBatchImageContext(batchId?: string): Promise<BatchImageReference[]> {
+  if (!batchId) return [];
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL');
+  const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+
+  if (!supabaseUrl || !supabaseServiceKey) {
+    return [];
+  }
+
+  const headers = {
+    'Authorization': `Bearer ${supabaseServiceKey}`,
+    'apikey': supabaseServiceKey,
+    'Content-Type': 'application/json',
+  };
+
+  try {
+    const params = new URLSearchParams({
+      batch_id: `eq.${batchId}`,
+      select: 'id,batch_sequence,image_label,imagekit_url,processed_url,file_url,description',
+      order: 'batch_sequence.asc'
+    });
+
+    const response = await fetch(`${supabaseUrl}/rest/v1/attachments?${params.toString()}`, {
+      headers,
+    });
+
+    if (!response.ok) {
+      console.warn('Failed to fetch batch image context', await response.text());
+      return [];
+    }
+
+    const rows = await response.json();
+    if (!Array.isArray(rows)) {
+      return [];
+    }
+
+    return rows.map((row: any) => ({
+      sequence: row.batch_sequence || 0,
+      label: row.image_label || null,
+      attachmentId: row.id,
+      fileUrl: row.imagekit_url || row.processed_url || row.file_url || null,
+      description: row.description || null,
+    }));
+  } catch (error) {
+    console.error('Failed to load batch image context:', error);
+  }
+
+  return [];
+}
+
+function buildContextAwarePrompt(aiProcessingType: string | undefined, context: TestContext, customInstruction?: string): string | undefined {
+  if (customInstruction && customInstruction.trim().length > 0) {
+    return customInstruction.trim();
+  }
+
+  const analyteNames = (context.analytes || [])
+    .map((a) => a?.name)
+    .filter((name): name is string => typeof name === 'string' && name.length > 0);
+
+  if (!analyteNames.length) {
+    return undefined;
+  }
+
+  const analyteList = analyteNames.join(', ');
+  const baseInstruction = `Extract or identify results for the following analytes: ${analyteList}. Return structured data with values and units where applicable.`;
+
+  switch (aiProcessingType) {
+    case 'vision_color':
+      return `${baseInstruction} Focus on color-based interpretations (e.g., urine strips, reagent cards).`; 
+    case 'vision_card':
+      return `${baseInstruction} Determine presence/absence or band intensity for card-based rapid tests.`;
+    case 'ocr_report':
+      return `${baseInstruction} Use OCR to capture numeric values from tables or printed reports.`;
+    default:
+      return baseInstruction;
+  }
 }
 
 /**
@@ -251,6 +557,30 @@ async function getImageFromStorage(attachmentId: string): Promise<string> {
 
   const attachment = attachments[0];
 
+  const candidateUrls = Array.from(new Set([
+    typeof attachment.imagekit_url === 'string' ? attachment.imagekit_url.trim() : null,
+    typeof attachment.processed_url === 'string' ? attachment.processed_url.trim() : null,
+  ].filter((url) => url && url.length > 0))) as string[];
+
+  for (const candidate of candidateUrls) {
+    try {
+      const processedResponse = await fetch(candidate);
+      if (!processedResponse.ok) {
+        continue;
+      }
+
+      const processedBuffer = await processedResponse.arrayBuffer();
+      if (processedBuffer.byteLength === 0) {
+        continue;
+      }
+
+      const processedBase64 = btoa(String.fromCharCode(...new Uint8Array(processedBuffer)));
+      return processedBase64;
+    } catch (error) {
+      console.warn(`Failed to fetch processed attachment from ${candidate}`, error);
+    }
+  }
+
   // Download file from Supabase Storage
   const fileResponse = await fetch(
     `${supabaseUrl}/storage/v1/object/attachments/${attachment.file_path}`,
@@ -295,7 +625,20 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { attachmentId, base64Image, documentType, testType, analysisType = 'all', aiProcessingType }: VisionRequest = await req.json();
+    const {
+      attachmentId,
+      base64Image,
+      documentType,
+      testType,
+      analysisType = 'all',
+      aiProcessingType,
+      orderId,
+      testGroupId,
+      analyteIds,
+      batchId,
+      referenceImages,
+      customInstruction
+    }: VisionRequest = await req.json();
 
     if (!attachmentId && !base64Image) {
       return new Response(
@@ -323,6 +666,32 @@ Deno.serve(async (req) => {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
         }
       );
+    }
+
+    const testContext = await getTestContext(orderId, testGroupId, analyteIds);
+    const batchContext = await getBatchImageContext(batchId);
+    const effectiveProcessingType = aiProcessingType || testContext.testGroup?.ai_processing_type || documentType || testType;
+    const contextPrompt = buildContextAwarePrompt(
+      typeof effectiveProcessingType === 'string' ? effectiveProcessingType : undefined,
+      testContext,
+      customInstruction
+    );
+
+    const batchReferenceImages = batchContext
+      .filter((reference) => !!reference.fileUrl)
+      .map((reference) => ({
+        url: reference.fileUrl as string,
+        type: 'batch',
+        description: reference.description || reference.label || undefined,
+      }));
+
+    const combinedReferenceImages = [
+      ...(Array.isArray(referenceImages) ? referenceImages : []),
+      ...batchReferenceImages,
+    ];
+
+    if (contextPrompt) {
+      console.log('Context-aware prompt generated for Vision OCR run:', contextPrompt);
     }
 
     const visionResults: VisionResponse = {};
@@ -382,6 +751,10 @@ Deno.serve(async (req) => {
     const responseData = {
       ...visionResults,
       originalBase64Image: imageData,
+      testContext,
+      batchContext,
+      referenceImages: combinedReferenceImages,
+      promptUsed: contextPrompt,
       metadata: {
         documentType: documentType || testType || aiProcessingType,
         aiProcessingType: aiProcessingType || null,
@@ -392,7 +765,13 @@ Deno.serve(async (req) => {
           colors: needsColors
         },
         processingTimestamp: new Date().toISOString(),
-        attachmentId: attachmentId || null
+        attachmentId: attachmentId || null,
+        orderId: orderId || null,
+        testGroupId: testGroupId || testContext.testGroup?.id || null,
+        analyteIds: Array.isArray(analyteIds) ? analyteIds : (testContext.analytes?.map((a) => a.id).filter(Boolean) || []),
+        batchId: batchId || null,
+        referenceImageCount: combinedReferenceImages.length,
+        contextPrompt,
       }
     };
 
@@ -427,7 +806,15 @@ Deno.serve(async (req) => {
                   text_length: visionResults.fullText?.length || 0,
                   objects_count: visionResults.objects?.length || 0,
                   colors_count: visionResults.colors?.length || 0,
-                  error: visionResults.error || null
+                  error: visionResults.error || null,
+                  order_id: orderId || null,
+                  test_group_id: testGroupId || testContext.testGroup?.id || null,
+                  batch_id: responseData.metadata?.batchId || batchId || null,
+                  context_prompt: contextPrompt || null,
+                  reference_image_count: combinedReferenceImages.length,
+                  analyte_ids: Array.isArray(responseData.metadata?.analyteIds)
+                    ? responseData.metadata.analyteIds
+                    : [],
                 }
               })
             }

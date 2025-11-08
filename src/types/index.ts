@@ -376,7 +376,14 @@ export interface Attachment {
   upload_timestamp: string;
   ai_processed: boolean;
   ai_confidence?: number;
-  processing_status?: 'pending' | 'processed' | 'failed';
+  processing_status?: 'pending' | 'processing' | 'processed' | 'failed';
+  imagekit_url?: string | null;
+  imagekit_file_id?: string | null;
+  processed_url?: string | null;
+  variants?: Record<string, string> | null;
+  image_processed_at?: string | null;
+  image_processing_error?: string | null;
+  resolved_file_url?: string | null;
   ai_processed_at?: string;
   ai_processing_type?: string;
   ai_metadata?: any;

@@ -684,46 +684,50 @@ const Reports: React.FC = () => {
         return;
       }
 
-      const pdfUrl = await generateTemplatePreviewPDF(templateRecord, {
-        context,
-        overrides: {
-          preview_mode: true,
-          preview_generated_at: new Date().toISOString(),
-          report_is_draft: context.meta?.allAnalytesApproved !== true,
+      const pdfUrl = await generateTemplatePreviewPDF(
+        templateRecord, 
+        {
+          context,
+          overrides: {
+            preview_mode: true,
+            preview_generated_at: new Date().toISOString(),
+            report_is_draft: context.meta?.allAnalytesApproved !== true,
+          },
+          brandingDefaults: {
+            headerHtml: (() => {
+              const placeholders = (context.placeholderValues ?? {}) as Record<string, unknown>;
+              if (typeof context.labBranding?.defaultHeaderHtml === 'string' && context.labBranding.defaultHeaderHtml.trim()) {
+                return context.labBranding.defaultHeaderHtml;
+              }
+              const direct = placeholders['labDefaultHeaderHtml'];
+              if (typeof direct === 'string' && direct.trim()) {
+                return direct;
+              }
+              const snake = placeholders['lab_default_header_html'];
+              if (typeof snake === 'string' && snake.trim()) {
+                return snake;
+              }
+              return undefined;
+            })(),
+            footerHtml: (() => {
+              const placeholders = (context.placeholderValues ?? {}) as Record<string, unknown>;
+              if (typeof context.labBranding?.defaultFooterHtml === 'string' && context.labBranding.defaultFooterHtml.trim()) {
+                return context.labBranding.defaultFooterHtml;
+              }
+              const direct = placeholders['labDefaultFooterHtml'];
+              if (typeof direct === 'string' && direct.trim()) {
+                return direct;
+              }
+              const snake = placeholders['lab_default_footer_html'];
+              if (typeof snake === 'string' && snake.trim()) {
+                return snake;
+              }
+              return undefined;
+            })(),
+          },
         },
-        brandingDefaults: {
-          headerHtml: (() => {
-            const placeholders = (context.placeholderValues ?? {}) as Record<string, unknown>;
-            if (typeof context.labBranding?.defaultHeaderHtml === 'string' && context.labBranding.defaultHeaderHtml.trim()) {
-              return context.labBranding.defaultHeaderHtml;
-            }
-            const direct = placeholders['labDefaultHeaderHtml'];
-            if (typeof direct === 'string' && direct.trim()) {
-              return direct;
-            }
-            const snake = placeholders['lab_default_header_html'];
-            if (typeof snake === 'string' && snake.trim()) {
-              return snake;
-            }
-            return undefined;
-          })(),
-          footerHtml: (() => {
-            const placeholders = (context.placeholderValues ?? {}) as Record<string, unknown>;
-            if (typeof context.labBranding?.defaultFooterHtml === 'string' && context.labBranding.defaultFooterHtml.trim()) {
-              return context.labBranding.defaultFooterHtml;
-            }
-            const direct = placeholders['labDefaultFooterHtml'];
-            if (typeof direct === 'string' && direct.trim()) {
-              return direct;
-            }
-            const snake = placeholders['lab_default_footer_html'];
-            if (typeof snake === 'string' && snake.trim()) {
-              return snake;
-            }
-            return undefined;
-          })(),
-        },
-      });
+        typedTemplates  // Pass all templates for multi-test-group support
+      );
       if (pdfUrl) {
         if (previewWindow) {
           previewWindow.location.replace(pdfUrl);

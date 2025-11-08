@@ -1,9 +1,10 @@
 // src/pages/result2.tsx
 import React, { useEffect, useState } from "react";
-import { Loader, Calendar, TestTube, Clock, AlertTriangle, CheckCircle, Activity } from "lucide-react";
+import { Loader, Calendar, TestTube, Clock, AlertTriangle, CheckCircle, Activity, History } from "lucide-react";
 import { supabase, database } from "../utils/supabase";
 import OrderDetailsModal from "../components/Orders/OrderDetailsModal";
 import SimpleWorkflowRunner from "../components/Workflow/SimpleWorkflowRunner";
+import WorkflowHistoryViewer from "../components/Workflow/WorkflowHistoryViewer";
 
 interface TestGroupProgress {
   order_id: string;
@@ -50,6 +51,8 @@ const Result2: React.FC = () => {
   const [selectedRange, setSelectedRange] = useState<'today' | 'yesterday' | 'last7' | 'all'>('today');
   const [selectedTestGroup, setSelectedTestGroup] = useState<TestGroupProgress | null>(null);
   const [showWorkflowPanel, setShowWorkflowPanel] = useState(false);
+  const [showWorkflowHistory, setShowWorkflowHistory] = useState(false);
+  const [workflowExecutionCount, setWorkflowExecutionCount] = useState<Record<string, number>>({});
   const [isCollapsedView, setIsCollapsedView] = useState(false); // New collapsed view state
   
   // Add state for OrderDetailsModal
@@ -398,7 +401,55 @@ const Result2: React.FC = () => {
     setShowWorkflowPanel(false);
     setSelectedWorkflow(null);
     setSelectedTestGroup(null);
-    fetchTestGroupProgress(); // Refresh data
+    // Refresh to update execution counts
+    checkWorkflowExecutionCounts();
+    fetchTestGroupProgress();
+  };
+
+  // Check workflow execution count for each order
+  const checkWorkflowExecutionCounts = async () => {
+    try {
+      const orderIds = testGroups.map(tg => tg.order_id);
+      if (orderIds.length === 0) return;
+
+      const { data, error } = await supabase
+        .from('order_workflow_instances')
+        .select('order_id, status')
+        .in('order_id', orderIds);
+
+      if (error) throw error;
+
+      // Count executions per order
+      const counts: Record<string, number> = {};
+      (data || []).forEach((instance: any) => {
+        counts[instance.order_id] = (counts[instance.order_id] || 0) + 1;
+      });
+
+      setWorkflowExecutionCount(counts);
+    } catch (error) {
+      console.error('Failed to check workflow execution counts:', error);
+    }
+  };
+
+  // Fetch execution counts when test groups load
+  useEffect(() => {
+    if (testGroups.length > 0) {
+      checkWorkflowExecutionCounts();
+    }
+  }, [testGroups]);
+
+  // Handle viewing workflow history
+  const handleViewWorkflowHistory = (testGroup: TestGroupProgress) => {
+    setSelectedTestGroup(testGroup);
+    setShowWorkflowHistory(true);
+  };
+
+  // Handle re-executing workflow from history
+  const handleReExecuteWorkflow = () => {
+    setShowWorkflowHistory(false);
+    if (selectedTestGroup) {
+      handleWorkflowExecute(selectedTestGroup);
+    }
   };
 
   const handleUpdateOrderStatus = async (orderId: string, newStatus: string) => {
@@ -523,6 +574,14 @@ const Result2: React.FC = () => {
                   workflowDefinition={selectedWorkflow.workflow_versions.definition}
                   orderId={selectedTestGroup.order_id}
                   testGroupId={selectedTestGroup.test_group_id}
+                  patientId={selectedTestGroup.patient_id}
+                  patientName={selectedTestGroup.patient_name}
+                  testName={selectedTestGroup.test_group_name}
+                  sampleId={selectedTestGroup.sample_id}
+                  labId={selectedTestGroup.lab_id}
+                  testCode={selectedTestGroup.test_group_id} // Using test_group_id as fallback for testCode
+                  workflowVersionId={selectedWorkflow.workflow_version_id || selectedWorkflow.workflow_versions?.id}
+                  workflowMapId={selectedWorkflow.id}
                   onComplete={handleWorkflowComplete}
                 />
               </div>
@@ -675,17 +734,51 @@ const Result2: React.FC = () => {
                         )}
 
                         {/* Workflow Button */}
-                        {testGroup.workflow_eligible && testGroup.panel_status === 'not_started' && (
-                          <div className="mt-3 pt-3 border-t border-gray-200">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleWorkflowExecute(testGroup);
-                              }}
-                              className="w-full px-3 py-2 bg-purple-600 text-white text-xs rounded hover:bg-purple-700 transition-colors"
-                            >
-                              Execute Workflow
-                            </button>
+                        {testGroup.workflow_eligible && (
+                          <div className="mt-3 pt-3 border-t border-gray-200 space-y-2">
+                            {workflowExecutionCount[testGroup.order_id] > 0 ? (
+                              <>
+                                {/* Show workflow already executed */}
+                                <div className="flex items-center justify-between p-2 bg-green-50 border border-green-200 rounded text-xs">
+                                  <div className="flex items-center text-green-700">
+                                    <CheckCircle className="h-4 w-4 mr-1" />
+                                    <span>
+                                      Workflow executed {workflowExecutionCount[testGroup.order_id]} time(s)
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleViewWorkflowHistory(testGroup);
+                                    }}
+                                    className="px-3 py-2 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 transition-colors"
+                                  >
+                                    View History
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleWorkflowExecute(testGroup);
+                                    }}
+                                    className="px-3 py-2 bg-purple-600 text-white text-xs rounded hover:bg-purple-700 transition-colors"
+                                  >
+                                    Execute Again
+                                  </button>
+                                </div>
+                              </>
+                            ) : (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleWorkflowExecute(testGroup);
+                                }}
+                                className="w-full px-3 py-2 bg-purple-600 text-white text-xs rounded hover:bg-purple-700 transition-colors"
+                              >
+                                Execute Workflow
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
@@ -738,13 +831,47 @@ const Result2: React.FC = () => {
                   workflowDefinition={selectedWorkflow.workflow_versions.definition}
                   orderId={selectedTestGroup.order_id}
                   testGroupId={selectedTestGroup.test_group_id}
-                  // Pass additional context from order data
-                  patientId={selectedWorkflow.orderData?.patient_id}
-                  patientName={selectedWorkflow.orderData?.patient_name}
+                  patientId={selectedTestGroup.patient_id}
+                  patientName={selectedTestGroup.patient_name}
                   testName={selectedTestGroup.test_group_name}
-                  sampleId={selectedWorkflow.orderData?.sample_id}
+                  sampleId={selectedTestGroup.sample_id}
                   labId={selectedTestGroup.lab_id}
+                  testCode={selectedTestGroup.test_group_id} // Using test_group_id as fallback for testCode
+                  workflowVersionId={selectedWorkflow.workflow_version_id || selectedWorkflow.workflow_versions?.id}
+                  workflowMapId={selectedWorkflow.id}
                   onComplete={handleWorkflowComplete}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Workflow History Modal - Temporarily disabled for debugging */}
+        {showWorkflowHistory && selectedTestGroup && (
+          <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-2 sm:p-4">
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl h-full sm:h-auto sm:max-h-[90vh] overflow-hidden">
+              <div className="flex items-center justify-between p-4 sm:p-6 border-b border-gray-200">
+                <h3 className="text-base sm:text-lg font-semibold truncate pr-2">
+                  Workflow History: {selectedTestGroup.test_group_name}
+                </h3>
+                <button
+                  onClick={() => {
+                    setShowWorkflowHistory(false);
+                    setSelectedTestGroup(null);
+                  }}
+                  className="text-gray-400 hover:text-gray-600 flex-shrink-0 p-1 sm:p-0"
+                >
+                  <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <div className="p-4 sm:p-6 overflow-y-auto h-full sm:h-auto sm:max-h-[calc(90vh-120px)]">
+                <WorkflowHistoryViewer
+                  orderId={selectedTestGroup.order_id}
+                  testGroupId={selectedTestGroup.test_group_id}
+                  workflowMapId={selectedWorkflow?.id}
+                  onReExecute={handleReExecuteWorkflow}
                 />
               </div>
             </div>

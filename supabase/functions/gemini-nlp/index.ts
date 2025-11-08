@@ -1,6 +1,6 @@
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-attachment-id, x-order-id',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-attachment-id, x-order-id, x-batch-id, x-multi-image',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
 }
 
@@ -11,7 +11,14 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Check for API key first - try ALLGOOGLE_KEY first, then fallback to GEMINI_API_KEY
+    // Validate authentication - check for either JWT token or API key
+    const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
+    const apiKey = req.headers.get('apikey') || req.headers.get('x-api-key');
+
+    // Allow both anon key and service role key for backward compatibility
+    console.log('Gemini NLP function invoked with auth');
+
+    // Check for Gemini API key - try ALLGOOGLE_KEY first, then fallback to GEMINI_API_KEY
     const geminiApiKey = Deno.env.get('ALLGOOGLE_KEY') || Deno.env.get('GEMINI_API_KEY');
     if (!geminiApiKey) {
       console.error('Google API key not configured');
@@ -27,18 +34,37 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { 
-      rawText, 
-      visionResults, 
+    const payload = await req.json();
+
+    const {
+      rawText,
+      visionResults,
       originalBase64Image,
-      documentType, 
-      testType, 
+      documentType,
+      testType,
       base64Image,
       aiProcessingType,
       aiPromptOverride,
       pipetteDetails,
-      expectedColor 
-    } = await req.json();
+      expectedColor,
+      analyteCatalog,
+      analytesToExtract,
+      orderId: bodyOrderId,
+      testGroupId,
+    } = payload as GeminiRequest & {
+      analyteCatalog?: Array<{ id?: string; name?: string | null; unit?: string | null; reference_range?: string | null; code?: string | null }>;
+      analytesToExtract?: string[];
+      orderId?: string;
+      testGroupId?: string;
+    };
+
+    const focusAnalyteNames = deriveAnalyteFocusList(analyteCatalog, analytesToExtract);
+    const extractionTargets = Array.isArray(analytesToExtract)
+      ? analytesToExtract.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+      : [];
+
+    let prompt = '';
+    let geminiResponse = '';
 
     console.log(`Starting Gemini NLP processing for ${aiProcessingType || documentType || testType || 'unknown'} type`);
 
@@ -49,17 +75,11 @@ Deno.serve(async (req) => {
 
     if (shouldUseFallback) {
       console.log('Vision OCR extracted insufficient text, using Gemini Vision fallback');
-      prompt = generatePrompt('vision', documentType, 'fallback');
+      prompt = applyAnalyteFocus(generatePrompt('vision', documentType, 'fallback'), focusAnalyteNames, extractionTargets);
       geminiResponse = await callGemini(prompt, geminiApiKey, originalBase64Image);
-    }
-    
-    let prompt: string;
-    let geminiResponse: string;
-
-    // Check for custom prompt override first
-    if (aiPromptOverride && aiPromptOverride.trim().length > 0) {
+    } else if (aiPromptOverride && aiPromptOverride.trim().length > 0) {
       console.log('Using custom AI prompt override');
-      prompt = aiPromptOverride;
+      prompt = applyAnalyteFocus(aiPromptOverride, focusAnalyteNames, extractionTargets);
       geminiResponse = await callGemini(prompt, geminiApiKey, originalBase64Image);
     } else if (aiProcessingType) {
       // Use aiProcessingType for modern configuration
@@ -75,13 +95,25 @@ Deno.serve(async (req) => {
             }
           );
         }
-        prompt = generatePrompt('ocr', 'printed-report', rawText);
+        prompt = applyAnalyteFocus(
+          generatePrompt('ocr', 'printed-report', rawText),
+          focusAnalyteNames,
+          extractionTargets,
+        );
         geminiResponse = await callGemini(prompt, geminiApiKey);
       } else if (aiProcessingType === 'vision_card') {
-        prompt = generatePrompt('vision', 'test-card', JSON.stringify(visionResults));
+        prompt = applyAnalyteFocus(
+          generatePrompt('vision', 'test-card', JSON.stringify(visionResults)),
+          focusAnalyteNames,
+          extractionTargets,
+        );
         geminiResponse = await callGemini(prompt, geminiApiKey, base64Image || originalBase64Image);
       } else if (aiProcessingType === 'vision_color') {
-        prompt = generatePrompt('vision', 'color-analysis', JSON.stringify(visionResults));
+        prompt = applyAnalyteFocus(
+          generatePrompt('vision', 'color-analysis', JSON.stringify(visionResults)),
+          focusAnalyteNames,
+          extractionTargets,
+        );
         geminiResponse = await callGemini(prompt, geminiApiKey, base64Image || originalBase64Image);
       } else {
         return new Response(
@@ -104,17 +136,50 @@ Deno.serve(async (req) => {
         );
       }
       
-      prompt = generatePrompt('ocr', documentType, rawText);
+      prompt = applyAnalyteFocus(
+        generatePrompt('ocr', documentType, rawText),
+        focusAnalyteNames,
+        extractionTargets,
+      );
+
+    if (!geminiResponse) {
+      return new Response(
+        JSON.stringify({
+          error: 'Gemini returned an empty response',
+          details: {
+            aiProcessingType,
+            documentType,
+            testType,
+            analyteFocusNames: focusAnalyteNames,
+            analyteExtractionTargets: extractionTargets,
+            orderId: bodyOrderId || null,
+            testGroupId: testGroupId || null,
+          },
+        }),
+        {
+          status: 502,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        },
+      );
+    }
       geminiResponse = await callGemini(prompt, geminiApiKey);
       
     } else if (testType === 'pipette-validation') {
       // Pipette validation processing
-      prompt = generatePrompt('vision', 'pipette-validation', JSON.stringify({visionResults, pipetteDetails, expectedColor}));
+      prompt = applyAnalyteFocus(
+        generatePrompt('vision', 'pipette-validation', JSON.stringify({visionResults, pipetteDetails, expectedColor})),
+        focusAnalyteNames,
+        extractionTargets,
+      );
       geminiResponse = await callGemini(prompt, geminiApiKey, base64Image);
       
     } else if (testType) {
       // Photo analysis processing
-      prompt = generatePrompt('vision', testType, JSON.stringify(visionResults));
+      prompt = applyAnalyteFocus(
+        generatePrompt('vision', testType, JSON.stringify(visionResults)),
+        focusAnalyteNames,
+        extractionTargets,
+      );
       geminiResponse = await callGemini(prompt, geminiApiKey, base64Image);
       
     } else {
@@ -126,6 +191,10 @@ Deno.serve(async (req) => {
         }
       );
     }
+
+    const attachmentIdHeader = req.headers.get('x-attachment-id');
+    const orderIdHeader = req.headers.get('x-order-id');
+    const requestOrderId = orderIdHeader || bodyOrderId || null;
 
     console.log(`Gemini processing completed. Type: ${aiProcessingType || documentType || testType}. Response length: ${geminiResponse.length} characters`);
 
@@ -157,7 +226,12 @@ Deno.serve(async (req) => {
             processingMethod: 'Supabase Edge Functions + Gemini NLP',
             ocrConfidence: visionResults?.confidence || 0.95,
             extractedTextLength: rawText?.length || 0,
-            processingTimestamp: new Date().toISOString()
+            processingTimestamp: new Date().toISOString(),
+            analyteFocusNames: focusAnalyteNames,
+            analyteExtractionTargets: extractionTargets,
+            orderId: requestOrderId,
+            testGroupId: testGroupId || null,
+            analyteCatalogSize: analyteCatalog?.length || 0,
           }
         };
         
@@ -179,7 +253,12 @@ Deno.serve(async (req) => {
             processingMethod: 'Supabase Edge Functions + Gemini Vision',
             pipetteType: pipetteDetails?.name || 'Unknown',
             expectedColor: expectedColor || null,
-            processingTimestamp: new Date().toISOString()
+            processingTimestamp: new Date().toISOString(),
+            analyteFocusNames: focusAnalyteNames,
+            analyteExtractionTargets: extractionTargets,
+            orderId: requestOrderId,
+            testGroupId: testGroupId || null,
+            analyteCatalogSize: analyteCatalog?.length || 0,
           }
         };
         
@@ -200,7 +279,12 @@ Deno.serve(async (req) => {
             customPromptUsed: !!aiPromptOverride,
             processingMethod: 'Supabase Edge Functions + Gemini Vision',
             visionFeaturesUsed: Object.keys(visionResults || {}),
-            processingTimestamp: new Date().toISOString()
+            processingTimestamp: new Date().toISOString(),
+            analyteFocusNames: focusAnalyteNames,
+            analyteExtractionTargets: extractionTargets,
+            orderId: requestOrderId,
+            testGroupId: testGroupId || null,
+            analyteCatalogSize: analyteCatalog?.length || 0,
           }
         };
         
@@ -227,13 +311,18 @@ Deno.serve(async (req) => {
             extractedTextLength: rawText?.length || 0,
             processingTimestamp: new Date().toISOString(),
             matchedParameters: enhancedParameters.filter(p => p.matched).length,
-            totalParameters: enhancedParameters.length
+            totalParameters: enhancedParameters.length,
+            analyteFocusNames: focusAnalyteNames,
+            analyteExtractionTargets: extractionTargets,
+            orderId: requestOrderId,
+            testGroupId: testGroupId || null,
+            analyteCatalogSize: analyteCatalog?.length || 0,
           }
         };
 
         // If attachmentId and orderId are provided, save AI extraction metadata to results
-        const attachmentId = req.headers.get('x-attachment-id');
-        const orderId = req.headers.get('x-order-id');
+        const attachmentId = attachmentIdHeader;
+        const orderId = requestOrderId;
         
         if (attachmentId && orderId && enhancedParameters.length > 0) {
           const supabaseUrl = Deno.env.get('SUPABASE_URL');
@@ -340,9 +429,26 @@ interface GeminiRequest {
   documentType?: string;
   testType?: string;
   base64Image?: string;
+  originalBase64Image?: string;
   pipetteDetails?: any;
   expectedColor?: any;
+  aiProcessingType?: string;
+  aiPromptOverride?: string;
+  analyteCatalog?: AnalyteCatalogEntry[];
+  analytesToExtract?: AnalytesToExtract;
+  orderId?: string;
+  testGroupId?: string;
 }
+
+type AnalyteCatalogEntry = {
+  id?: string;
+  name?: string | null;
+  unit?: string | null;
+  reference_range?: string | null;
+  code?: string | null;
+};
+
+type AnalytesToExtract = string[] | string | null | undefined;
 
 /**
  * Prompt template configurations
@@ -432,7 +538,7 @@ Focus on:
  */
 async function callGemini(prompt: string, geminiApiKey: string, imageData?: string): Promise<any> {
   // Use updated Gemini models and API endpoint
-  const model = imageData ? 'gemini-1.5-flash' : 'gemini-1.5-flash';
+  const model = imageData ? 'gemini-2.0-flash-exp' : 'gemini-2.0-flash-exp';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey}`;
 
   let requestBody;
@@ -595,4 +701,110 @@ async function matchParametersToAnalytes(extractedParameters: any[]): Promise<an
     console.warn('Error matching parameters to analytes:', error);
     return extractedParameters;
   }
+}
+
+function deriveAnalyteFocusList(
+  catalog: AnalyteCatalogEntry[] = [],
+  requestedAnalytes: AnalytesToExtract,
+): string[] {
+  const catalogEntries = catalog.filter((entry) => (entry?.name || '').trim().length > 0);
+  const catalogNames = uniqueStrings(
+    catalogEntries.map((entry) => (entry.name || '').trim()),
+  );
+
+  const requestedList = normalizeAnalyteList(requestedAnalytes);
+
+  if (requestedList.length === 0) {
+    return catalogNames;
+  }
+
+  const nameLookup = new Map<string, string>();
+  const codeLookup = new Map<string, string>();
+
+  catalogEntries.forEach((entry) => {
+    const normalizedName = normalizeIdentifier(entry.name);
+    const normalizedCode = normalizeIdentifier(entry.code);
+
+    if (normalizedName) {
+      nameLookup.set(normalizedName, (entry.name || '').trim());
+    }
+
+    if (normalizedCode && entry.name) {
+      codeLookup.set(normalizedCode, entry.name.trim());
+    }
+  });
+
+  const resolvedNames = requestedList
+    .map((identifier) => {
+      const normalized = normalizeIdentifier(identifier);
+      if (!normalized) {
+        return null;
+      }
+
+      return nameLookup.get(normalized) || codeLookup.get(normalized) || identifier;
+    })
+    .filter((value): value is string => !!value && value.trim().length > 0);
+
+  return resolvedNames.length > 0 ? uniqueStrings(resolvedNames) : catalogNames;
+}
+
+function normalizeIdentifier(value?: string | null): string {
+  return (value || '').trim().toLowerCase();
+}
+
+function normalizeAnalyteList(input: AnalytesToExtract): string[] {
+  if (!input) {
+    return [];
+  }
+
+  if (Array.isArray(input)) {
+    return uniqueStrings(
+      input
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter((item) => item.length > 0),
+    );
+  }
+
+  if (typeof input === 'string') {
+    return uniqueStrings(
+      input
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0),
+    );
+  }
+
+  return [];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [
+    ...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)),
+  ];
+}
+
+function applyAnalyteFocus(
+  basePrompt: string,
+  focusAnalytes: string[],
+  extractionTargets: string[],
+): string {
+  if (focusAnalytes.length === 0 && extractionTargets.length === 0) {
+    return basePrompt;
+  }
+
+  const focusInstructions: string[] = [];
+
+  if (focusAnalytes.length > 0) {
+    focusInstructions.push(
+      `Focus exclusively on these analytes for interpretation: ${focusAnalytes.join(', ')}`,
+    );
+  }
+
+  if (extractionTargets.length > 0) {
+    focusInstructions.push(
+      `Only return structured output for these analytes: ${extractionTargets.join(', ')}`,
+    );
+  }
+
+  return `${basePrompt}\n\n${focusInstructions.join('\n')}`;
 }

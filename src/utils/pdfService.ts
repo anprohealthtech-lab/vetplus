@@ -629,8 +629,73 @@ const convertHtmlImagestoBase64 = async (html: string): Promise<string> => {
 
 export const generateTemplatePreviewPDF = async (
   template: LabTemplateRecord,
-  options: TemplateRenderOptions = {}
+  options: TemplateRenderOptions = {},
+  allTemplates?: LabTemplateRecord[]
 ): Promise<string> => {
+  const context = options.context;
+  
+  // Check if we need multi-template rendering
+  const hasMultipleTestGroups = context?.testGroupIds && context.testGroupIds.length > 1;
+  
+  if (hasMultipleTestGroups && allTemplates && allTemplates.length > 0) {
+    console.log('🔀 Preview: Multi-template mode for', context!.testGroupIds!.length, 'test groups');
+    
+    // Create temporary reportData for multi-template rendering
+    const reportData: ReportData = {
+      patient: {
+        name: context!.patient?.name || 'Patient',
+        id: context!.patientId || 'Unknown',
+        age: typeof context!.patient?.age === 'number' ? context!.patient.age : 0,
+        gender: context!.patient?.gender || 'Unknown',
+        referredBy: context!.order?.referringDoctorName || 'Self',
+      },
+      report: {
+        reportId: context!.orderId,
+        collectionDate: context!.order?.sampleCollectedAt || '',
+        reportDate: new Date().toISOString(),
+        reportType: 'Preview',
+      },
+      testResults: [],
+      labTemplateRecord: template,
+      templateContext: context!,
+      placeholderOverrides: options.overrides,
+      labBrandingDefaults: options.brandingDefaults,
+    };
+    
+    const brandingDefaults = resolveBrandingDefaultsFromOptions(options);
+    const { html } = await renderMultipleTestGroupTemplates(
+      reportData,
+      false,
+      brandingDefaults,
+      allTemplates
+    );
+    
+    // Get lab branding defaults
+    const { data: labDefaults } = await supabase
+      .from('labs')
+      .select('default_report_header_html, default_report_footer_html')
+      .eq('id', template.lab_id)
+      .maybeSingle();
+
+    const rawHeaderHtml = labDefaults?.default_report_header_html || '';
+    const rawFooterHtml = labDefaults?.default_report_footer_html || '';
+    
+    const headerHtml = await convertHtmlImagestoBase64(rawHeaderHtml);
+    const footerHtml = await convertHtmlImagestoBase64(rawFooterHtml);
+    
+    const filename = `Multi_Template_Preview_${Date.now()}.pdf`;
+    return sendHtmlToPdfCo(html, filename, {
+      displayHeaderFooter: true,
+      headerHtml,
+      footerHtml,
+      headerHeight: '90px',
+      footerHeight: '80px',
+      mediaType: 'print',
+      printBackground: true,
+    });
+  }
+  
+  // Single template rendering (original logic)
   // Get lab branding defaults from database
   const { data: labDefaults } = await supabase
     .from('labs')
@@ -1476,13 +1541,210 @@ const generateUniversalHTMLTemplate = (data: ReportData, isDraft = false): strin
 </html>`;
 };
 
-const prepareReportHtml = (reportData: ReportData, isDraft: boolean): PreparedReportHtml => {
+/**
+ * Helper function to group analytes by test_group_id
+ */
+const groupAnalytesByTestGroup = (analytes: ReportTemplateAnalyteRow[]): Map<string, ReportTemplateAnalyteRow[]> => {
+  const grouped = new Map<string, ReportTemplateAnalyteRow[]>();
+  
+  for (const analyte of analytes) {
+    const testGroupId = analyte.test_group_id || 'ungrouped';
+    if (!grouped.has(testGroupId)) {
+      grouped.set(testGroupId, []);
+    }
+    grouped.get(testGroupId)!.push(analyte);
+  }
+  
+  return grouped;
+};
+
+/**
+ * Render multiple test group templates and merge them into a single HTML
+ */
+const renderMultipleTestGroupTemplates = async (
+  reportData: ReportData,
+  isDraft: boolean,
+  brandingDefaults: LabBrandingHtmlDefaults,
+  templates: LabTemplateRecord[]
+): Promise<{ html: string; bundle: any }> => {
+  const context = reportData.templateContext;
+  if (!context || !context.analytes || context.analytes.length === 0) {
+    throw new Error('No analytes found in report context');
+  }
+
+  // Group analytes by test_group_id
+  const analytesByGroup = groupAnalytesByTestGroup(context.analytes);
+  
+  console.log(`📋 Found ${analytesByGroup.size} test group(s) in order ${context.orderId}`);
+  
+  // If only one test group, use the standard single-template rendering
+  if (analytesByGroup.size === 1) {
+    const template = reportData.labTemplateRecord || selectTemplateForContext(templates, context);
+    if (template?.gjs_html) {
+      const bundle = renderLabTemplateHtmlBundle(template, {
+        context,
+        overrides: {
+          ...(reportData.placeholderOverrides ?? {}),
+          report_is_draft: isDraft,
+          report_generated_at: new Date().toISOString(),
+        },
+        brandingDefaults,
+      });
+      
+      return { html: bundle.previewHtml, bundle };
+    }
+  }
+
+  // Multiple test groups - need to merge templates
+  const renderedSections: string[] = [];
+  const testGroupNames: string[] = [];
+  
+  for (const [testGroupId, groupAnalytes] of analytesByGroup.entries()) {
+    console.log(`🔧 Rendering test group: ${testGroupId} with ${groupAnalytes.length} analyte(s)`);
+    
+    // Create a modified context for this test group
+    const groupContext: ReportTemplateContext = {
+      ...context,
+      analytes: groupAnalytes,
+      testGroupIds: [testGroupId],
+    };
+    
+    // Select template for this specific test group
+    let groupTemplate: LabTemplateRecord | null = null;
+    
+    // Try to find a template specifically for this test group
+    if (testGroupId !== 'ungrouped') {
+      groupTemplate = templates.find(t => t.test_group_id === testGroupId && t.gjs_html) || null;
+    }
+    
+    // Fall back to selecting based on context
+    if (!groupTemplate) {
+      groupTemplate = selectTemplateForContext(templates, groupContext);
+    }
+    
+    // Fall back to default template
+    if (!groupTemplate) {
+      groupTemplate = templates.find(t => t.is_default && t.gjs_html) || templates.find(t => t.gjs_html) || null;
+    }
+    
+    if (groupTemplate?.gjs_html) {
+      const bundle = renderLabTemplateHtmlBundle(groupTemplate, {
+        context: groupContext,
+        overrides: {
+          ...(reportData.placeholderOverrides ?? {}),
+          report_is_draft: isDraft,
+          report_generated_at: new Date().toISOString(),
+        },
+        brandingDefaults,
+      });
+      
+      // Extract the body content from the rendered HTML
+      const bodyMatch = bundle.previewHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+      const bodyContent = bodyMatch ? bodyMatch[1] : bundle.previewHtml;
+      
+      // Add section with test group separator
+      const testName = groupAnalytes[0]?.test_name || `Test Group ${renderedSections.length + 1}`;
+      testGroupNames.push(testName);
+      
+      const sectionHtml = `
+        <div class="test-group-section" data-test-group-id="${testGroupId}">
+          ${renderedSections.length > 0 ? `
+            <div class="test-group-separator" style="page-break-before: always; margin: 40px 0 20px; padding-top: 20px; border-top: 2px solid #2563eb;">
+              <h2 style="color: #2563eb; font-size: 18px; margin: 0;">${testName}</h2>
+            </div>
+          ` : ''}
+          ${bodyContent}
+        </div>
+      `;
+      
+      renderedSections.push(sectionHtml);
+    } else {
+      console.warn(`⚠️  No template found for test group: ${testGroupId}`);
+    }
+  }
+  
+  if (renderedSections.length === 0) {
+    throw new Error('Failed to render any test group templates');
+  }
+  
+  // Merge all sections into a single HTML document
+  const mergedBody = renderedSections.join('\n');
+  
+  // Get the base template structure from the first rendered template
+  const firstTemplate = templates.find(t => t.gjs_html) || reportData.labTemplateRecord;
+  if (!firstTemplate?.gjs_html) {
+    throw new Error('No valid template found for report generation');
+  }
+  
+  // Create a bundle with the first template's structure but merged content
+  const baseBundle = renderLabTemplateHtmlBundle(firstTemplate, {
+    context,
+    overrides: {
+      ...(reportData.placeholderOverrides ?? {}),
+      report_is_draft: isDraft,
+      report_generated_at: new Date().toISOString(),
+    },
+    brandingDefaults,
+  });
+  
+  // Replace the body content with merged sections
+  const mergedHtml = baseBundle.previewHtml.replace(
+    /<body[^>]*>[\s\S]*<\/body>/i,
+    `<body class="limsv2-report multi-test-group-report">${mergedBody}</body>`
+  );
+  
+  console.log(`✅ Successfully merged ${renderedSections.length} test group template(s)`);
+  
+  return {
+    html: mergedHtml,
+    bundle: {
+      ...baseBundle,
+      previewHtml: mergedHtml,
+      testGroupCount: renderedSections.length,
+      testGroupNames,
+    },
+  };
+};
+
+const prepareReportHtml = async (
+  reportData: ReportData,
+  isDraft: boolean,
+  allTemplates?: LabTemplateRecord[]
+): Promise<PreparedReportHtml> => {
   const filenameBase = buildReportFilenameBase(reportData, isDraft);
   const brandingDefaults = resolveReportBrandingDefaults(reportData);
 
-  if (reportData.labTemplateRecord?.gjs_html && reportData.templateContext) {
+  // Check if we have multiple test groups and templates
+  const context = reportData.templateContext;
+  const hasMultipleTestGroups = context?.testGroupIds && context.testGroupIds.length > 1;
+  
+  if (hasMultipleTestGroups && allTemplates && allTemplates.length > 0) {
+    console.log(`🔀 Detected ${context!.testGroupIds!.length} test groups, attempting multi-template merge`);
+    
+    try {
+      const { html, bundle } = await renderMultipleTestGroupTemplates(
+        reportData,
+        isDraft,
+        brandingDefaults,
+        allTemplates
+      );
+      
+      return {
+        html,
+        bundle,
+        filenameBase,
+        brandingDefaults,
+      };
+    } catch (error) {
+      console.error('❌ Multi-template merge failed, falling back to single template:', error);
+      // Fall through to single-template rendering
+    }
+  }
+
+  // Single template rendering (original logic)
+  if (reportData.labTemplateRecord?.gjs_html && context) {
     const bundle = renderLabTemplateHtmlBundle(reportData.labTemplateRecord, {
-      context: reportData.templateContext,
+      context,
       overrides: {
         ...(reportData.placeholderOverrides ?? {}),
         report_is_draft: isDraft,
@@ -1511,10 +1773,10 @@ const prepareReportHtml = (reportData: ReportData, isDraft: boolean): PreparedRe
 export const generatePDFWithAPI = async (
   reportData: ReportData,
   isDraft = false,
-  prepared?: PreparedReportHtml
+  prepared?: PreparedReportHtml | Promise<PreparedReportHtml>
 ): Promise<string> => {
   console.log('Generating PDF with PDF.co API...', isDraft ? '(DRAFT)' : '(FINAL)');
-  const ready = prepared ?? prepareReportHtml(reportData, isDraft);
+  const ready = prepared ? (prepared instanceof Promise ? await prepared : prepared) : await prepareReportHtml(reportData, isDraft);
   const filename = `${ready.filenameBase}.pdf`;
   
   // Get lab defaults directly from database
@@ -1560,16 +1822,17 @@ interface PrintPdfResult {
 
 const generatePrintPDFWithAPI = async (
   _reportData: ReportData,
-  prepared: PreparedReportHtml
+  prepared: PreparedReportHtml | Promise<PreparedReportHtml>
 ): Promise<PrintPdfResult> => {
-  const filename = `${prepared.filenameBase}_PRINT.pdf`;
+  const ready = prepared instanceof Promise ? await prepared : prepared;
+  const filename = `${ready.filenameBase}_PRINT.pdf`;
 
-  if (prepared.bundle) {
-    return sendPrintHtmlToPdfCo(prepared.bundle, filename);
+  if (ready.bundle) {
+    return sendPrintHtmlToPdfCo(ready.bundle, filename);
   }
 
   console.warn('Print PDF requested but no template bundle available. Falling back to preview HTML.');
-  const url = await sendHtmlToPdfCo(prepared.html, filename, {
+  const url = await sendHtmlToPdfCo(ready.html, filename, {
     displayHeaderFooter: false,
     mediaType: 'print',
     printBackground: true,
@@ -1583,10 +1846,10 @@ const generatePrintPDFWithAPI = async (
 };
 
 // Fallback PDF generation using browser print
-export const generatePDFWithBrowser = (reportData: ReportData): string => {
+export const generatePDFWithBrowser = async (reportData: ReportData): Promise<string> => {
   console.log('Generating PDF with browser fallback...');
 
-  const ready = prepareReportHtml(reportData, false);
+  const ready = await prepareReportHtml(reportData, false);
   const blob = new Blob([ready.html], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
   
@@ -1728,7 +1991,8 @@ export async function generateAndSavePDFReportWithProgress(
   orderId: string, 
   reportData: ReportData,
   onProgress?: (stage: string, progress?: number) => void,
-  isDraft = false
+  isDraft = false,
+  allTemplates?: LabTemplateRecord[]
 ): Promise<string | null> {
   console.log('generateAndSavePDFReportWithProgress called for order:', orderId, 'isDraft:', isDraft);
   
@@ -1827,7 +2091,7 @@ export async function generateAndSavePDFReportWithProgress(
     console.log(`Generating new ${reportType} PDF...`);
     onProgress?.(`Generating ${reportType} PDF with PDF.co...`, 25);
     
-    const preparedHtml = prepareReportHtml(reportData, isDraft);
+    const preparedHtml = await prepareReportHtml(reportData, isDraft, allTemplates);
   let pdfUrl: string | null = null;
   let pdfBlob: Blob | null = null;
 
@@ -2158,7 +2422,7 @@ export async function generateAndSavePDFReport(orderId: string, reportData: Repo
     }
 
     console.log('Generating new PDF...');
-    const preparedHtml = prepareReportHtml(reportData, isDraft);
+    const preparedHtml = await prepareReportHtml(reportData, isDraft);
   let pdfUrl: string | null = null;
   let pdfBlob: Blob | null = null;
 

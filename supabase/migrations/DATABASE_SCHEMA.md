@@ -1094,7 +1094,8 @@ CREATE TABLE public.workflow_results (
   committed_at timestamp with time zone,
   error text,
   detail text,
-  CONSTRAINT workflow_results_pkey PRIMARY KEY (id)
+  CONSTRAINT workflow_results_pkey PRIMARY KEY (id),
+  CONSTRAINT workflow_results_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id)
 );
 CREATE TABLE public.workflow_step_events (
   id uuid NOT NULL DEFAULT gen_random_uuid(),

@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Model } from 'survey-core'
 import { Survey } from 'survey-react-ui'
 import { submitWorkflowResults } from '../../utils/workflowAPI'
+import { supabase } from '../../utils/supabase'
+import { uploadFile, generateFilePath } from '../../utils/supabase'
 import 'survey-core/defaultV2.min.css'
 
 interface WorkflowRunnerProps {
@@ -9,6 +11,22 @@ interface WorkflowRunnerProps {
   onComplete?: (results: any) => void
   orderId?: string
   testGroupId?: string
+  patientId?: string
+  labId?: string
+  instanceId?: string
+  workflowVersionId?: string
+  workflowMapId?: string
+}
+
+interface WorkflowAttachmentRecord {
+  attachment_id: string
+  file_url: string | null
+  file_path: string
+  file_name: string
+  file_type: string
+  question_id: string
+  uploaded_at: string
+  metadata?: any
 }
 
 type WorkflowStatus = 'idle' | 'loading' | 'running' | 'completed' | 'error'
@@ -17,13 +35,19 @@ const WorkflowRunner: React.FC<WorkflowRunnerProps> = ({
   workflowDefinition,
   onComplete,
   orderId,
-  testGroupId
+  testGroupId,
+  patientId,
+  labId,
+  instanceId: providedInstanceId,
+  workflowVersionId,
+  workflowMapId
 }) => {
   const [survey, setSurvey] = useState<Model | null>(null)
   const [status, setStatus] = useState<WorkflowStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [instanceId] = useState(() => crypto.randomUUID())
+  const [instanceId] = useState(() => providedInstanceId || crypto.randomUUID())
+  const attachmentsRef = useRef<Record<string, WorkflowAttachmentRecord[]>>({})
 
   // Initialize Survey.js model when workflow definition changes
   useEffect(() => {
@@ -41,6 +65,15 @@ const WorkflowRunner: React.FC<WorkflowRunnerProps> = ({
         isPanelless: false
       })
 
+      // CRITICAL: Configure all file upload questions to NOT store base64
+      // This ensures files are uploaded to storage via onUploadFiles handler
+      surveyModel.getAllQuestions().forEach((question: any) => {
+        if (question.getType() === 'file') {
+          question.storeDataAsText = false // Force upload handler usage
+          console.log(`Configured file question "${question.name}" to use upload handler (storeDataAsText=false)`)
+        }
+      })
+
       // Set up completion handler
       surveyModel.onComplete.add(handleComplete)
       
@@ -54,6 +87,131 @@ const WorkflowRunner: React.FC<WorkflowRunnerProps> = ({
       setStatus('error')
     }
   }, [workflowDefinition])
+
+  // Handle file uploads for workflow questions
+  useEffect(() => {
+    if (!survey || !instanceId) {
+      return
+    }
+
+    const handleUploadFiles = async (_: Model, options: any) => {
+      // Check required context
+      if (!labId || !orderId || !patientId) {
+        console.error('Missing required context for workflow file upload:', {
+          labId,
+          orderId,
+          patientId,
+          hasLabId: !!labId,
+          hasOrderId: !!orderId,
+          hasPatientId: !!patientId
+        })
+        
+        // Provide helpful error message to user
+        alert('Cannot upload files: Missing patient or order context. Please ensure the workflow is properly initialized with patient and order information.')
+        options.callback('error')
+        return
+      }
+
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        const uploadedBy = user?.id ?? null
+        const questionName = options.question?.name as string | undefined
+
+        console.log('Starting file upload for workflow:', {
+          questionName,
+          fileCount: options.files?.length || 0,
+          instanceId,
+          orderId,
+          patientId,
+          labId
+        })
+
+        const uploadedPayload = []
+        const attachmentRecords: WorkflowAttachmentRecord[] = []
+
+        for (const file of options.files ?? []) {
+          console.log('Uploading file:', file.name, 'Size:', file.size, 'Type:', file.type)
+          
+          const filePath = generateFilePath(file.name, patientId, labId, 'workflow')
+          const { path, publicUrl } = await uploadFile(file, filePath, { upsert: false })
+
+          console.log('File uploaded to storage:', { path, publicUrl })
+
+          const { data: attachment, error: attachmentError } = await supabase
+            .from('attachments')
+            .insert({
+              related_table: 'order_workflow_instances',
+              related_id: instanceId,
+              order_id: orderId,
+              patient_id: patientId,
+              lab_id: labId,
+              uploaded_by: uploadedBy,
+              file_path: path,
+              file_url: publicUrl,
+              original_filename: file.name,
+              file_type: file.type,
+              file_size: file.size,
+              description: `Workflow upload for ${questionName ?? 'workflow'}`,
+              metadata: JSON.stringify({
+                question_id: questionName,
+                workflow_version_id: workflowVersionId,
+                workflow_map_id: workflowMapId,
+                test_group_id: testGroupId,
+              }),
+            })
+            .select()
+            .single()
+
+          if (attachmentError || !attachment) {
+            console.error('Failed to create attachment record:', attachmentError)
+            throw attachmentError ?? new Error('Failed to save attachment record')
+          }
+
+          console.log('Attachment record created:', attachment.id)
+
+          const attachmentRecord: WorkflowAttachmentRecord = {
+            attachment_id: attachment.id,
+            file_url: attachment.file_url,
+            file_path: attachment.file_path,
+            file_name: attachment.original_filename,
+            file_type: attachment.file_type,
+            question_id: questionName ?? 'workflow_upload',
+            uploaded_at: attachment.created_at ?? new Date().toISOString(),
+            metadata: attachment.metadata ?? undefined,
+          }
+
+          attachmentRecords.push(attachmentRecord)
+
+          // Survey.js expects this specific format in the callback
+          uploadedPayload.push({
+            file: file,
+            content: publicUrl,
+            name: file.name,
+            type: file.type,
+          })
+        }
+
+        // Store attachment records for later reference
+        if (questionName) {
+          const existing = attachmentsRef.current[questionName] ?? []
+          attachmentsRef.current[questionName] = [...existing, ...attachmentRecords]
+        }
+
+        console.log('File upload completed successfully:', uploadedPayload.length, 'files')
+        options.callback('success', uploadedPayload)
+      } catch (uploadError) {
+        console.error('Workflow file upload failed:', uploadError)
+        alert(`File upload failed: ${uploadError instanceof Error ? uploadError.message : 'Unknown error'}`)
+        options.callback('error')
+      }
+    }
+
+    survey.onUploadFiles.add(handleUploadFiles)
+
+    return () => {
+      survey.onUploadFiles.remove(handleUploadFiles)
+    }
+  }, [survey, instanceId, labId, orderId, patientId, workflowVersionId, workflowMapId, testGroupId])
 
   // Handle workflow completion
   const handleComplete = useCallback(async (sender: any) => {

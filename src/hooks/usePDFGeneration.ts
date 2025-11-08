@@ -63,12 +63,14 @@ export const usePDFGeneration = () => {
       }));
 
       let selectedTemplate: LabTemplateRecord | null = null;
+      let allTemplates: LabTemplateRecord[] = [];
       try {
         const { data: templates, error: templateError } = await database.labTemplates.list();
         if (templateError) {
           console.warn('Unable to load lab templates for PDF generation:', templateError);
         } else if (Array.isArray(templates) && templates.length > 0) {
-          selectedTemplate = selectTemplateForContext(templates as LabTemplateRecord[], context);
+          allTemplates = templates as LabTemplateRecord[];
+          selectedTemplate = selectTemplateForContext(allTemplates, context);
         }
       } catch (templateFetchError) {
         console.warn('Unexpected template fetch failure:', templateFetchError);
@@ -93,7 +95,8 @@ export const usePDFGeneration = () => {
             progress: progress ?? prev.progress,
           }));
         },
-        isDraft
+        isDraft,
+        allTemplates  // Pass all templates for multi-test-group support
       );
 
       if (pdfUrl) {

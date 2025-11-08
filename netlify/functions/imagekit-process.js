@@ -56,6 +56,98 @@ const buildVariantUrls = (baseUrl, assetType, tableName) => {
   };
 };
 
+const DEFAULT_TABLE_CONFIG = {
+  statusColumn: 'status',
+  statusMap: { processing: 'processing', ready: 'ready', error: 'error' },
+  updatedAtColumn: 'updated_at',
+  processedAtColumn: 'processed_at',
+  errorColumn: 'last_error',
+  imagekitFileIdColumn: 'imagekit_file_id',
+  imagekitUrlColumn: 'imagekit_url',
+  variantsColumn: 'variants',
+  processedUrlColumn: null,
+  fileUrlColumn: 'file_url',
+  overrideFileUrl: true,
+  sizeColumn: 'file_size',
+  dimensionsColumn: 'dimensions',
+};
+
+const TABLE_CONFIG = {
+  attachments: {
+    statusColumn: 'processing_status',
+    statusMap: { processing: 'processing', ready: 'processed', error: 'failed' },
+    updatedAtColumn: null,
+    processedAtColumn: 'image_processed_at',
+    errorColumn: 'image_processing_error',
+    imagekitFileIdColumn: 'imagekit_file_id',
+    imagekitUrlColumn: 'imagekit_url',
+    variantsColumn: 'variants',
+    processedUrlColumn: 'processed_url',
+    fileUrlColumn: null,
+    overrideFileUrl: false,
+    sizeColumn: null,
+    dimensionsColumn: null,
+  },
+  lab_branding_assets: {
+    ...DEFAULT_TABLE_CONFIG,
+  },
+  lab_user_signatures: {
+    ...DEFAULT_TABLE_CONFIG,
+  },
+};
+
+const getTableConfig = (tableName) => TABLE_CONFIG[tableName] || DEFAULT_TABLE_CONFIG;
+
+const buildSuccessUpdateFields = (config, uploadResult, baseUrl, variants, processedAt) => {
+  const updateFields = {};
+
+  if (config.imagekitFileIdColumn) {
+    updateFields[config.imagekitFileIdColumn] = uploadResult.fileId;
+  }
+
+  if (config.imagekitUrlColumn) {
+    updateFields[config.imagekitUrlColumn] = baseUrl;
+  }
+
+  if (config.variantsColumn) {
+    updateFields[config.variantsColumn] = variants;
+  }
+
+  if (config.processedAtColumn) {
+    updateFields[config.processedAtColumn] = processedAt;
+  }
+
+  if (config.processedUrlColumn) {
+    updateFields[config.processedUrlColumn] = baseUrl;
+  }
+
+  if (config.overrideFileUrl && config.fileUrlColumn) {
+    updateFields[config.fileUrlColumn] = baseUrl;
+  }
+
+  if (config.sizeColumn && typeof uploadResult.size === 'number') {
+    updateFields[config.sizeColumn] = uploadResult.size;
+  }
+
+  if (config.dimensionsColumn && uploadResult.width && uploadResult.height) {
+    updateFields[config.dimensionsColumn] = { width: uploadResult.width, height: uploadResult.height };
+  }
+
+  if (config.errorColumn) {
+    updateFields[config.errorColumn] = null;
+  }
+
+  return updateFields;
+};
+
+const buildErrorUpdateFields = (config, message) => {
+  if (!config.errorColumn) {
+    return {};
+  }
+
+  return { [config.errorColumn]: message };
+};
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return buildErrorResponse(405, 'Method not allowed');
@@ -90,9 +182,20 @@ exports.handler = async (event) => {
   }
 
   const supabase = getSupabaseClient();
+  const tableConfig = getTableConfig(tableName);
 
   const updateStatus = async (status, extra = {}) => {
-    const updatePayload = { status, updated_at: new Date().toISOString(), ...extra };
+    const updatePayload = { ...extra };
+    const mappedStatus = (tableConfig.statusMap && tableConfig.statusMap[status]) || status;
+
+    if (tableConfig.statusColumn) {
+      updatePayload[tableConfig.statusColumn] = mappedStatus;
+    }
+
+    if (tableConfig.updatedAtColumn) {
+      updatePayload[tableConfig.updatedAtColumn] = new Date().toISOString();
+    }
+
     const { error } = await supabase.from(tableName).update(updatePayload).eq('id', assetId);
     if (error) {
       console.error('Failed to update asset status', error);
@@ -105,7 +208,7 @@ exports.handler = async (event) => {
     const { data: downloadData, error: downloadError } = await supabase.storage.from(storageBucket).download(storagePath);
     if (downloadError) {
       console.error('Failed to download original from Supabase storage', downloadError);
-      await updateStatus('error', { last_error: 'Unable to fetch original file from storage' });
+      await updateStatus('error', buildErrorUpdateFields(tableConfig, 'Unable to fetch original file from storage'));
       return buildErrorResponse(500, 'Failed to fetch original file');
     }
 
@@ -137,24 +240,15 @@ exports.handler = async (event) => {
     if (!response.ok) {
       const errorText = await response.text();
       console.error('ImageKit upload failed', errorText);
-      await updateStatus('error', { last_error: `ImageKit upload failed: ${errorText}` });
+      await updateStatus('error', buildErrorUpdateFields(tableConfig, `ImageKit upload failed: ${errorText}`));
       return buildErrorResponse(502, 'ImageKit upload failed');
     }
 
-  const uploadResult = await response.json();
-  const baseUrl = uploadResult.url || `${IMAGEKIT_ENDPOINT.replace(/\/$/, '')}/${uploadResult.filePath}`;
-  const variants = buildVariantUrls(baseUrl, assetType, tableName);
-
-    const updateFields = {
-      imagekit_file_id: uploadResult.fileId,
-      imagekit_url: baseUrl,
-      variants,
-      processed_at: new Date().toISOString(),
-      file_url: baseUrl,
-      file_size: uploadResult.size || null,
-      dimensions: uploadResult.width && uploadResult.height ? { width: uploadResult.width, height: uploadResult.height } : null,
-      last_error: null,
-    };
+    const uploadResult = await response.json();
+    const baseUrl = uploadResult.url || `${IMAGEKIT_ENDPOINT.replace(/\/$/, '')}/${uploadResult.filePath}`;
+    const variants = buildVariantUrls(baseUrl, assetType, tableName);
+    const processedAt = new Date().toISOString();
+    const updateFields = buildSuccessUpdateFields(tableConfig, uploadResult, baseUrl, variants, processedAt);
 
     await updateStatus('ready', updateFields);
 
@@ -165,7 +259,7 @@ exports.handler = async (event) => {
     };
   } catch (err) {
     console.error('Unexpected image processing error', err);
-    await updateStatus('error', { last_error: err?.message || 'Unexpected error' });
+    await updateStatus('error', buildErrorUpdateFields(tableConfig, err?.message || 'Unexpected error'));
     return buildErrorResponse(500, 'Unexpected processing error');
   }
 };
