@@ -593,6 +593,22 @@ const Orders: React.FC = () => {
       
       console.log('Order created successfully:', order);
       
+      // Update any pending TRF attachments to link to this order
+      const PENDING_ORDER_UUID = '00000000-0000-0000-0000-000000000000';
+      const { error: updateError } = await supabase
+        .from('attachments')
+        .update({ related_id: order.id })
+        .eq('related_table', 'orders')
+        .eq('related_id', PENDING_ORDER_UUID)
+        .eq('description', 'Test Request Form for order creation');
+      
+      if (updateError) {
+        console.warn('Failed to update TRF attachment:', updateError);
+        // Non-critical error, continue with order creation
+      } else {
+        console.log('Updated TRF attachment to link to order:', order.id);
+      }
+      
       // Refresh the orders list
       await fetchOrders();
       

@@ -16,6 +16,7 @@ app.use(express.json({ limit: '50mb' }));
 // Browser instance cache
 let browserInstance: Browser | null = null;
 let lastUsed = Date.now();
+let activeRequests = 0; // Track active PDF generation requests
 const BROWSER_IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 
 interface PDFRequest {
@@ -50,10 +51,14 @@ interface PDFResponse {
 async function getBrowser(): Promise<Browser> {
   const now = Date.now();
   
-  // Close browser if idle for too long
-  if (browserInstance && now - lastUsed > BROWSER_IDLE_TIMEOUT) {
+  // Close browser if idle for too long AND no active requests
+  if (browserInstance && now - lastUsed > BROWSER_IDLE_TIMEOUT && activeRequests === 0) {
     console.log('♻️ Closing idle browser instance');
-    await browserInstance.close();
+    try {
+      await browserInstance.close();
+    } catch (err) {
+      console.warn('⚠️ Error closing browser:', err);
+    }
     browserInstance = null;
   }
 
@@ -61,9 +66,18 @@ async function getBrowser(): Promise<Browser> {
   if (!browserInstance) {
     const launchStart = Date.now();
     console.log('🚀 Launching new Puppeteer browser...');
+    console.log('📍 PUPPETEER_CACHE_DIR =', process.env.PUPPETEER_CACHE_DIR);
+    
+    try {
+      // Log executable path for debugging
+      const execPath = puppeteer.executablePath();
+      console.log('📍 Chrome executable path:', execPath);
+    } catch (err) {
+      console.warn('⚠️ Could not determine executablePath:', err);
+    }
     
     browserInstance = await puppeteer.launch({
-      headless: true,
+      headless: 'new', // Use new headless mode
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -148,10 +162,15 @@ app.post('/generate-pdf', async (req: Request, res: Response) => {
   const totalStart = Date.now();
   let page: Page | null = null;
 
+  // Increment active requests counter
+  activeRequests++;
+  console.log(`📊 Active requests: ${activeRequests}`);
+
   try {
     const { html, options = {} }: PDFRequest = req.body;
 
     if (!html) {
+      activeRequests--;
       return res.status(400).json({
         success: false,
         error: 'HTML content is required',
@@ -176,10 +195,10 @@ app.post('/generate-pdf', async (req: Request, res: Response) => {
       deviceScaleFactor: 2, // High quality rendering
     });
 
-    // Load HTML content
+    // Load HTML content with longer timeout for complex documents
     await page.setContent(html, {
       waitUntil: 'networkidle0',
-      timeout: 30000,
+      timeout: 60000, // Increased from 30s to 60s
     });
     const pageLoadTime = Date.now() - pageStart;
 
@@ -197,16 +216,27 @@ app.post('/generate-pdf', async (req: Request, res: Response) => {
       landscape: options.landscape || false,
       scale: options.scale || 1,
       preferCSSPageSize: false,
+      timeout: 60000, // Add timeout for PDF generation
     });
     const pdfGenTime = Date.now() - pdfStart;
 
-    // Close page
-    await page.close();
-    page = null;
+    // Close page safely
+    if (page) {
+      try {
+        await page.close();
+      } catch (closeErr) {
+        console.warn('⚠️ Error closing page (non-fatal):', closeErr);
+      }
+      page = null;
+    }
 
     const totalTime = Date.now() - totalStart;
 
     console.log(`✅ PDF generated in ${totalTime}ms (browser: ${browserTime}ms, load: ${pageLoadTime}ms, pdf: ${pdfGenTime}ms)`);
+
+    // Decrement active requests counter
+    activeRequests--;
+    console.log(`📊 Active requests: ${activeRequests}`);
 
     // Return PDF as base64
     const response: PDFResponse = {
@@ -224,12 +254,16 @@ app.post('/generate-pdf', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('❌ PDF generation failed:', error);
     
+    // Decrement active requests counter on error
+    activeRequests--;
+    console.log(`📊 Active requests after error: ${activeRequests}`);
+    
     // Cleanup page if still open
     if (page) {
       try {
         await page.close();
       } catch (e) {
-        console.error('Failed to close page:', e);
+        console.warn('⚠️ Failed to close page (non-fatal):', e);
       }
     }
 

@@ -64,6 +64,7 @@ const navigation = [
   
   // Advanced Tools
   { name: 'AI Tools', href: '/ai-tools', icon: Brain, category: 'tools' },
+  { name: 'AI Prompt Manager', href: '/ai-prompts', icon: Brain, category: 'tools' },
   { name: 'Template Studio', href: '/template-studio', icon: Palette, category: 'tools' },
   { name: 'Template Studio (CKE)', href: '/template-studio-cke', icon: Palette, category: 'tools' },
   { name: 'Branding & Signatures', href: '/settings/branding', icon: Image, category: 'tools' },

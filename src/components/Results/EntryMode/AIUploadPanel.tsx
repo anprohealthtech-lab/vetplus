@@ -289,7 +289,20 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
     try {
       setStep('ocr', 'running');
       pushLog('Invoking vision-ocr…');
-      const vision = await supabase.functions.invoke('vision-ocr', { body: { attachmentId } });
+      
+      // Determine test group ID for intelligent processing type selection
+      const effectiveTestGroupId = uploadScope === 'test' && selectedTestGroupId 
+        ? selectedTestGroupId 
+        : testGroup?.id;
+      
+      // Pass order and test context to vision-ocr for intelligent AI prompt selection
+      const vision = await supabase.functions.invoke('vision-ocr', { 
+        body: { 
+          attachmentId,
+          orderId: order.id,
+          testGroupId: effectiveTestGroupId,
+        } 
+      });
       if (vision.error) throw new Error(vision.error.message);
       setStep('ocr', 'ok', { sample: (vision.data?.fullText || '').slice(0, 64) + '…' });
 

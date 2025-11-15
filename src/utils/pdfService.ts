@@ -4,10 +4,45 @@ import nunjucks from 'nunjucks';
 import { reportBaselineCss } from '../styles/reportBaselineString';
 import { ensureReportRegions, extractReportRegions } from './reportTemplateRegions';
 
-// PDF.co API configuration
-const PDFCO_API_KEY = import.meta.env.VITE_PDFCO_API_KEY || 'landinquiryfirm@gmail.com_AEu7lrDUacQsWOHuJ757dQDYPrJz6XbsYQcX2HrSVXf1LX8cvBn94TPzmfpeVgrT';
-const PDFCO_API_URL = 'https://api.pdf.co/v1/pdf/convert/from/html';
-const PDFCO_JOB_STATUS_URL = 'https://api.pdf.co/v1/job/check';
+// PDF Provider Configuration
+import {
+  getPDFConfig,
+  shouldUsePuppeteer,
+  shouldFallbackToPDFCO,
+  logPDFEvent,
+  recordPerformanceMetrics,
+  type PerformanceMetrics
+} from './pdfProviderConfig';
+
+// Puppeteer PDF generation (preferred for speed)
+import {
+  generatePDFWithPuppeteer,
+  generatePDFStream,
+  analyzePDFComplexity,
+  warmupPuppeteer,
+  type PDFComplexityAnalysis,
+} from './pdfServicePuppeteer';
+
+// Export configuration utilities
+export {
+  getPDFConfig,
+  setPDFConfig,
+  resetPDFConfig,
+  getPerformanceStats
+} from './pdfProviderConfig';
+
+// Export Puppeteer utilities
+export { warmupPuppeteer, analyzePDFComplexity };
+
+// PDF.co API configuration (loaded from config)
+const getPDFCOConfig = () => {
+  const config = getPDFConfig();
+  return {
+    PDFCO_API_KEY: config.pdfcoApiKey,
+    PDFCO_API_URL: 'https://api.pdf.co/v1/pdf/convert/from/html',
+    PDFCO_JOB_STATUS_URL: 'https://api.pdf.co/v1/job/check'
+  };
+};
 
 const nunjucksEnv = nunjucks.configure({
   autoescape: true,
@@ -289,6 +324,7 @@ export interface ReportHtmlBundle {
   bodyHtml: string;
   headerHtml: string;
   footerHtml: string;
+  customCss?: string;
 }
 
 interface PreparedReportHtml {
@@ -362,6 +398,118 @@ const buildPdfBodyDocument = (bodyHtml: string, customCss: string): string => {
   ].join('');
 };
 
+/**
+ * Build print-optimized HTML document for physical letterhead printing
+ * - Wraps body in full HTML with baseline CSS
+ * - Adds print-specific class for styling
+ * - Removes backgrounds, watermarks, and digital header/footer
+ * - Adds top padding for pre-printed letterhead area
+ */
+const buildPrintBodyDocument = (bodyHtml: string, customCss: string): string => {
+  // Print-specific CSS overrides
+  const printCss = `
+    /* Print-optimized styles for physical letterhead */
+    .limsv2-report--print {
+      background: none !important;
+    }
+    
+    .limsv2-report--print .limsv2-report-body {
+      padding-top: 80px;  /* Space for pre-printed letterhead */
+      padding-bottom: 40px;
+      background: none !important;
+    }
+    
+    /* Hide all digital branding elements */
+    .limsv2-report--print img[data-role="watermark"],
+    .limsv2-report--print img[data-role="logo"],
+    .limsv2-report--print .lab-header-branding,
+    .limsv2-report--print .lab-footer-branding,
+    .limsv2-report--print .digital-only {
+      display: none !important;
+    }
+    
+    /* Remove all background colors and gradients */
+    .limsv2-report--print .test-group-section,
+    .limsv2-report--print .result-table,
+    .limsv2-report--print th,
+    .limsv2-report--print td {
+      background: none !important;
+      background-color: transparent !important;
+      background-image: none !important;
+    }
+    
+    /* Keep neutral text colors */
+    .limsv2-report--print {
+      color: #000 !important;
+    }
+    
+    .limsv2-report--print h1,
+    .limsv2-report--print h2,
+    .limsv2-report--print h3 {
+      color: #000 !important;
+    }
+    
+    /* Clean table formatting */
+    .limsv2-report--print table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+    
+    .limsv2-report--print th,
+    .limsv2-report--print td {
+      border: 1px solid #ccc;
+      padding: 6px 8px;
+      color: #000;
+    }
+    
+    /* Page breaks between test groups */
+    @media print {
+      .test-group-separator {
+        page-break-before: always;
+      }
+      
+      .test-group-section {
+        page-break-inside: avoid;
+      }
+    }
+    
+    /* Keep doctor signature visible */
+    .limsv2-report--print .doctor-signature {
+      display: block !important;
+    }
+    
+    /* Remove editor placeholders */
+    .limsv2-report--print h2:empty,
+    .limsv2-report--print p:empty {
+      display: none;
+    }
+  `;
+
+  const styles = [
+    `<style id="${BASELINE_STYLE_TAG_ID}">${reportBaselineCss}</style>`,
+    customCss ? `<style id="${CUSTOM_STYLE_TAG_ID}">${customCss}</style>` : '',
+    `<style id="print-overrides">${printCss}</style>`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return [
+    '<!DOCTYPE html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="utf-8" />',
+    '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+    styles,
+    '</head>',
+    '<body>',
+    '<div class="limsv2-report limsv2-report--print">',
+    `<main class="limsv2-report-body limsv2-report-body--print">${bodyHtml || '<p></p>'}</main>`,
+    '</div>',
+    '</body>',
+    '</html>',
+  ].join('');
+};
+
 export const buildReportHtmlBundle = (options: BuildReportHtmlOptions): ReportHtmlBundle => {
   const fragment = sanitizeHtmlFragment(options.html);
   const customCss = normalizeCustomCss(options.css);
@@ -378,6 +526,7 @@ export const buildReportHtmlBundle = (options: BuildReportHtmlOptions): ReportHt
     bodyHtml: buildPdfBodyDocument(regions.bodyHtml, customCss),
     headerHtml: regions.headerHtml,
     footerHtml: regions.footerHtml,
+    customCss,
   };
 };
 
@@ -404,6 +553,8 @@ interface PdfCoRequestOptions {
 }
 
 const pollPdfCoJob = async (jobId: string, maxAttempts = 60, intervalMs = 3000): Promise<string> => {
+  const { PDFCO_API_KEY, PDFCO_JOB_STATUS_URL } = getPDFCOConfig();
+  
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     await delay(intervalMs);
 
@@ -443,6 +594,8 @@ const sendHtmlToPdfCo = async (
   filename: string,
   options: PdfCoRequestOptions = {}
 ): Promise<string> => {
+  const { PDFCO_API_KEY, PDFCO_API_URL } = getPDFCOConfig();
+  
   if (!PDFCO_API_KEY) {
     throw new Error('PDF.co API key not configured');
   }
@@ -451,10 +604,29 @@ const sendHtmlToPdfCo = async (
   const mediaType = options.mediaType ?? 'print';
   const printBackground = options.printBackground ?? true;
   const scale = options.scale ?? 1.0;
+  const displayHeaderFooter = options.displayHeaderFooter ?? true;
 
   // ALWAYS include header/footer fields, even if empty
   const headerHtml = options.headerHtml ?? '';
   const footerHtml = options.footerHtml ?? '';
+  
+  // 📊 Log PDF.co request for debugging
+  console.log('📄 PDF.co generation request:');
+  console.log('  Filename:', filename);
+  console.log('  Media type:', mediaType);
+  console.log('  Display header/footer:', displayHeaderFooter);
+  console.log('  Print background:', printBackground);
+  console.log('  Margins:', margins);
+  console.log('  HTML length:', htmlContent.length);
+  console.log('  HTML preview:', htmlContent.substring(0, 500));
+  
+  // Extract test sections from HTML for debugging
+  const testSections = htmlContent.match(/data-test="([^"]+)"/g);
+  if (testSections) {
+    console.log('  Tests in HTML:', testSections.join(', '));
+  } else {
+    console.log('  No data-test attributes found in HTML');
+  }
   
   console.log('Raw header HTML (before JSON):', headerHtml);
   console.log('Raw footer HTML (before JSON):', footerHtml);
@@ -469,7 +641,7 @@ const sendHtmlToPdfCo = async (
     printBackground,
     scale,
     mediaType,
-    displayHeaderFooter: true,
+    displayHeaderFooter,
     header: headerHtml,
     footer: footerHtml,
   };
@@ -518,17 +690,41 @@ const sendPrintHtmlToPdfCo = async (
   bundle: ReportHtmlBundle,
   filename: string
 ): Promise<PrintPdfResult> => {
-  const url = await sendHtmlToPdfCo(bundle.bodyHtml, filename, {
+  // 📊 Log print HTML for debugging
+  console.log('📄 Print PDF generation:');
+  console.log('  Filename:', filename);
+  console.log('  Body HTML length:', bundle.bodyHtml.length);
+  console.log('  Body HTML preview:', bundle.bodyHtml.substring(0, 500));
+  
+  // Extract test sections from HTML for debugging
+  const testSections = bundle.bodyHtml.match(/data-test="([^"]+)"/g);
+  if (testSections) {
+    console.log('  Tests in print HTML:', testSections.join(', '));
+  } else {
+    console.log('  No data-test attributes found in print HTML');
+  }
+  
+  // Build full print-optimized HTML document (not fragment)
+  const customCss = bundle.customCss || '';
+  const printHtml = buildPrintBodyDocument(bundle.bodyHtml, customCss);
+  
+  console.log('  Full print HTML length:', printHtml.length);
+  console.log('  Print HTML has proper structure:', printHtml.includes('limsv2-report--print'));
+  
+  // Send full HTML document with print-optimized settings
+  const url = await sendHtmlToPdfCo(printHtml, filename, {
     headerHtml: '',
     footerHtml: '',
     mediaType: 'print',
-    printBackground: false,
+    printBackground: false,  // No backgrounds - using physical letterhead
+    displayHeaderFooter: false,  // No Chrome header/footer reservation
+    margins: '40px 20px 40px 20px',  // Safe print margins
   });
 
   return {
     url,
-    headerHtml: null,
-    footerHtml: null,
+    headerHtml: null,  // No header for print version
+    footerHtml: null,  // No footer for print version
   };
 };
 
@@ -1700,6 +1896,7 @@ const renderMultipleTestGroupTemplates = async (
     bundle: {
       ...baseBundle,
       previewHtml: mergedHtml,
+      bodyHtml: mergedBody,  // ✅ FIX: Use merged body content for print PDF
       testGroupCount: renderedSections.length,
       testGroupNames,
     },
@@ -2089,26 +2286,138 @@ export async function generateAndSavePDFReportWithProgress(
     }
 
     console.log(`Generating new ${reportType} PDF...`);
-    onProgress?.(`Generating ${reportType} PDF with PDF.co...`, 25);
     
     const preparedHtml = await prepareReportHtml(reportData, isDraft, allTemplates);
-  let pdfUrl: string | null = null;
-  let pdfBlob: Blob | null = null;
+    let pdfUrl: string | null = null;
+    let pdfBlob: Blob | null = null;
 
-    // Try PDF.co API - this is the only method we should use
+    // Analyze PDF complexity to determine generation method
+    const complexity = analyzePDFComplexity(preparedHtml.html);
+    const usePuppeteer = shouldUsePuppeteer() && complexity.recommendation === 'puppeteer';
+    
+    console.log('PDF Generation Strategy:', {
+      usePuppeteer,
+      complexity: complexity.complexity,
+      pageCount: complexity.pageCount,
+      recommendation: complexity.recommendation,
+      htmlSize: complexity.htmlSize,
+      provider: usePuppeteer ? 'puppeteer' : 'pdfco',
+      fallbackEnabled: shouldFallbackToPDFCO()
+    });
+
+    // Try Puppeteer first if enabled and recommended
+    if (usePuppeteer) {
+      logPDFEvent('start', 'puppeteer', { orderId, complexity: complexity.complexity });
+      const startTime = Date.now();
+      
+      try {
+        onProgress?.(`Generating ${reportType} PDF with Puppeteer...`, 25);
+        console.log('🎭 Using Puppeteer for PDF generation (5s timeout)');
+        
+        // ⏱️ 5-second timeout wrapper for Puppeteer
+        const puppeteerUrl = await Promise.race([
+          generatePDFWithPuppeteer({
+            orderId,
+            html: preparedHtml.html,
+            variant: reportType,
+            cacheKey: `${orderId}_${reportType}`
+          }),
+          new Promise<string>((_, reject) => 
+            setTimeout(() => reject(new Error('Puppeteer timeout: 5s exceeded')), 5000)
+          )
+        ]);
+        
+        if (puppeteerUrl) {
+          const totalTime = Date.now() - startTime;
+          console.log('✅ Puppeteer generation successful:', puppeteerUrl);
+          logPDFEvent('success', 'puppeteer', { orderId, time: totalTime });
+          recordPerformanceMetrics({
+            provider: 'puppeteer',
+            totalTime,
+            stages: { generation: totalTime }
+          });
+          
+          // Generate print version if final report (with delay to prevent browser conflicts)
+          if (!isDraft) {
+            onProgress?.('Preparing print-ready PDF...', 92);
+            
+            // Wait a moment for the previous page to fully close
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            try {
+              onProgress?.('Generating print-ready PDF...', 93);
+              
+              // ⏱️ 5-second timeout for print PDF too
+              const printUrl = await Promise.race([
+                generatePDFWithPuppeteer({
+                  orderId,
+                  html: preparedHtml.html,
+                  variant: 'print',
+                  cacheKey: `${orderId}_print`
+                }),
+                new Promise<string>((_, reject) => 
+                  setTimeout(() => reject(new Error('Print PDF timeout: 5s exceeded')), 5000)
+                )
+              ]);
+              
+              if (printUrl) {
+                console.log('✅ Print PDF generated successfully:', printUrl);
+                onProgress?.('Print PDF ready!', 96);
+              }
+            } catch (printError) {
+              console.error('⚠️ Print PDF generation failed (non-critical):', printError);
+              onProgress?.('Main PDF ready (print version skipped)', 96);
+              // Don't fail the whole operation if print version fails
+            }
+          }
+          
+          onProgress?.('PDF ready for download!', 100);
+          return puppeteerUrl;
+        } else {
+          throw new Error('Puppeteer generation returned no URL');
+        }
+      } catch (puppeteerError) {
+        const failTime = Date.now() - startTime;
+        console.warn(`⚠️ Puppeteer generation failed (${failTime}ms), falling back to PDF.co:`, puppeteerError);
+        logPDFEvent('error', 'puppeteer', { orderId, error: puppeteerError, time: failTime });
+        
+        // Check if fallback is enabled
+        if (!shouldFallbackToPDFCO()) {
+          throw puppeteerError; // Don't fallback, throw error
+        }
+        
+        logPDFEvent('fallback', 'pdfco', { orderId, reason: 'puppeteer_failed' });
+        onProgress?.('Retrying with PDF.co...', 30);
+        // Continue to PDF.co fallback
+      }
+    }
+
+    // PDF.co generation (fallback or primary)
+    logPDFEvent('start', 'pdfco', { orderId, isFallback: usePuppeteer });
+    const pdfcoStartTime = Date.now();
+
+    // PDF.co fallback (or primary method if Puppeteer disabled)
+    onProgress?.(`Generating ${reportType} PDF with PDF.co...`, 35);
     try {
-      pdfUrl = await generatePDFWithAPI(reportData, isDraft, preparedHtml);
-      console.log('✅ PDF.co URL received:', pdfUrl);
-      onProgress?.('PDF generated, downloading...', 40);
+      // ⚡ PARALLEL OPTIMIZATION: Generate both main and print PDFs at the same time
+      const mainPdfPromise = generatePDFWithAPI(reportData, isDraft, preparedHtml);
+      const printPdfPromise = !isDraft ? generatePrintPDFWithAPI(reportData, preparedHtml) : null;
+      
+      console.log('⚡ Generating main and print PDFs in parallel...');
+      
+      // Wait for main PDF first
+      pdfUrl = await mainPdfPromise;
+      console.log('✅ Main PDF.co URL received:', pdfUrl);
+      onProgress?.('PDF generated, downloading...', 50);
       
       if (pdfUrl && (pdfUrl.includes('pdf.co') || pdfUrl.includes('s3.us-west-2.amazonaws.com'))) {
-        console.log('📥 Downloading PDF from PDF.co/AWS...');
+        console.log('📥 Downloading main PDF from PDF.co/AWS...');
         
         // Use the robust download function for large files with progress
         try {
           pdfBlob = await downloadLargePDFWithProgress(pdfUrl, onProgress);
-          console.log('✅ PDF successfully downloaded:', pdfBlob.size, 'bytes');
-          onProgress?.('PDF downloaded successfully', 80);
+          console.log('✅ Main PDF successfully downloaded:', pdfBlob.size, 'bytes');
+          onProgress?.('PDF downloaded successfully', 70);
         } catch (downloadError) {
           console.warn('⚠️ Robust download failed, trying standard method:', downloadError);
           onProgress?.('Retrying download...', 50);
@@ -2133,16 +2442,69 @@ export async function generateAndSavePDFReportWithProgress(
             const arrayBuffer = await response.arrayBuffer();
             pdfBlob = new Blob([arrayBuffer], { type: 'application/pdf' });
             console.log('✅ Standard download completed, size:', pdfBlob.size);
-            onProgress?.('PDF downloaded successfully', 80);
+            onProgress?.('PDF downloaded successfully', 70);
           } else {
             throw new Error(`Standard download failed: ${response.status} ${response.statusText}`);
+          }
+        }
+        
+        // Record PDF.co success metrics
+        const pdfcoTotalTime = Date.now() - pdfcoStartTime;
+        logPDFEvent('success', 'pdfco', { orderId, time: pdfcoTotalTime, size: pdfBlob.size });
+        recordPerformanceMetrics({
+          provider: 'pdfco',
+          totalTime: pdfcoTotalTime,
+          stages: { generation: pdfcoTotalTime }
+        });
+        
+        // ⚡ PARALLEL: Now wait for print PDF (which was generating in parallel)
+        if (printPdfPromise) {
+          onProgress?.('Waiting for print PDF (generated in parallel)...', 75);
+          try {
+            const printResult = await printPdfPromise;
+            const printPdfUrl = printResult.url;
+            console.log('✅ Print PDF completed in parallel:', printPdfUrl);
+            onProgress?.('Downloading print PDF...', 80);
+
+            let printBlob: Blob | null = null;
+            try {
+              printBlob = await downloadLargePDFWithProgress(printPdfUrl, onProgress);
+            } catch (printDownloadError) {
+              console.warn('Print PDF robust download failed, attempting standard fetch...', printDownloadError);
+              const response = await fetch(printPdfUrl, {
+                method: 'GET',
+                headers: {
+                  'Accept': 'application/pdf, */*',
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                  'Cache-Control': 'no-cache',
+                },
+              });
+
+              if (response.ok) {
+                const buffer = await response.arrayBuffer();
+                printBlob = new Blob([buffer], { type: 'application/pdf' });
+              } else {
+                throw new Error(`Standard print PDF download failed: ${response.status} ${response.statusText}`);
+              }
+            }
+
+            if (printBlob) {
+              onProgress?.('Saving print PDF...', 85);
+              const printStorageUrl = await savePDFToStorage(printBlob, orderId, 'print');
+              await updateReportWithPrintPDFInfo(orderId, printStorageUrl);
+              console.log('✅ Print PDF saved and database updated');
+            }
+          } catch (printError) {
+            console.error('⚠️ Print PDF generation/save failed (non-critical):', printError);
           }
         }
       } else {
         throw new Error(`Invalid PDF URL received: ${pdfUrl}`);
       }
     } catch (error) {
+      const pdfcoFailTime = Date.now() - pdfcoStartTime;
       console.error('❌ PDF.co generation failed completely:', error);
+      logPDFEvent('error', 'pdfco', { orderId, error, time: pdfcoFailTime });
       onProgress?.('PDF generation failed', 0);
       throw new Error(`PDF generation failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -2155,55 +2517,14 @@ export async function generateAndSavePDFReportWithProgress(
     }
 
     // Save to Supabase storage (public bucket)
-    console.log('Saving PDF to storage...');
-    onProgress?.('Uploading to storage...', 85);
+    console.log('Saving main PDF to storage...');
+    onProgress?.('Uploading to storage...', 90);
     const storageUrl = await savePDFToStorage(pdfBlob, orderId, isDraft ? 'draft' : 'final');
     
     // Update database
     console.log('Updating database with PDF URL...');
-    onProgress?.('Updating database...', 90);
+    onProgress?.('Updating database...', 95);
     await updateReportWithPDFInfo(orderId, storageUrl, reportType);
-
-    if (!isDraft) {
-      onProgress?.('Generating print-ready PDF...', 92);
-      try {
-        const printResult = await generatePrintPDFWithAPI(reportData, preparedHtml);
-        const printPdfUrl = printResult.url;
-        onProgress?.('Downloading print PDF...', 94);
-
-        let printBlob: Blob | null = null;
-        try {
-          printBlob = await downloadLargePDFWithProgress(printPdfUrl, onProgress);
-        } catch (printDownloadError) {
-          console.warn('Print PDF robust download failed, attempting standard fetch...', printDownloadError);
-          const response = await fetch(printPdfUrl, {
-            method: 'GET',
-            headers: {
-              'Accept': 'application/pdf, */*',
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-              'Cache-Control': 'no-cache',
-            },
-          });
-
-          if (response.ok) {
-            const buffer = await response.arrayBuffer();
-            printBlob = new Blob([buffer], { type: 'application/pdf' });
-          } else {
-            throw new Error(`Standard print PDF download failed: ${response.status} ${response.statusText}`);
-          }
-        }
-
-        if (printBlob) {
-          onProgress?.('Saving print PDF...', 95);
-          const printStorageUrl = await savePDFToStorage(printBlob, orderId, 'print');
-          await updateReportWithPrintPDFInfo(orderId, printStorageUrl);
-          onProgress?.('Print PDF ready!', 96);
-        }
-      } catch (printError) {
-        console.error('Print PDF generation failed:', printError);
-        onProgress?.('Print PDF generation failed', 96);
-      }
-    }
 
     console.log('PDF generation completed successfully');
     onProgress?.('PDF ready for download!', 100);

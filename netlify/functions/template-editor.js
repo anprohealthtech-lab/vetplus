@@ -4,6 +4,14 @@ You receive:
 - currentCss: optional CSS string for the template.
 - instructions: user instructions describing desired modifications.
 Return JSON with { html: string, css?: string, summary?: string, warnings?: string[] }.
+
+CRITICAL SECURITY RULES (MUST FOLLOW):
+- NEVER include <script> tags in the HTML
+- NEVER include inline event handlers (onload, onerror, onclick, etc.)
+- NEVER include javascript: URLs
+- NEVER include <iframe> tags
+- ONLY return pure HTML markup with CSS styling
+
 Global layout contract (always enforce, even if the user does not mention it):
 1. Immediately after the header logo/banner include a two-column table covering Patient Name, Patient Age, Registration Date, Location/Collection Centre, Sample Collected At, Approved/Verified At, and Referring Doctor. Use existing placeholders when present (e.g. {{patientName}}, {{patientAge}}, {{registrationDate}}, {{locationName}}, {{sampleCollectedAt}}, {{approvedAt}}, {{referringDoctorName}}) and otherwise introduce clearly named placeholders in the same {{snakeCase}} pattern.
 2. Preserve or add a header image/logo container at the very top (use a <div> or <figure> with a placeholder <img> whose src is something like {{headerImageUrl}}).
@@ -13,7 +21,9 @@ Constraints:
 1. Modify only what the user asks for in addition to enforcing the contract above while keeping existing double-curly placeholders exactly intact.
 2. Avoid <script>, inline event handlers, javascript: URLs, or remote assets.
 3. Keep layout printable and accessible.
-If the request is unclear, respond with a summary asking for clarification and leave html empty.`;
+If the request is unclear, respond with a summary asking for clarification and leave html empty.
+
+IMPORTANT: Your response must be valid JSON. Do NOT include any <script> tags or JavaScript code in the html field.`;
 
 const GEMINI_MODEL = 'gemini-2.0-flash';
 
@@ -38,12 +48,25 @@ function sanitizeResponse(candidate) {
 
   const sanitized = { ...candidate };
 
-  if (sanitized.html && FORBIDDEN_PATTERNS.some((pattern) => pattern.test(sanitized.html))) {
-    sanitized.warnings = [
-      ...(Array.isArray(sanitized.warnings) ? sanitized.warnings : []),
-      'AI response contained potentially unsafe markup and was removed.',
-    ];
-    sanitized.html = undefined;
+  if (sanitized.html) {
+    // Check each forbidden pattern individually for better debugging
+    const foundPatterns = [];
+    for (const pattern of FORBIDDEN_PATTERNS) {
+      if (pattern.test(sanitized.html)) {
+        foundPatterns.push(pattern.toString());
+      }
+    }
+
+    if (foundPatterns.length > 0) {
+      console.warn('Found forbidden patterns in HTML:', foundPatterns);
+      console.warn('HTML preview (first 500 chars):', sanitized.html.substring(0, 500));
+      
+      sanitized.warnings = [
+        ...(Array.isArray(sanitized.warnings) ? sanitized.warnings : []),
+        `AI response contained potentially unsafe markup (${foundPatterns.join(', ')}) and was removed.`,
+      ];
+      sanitized.html = undefined;
+    }
   }
 
   return sanitized;
@@ -233,11 +256,24 @@ exports.handler = async (event) => {
     }
 
     if (!candidatePayload) {
+      console.error('Failed to extract candidate payload. Full response:', responseText.substring(0, 1000));
       return {
         statusCode: 502,
         headers: CORS_HEADERS,
         body: JSON.stringify({ error: 'Gemini response did not include a usable candidate payload.' }),
       };
+    }
+
+    console.log('Extracted candidate payload keys:', Object.keys(candidatePayload));
+    console.log('Has HTML:', !!candidatePayload.html);
+    console.log('Has CSS:', !!candidatePayload.css);
+    console.log('Summary:', candidatePayload.summary);
+    
+    // Log the full HTML response for debugging
+    if (candidatePayload.html) {
+      console.log('=== FULL HTML RESPONSE (first 2000 chars) ===');
+      console.log(candidatePayload.html.substring(0, 2000));
+      console.log('=== END HTML RESPONSE ===');
     }
 
     const result = sanitizeResponse(candidatePayload);

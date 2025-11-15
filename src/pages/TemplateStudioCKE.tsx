@@ -257,7 +257,7 @@ const buildPremiumEditorConfig = (
     GeneralHtmlSupport,
     Heading,
     HtmlComment,
-    HtmlEmbed,
+    // HtmlEmbed, // Removed - not allowed by license
     ImageBlock,
     ImageCaption,
     ImageInline,
@@ -316,7 +316,7 @@ const buildPremiumEditorConfig = (
     'ckbox',
     'insertTable',
     'codeBlock',
-    'htmlEmbed',
+    // 'htmlEmbed', // Removed - not allowed by license
     '|',
     'bulletedList',
     'numberedList',
@@ -339,7 +339,7 @@ const buildPremiumEditorConfig = (
     GeneralHtmlSupport,
     Heading,
     HtmlComment,
-    HtmlEmbed,
+    // HtmlEmbed, // Removed - not allowed by license
     ImageBlock,
     ImageCaption,
     ImageInline,
@@ -779,7 +779,7 @@ const TemplateStudioCKE: React.FC = () => {
       }
       editorInstanceRef.current = null;
     };
-  }, [ckeditorAiApiKey, ckeditorLicenseKey, ckeditorTokenUrl, isLoading]);
+  }, [ckeditorAiApiKey, ckeditorLicenseKey, ckeditorTokenUrl, isLoading, selectedTemplateId]);
 
   const fetchAvailablePlaceholderOptions = useCallback(async (): Promise<PlaceholderOption[]> => {
     const aggregated: PlaceholderOption[] = [...LAB_META_PLACEHOLDER_OPTIONS];
@@ -1093,11 +1093,13 @@ const TemplateStudioCKE: React.FC = () => {
         setLabId(currentLabId);
 
         const { data: templateRows, error: templatesError } = await database.labTemplates.list(currentLabId);
+        console.log('📋 Template fetch result:', { templateRows, templatesError, currentLabId });
         if (templatesError) {
           throw templatesError;
         }
 
         const normalizedTemplates = (templateRows || []) as LabTemplateRecord[];
+        console.log('📋 Normalized templates:', normalizedTemplates);
         let templateRecord = (normalizedTemplates.find((tpl) => tpl.is_default) || normalizedTemplates[0]) as
           | LabTemplateRecord
           | undefined;
@@ -1311,26 +1313,35 @@ const TemplateStudioCKE: React.FC = () => {
 
   const handleTemplateSelect = useCallback(
     (templateId: string) => {
+      console.log('🔄 Template select triggered:', templateId);
       const template = templates.find((tpl) => tpl.id === templateId);
+      console.log('📄 Found template:', template?.template_name);
       if (!template) {
+        console.warn('❌ Template not found for ID:', templateId);
         return;
       }
 
+      // Get the HTML content
+      const htmlContent = template.gjs_html || '';
+      console.log('💾 Loading HTML content (length):', htmlContent.length);
+      
+      // Update all state - React will remount editor due to key change
       setSelectedTemplateId(templateId);
       setTemplateMeta(template);
-      setHtmlContent(template.gjs_html || '');
+      setHtmlContent(htmlContent);
       setCssContent(template.gjs_css || '');
-      const instance = editorInstanceRef.current || ckeditorInstance;
-      if (instance?.setData) {
-        instance.setData(template.gjs_html || '');
-      }
+      htmlRef.current = htmlContent;
+      cssRef.current = template.gjs_css || '';
+      
       setLastSavedAt(template?.updated_at ? new Date(template.updated_at) : null);
       setSaveMessage(null);
       setSaveError(null);
       setAuditSuccessMessage(null);
       setAuditRevertSnapshot(null);
+      
+      console.log('✅ Template state updated, editor will remount');
     },
-    [ckeditorInstance, templates]
+    [templates, setHtmlContent, setCssContent]
   );
 
   const handleCreateTemplate = useCallback(async () => {
@@ -2073,7 +2084,7 @@ const TemplateStudioCKE: React.FC = () => {
                 </div>
               </div>
             ) : null}
-            <div ref={editorContainerRef} className="min-h-[560px]" />
+            <div key={selectedTemplateId || 'new-template'} ref={editorContainerRef} className="min-h-[560px]" />
           </div>
 
           <div className="mt-6">

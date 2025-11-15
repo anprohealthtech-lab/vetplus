@@ -2428,10 +2428,40 @@ export const database = {
         return { data: null, error: new Error('No lab_id found for current user') };
       }
       
-      // First create the invoice with lab_id
+      // Ensure location_id is populated
+      let location_id = invoiceDetails.location_id;
+      if (!location_id) {
+        // Try to get from order if order_id is provided
+        if (invoiceDetails.order_id) {
+          const { data: order } = await supabase
+            .from('orders')
+            .select('location_id')
+            .eq('id', invoiceDetails.order_id)
+            .single();
+          if (order?.location_id) {
+            location_id = order.location_id;
+          }
+        }
+        // If still no location, get user's default location
+        if (!location_id) {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user) {
+            const { data: userData } = await supabase
+              .from('users')
+              .select('location_id')
+              .eq('id', user.id)
+              .single();
+            if (userData?.location_id) {
+              location_id = userData.location_id;
+            }
+          }
+        }
+      }
+      
+      // First create the invoice with lab_id and location_id
       const { data: invoice, error } = await supabase
         .from('invoices')
-        .insert([{ ...invoiceDetails, lab_id }])
+        .insert([{ ...invoiceDetails, lab_id, location_id }])
         .select()
         .single();
 
@@ -2675,12 +2705,132 @@ export const database = {
         paymentData.lab_id = lab_id;
       }
       
+      // Get current user info for received_by
+      if (!paymentData.received_by) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          paymentData.received_by = user.id;
+        }
+      }
+      
+      // Get location_id from invoice if not provided
+      if (!paymentData.location_id && paymentData.invoice_id) {
+        const { data: invoice } = await supabase
+          .from('invoices')
+          .select('location_id, order_id')
+          .eq('id', paymentData.invoice_id)
+          .single();
+        
+        if (invoice?.location_id) {
+          paymentData.location_id = invoice.location_id;
+        } else if (invoice?.order_id) {
+          // If invoice has no location, try to get from order
+          const { data: order } = await supabase
+            .from('orders')
+            .select('location_id')
+            .eq('id', invoice.order_id)
+            .single();
+          if (order?.location_id) {
+            paymentData.location_id = order.location_id;
+          }
+        }
+        
+        // If still no location, get user's default location
+        if (!paymentData.location_id) {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user) {
+            const { data: userData } = await supabase
+              .from('users')
+              .select('location_id')
+              .eq('id', user.id)
+              .single();
+            if (userData?.location_id) {
+              paymentData.location_id = userData.location_id;
+            }
+          }
+        }
+      }
+      
       const { data, error } = await supabase
         .from('payments')
         .insert([paymentData])
         .select()
         .single();
-      return { data, error };
+      
+      if (error) {
+        console.error('Error creating payment:', error);
+        return { data: null, error };
+      }
+      
+      // Update invoice status after successful payment
+      if (data && paymentData.invoice_id) {
+        try {
+          console.log('Updating invoice status for invoice:', paymentData.invoice_id);
+          
+          // Get total payments for this invoice
+          const { data: payments, error: paymentsError } = await supabase
+            .from('payments')
+            .select('amount')
+            .eq('invoice_id', paymentData.invoice_id);
+
+          if (paymentsError) {
+            console.error('Error fetching payments:', paymentsError);
+            return { data, error: null }; // Return payment but log error
+          }
+
+          // Get invoice total
+          const { data: invoice, error: invoiceError } = await supabase
+            .from('invoices')
+            .select('total')
+            .eq('id', paymentData.invoice_id)
+            .single();
+
+          if (invoiceError) {
+            console.error('Error fetching invoice:', invoiceError);
+            return { data, error: null }; // Return payment but log error
+          }
+
+          if (invoice && payments) {
+            const totalPaid = payments.reduce((sum, p) => sum + parseFloat(p.amount || '0'), 0);
+            const invoiceTotal = parseFloat(invoice.total || '0');
+
+            let newStatus = 'Unpaid';
+            if (totalPaid >= invoiceTotal) {
+              newStatus = 'Paid';
+            } else if (totalPaid > 0) {
+              newStatus = 'Partial';
+            }
+
+            console.log('Invoice status update:', { 
+              invoiceId: paymentData.invoice_id, 
+              totalPaid, 
+              invoiceTotal, 
+              newStatus 
+            });
+
+            // Update invoice status
+            const { error: updateError } = await supabase
+              .from('invoices')
+              .update({ 
+                status: newStatus,
+                payment_method: paymentData.payment_method,
+                payment_date: paymentData.payment_date
+              })
+              .eq('id', paymentData.invoice_id);
+
+            if (updateError) {
+              console.error('Error updating invoice status:', updateError);
+            } else {
+              console.log('Invoice status updated successfully to:', newStatus);
+            }
+          }
+        } catch (updateErr) {
+          console.error('Exception updating invoice status:', updateErr);
+          // Don't fail the whole operation, payment was successful
+        }
+      }
+      
+      return { data, error: null };
     },
     
     getPaymentSummary: async (startDate?: string, endDate?: string, method?: string) => {
@@ -2701,6 +2851,19 @@ export const database = {
       }
       
       const { data, error } = await query.order('payment_date', { ascending: false });
+      return { data, error };
+    },
+    
+    // For Cash Reconciliation (cash-only, date + location)
+    getByDateRange: async (fromDate: string, toDate: string, locationId: string) => {
+      const { data, error } = await supabase
+        .from('payments')
+        .select('*, invoices(patient_name)')
+        .eq('payment_method', 'cash')
+        .eq('location_id', locationId)
+        .gte('payment_date', fromDate)
+        .lte('payment_date', toDate)
+        .order('created_at');
       return { data, error };
     }
   },
@@ -5180,6 +5343,9 @@ const masterDataAPI = {
       if (error) return { data: null, error };
       if (data) return { data, error: null };
 
+      // Get current user ID for created_by
+      const { data: { user } } = await supabase.auth.getUser();
+      
       const { data: created, error: insertErr } = await supabase
         .from('cash_register')
         .insert({
@@ -5189,6 +5355,7 @@ const masterDataAPI = {
           shift,
           opening_balance: 0,
           system_amount: 0,
+          created_by: user?.id || null,
         })
         .select('*')
         .single();
@@ -5198,16 +5365,34 @@ const masterDataAPI = {
     update: async (id: string, patch: Partial<{ system_amount: number }>) =>
       supabase.from('cash_register').update(patch).eq('id', id),
 
-    reconcile: async (id: string, actualAmount: number, notes?: string) =>
-      supabase
+    reconcile: async (id: string, actualAmount: number, notes?: string) => {
+      // Get current user ID for reconciled_by
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      // Get current register data to calculate closing_balance
+      const { data: register } = await supabase
+        .from('cash_register')
+        .select('opening_balance, system_amount')
+        .eq('id', id)
+        .single();
+      
+      const closingBalance = register 
+        ? parseFloat(register.opening_balance) + parseFloat(register.system_amount)
+        : actualAmount;
+      
+      return supabase
         .from('cash_register')
         .update({
           actual_amount: actualAmount,
+          closing_balance: closingBalance,
+          variance: actualAmount - closingBalance,
           reconciled: true,
-          notes: notes || null,
+          reconciled_by: user?.id || null,
           reconciled_at: new Date().toISOString(),
+          notes: notes || null,
         })
-        .eq('id', id)
+        .eq('id', id);
+    }
   },
 
   // Credit Transactions API
@@ -5331,45 +5516,8 @@ const masterDataAPI = {
         .order('created_at', { ascending: false }),
   },
 
-  // --- NEW Phase 4: Payments (used by PaymentCapture & CashReconciliation) ---
-  payments: {
-    create: async (payload: {
-      invoice_id: string;
-      amount: number;
-      payment_method: 'cash' | 'card' | 'upi' | 'bank' | 'credit_adjustment';
-      payment_reference?: string | null;
-      payment_date: string; // YYYY-MM-DD
-      location_id?: string | null;
-      account_id?: string | null;
-      notes?: string | null;
-    }) => supabase.from('payments').insert(payload).single(),
-
-    getByInvoice: async (invoiceId: string) =>
-      supabase.from('payments').select('*').eq('invoice_id', invoiceId).order('created_at'),
-
-    getByInvoiceId: async (invoiceId: string) => {
-      const { data, error } = await supabase
-        .from('payments')
-        .select('*')
-        .eq('invoice_id', invoiceId)
-        .order('payment_date', { ascending: false });
-      return { data, error };
-    },
-
-    // For Cash Reconciliation (cash-only, date + location)
-    getByDateRange: async (fromDate: string, toDate: string, locationId: string) =>
-      supabase
-        .from('payments')
-        .select('*, invoices(patient_name)')
-        .eq('payment_method', 'cash')
-        .eq('location_id', locationId)
-        .gte('payment_date', fromDate)
-        .lte('payment_date', toDate)
-        .order('created_at'),
-  },
-
-  // --- NEW Phase 4: Cash Register helpers used by CashReconciliation ---
-  // (Merged into main cashRegister object above)
+  // --- Phase 4: Payments - USING ENHANCED VERSION FROM LINES 2688-2850 ---
+  // Legacy direct insert removed - now using enhanced version with auto-population
 };
 
 // Branding & Signature System API

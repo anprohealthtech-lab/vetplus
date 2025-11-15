@@ -1,6 +1,6 @@
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-attachment-id, x-order-id, x-batch-id, x-multi-image',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-attachment-id, x-order-id, x-batch-id, x-multi-image, x-test-group-id',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
 }
 
@@ -57,6 +57,19 @@ Deno.serve(async (req) => {
       orderId?: string;
       testGroupId?: string;
     };
+    
+    console.log('\n📨 Gemini NLP Request Received:');
+    console.log(`  - AI Processing Type: ${aiProcessingType || 'not provided'}`);
+    console.log(`  - Document Type: ${documentType || 'not provided'}`);
+    console.log(`  - Test Type: ${testType || 'not provided'}`);
+    console.log(`  - Has rawText: ${!!rawText} (${rawText?.length || 0} chars)`);
+    console.log(`  - Has base64Image: ${!!base64Image}`);
+    console.log(`  - Has originalBase64Image: ${!!originalBase64Image}`);
+    console.log(`  - Has visionResults: ${!!visionResults}`);
+    console.log(`  - Has aiPromptOverride: ${!!aiPromptOverride} (${aiPromptOverride?.length || 0} chars)`);
+    console.log(`  - Order ID: ${bodyOrderId || 'not provided'}`);
+    console.log(`  - Test Group ID: ${testGroupId || 'not provided'}`);
+    console.log(`  - Analytes to extract: ${analytesToExtract?.length || 0}`);
 
     const focusAnalyteNames = deriveAnalyteFocusList(analyteCatalog, analytesToExtract);
     const extractionTargets = Array.isArray(analytesToExtract)
@@ -66,7 +79,7 @@ Deno.serve(async (req) => {
     let prompt = '';
     let geminiResponse = '';
 
-    console.log(`Starting Gemini NLP processing for ${aiProcessingType || documentType || testType || 'unknown'} type`);
+    console.log(`\n🤖 Starting Gemini NLP processing for ${aiProcessingType || documentType || testType || 'unknown'} type`);
 
     // Check if we need to use Gemini Vision fallback for OCR
     const shouldUseFallback = documentType && 
@@ -79,7 +92,9 @@ Deno.serve(async (req) => {
       geminiResponse = await callGemini(prompt, geminiApiKey, originalBase64Image);
     } else if (aiPromptOverride && aiPromptOverride.trim().length > 0) {
       console.log('Using custom AI prompt override');
-      prompt = applyAnalyteFocus(aiPromptOverride, focusAnalyteNames, extractionTargets);
+      // Enforce JSON-only response for custom prompts with analyte name guidance
+      const enforcedPrompt = enforceJsonResponse(aiPromptOverride, extractionTargets);
+      prompt = applyAnalyteFocus(enforcedPrompt, focusAnalyteNames, extractionTargets);
       geminiResponse = await callGemini(prompt, geminiApiKey, originalBase64Image);
     } else if (aiProcessingType) {
       // Use aiProcessingType for modern configuration
@@ -392,15 +407,17 @@ Deno.serve(async (req) => {
       return new Response(
         JSON.stringify({ 
           rawText: cleanedResponse,
+          extractedParameters: [], // Prevent .map() errors in frontend
           originalResponse: geminiResponse,
           metadata: {
             documentType: documentType || testType || aiProcessingType,
             aiProcessingType: aiProcessingType || null,
             customPromptUsed: !!aiPromptOverride,
             processingMethod: 'Supabase Edge Functions + Gemini',
-            processingTimestamp: new Date().toISOString()
+            processingTimestamp: new Date().toISOString(),
+            parseError: true
           },
-          message: 'Gemini response could not be parsed as JSON.' 
+          message: 'Gemini response could not be parsed as JSON. Check if custom prompt properly instructs Gemini to return JSON only.' 
         }),
         { 
           headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
@@ -468,6 +485,41 @@ const PROMPT_TEMPLATES = {
     form: "Extract patient details and requested tests from form"
   }
 };
+
+/**
+ * Enforce JSON-only response for custom prompts
+ */
+function enforceJsonResponse(customPrompt: string, analyteNames: string[] = []): string {
+  // Add strong JSON-only instructions
+  let jsonEnforcement = `
+CRITICAL INSTRUCTIONS:
+1. You MUST respond with ONLY a valid JSON object
+2. Do NOT include any explanatory text before or after the JSON
+3. Do NOT use markdown code blocks like \`\`\`json
+4. Start your response directly with { and end with }
+5. Ensure all JSON is properly formatted and parseable
+
+`;
+
+  // If analyte names are provided, instruct Gemini to use them as keys
+  if (analyteNames.length > 0) {
+    jsonEnforcement += `
+PARAMETER NAMING REQUIREMENT:
+Use these EXACT parameter names as keys in your JSON response:
+${analyteNames.map((name, idx) => `${idx + 1}. "${name}"`).join('\n')}
+
+Your JSON should have this structure:
+{
+  "${analyteNames[0]}": "extracted value",
+  "${analyteNames[1]}": "extracted value",
+  ...
+}
+
+`;
+  }
+  
+  return jsonEnforcement + customPrompt + '\n\nRemember: Return ONLY the JSON object with the exact parameter names specified above.';
+}
 
 /**
  * Generate optimized prompts
@@ -642,8 +694,44 @@ async function callGemini(prompt: string, geminiApiKey: string, imageData?: stri
 /**
  * Match extracted parameters to database analytes
  */
-async function matchParametersToAnalytes(extractedParameters: any[]): Promise<any[]> {
+async function matchParametersToAnalytes(extractedParameters: any): Promise<any[]> {
   try {
+    // Handle non-array inputs (e.g., custom JSON objects from vision_color)
+    if (!Array.isArray(extractedParameters)) {
+      console.log('extractedParameters is not an array, converting to parameter format');
+      
+      // Convert flat object directly to parameter array
+      // e.g., { "ABO Blood Group": "A", "Rh Blood Group": "Positive" } 
+      // becomes [{ parameter: "ABO Blood Group", value: "A", ... }, ...]
+      const parametersArray = [];
+      
+      for (const [paramName, paramValue] of Object.entries(extractedParameters)) {
+        // Skip non-data fields
+        if (['testType', 'testResult', 'confidenceLevel', 'interpretation', 'valid', 'controlLine'].includes(paramName)) {
+          continue;
+        }
+        
+        parametersArray.push({
+          parameter: paramName,
+          value: typeof paramValue === 'object' ? JSON.stringify(paramValue) : String(paramValue),
+          unit: '',
+          reference_range: '',
+          flag: 'Normal',
+          matched: false,
+          confidence: 0.95
+        });
+      }
+      
+      extractedParameters = parametersArray;
+      console.log(`Converted object to ${parametersArray.length} parameters`);
+    }
+
+    // Handle empty array
+    if (extractedParameters.length === 0) {
+      console.log('extractedParameters is empty array');
+      return [];
+    }
+
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
     

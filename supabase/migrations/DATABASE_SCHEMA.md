@@ -188,6 +188,24 @@ CREATE TABLE public.analytes (
   reference_range_female text,
   CONSTRAINT analytes_pkey PRIMARY KEY (id)
 );
+CREATE TABLE public.attachment_batches (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  order_id uuid,
+  patient_id uuid,
+  upload_type text NOT NULL CHECK (upload_type = ANY (ARRAY['order'::text, 'test'::text, 'patient'::text])),
+  total_files integer NOT NULL,
+  upload_context jsonb DEFAULT '{}'::jsonb,
+  uploaded_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  lab_id uuid NOT NULL,
+  batch_status text DEFAULT 'completed'::text CHECK (batch_status = ANY (ARRAY['uploading'::text, 'completed'::text, 'failed'::text])),
+  batch_description text,
+  CONSTRAINT attachment_batches_pkey PRIMARY KEY (id),
+  CONSTRAINT attachment_batches_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT attachment_batches_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
+  CONSTRAINT attachment_batches_uploaded_by_fkey FOREIGN KEY (uploaded_by) REFERENCES public.users(id),
+  CONSTRAINT attachment_batches_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
 CREATE TABLE public.attachments (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   patient_id uuid,
@@ -206,7 +224,7 @@ CREATE TABLE public.attachments (
   upload_timestamp timestamp with time zone DEFAULT now(),
   ai_processed boolean DEFAULT false,
   ai_confidence numeric,
-  processing_status text CHECK (processing_status = ANY (ARRAY['pending'::text, 'processed'::text, 'failed'::text])),
+  processing_status text DEFAULT 'pending'::text CHECK (processing_status = ANY (ARRAY['pending'::text, 'processing'::text, 'processed'::text, 'failed'::text])),
   ai_processed_at timestamp without time zone,
   ai_processing_type text,
   ai_metadata jsonb,
@@ -215,6 +233,17 @@ CREATE TABLE public.attachments (
   order_test_id uuid,
   file_name text,
   metadata text,
+  batch_id uuid,
+  batch_sequence integer,
+  batch_total integer,
+  image_label text,
+  batch_metadata jsonb DEFAULT '{}'::jsonb,
+  imagekit_url text,
+  imagekit_file_id text,
+  processed_url text,
+  variants jsonb DEFAULT '{}'::jsonb,
+  image_processed_at timestamp with time zone,
+  image_processing_error text,
   CONSTRAINT attachments_pkey PRIMARY KEY (id),
   CONSTRAINT attachments_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT attachments_uploaded_by_fkey FOREIGN KEY (uploaded_by) REFERENCES public.users(id),
@@ -625,15 +654,19 @@ CREATE TABLE public.order_tests (
 );
 CREATE TABLE public.order_workflow_instances (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
-  order_id uuid NOT NULL UNIQUE,
+  order_id uuid NOT NULL,
   workflow_version_id uuid NOT NULL,
   current_step_id text,
   started_at timestamp with time zone NOT NULL DEFAULT now(),
   completed_at timestamp with time zone,
   status text,
+  workflow_id uuid,
+  lab_id uuid,
   CONSTRAINT order_workflow_instances_pkey PRIMARY KEY (id),
   CONSTRAINT order_workflow_instances_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
-  CONSTRAINT order_workflow_instances_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id)
+  CONSTRAINT order_workflow_instances_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id),
+  CONSTRAINT order_workflow_instances_workflow_id_fkey FOREIGN KEY (workflow_id) REFERENCES public.workflows(id),
+  CONSTRAINT order_workflow_instances_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
 CREATE TABLE public.orders (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -853,7 +886,6 @@ CREATE TABLE public.result_values (
   CONSTRAINT rv_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
   CONSTRAINT rv_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT rv_order_test_group_id_fkey FOREIGN KEY (order_test_group_id) REFERENCES public.order_test_groups(id),
-  CONSTRAINT result_values_sample_id_fkey FOREIGN KEY (sample_id) REFERENCES public.samples(id),
   CONSTRAINT rv_verified_by_fkey FOREIGN KEY (verified_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.result_verification_audit (
@@ -1073,9 +1105,34 @@ CREATE TABLE public.workflow_ai_configs (
   CONSTRAINT workflow_ai_configs_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id),
   CONSTRAINT workflow_ai_configs_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
 );
+CREATE TABLE public.workflow_ai_processing (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  workflow_instance_id uuid UNIQUE,
+  order_id uuid,
+  test_group_id uuid,
+  lab_id uuid,
+  workflow_data jsonb DEFAULT '{}'::jsonb,
+  image_attachments jsonb DEFAULT '[]'::jsonb,
+  reference_images jsonb DEFAULT '[]'::jsonb,
+  processing_status text DEFAULT 'pending'::text CHECK (processing_status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'failed'::text])),
+  processing_started_at timestamp with time zone,
+  processing_completed_at timestamp with time zone,
+  extracted_values jsonb,
+  ai_confidence numeric,
+  ai_metadata jsonb,
+  error_message text,
+  retry_count integer DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT workflow_ai_processing_pkey PRIMARY KEY (id),
+  CONSTRAINT workflow_ai_processing_workflow_instance_id_fkey FOREIGN KEY (workflow_instance_id) REFERENCES public.order_workflow_instances(id),
+  CONSTRAINT workflow_ai_processing_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT workflow_ai_processing_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT workflow_ai_processing_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
 CREATE TABLE public.workflow_results (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
-  workflow_instance_id uuid NOT NULL UNIQUE,
+  workflow_instance_id uuid NOT NULL,
   step_id text NOT NULL,
   order_id uuid,
   patient_id uuid,
@@ -1083,19 +1140,24 @@ CREATE TABLE public.workflow_results (
   test_group_id uuid,
   test_name text,
   test_code text,
-  review_status text,
+  review_status text CHECK (review_status IS NULL OR (review_status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'needs_clarification'::text, 'completed'::text, 'in_progress'::text, 'not_started'::text, 'done'::text]))),
   sample_id text,
   qc_summary text,
   payload jsonb NOT NULL,
   extracted jsonb,
-  status text NOT NULL DEFAULT 'received'::text,
+  status text NOT NULL DEFAULT 'received'::text CHECK (status = ANY (ARRAY['received'::text, 'processing'::text, 'completed'::text, 'failed'::text, 'committed'::text, 'done'::text])),
   created_by uuid,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   committed_at timestamp with time zone,
   error text,
   detail text,
   CONSTRAINT workflow_results_pkey PRIMARY KEY (id),
-  CONSTRAINT workflow_results_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id)
+  CONSTRAINT workflow_results_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT workflow_results_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT workflow_results_workflow_instance_id_fkey FOREIGN KEY (workflow_instance_id) REFERENCES public.order_workflow_instances(id),
+  CONSTRAINT workflow_results_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
+  CONSTRAINT workflow_results_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT workflow_results_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.workflow_step_events (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1131,8 +1193,10 @@ CREATE TABLE public.workflow_versions (
   active boolean,
   description text,
   name text,
+  test_group_id uuid,
   CONSTRAINT workflow_versions_pkey PRIMARY KEY (id),
-  CONSTRAINT workflow_versions_workflow_id_fkey FOREIGN KEY (workflow_id) REFERENCES public.workflows(id)
+  CONSTRAINT workflow_versions_workflow_id_fkey FOREIGN KEY (workflow_id) REFERENCES public.workflows(id),
+  CONSTRAINT workflow_versions_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
 );
 CREATE TABLE public.workflows (
   id uuid NOT NULL DEFAULT gen_random_uuid(),

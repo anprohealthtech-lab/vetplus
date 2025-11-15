@@ -201,10 +201,24 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
       const result = await WhatsAppAPI.connectWhatsApp();
       setConnectionStatus(result);
       
-      // Parse QR code from result (handle both raw QR text and qrCode URL)
+      // Parse QR code from result
+      // The backend might return qrCode as raw string or as image URL
       const rawQR = (result as any)?.rawQR as string | undefined;
-      const qrCodeUrl = (result as any)?.qrCode as string | undefined;
-      const qr = qrCodeUrl || buildQrFromRaw(rawQR);
+      const qrCodeFromResult = (result as any)?.qrCode as string | undefined;
+      
+      // If qrCode is a data URL or http URL, use it directly
+      // Otherwise, treat it as raw QR data and convert it
+      let qr: string | null = null;
+      if (qrCodeFromResult) {
+        if (qrCodeFromResult.startsWith('data:') || qrCodeFromResult.startsWith('http')) {
+          qr = qrCodeFromResult;
+        } else {
+          // It's raw QR data, convert it to image URL
+          qr = buildQrFromRaw(qrCodeFromResult);
+        }
+      } else if (rawQR) {
+        qr = buildQrFromRaw(rawQR);
+      }
       
       console.log('Connect result:', result, 'Parsed QR:', qr);
       if (qr) setQrCode(qr);

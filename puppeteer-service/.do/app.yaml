@@ -17,6 +17,8 @@ services:
         value: production
       - key: PORT
         value: "3000"
+      - key: PUPPETEER_CACHE_DIR
+        value: "/workspace/.cache/puppeteer"
     health_check:
       http_path: /health
       initial_delay_seconds: 30

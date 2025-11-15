@@ -1189,17 +1189,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         return; 
       }
       
-      const isMultiImage = availableImagesForAI.length > 1;
-      const attachmentDetail = isMultiImage 
-        ? `${availableImagesForAI.length} images in batch` 
-        : "Single image";
-      
-      aiMark("attach", { status: "done", detail: attachmentDetail });
-
-      aiMark("vision", { status: "doing" });
-      const processingType = analyteConfig?.type || aiProcessingConfig?.type || "ocr_report";
-      const customPrompt   = analyteConfig?.prompt || aiProcessingConfig?.prompt;
-
+      // Determine target test group FIRST (before filtering images)
       const targetTestGroup =
         (selectedTestGroup && testGroups.find((tg) => tg.test_group_id === selectedTestGroup)) ||
         (selectedTestId && testGroups.find((tg) => tg.order_test_id === selectedTestId)) ||
@@ -1208,7 +1198,41 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           : undefined) ||
         testGroups[0];
 
-  const targetTestGroupId = targetTestGroup?.test_group_id || null;
+      const targetTestGroupId = targetTestGroup?.test_group_id || null;
+      
+      // Filter images for the selected test group ONLY
+      // If user selected a specific test group, only use images tagged for that test group
+      let imagesForThisTest = availableImagesForAI;
+      
+      if (targetTestGroupId && availableImagesForAI.length > 1) {
+        // Filter to only images assigned to this test group
+        const filteredImages = availableImagesForAI.filter((img: any) => {
+          // Check if image has test_group_id metadata
+          const imgTestGroupId = img.test_group_id || img.metadata?.test_group_id;
+          // If no test group assigned to image, OR matches target test group
+          return !imgTestGroupId || imgTestGroupId === targetTestGroupId;
+        });
+        
+        if (filteredImages.length > 0) {
+          imagesForThisTest = filteredImages;
+          console.log(`Filtered ${imagesForThisTest.length} images for test group:`, targetTestGroup?.test_group_name);
+        } else {
+          // If no images match, warn user but continue with all images
+          console.warn(`No images found for test group ${targetTestGroup?.test_group_name}, using all available images`);
+        }
+      }
+      
+      const isMultiImage = imagesForThisTest.length > 1;
+      const attachmentDetail = isMultiImage 
+        ? `${imagesForThisTest.length} images for ${targetTestGroup?.test_group_name || 'test'}` 
+        : "Single image";
+      
+      aiMark("attach", { status: "done", detail: attachmentDetail });
+
+      aiMark("vision", { status: "doing" });
+      const processingType = analyteConfig?.type || aiProcessingConfig?.type || "ocr_report";
+      const customPrompt   = analyteConfig?.prompt || aiProcessingConfig?.prompt;
+
       const activeTestGroupKey = targetTestGroupId || 'order';
 
       const orderScopedAnalytes = (targetTestGroup?.analytes?.length ? targetTestGroup.analytes : orderAnalytes) || [];
@@ -1251,12 +1275,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       const resolvedBatchId =
         selectedBatchForAI?.batchId ||
         selectedBatchForAI?.id ||
-        availableImagesForAI[0]?.batch_id ||
+        imagesForThisTest[0]?.batch_id ||
         activeAttachment?.batch_id ||
         null;
 
-      const referenceImagesForVision = availableImagesForAI
-        .filter((img: any) => !attachmentId || img.id !== attachmentId)
+      // Use filtered images for reference
+      // When using batch mode with multiple images, include ALL images in referenceImages
+      const useAllImagesInBatch = !attachmentId && imagesForThisTest.length > 0;
+      
+      const referenceImagesForVision = imagesForThisTest
+        .filter((img: any) => useAllImagesInBatch || !attachmentId || img.id !== attachmentId)
         .map((img: any) => {
           const url = resolveAttachmentUrl(img);
           if (!url) return null;
@@ -1264,12 +1292,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             url,
             type: "supporting",
             description: img.image_label || `Image ${img.batch_sequence || 1}`,
+            testGroupId: img.test_group_id || img.metadata?.test_group_id || targetTestGroupId,
           };
         })
-        .filter(Boolean) as Array<{ url: string; type: string; description?: string }>;
+        .filter(Boolean) as Array<{ url: string; type: string; description?: string; testGroupId?: string }>;
+
+      // For batch mode, use the first image ID if attachmentId is not set
+      const primaryAttachmentId = attachmentId || (imagesForThisTest.length > 0 ? imagesForThisTest[0]?.id : null);
 
       const visionPayload = {
-        attachmentId,
+        attachmentId: primaryAttachmentId,
         aiProcessingType: processingType,
         analysisType: processingType === "ocr_report" ? "text" : "all",
         orderId: order.id,
@@ -1278,7 +1310,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         batchId: resolvedBatchId || undefined,
         referenceImages: referenceImagesForVision.length ? referenceImagesForVision : undefined,
         customInstruction:
-          customPrompt || (availableImagesForAI.length > 1 ? multiImageAIInstructions : undefined),
+          customPrompt || (imagesForThisTest.length > 1 ? multiImageAIInstructions : undefined),
       };
 
       const visionResponse = await supabase.functions.invoke("vision-ocr", { 
@@ -1290,25 +1322,32 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       aiMark("nlp", { status: "doing" });
       const analytesToExtract = manualValues.filter(v => !v.value || (typeof v.value === 'string' && v.value.trim() === "")).map(v => v.parameter);
       
-      // Prepare request body with multi-image support
+      // Use the detected processing type from vision-ocr response (auto-detection result)
+      const detectedProcessingType = visionResponse.data?.metadata?.aiProcessingType || processingType;
+      
+      // Extract custom prompt from vision-ocr response (if available) or use manual selection
+      const detectedCustomPrompt = visionResponse.data?.customPrompt || customPrompt || (imagesForThisTest.length > 1 ? multiImageAIInstructions : undefined);
+      
+      // Prepare request body with multi-image support - USE FILTERED IMAGES
       const requestBody = {
         rawText: visionResponse.data?.fullText,
         visionResults: visionResponse.data,
         originalBase64Image: visionResponse.data?.originalBase64Image,
-        aiProcessingType: processingType,
-        aiPromptOverride: customPrompt || (availableImagesForAI.length > 1 ? multiImageAIInstructions : undefined),
+        aiProcessingType: detectedProcessingType,  // Use detected type from vision-ocr
+        aiPromptOverride: detectedCustomPrompt,  // Use custom prompt from vision-ocr or manual selection
         analyteCatalog,
         analytesToExtract: analytesToExtract.length ? analytesToExtract : undefined,
         orderId: order.id,
         testGroupId: visionPayload.testGroupId,
         analyteIds: visionPayload.analyteIds,
-        // Multi-image context
-        isMultiImage: availableImagesForAI.length > 1,
-        imageReferences: availableImagesForAI.map((img: any, idx: number) => ({
+        // Multi-image context - USE FILTERED IMAGES
+        isMultiImage: imagesForThisTest.length > 1,
+        imageReferences: imagesForThisTest.map((img: any, idx: number) => ({
           sequence: idx + 1,
           label: img.image_label || `Image ${idx + 1}`,
           attachmentId: img.id,
-          fileUrl: resolveAttachmentUrl(img) || img.fileUrl
+          fileUrl: resolveAttachmentUrl(img) || img.fileUrl,
+          testGroupId: img.test_group_id || img.metadata?.test_group_id || targetTestGroupId,
         })),
         batchId: visionPayload.batchId,
         referenceImages: visionPayload.referenceImages,
@@ -1320,7 +1359,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           "x-attachment-id": attachmentId, 
           "x-order-id": order.id,
           "x-batch-id": visionPayload.batchId || "",
-          "x-multi-image": availableImagesForAI.length > 1 ? "true" : "false"
+          "x-multi-image": imagesForThisTest.length > 1 ? "true" : "false",
+          "x-test-group-id": targetTestGroupId || "",
         },
       });
       if (geminiResponse.error) throw new Error(geminiResponse.error.message);
@@ -1391,15 +1431,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       setAiProgress(100);
 
       // Store batch context for persistence if multi-image processing
-      if (availableImagesForAI.length > 1 && selectedBatchForAI) {
+      if (imagesForThisTest.length > 1 && selectedBatchForAI) {
         localStorage.setItem(
           `ai_batch_${activeTestGroupKey}`,
           JSON.stringify({
             batchId: selectedBatchForAI.batchId,
             processed: true,
             processedAt: new Date().toISOString(),
-            imageCount: availableImagesForAI.length,
+            imageCount: imagesForThisTest.length,
             matchedCount,
+            testGroupId: targetTestGroupId,
           })
         );
       }

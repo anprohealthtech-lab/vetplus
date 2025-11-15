@@ -41,7 +41,7 @@ exports.handler = async (event) => {
     } = body;
 
     const finalUserId = userId || null;
-    const resolvedPhoneNumber = phoneNumber || to || null;
+    let resolvedPhoneNumber = phoneNumber || to || null;
     const resolvedFileUrl = fileUrl || url || null;
     const finalCaption = caption || content || '';
 
@@ -61,6 +61,13 @@ exports.handler = async (event) => {
       };
     }
 
+    // Remove + prefix from phone number if present
+    if (resolvedPhoneNumber && resolvedPhoneNumber.startsWith('+')) {
+      const originalNumber = resolvedPhoneNumber;
+      resolvedPhoneNumber = resolvedPhoneNumber.substring(1);
+      console.log(`Removed + prefix from phone number: ${originalNumber} -> ${resolvedPhoneNumber}`);
+    }
+
     console.log('Extracted values:', {
       finalUserId,
       phoneNumber: resolvedPhoneNumber,
@@ -77,10 +84,10 @@ exports.handler = async (event) => {
       };
     }
 
-    // Validate phone number format (basic E.164 check)
-    const phoneRegex = /^\+[1-9]\d{1,14}$/;
+    // Validate phone number format (should be digits only after removing +)
+    const phoneRegex = /^[1-9]\d{7,14}$/;
     if (!phoneRegex.test(resolvedPhoneNumber)) {
-      console.warn('Phone number format warning:', resolvedPhoneNumber, '- Expected E.164 format (+countrycode+number)');
+      console.warn('Phone number format warning:', resolvedPhoneNumber, '- Expected numeric format without + prefix');
     }
 
     const base = process.env.WHATSAPP_API_BASE_URL || process.env.VITE_WHATSAPP_API_BASE_URL || 'https://lionfish-app-nmodi.ondigitalocean.app';

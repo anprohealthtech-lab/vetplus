@@ -1,7 +1,229 @@
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-attachment-id, x-order-id',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-attachment-id, x-order-id, x-test-group-id, x-batch-id',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+}
+
+/**
+ * Get AI prompt with hierarchical fallback (same as process-trf)
+ */
+async function getAIPrompt(
+  supabaseUrl: string,
+  supabaseAnonKey: string,
+  authToken: string,
+  processingType: string,
+  labId?: string,
+  testGroupId?: string
+): Promise<string | null> {
+  try {
+    console.log(`\n🔍 AI Prompt Lookup Starting...`);
+    console.log(`  - Type: ${processingType}`);
+    console.log(`  - Lab ID: ${labId || 'not provided'}`);
+    console.log(`  - Test Group ID: ${testGroupId || 'not provided'}`);
+
+    const headers = {
+      'apikey': supabaseAnonKey,
+      'Authorization': `Bearer ${authToken}`,
+      'Content-Type': 'application/json',
+    };
+
+    // Try: Lab + Test specific
+    if (labId && testGroupId) {
+      console.log('  → Trying: Lab + Test specific prompt...');
+      const params = new URLSearchParams({
+        select: 'prompt',
+        lab_id: `eq.${labId}`,
+        test_id: `eq.${testGroupId}`,
+        ai_processing_type: `eq.${processingType}`,
+        analyte_id: 'is.null',
+      });
+
+      const response = await fetch(`${supabaseUrl}/rest/v1/ai_prompts?${params.toString()}`, { headers });
+      if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data) && data.length > 0 && data[0].prompt) {
+          console.log('  ✅ FOUND: Lab + Test specific prompt');
+          console.log(`     Length: ${data[0].prompt.length} chars`);
+          return data[0].prompt;
+        }
+      }
+      console.log('  ❌ Not found: Lab + Test specific prompt');
+    }
+
+    // Try: Test-specific
+    if (testGroupId) {
+      console.log('  → Trying: Test-specific prompt...');
+      const params = new URLSearchParams({
+        select: 'prompt',
+        test_id: `eq.${testGroupId}`,
+        ai_processing_type: `eq.${processingType}`,
+        lab_id: 'is.null',
+        analyte_id: 'is.null',
+      });
+
+      const response = await fetch(`${supabaseUrl}/rest/v1/ai_prompts?${params.toString()}`, { headers });
+      if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data) && data.length > 0 && data[0].prompt) {
+          console.log('  ✅ FOUND: Test-specific prompt');
+          console.log(`     Length: ${data[0].prompt.length} chars`);
+          return data[0].prompt;
+        }
+      }
+      console.log('  ❌ Not found: Test-specific prompt');
+    }
+
+    // Try: Test group level prompt
+    if (testGroupId) {
+      console.log('  → Trying: Test Group level prompt...');
+      const params = new URLSearchParams({
+        select: 'group_level_prompt',
+        id: `eq.${testGroupId}`,
+      });
+
+      const response = await fetch(`${supabaseUrl}/rest/v1/test_groups?${params.toString()}`, { headers });
+      if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data) && data.length > 0 && data[0].group_level_prompt) {
+          console.log('  ✅ FOUND: Test Group level prompt');
+          console.log(`     Length: ${data[0].group_level_prompt.length} chars`);
+          return data[0].group_level_prompt;
+        }
+      }
+      console.log('  ❌ Not found: Test Group level prompt');
+    }
+
+    // Try: Default prompt
+    console.log('  → Trying: Default prompt from database...');
+    const params = new URLSearchParams({
+      select: 'prompt',
+      ai_processing_type: `eq.${processingType}`,
+      default: 'eq.true',
+      lab_id: 'is.null',
+      test_id: 'is.null',
+      analyte_id: 'is.null',
+    });
+
+    const response = await fetch(`${supabaseUrl}/rest/v1/ai_prompts?${params.toString()}`, { headers });
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data) && data.length > 0 && data[0].prompt) {
+        console.log('  ✅ FOUND: Default prompt from database');
+        console.log(`     Length: ${data[0].prompt.length} chars`);
+        return data[0].prompt;
+      }
+    }
+    console.log('  ❌ Not found: Default prompt in database');
+
+    // No custom prompt found - will use hardcoded
+    console.log('  ⚠️  No custom prompt found - will use hardcoded default');
+    return null;
+  } catch (error) {
+    console.error('❌ Error fetching AI prompt:', error);
+    return null;
+  }
+}
+
+/**
+ * Intelligently detect the best AI processing type for a test group
+ * by checking which processing types have custom prompts configured
+ */
+async function detectProcessingType(
+  supabaseUrl: string,
+  supabaseAnonKey: string,
+  authToken: string,
+  labId?: string,
+  testGroupId?: string
+): Promise<string | null> {
+  if (!testGroupId) return null;
+
+  const processingTypes = ['vision_color', 'vision_card', 'ocr_report', 'nlp_extraction'];
+  
+  console.log('\n🔍 Auto-detecting best AI processing type...');
+  console.log(`  - Lab ID: ${labId || 'not provided'}`);
+  console.log(`  - Test Group ID: ${testGroupId}`);
+
+  const headers = {
+    'apikey': supabaseAnonKey,
+    'Authorization': `Bearer ${authToken}`,
+    'Content-Type': 'application/json',
+  };
+
+  // Check each processing type in priority order
+  for (const type of processingTypes) {
+    console.log(`\n  → Checking for ${type} prompts...`);
+    
+    // Try Lab + Test specific
+    if (labId && testGroupId) {
+      console.log(`     Lab + Test specific lookup:`);
+      console.log(`       - lab_id: ${labId}`);
+      console.log(`       - test_id: ${testGroupId}`);
+      console.log(`       - ai_processing_type: ${type}`);
+      
+      const params = new URLSearchParams({
+        select: 'prompt',
+        lab_id: `eq.${labId}`,
+        test_id: `eq.${testGroupId}`,
+        ai_processing_type: `eq.${type}`,
+        analyte_id: 'is.null',
+      });
+
+      const url = `${supabaseUrl}/rest/v1/ai_prompts?${params.toString()}`;
+      console.log(`     Query URL: ${url}`);
+      
+      const response = await fetch(url, { headers });
+      console.log(`     HTTP Status: ${response.status}`);
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log(`     Response: ${data.length} rows found`);
+        if (data.length > 0) {
+          console.log(`     First row:`, JSON.stringify(data[0]).substring(0, 200));
+        }
+        if (Array.isArray(data) && data.length > 0 && data[0].prompt) {
+          console.log(`  ✅ FOUND: Lab + Test specific prompt for ${type}`);
+          return type;
+        } else {
+          console.log(`  ❌ No matching rows (or prompt field is null)`);
+        }
+      } else {
+        const errorText = await response.text();
+        console.log(`     HTTP Error: ${response.status} ${response.statusText}`);
+        console.log(`     Error details: ${errorText}`);
+      }
+    } else {
+      console.log(`     Skipping Lab + Test specific (labId: ${!!labId}, testGroupId: ${!!testGroupId})`);
+    }
+
+    // Try Test-specific
+    if (testGroupId) {
+      const params = new URLSearchParams({
+        select: 'prompt',
+        test_id: `eq.${testGroupId}`,
+        ai_processing_type: `eq.${type}`,
+        lab_id: 'is.null',
+        analyte_id: 'is.null',
+      });
+
+      const url = `${supabaseUrl}/rest/v1/ai_prompts?${params.toString()}`;
+      console.log(`     Query: ${url}`);
+      
+      const response = await fetch(url, { headers });
+      if (response.ok) {
+        const data = await response.json();
+        console.log(`     Response: ${data.length} rows found`);
+        if (Array.isArray(data) && data.length > 0 && data[0].prompt) {
+          console.log(`  ✅ Found custom prompt for type: ${type} (Test specific)`);
+          return type;
+        }
+      } else {
+        console.log(`     HTTP Error: ${response.status} ${response.statusText}`);
+      }
+    }
+  }
+
+  console.log('  ℹ️  No custom prompts found - will use default detection');
+  return null;
 }
 
 interface VisionRequest {
@@ -115,7 +337,7 @@ async function getTestContext(orderId?: string, testGroupId?: string, analyteIds
     }
 
     if (testGroupId) {
-      const select = 'id,name,code,lab_id,ai_processing_type,ai_prompt_override,test_group_analytes(analyte_id,analytes(id,name,unit,reference_range,ai_processing_type,ai_prompt_override))';
+      const select = 'id,name,code,lab_id,test_group_analytes(analyte_id,analytes(id,name,unit,reference_range))';
       const tgParams = new URLSearchParams({
         id: `eq.${testGroupId}`,
         select,
@@ -135,8 +357,6 @@ async function getTestContext(orderId?: string, testGroupId?: string, analyteIds
             name: group.name,
             code: group.code,
             lab_id: group.lab_id,
-            ai_processing_type: group.ai_processing_type,
-            ai_prompt_override: group.ai_prompt_override,
           };
 
           const analytesFromGroup = Array.isArray(group.test_group_analytes)
@@ -145,8 +365,6 @@ async function getTestContext(orderId?: string, testGroupId?: string, analyteIds
                 name: tga.analytes?.name,
                 unit: tga.analytes?.unit,
                 reference_range: tga.analytes?.reference_range,
-                ai_processing_type: tga.analytes?.ai_processing_type,
-                ai_prompt_override: tga.analytes?.ai_prompt_override,
               }))
             : [];
 
@@ -179,7 +397,7 @@ async function getTestContext(orderId?: string, testGroupId?: string, analyteIds
 
     if (analyteIdArray.length && (!context.analytes || context.analytes.length < analyteIdArray.length)) {
       const analyteParams = new URLSearchParams({
-        select: 'id,name,unit,reference_range,code',
+        select: 'id,name,unit,reference_range',
         id: `in.(${analyteIdArray.join(',')})`
       });
 
@@ -203,7 +421,6 @@ async function getTestContext(orderId?: string, testGroupId?: string, analyteIds
                 name: row.name,
                 unit: row.unit,
                 reference_range: row.reference_range,
-                code: row.code,
               });
             } else {
               const current = existing.get(row.id);
@@ -211,7 +428,6 @@ async function getTestContext(orderId?: string, testGroupId?: string, analyteIds
                 current.name = current.name || row.name;
                 current.unit = current.unit || row.unit;
                 current.reference_range = current.reference_range || row.reference_range;
-                current.code = current.code || row.code;
               }
             }
           });
@@ -299,11 +515,27 @@ async function getBatchImageContext(batchId?: string): Promise<BatchImageReferen
   return [];
 }
 
-function buildContextAwarePrompt(aiProcessingType: string | undefined, context: TestContext, customInstruction?: string): string | undefined {
+function buildContextAwarePrompt(
+  aiProcessingType: string | undefined, 
+  context: TestContext, 
+  customInstruction?: string,
+  databasePrompt?: string | null
+): string | undefined {
+  // Priority 1: Custom instruction from request
   if (customInstruction && customInstruction.trim().length > 0) {
+    console.log('  📝 Using custom instruction from request');
     return customInstruction.trim();
   }
 
+  // Priority 2: Database prompt (from AI Prompts Manager)
+  if (databasePrompt && databasePrompt.trim().length > 0) {
+    console.log('  📝 Using prompt from AI Prompts database');
+    console.log(`     Preview: ${databasePrompt.substring(0, 200)}...`);
+    return databasePrompt.trim();
+  }
+
+  // Priority 3: Generate context-aware prompt (fallback)
+  console.log('  📝 Generating context-aware fallback prompt');
   const analyteNames = (context.analytes || [])
     .map((a) => a?.name)
     .filter((name): name is string => typeof name === 'string' && name.length > 0);
@@ -609,6 +841,25 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // Get Supabase configuration
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY');
+    const authHeader = req.headers.get('Authorization') || '';
+    
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.error('Supabase configuration missing');
+      return new Response(
+        JSON.stringify({ 
+          error: 'Supabase configuration missing',
+          details: 'SUPABASE_URL or SUPABASE_ANON_KEY not set'
+        }),
+        { 
+          status: 500, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        }
+      );
+    }
+    
     // Check for API key first - try ALLGOOGLE_KEY first, then fallback to GOOGLE_CLOUD_API_KEY
     const visionApiKey = Deno.env.get('ALLGOOGLE_KEY') || Deno.env.get('GOOGLE_CLOUD_API_KEY');
     if (!visionApiKey) {
@@ -625,6 +876,7 @@ Deno.serve(async (req) => {
       );
     }
 
+    const requestBody = await req.json();
     const {
       attachmentId,
       base64Image,
@@ -638,11 +890,25 @@ Deno.serve(async (req) => {
       batchId,
       referenceImages,
       customInstruction
-    }: VisionRequest = await req.json();
+    }: VisionRequest = requestBody;
 
-    if (!attachmentId && !base64Image) {
+    // Log what the frontend actually sent
+    console.log('\n📨 Vision OCR Request Received:');
+    console.log('  Raw request body:', JSON.stringify(requestBody, null, 2));
+    console.log('  Extracted values:');
+    console.log(`    - aiProcessingType: ${aiProcessingType || 'NOT PROVIDED'}`);
+    console.log(`    - documentType: ${documentType || 'NOT PROVIDED'}`);
+    console.log(`    - testType: ${testType || 'NOT PROVIDED'}`);
+    console.log(`    - orderId: ${orderId || 'NOT PROVIDED'}`);
+    console.log(`    - testGroupId: ${testGroupId || 'NOT PROVIDED'}`);
+    console.log(`    - attachmentId: ${attachmentId || 'NOT PROVIDED'}`);
+
+    // Check if we have any image source
+    const hasReferenceImages = Array.isArray(referenceImages) && referenceImages.length > 0;
+    
+    if (!attachmentId && !base64Image && !hasReferenceImages) {
       return new Response(
-        JSON.stringify({ error: 'Missing attachmentId or base64Image' }),
+        JSON.stringify({ error: 'Missing attachmentId, base64Image, or referenceImages' }),
         { 
           status: 400, 
           headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
@@ -651,10 +917,51 @@ Deno.serve(async (req) => {
     }
 
     console.log(`Starting Vision AI processing for ${aiProcessingType || documentType || testType || 'unknown'} type`);
+    console.log(`  - Has referenceImages: ${hasReferenceImages} (count: ${hasReferenceImages ? referenceImages.length : 0})`);
 
     // Get image data
     let imageData = base64Image;
-    if (attachmentId && !base64Image) {
+    
+    // If we have reference images but no attachmentId/base64Image, use the first reference image
+    if (!imageData && hasReferenceImages) {
+      console.log('  ℹ️  Using first reference image as primary image source');
+      const firstRefImage = referenceImages[0];
+      
+      // If the reference image has a URL, fetch it
+      if (firstRefImage.url) {
+        try {
+          console.log(`  📥 Fetching reference image from: ${firstRefImage.url}`);
+          const imageResponse = await fetch(firstRefImage.url);
+          if (!imageResponse.ok) {
+            throw new Error(`Failed to fetch reference image: ${imageResponse.status}`);
+          }
+          const imageBuffer = await imageResponse.arrayBuffer();
+          
+          // Convert ArrayBuffer to base64 using Deno-compatible method
+          const uint8Array = new Uint8Array(imageBuffer);
+          let binaryString = '';
+          for (let i = 0; i < uint8Array.length; i++) {
+            binaryString += String.fromCharCode(uint8Array[i]);
+          }
+          imageData = btoa(binaryString);
+          
+          console.log('  ✅ Successfully fetched and converted reference image to base64');
+        } catch (error) {
+          console.error('  ❌ Error fetching reference image:', error);
+          return new Response(
+            JSON.stringify({ 
+              error: 'Failed to fetch reference image',
+              details: error instanceof Error ? error.message : String(error)
+            }),
+            { 
+              status: 400, 
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+            }
+          );
+        }
+      }
+    } else if (attachmentId && !imageData) {
+      // Original behavior: fetch from storage if we have attachmentId
       imageData = await getImageFromStorage(attachmentId);
     }
 
@@ -670,11 +977,67 @@ Deno.serve(async (req) => {
 
     const testContext = await getTestContext(orderId, testGroupId, analyteIds);
     const batchContext = await getBatchImageContext(batchId);
-    const effectiveProcessingType = aiProcessingType || testContext.testGroup?.ai_processing_type || documentType || testType;
+    const labId = testContext.order?.lab_id || undefined;
+    
+    console.log('\n📋 Context Summary:');
+    console.log(`  - Order ID: ${orderId || 'not provided'}`);
+    console.log(`  - Test Group ID: ${testGroupId || 'not provided'}`);
+    console.log(`  - Lab ID from context: ${labId || 'not found'}`);
+    console.log(`  - AI Processing Type param: ${aiProcessingType || 'not provided'}`);
+    
+    // Intelligent processing type detection
+    // Priority: auto-detect from custom prompts > explicit param > test group config
+    let effectiveProcessingType: string | null = null;
+    
+    console.log(`  - AI Processing Type param: ${aiProcessingType || 'not provided'}`);
+    console.log(`  - Test Group config: ${testContext.testGroup?.ai_processing_type || 'not set'}`);
+    
+    // ALWAYS try auto-detection first if we have test context
+    if (testGroupId && labId) {
+      console.log('\n🔍 Starting auto-detection for custom prompts...');
+      const detectedType = await detectProcessingType(
+        supabaseUrl,
+        supabaseAnonKey,
+        authHeader.replace('Bearer ', ''),
+        labId,
+        testGroupId
+      );
+      if (detectedType) {
+        effectiveProcessingType = detectedType;
+        console.log(`  ✅ Auto-detected processing type: ${detectedType}`);
+      } else {
+        console.log(`  ℹ️  No custom prompts found, falling back to defaults...`);
+      }
+    }
+    
+    // Fallback to explicit params or test group config if auto-detection didn't find anything
+    if (!effectiveProcessingType) {
+      effectiveProcessingType = aiProcessingType || testContext.testGroup?.ai_processing_type;
+      if (effectiveProcessingType) {
+        console.log(`  ⏭️  Using fallback processing type: ${effectiveProcessingType}`);
+      }
+    }
+    
+    // Fetch AI prompt from database (hierarchical lookup)
+    let databasePrompt: string | null = null;
+    
+    if (effectiveProcessingType && typeof effectiveProcessingType === 'string') {
+      console.log('\n📝 Fetching AI prompt for Vision OCR...');
+      databasePrompt = await getAIPrompt(
+        supabaseUrl,
+        supabaseAnonKey,
+        authHeader.replace('Bearer ', ''),
+        effectiveProcessingType,
+        labId,
+        testGroupId
+      );
+    }
+    
     const contextPrompt = buildContextAwarePrompt(
       typeof effectiveProcessingType === 'string' ? effectiveProcessingType : undefined,
       testContext,
-      customInstruction
+      customInstruction,
+      databasePrompt
     );
 
     const batchReferenceImages = batchContext
@@ -755,9 +1118,11 @@ Deno.serve(async (req) => {
       batchContext,
       referenceImages: combinedReferenceImages,
       promptUsed: contextPrompt,
+      customPrompt: databasePrompt || null, // Include custom prompt from database
       metadata: {
-        documentType: documentType || testType || aiProcessingType,
-        aiProcessingType: aiProcessingType || null,
+        documentType: documentType || testType || effectiveProcessingType,
+        aiProcessingType: effectiveProcessingType || null, // Use detected type, not original param
+        customPromptAvailable: !!databasePrompt, // Indicate if custom prompt was found
         analysisType,
         featuresUsed: {
           text: needsText,
@@ -796,7 +1161,7 @@ Deno.serve(async (req) => {
                 ai_confidence: visionResults.confidence || null,
                 processing_status: visionResults.error ? 'failed' : 'processed',
                 ai_processed_at: new Date().toISOString(),
-                ai_processing_type: aiProcessingType || documentType || testType,
+                ai_processing_type: effectiveProcessingType || null, // Use detected type
                 ai_metadata: {
                   vision_features_used: {
                     text: needsText,

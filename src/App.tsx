@@ -1,5 +1,5 @@
 // src/App.tsx
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import ProtectedRoute from './components/Auth/ProtectedRoute';
@@ -24,6 +24,7 @@ import OrderDetail from './pages/OrderDetail';
 import WhatsApp from './pages/WhatsApp';
 import WhatsAppUserSyncManager from './components/WhatsApp/WhatsAppUserSyncManager';
 import { useWhatsAppAutoSync } from './hooks/useWhatsAppAutoSync';
+import { warmupPuppeteer } from './utils/pdfService';
 import "./styles/print.css";
 
 // ⬇️ New modern dashboard page
@@ -42,6 +43,7 @@ import { BrandingSettings } from './pages/BrandingSettings';
 import WorkflowConfiguratorPage from './pages/WorkflowConfiguratorPage';
 import WorkflowEvaluatorPage from './pages/WorkflowEvaluatorPage';
 import WorkflowExplainerDemo from './pages/WorkflowExplainerDemo';
+import AIPromptManager from './pages/AIPromptManager';
 import WorkflowExplainerTestPage from './pages/WorkflowExplainerTestPage';
 import OptimizationDemo from './pages/OptimizationDemo';
 
@@ -50,6 +52,18 @@ const AppRoutes: React.FC = () => {
   
   // Initialize WhatsApp auto-sync when user is authenticated
   useWhatsAppAutoSync();
+
+  // Warm up Puppeteer instance for faster PDF generation
+  useEffect(() => {
+    // Warmup after a short delay to not block initial render
+    const timer = setTimeout(() => {
+      warmupPuppeteer().catch(err => {
+        console.warn('Puppeteer warmup failed:', err);
+      });
+    }, 2000);
+    
+    return () => clearTimeout(timer);
+  }, []);
 
   // Show loading state while auth is initializing
   if (loading) {
@@ -95,6 +109,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/billing" element={<Billing />} />
                 <Route path="/cash-reconciliation" element={<CashReconciliation />} />
                 <Route path="/ai-tools" element={<AITools />} />
+                <Route path="/ai-prompts" element={<AIPromptManager />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/settings/branding" element={<BrandingSettings />} />
                 <Route path="/verification" element={<ResultVerificationConsole />} />

@@ -604,6 +604,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       const visionData = visionResponse.data;
       console.log('Vision OCR completed. Extracted text length:', visionData.fullText?.length || 0);
       
+      // Use the detected processing type from vision-ocr response (auto-detection result)
+      const detectedProcessingType = visionData?.metadata?.aiProcessingType || processingType;
+      console.log('Using processing type:', detectedProcessingType, '(detected from vision-ocr)');
+      
       // Step 2: Call gemini-nlp Edge Function with metadata headers
       console.log('Calling gemini-nlp Edge Function...');
       const geminiResponse = await supabase.functions.invoke('gemini-nlp', {
@@ -611,10 +615,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           rawText: visionData.fullText,
           visionResults: visionData,
           originalBase64Image: visionData.originalBase64Image,
-          documentType: processingType === 'ocr_report' ? 'printed-report' : undefined,
-          testType: processingType === 'vision_card' ? 'test-card' :
-                   processingType === 'vision_color' ? 'color-analysis' : undefined,
-          aiProcessingType: processingType,
+          documentType: detectedProcessingType === 'ocr_report' ? 'printed-report' : undefined,
+          testType: detectedProcessingType === 'vision_card' ? 'test-card' :
+                   detectedProcessingType === 'vision_color' ? 'color-analysis' : undefined,
+          aiProcessingType: detectedProcessingType,  // Use detected type from vision-ocr
           aiPromptOverride: customPrompt,
           allAnalytes: allAnalytes,
           analytesToExtract: analytesToExtract.length > 0 ? analytesToExtract : undefined,
