@@ -14,6 +14,12 @@ export interface SignatureSummary {
   file_url?: string;
   text_signature?: string;
   created_at?: string;
+  users?: {
+    id: string;
+    name: string;
+    email: string;
+    role?: string;
+  };
 }
 
 interface SignatureCardProps {
@@ -39,6 +45,11 @@ export const SignatureCard: React.FC<SignatureCardProps> = ({
           <div>
             <p className="text-sm font-semibold text-gray-900">{signature.signature_name}</p>
             <p className="text-xs text-gray-500">{signature.signature_type}</p>
+            {signature.users && (
+              <p className="text-xs text-gray-400">
+                User: {signature.users.name} ({signature.users.email})
+              </p>
+            )}
           </div>
         </div>
         {signature.is_default && (

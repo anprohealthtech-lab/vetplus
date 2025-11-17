@@ -619,27 +619,75 @@ export const database = {
           .from('users')
           .select(`
             id,
+            name,
             email,
-            raw_user_meta_data,
+            role,
+            department,
+            phone,
             lab_id,
-            created_at,
             status,
-            lab_user_signatures(
+            is_phlebotomist,
+            created_at,
+            last_login,
+            lab_user_signatures!lab_user_signatures_user_id_fkey(
               id,
-              signature_url,
-              processed_signature_url,
+              signature_name,
+              file_url,
               imagekit_url,
-              is_active
+              is_active,
+              is_default
             )
           `)
           .eq('lab_id', labId)
-          .eq('status', 'Active')
           .order('created_at', { ascending: false });
 
         return { data: data || [], error };
       } catch (error) {
         console.error('Error fetching lab users:', error);
         return { data: [], error };
+      }
+    },
+
+    getPhlebotomists: async (labId?: string): Promise<{ data: any[]; error: any }> => {
+      try {
+        const lab_id = labId || await database.getCurrentUserLabId();
+        if (!lab_id) {
+          return { data: [], error: new Error('No lab_id found') };
+        }
+
+        const { data, error } = await supabase
+          .from('users')
+          .select('id, name, email, role, phone, is_phlebotomist')
+          .eq('lab_id', lab_id)
+          .eq('status', 'Active')
+          .eq('is_phlebotomist', true)
+          .order('name');
+
+        return { data: data || [], error };
+      } catch (error) {
+        console.error('Error fetching phlebotomists:', error);
+        return { data: [], error };
+      }
+    },
+
+    // Alias for consistency
+    listPhlebotomists: async (labId?: string) => {
+      return database.users.getPhlebotomists(labId);
+    },
+
+    updatePhlebotomistStatus: async (userId: string, isPhlebotomist: boolean) => {
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .update({ is_phlebotomist: isPhlebotomist })
+          .eq('id', userId)
+          .select()
+          .single();
+
+        return { data, error };
+      } catch (error) {
+        console.error('Error updating phlebotomist status:', error);
+        return { data: null, error };
       }
     },
 
@@ -1707,16 +1755,18 @@ export const database = {
     },
 
     // NEW: Sample collection methods
-    markSampleCollected: async (orderId: string, collectedBy?: string) => {
+    markSampleCollected: async (orderId: string, collectedBy?: string, collectorUserId?: string) => {
       try {
         const { data: auth } = await supabase.auth.getUser();
         const collectorName = collectedBy || auth?.user?.user_metadata?.full_name || auth?.user?.email || 'Unknown User';
+        const collectorId = collectorUserId || auth?.user?.id;
         
         const { data, error } = await supabase
           .from('orders')
           .update({
             sample_collected_at: new Date().toISOString(),
             sample_collected_by: collectorName,
+            sample_collector_id: collectorId, // NEW: Track collector user ID
             status: 'Sample Collection',
             status_updated_at: new Date().toISOString(),
             status_updated_by: collectorName
@@ -5753,6 +5803,25 @@ const brandingSignatureAPI = {
         .order('created_at', { ascending: false });
 
       return { data: (data as LabUserSignature[]) || [], error };
+    },
+
+    getAllForLab: async (labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: [], error: new Error('No lab_id found for current user') };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_user_signatures')
+        .select(`
+          *,
+          users!user_id(id, name, email, role)
+        `)
+        .eq('lab_id', labId)
+        .eq('is_active', true)
+        .order('created_at', { ascending: false });
+
+      return { data: (data as any[]) || [], error };
     },
 
     getDefault: async (userIdOverride?: string, labIdOverride?: string) => {

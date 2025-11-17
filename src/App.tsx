@@ -16,7 +16,7 @@ import PeripheralSmearDemo from './components/Workflows/PeripheralSmearDemo';
 import Billing from './pages/Billing';
 import CashReconciliation from './pages/CashReconciliation';
 import AITools from './pages/AITools';
-import Settings from './pages/Settings';
+import UserManagement from './pages/UserManagement';
 import ResultVerificationConsole from './pages/ResultVerificationConsole';
 import { WorkflowManagement } from './pages/WorkflowManagement';
 import WorkflowDemo from './pages/WorkflowDemo';
@@ -110,7 +110,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/cash-reconciliation" element={<CashReconciliation />} />
                 <Route path="/ai-tools" element={<AITools />} />
                 <Route path="/ai-prompts" element={<AIPromptManager />} />
-                <Route path="/settings" element={<Settings />} />
+                <Route path="/settings" element={<UserManagement />} />
                 <Route path="/settings/branding" element={<BrandingSettings />} />
                 <Route path="/verification" element={<ResultVerificationConsole />} />
                 <Route path="/workflows" element={<WorkflowManagement />} />

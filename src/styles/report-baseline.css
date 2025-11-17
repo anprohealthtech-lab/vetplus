@@ -31,6 +31,7 @@
   max-width: 820px;
   min-height: calc(297mm - 40px);
   box-sizing: border-box;
+  z-index: 0;
 }
 
 .limsv2-report * {
@@ -41,6 +42,8 @@
 .limsv2-report-footer {
   padding: 16px var(--report-horizontal-padding);
   background: var(--report-background-color);
+  position: relative;
+  z-index: 2;
 }
 
 .limsv2-report-header {
@@ -54,6 +57,8 @@
 
 .limsv2-report-body {
   padding: var(--report-body-padding-top) var(--report-horizontal-padding) var(--report-body-padding-bottom);
+  position: relative;
+  z-index: 2;
 }
 
 .limsv2-report-body.limsv2-report-body--pdf {
@@ -71,6 +76,28 @@
 
 .report-region {
   position: relative;
+  z-index: 2;
+}
+
+/* Watermark background layer */
+.report-watermark {
+  position: absolute !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  z-index: 1 !important;
+  opacity: 0.15 !important;
+  pointer-events: none !important;
+  max-width: 80% !important;
+  height: auto !important;
+}
+
+/* Ensure all content (tables, text, etc.) appears above watermark */
+.limsv2-report-body > *:not(.report-watermark),
+.report-region > *:not(.report-watermark),
+table, p, h1, h2, h3, h4, h5, h6, div {
+  position: relative;
+  z-index: 3;
 }
 
 .report-region-placeholder {

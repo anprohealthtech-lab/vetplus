@@ -46,6 +46,7 @@ import MultiImageUploader from "../Upload/MultiImageUploader";
 import BatchImageViewer from "../Upload/BatchImageViewer";
 import SingleImageViewer from "../Upload/SingleImageViewer";
 import PopoutInput from "./PopoutInput";
+import PhlebotomistSelector from "../Users/PhlebotomistSelector";
 
 interface WorkflowStep {
   name: string;
@@ -382,17 +383,31 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   // Centralized status updater (for quick buttons and collection actions)
   const { markSampleCollected: markCollectedCentral } = useOrderStatusCentral();
   const [updatingCollection, setUpdatingCollection] = useState(false);
+  const [selectedPhlebotomistId, setSelectedPhlebotomistId] = useState<string>('');
+  const [selectedPhlebotomistName, setSelectedPhlebotomistName] = useState<string>('');
+  const [showPhlebotomistSelector, setShowPhlebotomistSelector] = useState(false);
 
   const handleMarkSampleCollected = async () => {
+    // If no phlebotomist selected, show selector first
+    if (!order.sample_collected_at && !showPhlebotomistSelector) {
+      setShowPhlebotomistSelector(true);
+      return;
+    }
+
     try {
       setUpdatingCollection(true);
-      const res = await markCollectedCentral(order.id);
-      if (!res.success) {
-        alert(res.message);
+      const { error } = await database.orders.markSampleCollected(
+        order.id,
+        selectedPhlebotomistName || undefined,
+        selectedPhlebotomistId || undefined
+      );
+      if (error) {
+        alert('Failed to mark sample collected');
         return;
       }
       await database.orders.checkAndUpdateStatus(order.id);
       if (onUpdateStatus) await onUpdateStatus(order.id, "Sample Collection");
+      setShowPhlebotomistSelector(false);
     } catch (e) {
       console.error("Error marking sample collected:", e);
       alert("Failed to mark sample collected");
@@ -2013,13 +2028,44 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   {updatingCollection ? 'Updating...' : 'Mark Not Collected'}
                 </button>
               ) : (
-                <button
-                  onClick={handleMarkSampleCollected}
-                  disabled={updatingCollection}
-                  className="px-3 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {updatingCollection ? 'Updating...' : 'Mark Collected'}
-                </button>
+                <>
+                  {showPhlebotomistSelector ? (
+                    <div className="flex items-center gap-2">
+                      <PhlebotomistSelector
+                        labId={order.lab_id}
+                        value={selectedPhlebotomistId}
+                        onChange={(userId, userName) => {
+                          setSelectedPhlebotomistId(userId || '');
+                          setSelectedPhlebotomistName(userName);
+                        }}
+                        className="text-xs"
+                        placeholder="Select collector..."
+                      />
+                      <button
+                        onClick={handleMarkSampleCollected}
+                        disabled={updatingCollection || !selectedPhlebotomistId}
+                        className="px-3 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                      >
+                        {updatingCollection ? 'Collecting...' : 'Confirm'}
+                      </button>
+                      <button
+                        onClick={() => setShowPhlebotomistSelector(false)}
+                        disabled={updatingCollection}
+                        className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={handleMarkSampleCollected}
+                      disabled={updatingCollection}
+                      className="px-3 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {updatingCollection ? 'Updating...' : 'Mark Collected'}
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </div>

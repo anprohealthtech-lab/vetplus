@@ -254,8 +254,10 @@ const buildPremiumEditorConfig = (
     CodeBlock,
     Emoji,
     Essentials,
+    FindAndReplace,
     GeneralHtmlSupport,
     Heading,
+    HorizontalLine,
     HtmlComment,
     // HtmlEmbed, // Removed - not allowed by license
     ImageBlock,
@@ -274,10 +276,15 @@ const buildPremiumEditorConfig = (
     List,
     ListProperties,
     Mention,
+    PageBreak,
     Paragraph,
     PasteFromOffice,
     PictureEditing,
+    RemoveFormat,
+    SelectAll,
     ShowBlocks,
+    SpecialCharacters,
+    SpecialCharactersEssentials,
     Table,
     TableCaption,
     TableCellProperties,
@@ -285,6 +292,8 @@ const buildPremiumEditorConfig = (
     TableProperties,
     TableToolbar,
     TextTransformation,
+    TodoList,
+    WordCount,
   } = CKEDITOR;
 
   const {
@@ -300,6 +309,9 @@ const buildPremiumEditorConfig = (
     'undo',
     'redo',
     '|',
+    'findAndReplace',
+    'selectAll',
+    '|',
     ...(aiEnabled ? ['aiCommands', 'aiAssistant', '|'] : []),
     'sourceEditingEnhanced',
     'showBlocks',
@@ -309,17 +321,22 @@ const buildPremiumEditorConfig = (
     'bold',
     'italic',
     'code',
+    'removeFormat',
     '|',
     'emoji',
+    'specialCharacters',
     'link',
     'insertImage',
     'ckbox',
     'insertTable',
+    'horizontalLine',
+    'pageBreak',
     'codeBlock',
     // 'htmlEmbed', // Removed - not allowed by license
     '|',
     'bulletedList',
     'numberedList',
+    'todoList',
   ];
 
   const plugins = [
@@ -336,8 +353,10 @@ const buildPremiumEditorConfig = (
     CodeBlock,
     Emoji,
     Essentials,
+    FindAndReplace,
     GeneralHtmlSupport,
     Heading,
+    HorizontalLine,
     HtmlComment,
     // HtmlEmbed, // Removed - not allowed by license
     ImageBlock,
@@ -356,12 +375,17 @@ const buildPremiumEditorConfig = (
     List,
     ListProperties,
     Mention,
+    PageBreak,
     Paragraph,
     PasteFromOffice,
     PasteFromOfficeEnhanced,
     PictureEditing,
+    RemoveFormat,
+    SelectAll,
     ShowBlocks,
     SourceEditingEnhanced,
+    SpecialCharacters,
+    SpecialCharactersEssentials,
     Table,
     TableCaption,
     TableCellProperties,
@@ -369,6 +393,8 @@ const buildPremiumEditorConfig = (
     TableProperties,
     TableToolbar,
     TextTransformation,
+    TodoList,
+    WordCount,
   ];
 
   if (aiEnabled) {
@@ -434,13 +460,45 @@ const buildPremiumEditorConfig = (
     mention: {
       feeds: [
         {
-          marker: '@',
-          feed: [],
+          marker: '{{',
+          feed: [
+            '{{patientName}}',
+            '{{patientAge}}',
+            '{{patientGender}}',
+            '{{patientDOB}}',
+            '{{patientId}}',
+            '{{orderId}}',
+            '{{sampleId}}',
+            '{{registrationDate}}',
+            '{{locationName}}',
+            '{{sampleCollectedAt}}',
+            '{{approvedAt}}',
+            '{{referringDoctorName}}',
+            '{{reportDate}}',
+            '{{approverSignature}}',
+            '{{approvedByName}}',
+            '{{approverName}}',
+            '{{approverRole}}',
+            '{{labName}}',
+            '{{labAddress}}',
+            '{{labPhone}}',
+            '{{labEmail}}',
+            '{{labLogoUrl}}',
+          ],
+          minimumCharacters: 0,
         },
       ],
     },
     table: {
       contentToolbar: ['tableColumn', 'tableRow', 'mergeTableCells', 'tableProperties', 'tableCellProperties'],
+    },
+    wordCount: {
+      onUpdate: (stats: any) => {
+        // Word count stats available: stats.words, stats.characters
+        if (typeof window !== 'undefined' && (window as any).ckeditorWordCount) {
+          (window as any).ckeditorWordCount = stats;
+        }
+      },
     },
   };
 
@@ -646,6 +704,10 @@ const TemplateStudioCKE: React.FC = () => {
       { id: 'sampleCollectedAt', label: 'Sample Collected At', placeholder: '{{sampleCollectedAt}}', group: 'patient' },
       { id: 'approvedAt', label: 'Approved / Verified At', placeholder: '{{approvedAt}}', group: 'patient' },
       { id: 'orderId', label: 'Order ID', placeholder: '{{orderId}}', group: 'patient' },
+      { id: 'approverSignature', label: 'Approver Signature (Dynamic)', placeholder: '{{approverSignature}}', group: 'patient' },
+      { id: 'approvedByName', label: 'Approved By Name', placeholder: '{{approvedByName}}', group: 'patient' },
+      { id: 'approverName', label: 'Approver Name', placeholder: '{{approverName}}', group: 'patient' },
+      { id: 'approverRole', label: 'Approver Role', placeholder: '{{approverRole}}', group: 'patient' },
     ],
     []
   );
@@ -1009,6 +1071,19 @@ const TemplateStudioCKE: React.FC = () => {
             if (option.removeBackground) {
               styleSegments.push('background:none transparent', 'background-image:none');
             }
+            
+            // Add background layer styling for watermarks
+            if (option.assetType === 'watermark') {
+              styleSegments.push(
+                'position:absolute',
+                'top:50%',
+                'left:50%',
+                'transform:translate(-50%, -50%)',
+                'z-index:1',
+                'opacity:0.15',
+                'pointer-events:none'
+              );
+            }
 
             if (!option.preferredWidth && !option.preferredHeight) {
               styleSegments.push('max-width:100%', 'height:auto');
@@ -1023,12 +1098,20 @@ const TemplateStudioCKE: React.FC = () => {
             return;
           }
 
-          const insertPosition = selection.getFirstPosition();
-          if (insertPosition) {
-            writer.insertText(token, insertPosition);
+          // For signature placeholders, insert as image tag instead of plain text
+          if (token === '{{approverSignature}}' || token === '{{approvedBySignature}}') {
+            const imgHtml = `<img src="${token}" alt="Approver Signature" style="max-width:200px;height:auto;object-fit:contain;" />`;
+            const viewFragment = instance.data.processor.toView(imgHtml);
+            const modelFragment = instance.data.toModel(viewFragment);
+            instance.model.insertContent(modelFragment, selection);
           } else {
-            const textNode = writer.createText(token);
-            instance.model.insertContent(textNode, selection);
+            const insertPosition = selection.getFirstPosition();
+            if (insertPosition) {
+              writer.insertText(token, insertPosition);
+            } else {
+              const textNode = writer.createText(token);
+              instance.model.insertContent(textNode, selection);
+            }
           }
         });
 
@@ -1056,6 +1139,49 @@ const TemplateStudioCKE: React.FC = () => {
     },
     [cssContent, htmlContent]
   );
+
+  const handleConvertToWatermark = useCallback(() => {
+    const instance = ckeditorInstance || editorInstanceRef.current;
+    if (!instance) {
+      alert('Editor is not ready');
+      return;
+    }
+
+    try {
+      instance.model.change((writer: any) => {
+        const selection = instance.model.document.selection;
+        const selectedElement = selection.getSelectedElement();
+
+        if (!selectedElement || !selectedElement.is('element', 'imageBlock')) {
+          alert('Please select an image first to convert it to a watermark');
+          return;
+        }
+
+        // Apply watermark styling
+        const watermarkStyles = [
+          'position:absolute',
+          'top:50%',
+          'left:50%',
+          'transform:translate(-50%, -50%)',
+          'z-index:1',
+          'opacity:0.15',
+          'pointer-events:none',
+          'max-width:80%',
+          'height:auto',
+          'background:none transparent',
+          'background-image:none'
+        ].join(';');
+
+        writer.setAttribute('style', watermarkStyles, selectedElement);
+        writer.setAttribute('class', 'report-watermark', selectedElement);
+        
+        alert('✅ Image converted to watermark background layer!\n\nThe image now has:\n• Low opacity (15%)\n• Centered position\n• Behind content (z-index: 1)\n• Content will appear above it (z-index: 3)');
+      });
+    } catch (err) {
+      console.error('Failed to convert to watermark:', err);
+      alert('Failed to apply watermark styling. Please try again.');
+    }
+  }, [ckeditorInstance]);
 
   const identityId = user?.id;
 
@@ -1885,6 +2011,17 @@ const TemplateStudioCKE: React.FC = () => {
             className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
           >
             Placeholders
+          </button>
+          <button
+            type="button"
+            onClick={handleConvertToWatermark}
+            title="Select an image and click to send it to background as watermark"
+            className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 transition hover:bg-indigo-100"
+          >
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+            </svg>
+            Send to Background
           </button>
           <button
             type="button"

@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { database } from '../../utils/supabase';
 
 type SignatureType = 'digital' | 'handwritten' | 'stamp' | 'text';
 
@@ -8,6 +9,13 @@ interface SignatureUploaderProps {
   apiBaseUrl?: string;
   onSuccess: () => void;
   onClose: () => void;
+}
+
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  role?: string;
 }
 
 const toBase64 = (file: File) =>
@@ -28,6 +36,27 @@ export const SignatureUploader: React.FC<SignatureUploaderProps> = ({ labId, use
   const [file, setFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // User selection
+  const [selectedUserId, setSelectedUserId] = useState<string>(userId);
+  const [users, setUsers] = useState<User[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(true);
+
+  useEffect(() => {
+    loadUsers();
+  }, [labId]);
+
+  const loadUsers = async () => {
+    try {
+      const { data, error } = await database.users.getLabUsers(labId);
+      if (error) throw error;
+      setUsers(data || []);
+    } catch (err) {
+      console.error('Error loading users:', err);
+    } finally {
+      setLoadingUsers(false);
+    }
+  };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -59,7 +88,7 @@ export const SignatureUploader: React.FC<SignatureUploaderProps> = ({ labId, use
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           labId,
-          userId,
+          userId: selectedUserId,
           signatureType,
           fileName,
           contentType,
@@ -93,13 +122,34 @@ export const SignatureUploader: React.FC<SignatureUploaderProps> = ({ labId, use
           </div>
 
           <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">User</label>
+            <select
+              value={selectedUserId}
+              onChange={(event) => setSelectedUserId(event.target.value)}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring"
+              disabled={isSubmitting || loadingUsers}
+            >
+              {loadingUsers ? (
+                <option>Loading users...</option>
+              ) : (
+                users.map((user) => (
+                  <option key={user.id} value={user.id}>
+                    {user.name} ({user.email})
+                  </option>
+                ))
+              )}
+            </select>
+            <p className="mt-1 text-xs text-gray-500">Select the user this signature belongs to</p>
+          </div>
+
+          <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">Signature name</label>
             <input
               type="text"
               value={signatureName}
               onChange={(event) => setSignatureName(event.target.value)}
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring"
-              placeholder="e.g. Dr. A. Kumar"
+              placeholder="e.g. Dr. A. Kumar Official Signature"
               disabled={isSubmitting}
             />
           </div>

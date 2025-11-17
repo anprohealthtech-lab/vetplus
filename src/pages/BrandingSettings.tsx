@@ -112,8 +112,8 @@ export const BrandingSettings: React.FC = () => {
         throw new Error(`Failed to load branding assets: ${assetsError.message}`);
       }
 
-      // Load user signatures
-      const { data: signatures, error: signaturesError } = await database.userSignatures.getAll();
+      // Load ALL lab user signatures (not just current user's)
+      const { data: signatures, error: signaturesError } = await database.userSignatures.getAllForLab(currentLabId);
       if (signaturesError) {
         throw new Error(`Failed to load signatures: ${signaturesError.message}`);
       }
