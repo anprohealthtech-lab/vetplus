@@ -1,51 +1,103 @@
 import React, { useState, useEffect } from 'react';
-import { Users, Plus, Edit, Trash2, Eye, Search, CheckCircle, XCircle, Phone, Mail, Shield } from 'lucide-react';
-import { database } from '../utils/supabase';
-import { useAuth } from '../contexts/AuthContext';
+import { 
+  Users, 
+  Plus, 
+  Edit, 
+  Trash2, 
+  Search, 
+  Filter,
+  UserCheck,
+  UserX,
+  Clock,
+  Mail,
+  Phone,
+  Shield,
+  MapPin,
+  Calendar
+} from 'lucide-react';
+import { supabase, database } from '../utils/supabase';
+import AddUserModal from '../components/Users/AddUserModal';
 
 interface User {
   id: string;
   name: string;
   email: string;
-  role: string;
-  department?: string;
+  contact_number: string;
+  gender: string;
   status: string;
-  phone?: string;
+  join_date: string;
+  last_login: string;
+  role_name: string;
+  role_code: string;
+  permissions: string[];
+  assigned_centers: string[];
   lab_id: string;
-  is_phlebotomist?: boolean;
-  created_at?: string;
-  last_login?: string;
+  is_phlebotomist: boolean;
 }
 
 const UserManagement: React.FC = () => {
-  const { user: currentUser } = useAuth();
   const [users, setUsers] = useState<User[]>([]);
+  const [filteredUsers, setFilteredUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedRole, setSelectedRole] = useState('All');
-  const [showUserForm, setShowUserForm] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [roleFilter, setRoleFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [error, setError] = useState('');
 
+  // Load users
   useEffect(() => {
     loadUsers();
   }, []);
 
+  // Filter users
+  useEffect(() => {
+    let filtered = users;
+
+    if (searchTerm) {
+      filtered = filtered.filter(user =>
+        user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        user.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        user.contact_number?.includes(searchTerm)
+      );
+    }
+
+    if (roleFilter !== 'all') {
+      filtered = filtered.filter(user => user.role_code === roleFilter);
+    }
+
+    if (statusFilter !== 'all') {
+      filtered = filtered.filter(user => user.status === statusFilter);
+    }
+
+    setFilteredUsers(filtered);
+  }, [users, searchTerm, roleFilter, statusFilter]);
+
   const loadUsers = async () => {
     try {
       setLoading(true);
+      setError('');
+
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        console.error('No lab ID found');
+        setError('No lab context found');
         return;
       }
 
-      const { data, error } = await database.users.getLabUsers(labId);
+      // Load users with permissions and roles from the view
+      const { data, error } = await supabase
+        .from('v_users_with_permissions')
+        .select('*')
+        .eq('lab_id', labId)
+        .order('name');
+
       if (error) throw error;
 
       setUsers(data || []);
-    } catch (error) {
-      console.error('Error loading users:', error);
-      alert('Failed to load users');
+    } catch (err: any) {
+      console.error('Error loading users:', err);
+      setError(err.message || 'Failed to load users');
     } finally {
       setLoading(false);
     }
@@ -69,27 +121,60 @@ const UserManagement: React.FC = () => {
   };
 
   const handleDeleteUser = async (userId: string) => {
-    if (!confirm('Are you sure you want to delete this user?')) return;
+    if (!confirm('Are you sure you want to deactivate this user?')) return;
 
     try {
-      // In production, you'd call a delete API
-      // For now, just mark as inactive
-      alert('User deletion requires additional security verification');
+      const { error } = await supabase
+        .from('users')
+        .update({ status: 'Inactive' })
+        .eq('id', userId);
+
+      if (error) throw error;
+
+      // Reload users
+      await loadUsers();
     } catch (error) {
-      console.error('Error deleting user:', error);
-      alert('Failed to delete user');
+      console.error('Error deactivating user:', error);
+      alert('Failed to deactivate user');
     }
   };
 
-  const filteredUsers = users.filter((user) => {
-    const matchesSearch =
-      user.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      user.email?.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesRole = selectedRole === 'All' || user.role === selectedRole;
-    return matchesSearch && matchesRole;
-  });
+  // Helper functions for badges and formatting
+  const getStatusBadge = (status: string) => {
+    const styles = {
+      Active: 'bg-green-100 text-green-800',
+      Inactive: 'bg-red-100 text-red-800',
+      Suspended: 'bg-yellow-100 text-yellow-800',
+    };
+    return styles[status as keyof typeof styles] || 'bg-gray-100 text-gray-800';
+  };
+
+  const getRoleBadge = (roleCode: string) => {
+    const styles = {
+      admin: 'bg-purple-100 text-purple-800',
+      lab_manager: 'bg-blue-100 text-blue-800',
+      doctor: 'bg-teal-100 text-teal-800',
+      technician: 'bg-cyan-100 text-cyan-800',
+      phlebotomist: 'bg-orange-100 text-orange-800',
+      receptionist: 'bg-pink-100 text-pink-800',
+      finance_manager: 'bg-green-100 text-green-800',
+      quality_control: 'bg-indigo-100 text-indigo-800',
+    };
+    return styles[roleCode as keyof typeof styles] || 'bg-gray-100 text-gray-800';
+  };
+
+  const formatDate = (dateString?: string) => {
+    if (!dateString) return 'N/A';
+    return new Date(dateString).toLocaleDateString();
+  };
+
+  const formatDateTime = (dateString?: string) => {
+    if (!dateString) return 'Never';
+    return new Date(dateString).toLocaleString();
+  };
 
   const activeUsers = users.filter(u => u.status === 'Active').length;
+  const inactiveUsers = users.filter(u => u.status === 'Inactive').length;
   const phlebotomists = users.filter(u => u.is_phlebotomist).length;
 
   return (
@@ -102,8 +187,8 @@ const UserManagement: React.FC = () => {
         </div>
         <button
           onClick={() => {
-            setSelectedUser(null);
-            setShowUserForm(true);
+            setEditingUser(null);
+            setShowUserModal(true);
           }}
           className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
         >
@@ -111,6 +196,13 @@ const UserManagement: React.FC = () => {
           Add User
         </button>
       </div>
+
+      {/* Error Display */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-800">
+          {error}
+        </div>
+      )}
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
@@ -129,7 +221,7 @@ const UserManagement: React.FC = () => {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center">
             <div className="bg-green-100 p-3 rounded-lg">
-              <CheckCircle className="h-6 w-6 text-green-600" />
+              <UserCheck className="h-6 w-6 text-green-600" />
             </div>
             <div className="ml-4">
               <div className="text-2xl font-bold text-gray-900">{activeUsers}</div>
@@ -152,14 +244,12 @@ const UserManagement: React.FC = () => {
 
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center">
-            <div className="bg-purple-100 p-3 rounded-lg">
-              <Shield className="h-6 w-6 text-purple-600" />
+            <div className="bg-red-100 p-3 rounded-lg">
+              <UserX className="h-6 w-6 text-red-600" />
             </div>
             <div className="ml-4">
-              <div className="text-2xl font-bold text-gray-900">
-                {users.filter(u => u.role === 'admin').length}
-              </div>
-              <div className="text-sm text-gray-600">Administrators</div>
+              <div className="text-2xl font-bold text-gray-900">{inactiveUsers}</div>
+              <div className="text-sm text-gray-600">Inactive Users</div>
             </div>
           </div>
         </div>
@@ -172,22 +262,36 @@ const UserManagement: React.FC = () => {
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
             <input
               type="text"
-              placeholder="Search users by name or email..."
+              placeholder="Search users by name, email, or contact..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
           <select
-            value={selectedRole}
-            onChange={(e) => setSelectedRole(e.target.value)}
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
             className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            <option value="All">All Roles</option>
+            <option value="all">All Roles</option>
             <option value="admin">Admin</option>
             <option value="lab_manager">Lab Manager</option>
+            <option value="doctor">Doctor</option>
             <option value="technician">Technician</option>
+            <option value="phlebotomist">Phlebotomist</option>
             <option value="receptionist">Receptionist</option>
+            <option value="finance_manager">Finance Manager</option>
+            <option value="quality_control">Quality Control</option>
+          </select>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All Status</option>
+            <option value="Active">Active</option>
+            <option value="Inactive">Inactive</option>
+            <option value="Suspended">Suspended</option>
           </select>
         </div>
       </div>
@@ -203,7 +307,9 @@ const UserManagement: React.FC = () => {
         {loading ? (
           <div className="p-8 text-center text-gray-500">Loading users...</div>
         ) : filteredUsers.length === 0 ? (
-          <div className="p-8 text-center text-gray-500">No users found</div>
+          <div className="p-8 text-center text-gray-500">
+            No users found matching your criteria
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -216,13 +322,16 @@ const UserManagement: React.FC = () => {
                     Role
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Department
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Phlebotomist
+                    Contact
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Status
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Joined
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Last Login
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Actions
@@ -240,7 +349,14 @@ const UserManagement: React.FC = () => {
                           </span>
                         </div>
                         <div className="ml-4">
-                          <div className="text-sm font-medium text-gray-900">{user.name}</div>
+                          <div className="flex items-center">
+                            <div className="text-sm font-medium text-gray-900">{user.name}</div>
+                            {user.is_phlebotomist && (
+                              <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+                                Phlebotomist
+                              </span>
+                            )}
+                          </div>
                           <div className="text-sm text-gray-500 flex items-center">
                             <Mail className="h-3 w-3 mr-1" />
                             {user.email}
@@ -249,51 +365,52 @@ const UserManagement: React.FC = () => {
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="inline-flex px-2 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-800">
-                        {user.role || 'N/A'}
+                      <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${getRoleBadge(user.role_code)}`}>
+                        {user.role_name}
                       </span>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {user.department || 'Laboratory'}
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm text-gray-900">{user.contact_number || 'N/A'}</div>
+                      {user.assigned_centers && user.assigned_centers.length > 0 && (
+                        <div className="flex items-center text-xs text-gray-500 mt-1">
+                          <MapPin className="h-3 w-3 mr-1" />
+                          {user.assigned_centers.length} center(s)
+                        </div>
+                      )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <label className="flex items-center cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={user.is_phlebotomist || false}
-                          onChange={() => handleTogglePhlebotomist(user.id, user.is_phlebotomist || false)}
-                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                        />
-                        <span className="ml-2 text-sm text-gray-700">
-                          {user.is_phlebotomist ? 'Yes' : 'No'}
-                        </span>
-                      </label>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span
-                        className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
-                          user.status === 'Active'
-                            ? 'bg-green-100 text-green-800'
-                            : 'bg-red-100 text-red-800'
-                        }`}
-                      >
+                      <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${getStatusBadge(user.status)}`}>
                         {user.status}
                       </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex items-center text-sm text-gray-500">
+                        <Calendar className="h-3 w-3 mr-1" />
+                        {formatDate(user.join_date)}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex items-center text-sm text-gray-500">
+                        <Clock className="h-3 w-3 mr-1" />
+                        {formatDateTime(user.last_login)}
+                      </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                       <div className="flex items-center space-x-2">
                         <button
                           onClick={() => {
-                            setSelectedUser(user);
-                            setShowUserForm(true);
+                            setEditingUser(user);
+                            setShowUserModal(true);
                           }}
-                          className="text-blue-600 hover:text-blue-900"
+                          className="text-blue-600 hover:text-blue-900 p-1 rounded hover:bg-blue-50"
+                          title="Edit user"
                         >
                           <Edit className="h-4 w-4" />
                         </button>
                         <button
                           onClick={() => handleDeleteUser(user.id)}
-                          className="text-red-600 hover:text-red-900"
+                          className="text-red-600 hover:text-red-900 p-1 rounded hover:bg-red-50"
+                          title="Deactivate user"
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
@@ -307,24 +424,20 @@ const UserManagement: React.FC = () => {
         )}
       </div>
 
-      {/* User Form Modal - TODO: Implement full form */}
-      {showUserForm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-2xl w-full mx-4">
-            <h2 className="text-xl font-bold mb-4">
-              {selectedUser ? 'Edit User' : 'Add New User'}
-            </h2>
-            <p className="text-gray-600 mb-4">
-              User form functionality will be implemented with full user management features.
-            </p>
-            <button
-              onClick={() => setShowUserForm(false)}
-              className="px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300"
-            >
-              Close
-            </button>
-          </div>
-        </div>
+      {/* Add/Edit User Modal */}
+      {showUserModal && (
+        <AddUserModal
+          user={editingUser}
+          onClose={() => {
+            setShowUserModal(false);
+            setEditingUser(null);
+          }}
+          onSuccess={() => {
+            setShowUserModal(false);
+            setEditingUser(null);
+            loadUsers();
+          }}
+        />
       )}
     </div>
   );

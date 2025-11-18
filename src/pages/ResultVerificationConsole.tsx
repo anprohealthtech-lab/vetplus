@@ -62,6 +62,15 @@ type Analyte = {
   verified_at: string | null;
 };
 
+type TrendData = {
+  bill_date: string;
+  test_name: string;
+  value: string;
+  unit: string;
+  reference_range: string;
+  flag: string | null;
+};
+
 type Attachment = {
   id: string;
   file_url: string;
@@ -352,6 +361,10 @@ const ResultVerificationConsole: React.FC = () => {
   // bulk operations
   const [selectedPanels, setSelectedPanels] = useState<Set<string>>(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [trendData, setTrendData] = useState<Record<string, TrendData[]>>({});
+  const [showTrendModal, setShowTrendModal] = useState(false);
+  const [selectedAnalyteTrend, setSelectedAnalyteTrend] = useState<{ parameter: string; patientId: string } | null>(null);
+  const [loadingTrend, setLoadingTrend] = useState(false);
 
     /* ----------------- Load attachments ----------------- */
   const loadAttachments = async (orderId: string) => {
@@ -491,6 +504,38 @@ const ResultVerificationConsole: React.FC = () => {
           setRowsByResult((s) => ({ ...s, [result_id]: mapped }));
         }
       }
+    }
+  };
+
+  /* ----------------- Load trend data for analyte ----------------- */
+  const loadTrendData = async (patientId: string, parameter: string) => {
+    const cacheKey = `${patientId}-${parameter}`;
+    if (trendData[cacheKey]) {
+      setSelectedAnalyteTrend({ parameter, patientId });
+      setShowTrendModal(true);
+      return;
+    }
+
+    setLoadingTrend(true);
+    try {
+      const { data, error } = await supabase
+        .from('v_report_template_context')
+        .select('bill_date, test_name, value, unit, reference_range, flag')
+        .eq('patient_id', patientId)
+        .eq('parameter', parameter)
+        .order('bill_date', { ascending: false })
+        .limit(10);
+
+      if (error) throw error;
+
+      setTrendData((prev) => ({ ...prev, [cacheKey]: (data || []) as TrendData[] }));
+      setSelectedAnalyteTrend({ parameter, patientId });
+      setShowTrendModal(true);
+    } catch (error) {
+      console.error('Error loading trend data:', error);
+      alert('Failed to load trend data');
+    } finally {
+      setLoadingTrend(false);
     }
   };
 
@@ -673,9 +718,11 @@ const ResultVerificationConsole: React.FC = () => {
     );
   };
 
-  const AnalyteRowView: React.FC<{ a: Analyte }> = ({ a }) => {
+  const AnalyteRowView: React.FC<{ a: Analyte; patientId: string }> = ({ a, patientId }) => {
     const status = a.verify_status || "pending";
     const isBusy = !!busy[a.id];
+    const cacheKey = `${patientId}-${a.parameter}`;
+    const hasTrend = trendData[cacheKey] && trendData[cacheKey].length > 0;
 
     const getFlagBadge = (flag: string | null) => {
       if (!flag) return null;
@@ -700,7 +747,26 @@ const ResultVerificationConsole: React.FC = () => {
     return (
       <tr className="hover:bg-blue-50 transition-colors">
         <td className="px-4 py-4">
-          <div className="font-semibold text-gray-900">{a.parameter}</div>
+          <div className="flex items-center space-x-2">
+            <div className="font-semibold text-gray-900">{a.parameter}</div>
+            <button
+              onClick={() => loadTrendData(patientId, a.parameter)}
+              disabled={loadingTrend}
+              className="inline-flex items-center text-blue-600 hover:text-blue-800 transition-colors"
+              title="View trend"
+            >
+              {loadingTrend && selectedAnalyteTrend?.parameter === a.parameter ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <TrendingUp className="h-4 w-4" />
+              )}
+            </button>
+            {hasTrend && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                {trendData[cacheKey].length}
+              </span>
+            )}
+          </div>
           {a.value && (
             <div className="text-sm text-gray-600 mt-1">
               Last updated: {a.verified_at ? new Date(a.verified_at).toLocaleString() : 'Never'}
@@ -936,7 +1002,7 @@ const ResultVerificationConsole: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {analytes.map((a) => (
-                    <AnalyteRowView key={a.id} a={a} />
+                    <AnalyteRowView key={a.id} a={a} patientId={row.patient_id} />
                   ))}
                 </tbody>
               </table>
@@ -1016,6 +1082,139 @@ const ResultVerificationConsole: React.FC = () => {
     const today = new Date().toISOString().split('T')[0];
     setFrom(today);
     setTo(today);
+  };
+
+  /* ----------------- Trend Modal Component ----------------- */
+  const TrendModal: React.FC = () => {
+    if (!showTrendModal || !selectedAnalyteTrend) return null;
+
+    const cacheKey = `${selectedAnalyteTrend.patientId}-${selectedAnalyteTrend.parameter}`;
+    const trends = trendData[cacheKey] || [];
+
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
+          <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <TrendingUp className="h-6 w-6 text-white" />
+              <h3 className="text-xl font-bold text-white">
+                Trend: {selectedAnalyteTrend.parameter}
+              </h3>
+            </div>
+            <button
+              onClick={() => setShowTrendModal(false)}
+              className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2 transition-colors"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="p-6 overflow-y-auto max-h-[calc(90vh-80px)]">
+            {trends.length === 0 ? (
+              <div className="text-center py-12">
+                <Activity className="h-16 w-16 text-gray-300 mx-auto mb-4" />
+                <p className="text-gray-500 text-lg">No historical data available</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-4">
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <span className="text-gray-600 font-medium">Total Records:</span>
+                      <span className="ml-2 text-gray-900 font-bold">{trends.length}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-600 font-medium">Date Range:</span>
+                      <span className="ml-2 text-gray-900 font-bold">
+                        {trends.length > 0 && fmtDate(trends[trends.length - 1].bill_date)} - {trends.length > 0 && fmtDate(trends[0].bill_date)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                  <table className="min-w-full">
+                    <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-sm font-bold text-gray-700 uppercase">
+                          Bill Date
+                        </th>
+                        <th className="px-4 py-3 text-left text-sm font-bold text-gray-700 uppercase">
+                          Test Name
+                        </th>
+                        <th className="px-4 py-3 text-left text-sm font-bold text-gray-700 uppercase">
+                          Value
+                        </th>
+                        <th className="px-4 py-3 text-left text-sm font-bold text-gray-700 uppercase">
+                          Unit
+                        </th>
+                        <th className="px-4 py-3 text-left text-sm font-bold text-gray-700 uppercase">
+                          Range
+                        </th>
+                        <th className="px-4 py-3 text-left text-sm font-bold text-gray-700 uppercase">
+                          Flag
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {trends.map((trend, idx) => {
+                        const isLatest = idx === 0;
+                        return (
+                          <tr
+                            key={idx}
+                            className={`${
+                              isLatest ? 'bg-blue-50 font-semibold' : 'hover:bg-gray-50'
+                            } transition-colors`}
+                          >
+                            <td className="px-4 py-3 text-sm text-gray-900">
+                              {fmtDate(trend.bill_date)}
+                              {isLatest && (
+                                <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-800">
+                                  Latest
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-gray-700">
+                              {trend.test_name}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="text-lg font-bold text-gray-900">
+                                {trend.value}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-sm font-medium text-gray-700">
+                              {trend.unit}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-gray-600">
+                              {trend.reference_range}
+                            </td>
+                            <td className="px-4 py-3">
+                              {trend.flag && (
+                                <span
+                                  className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${
+                                    trend.flag === 'H' || trend.flag === 'Critical'
+                                      ? 'bg-red-100 text-red-800'
+                                      : trend.flag === 'L'
+                                      ? 'bg-blue-100 text-blue-800'
+                                      : 'bg-orange-100 text-orange-800'
+                                  }`}
+                                >
+                                  {trend.flag}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   };
 
   /* ----------------- Render ----------------- */
@@ -1410,6 +1609,9 @@ const ResultVerificationConsole: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Trend Modal */}
+      <TrendModal />
     </div>
   );
 };

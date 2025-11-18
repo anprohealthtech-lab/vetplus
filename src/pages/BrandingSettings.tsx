@@ -68,7 +68,7 @@ interface SignatureVariant {
 const isPlaceholderId = (value: string) => value.startsWith('temp-');
 
 export const BrandingSettings: React.FC = () => {
-  const [currentTab, setCurrentTab] = useState<'assets' | 'signatures' | 'preview'>('assets');
+  const [currentTab, setCurrentTab] = useState<'assets' | 'signatures' | 'watermark' | 'preview'>('assets');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
@@ -77,6 +77,15 @@ export const BrandingSettings: React.FC = () => {
   const [userSignatures, setUserSignatures] = useState<UserSignature[]>([]);
   const [labId, setLabId] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  
+  // Watermark settings state
+  const [watermarkEnabled, setWatermarkEnabled] = useState(false);
+  const [watermarkImageUrl, setWatermarkImageUrl] = useState<string>('');
+  const [watermarkOpacity, setWatermarkOpacity] = useState(0.15);
+  const [watermarkPosition, setWatermarkPosition] = useState<'center' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'repeat'>('center');
+  const [watermarkSize, setWatermarkSize] = useState<'small' | 'medium' | 'large' | 'full'>('medium');
+  const [watermarkRotation, setWatermarkRotation] = useState(0);
+  const [savingWatermark, setSavingWatermark] = useState(false);
   
   // Upload states
   const [showAssetUploader, setShowAssetUploader] = useState(false);
@@ -98,6 +107,35 @@ export const BrandingSettings: React.FC = () => {
     try {
       // Get current lab ID
       const currentLabId = await database.getCurrentUserLabId();
+      if (!currentLabId) {
+        throw new Error('Lab ID not found');
+      }
+      setLabId(currentLabId);
+
+      // Get current user ID
+      const { user, error: authError } = await auth.getCurrentUser();
+      if (authError || !user) {
+        throw new Error('User not authenticated');
+      }
+      setCurrentUserId(user.id);
+
+      // Load lab watermark settings
+      const { data: labData, error: labError } = await database.supabase
+        .from('labs')
+        .select('watermark_enabled, watermark_image_url, watermark_opacity, watermark_position, watermark_size, watermark_rotation')
+        .eq('id', currentLabId)
+        .single();
+      
+      if (!labError && labData) {
+        setWatermarkEnabled(labData.watermark_enabled || false);
+        setWatermarkImageUrl(labData.watermark_image_url || '');
+        setWatermarkOpacity(labData.watermark_opacity || 0.15);
+        setWatermarkPosition(labData.watermark_position || 'center');
+        setWatermarkSize(labData.watermark_size || 'medium');
+        setWatermarkRotation(labData.watermark_rotation || 0);
+      }
+
+      // Load branding assets
       if (!currentLabId) {
         throw new Error('No lab ID found for current user');
       }
@@ -225,6 +263,34 @@ export const BrandingSettings: React.FC = () => {
     }
   };
 
+  const handleSaveWatermarkSettings = async () => {
+    if (!labId) return;
+    
+    setSavingWatermark(true);
+    try {
+      const { error } = await database.supabase
+        .from('labs')
+        .update({
+          watermark_enabled: watermarkEnabled,
+          watermark_image_url: watermarkImageUrl,
+          watermark_opacity: watermarkOpacity,
+          watermark_position: watermarkPosition,
+          watermark_size: watermarkSize,
+          watermark_rotation: watermarkRotation
+        })
+        .eq('id', labId);
+      
+      if (error) throw error;
+      
+      alert('✅ Watermark settings saved successfully!\n\nAll new reports will automatically include the watermark.');
+    } catch (err) {
+      console.error('Error saving watermark settings:', err);
+      alert('Failed to save watermark settings. Please try again.');
+    } finally {
+      setSavingWatermark(false);
+    }
+  };
+
   const getProcessingStatusIcon = (status?: string) => {
     switch (status) {
       case 'pending':
@@ -320,6 +386,7 @@ export const BrandingSettings: React.FC = () => {
         <nav className="-mb-px flex space-x-8">
           {[
             { id: 'assets', label: 'Branding Assets', icon: Image },
+            { id: 'watermark', label: 'Watermark Settings', icon: Eye },
             { id: 'signatures', label: 'Digital Signatures', icon: FileText },
             { id: 'preview', label: 'Preview & Export', icon: Eye }
           ].map((tab) => {
@@ -403,6 +470,223 @@ export const BrandingSettings: React.FC = () => {
               <p className="mt-1 text-sm text-gray-500">Get started by uploading your first asset.</p>
             </div>
           )}
+        </div>
+      )}
+
+      {currentTab === 'watermark' && (
+        <div className="space-y-6">
+          {/* Watermark Settings Card */}
+          <div className="bg-white border border-gray-200 rounded-lg p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Automatic Report Watermark</h3>
+            <p className="text-sm text-gray-600 mb-6">
+              Configure watermark settings to automatically apply to all generated reports. This is faster and more scalable than external API watermarking.
+            </p>
+
+            {/* Enable/Disable Toggle */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                <div>
+                  <label className="text-sm font-medium text-gray-900">Enable Watermark</label>
+                  <p className="text-xs text-gray-500 mt-1">Apply watermark to all generated reports</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={watermarkEnabled}
+                      onChange={(e) => setWatermarkEnabled(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                  </label>
+                  <span className="text-sm font-medium text-gray-700">
+                    {watermarkEnabled ? 'Enabled' : 'Disabled'}
+                  </span>
+                </div>
+              </div>
+
+              {watermarkEnabled && (
+                <>
+                  {/* Watermark Image Selection */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-900">Watermark Image</label>
+                    <div className="flex gap-3">
+                      <input
+                        type="text"
+                        value={watermarkImageUrl}
+                        onChange={(e) => setWatermarkImageUrl(e.target.value)}
+                        placeholder="Enter image URL or select from assets below"
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm"
+                      />
+                    </div>
+                    {watermarkImageUrl && (
+                      <div className="mt-2 p-3 bg-gray-50 rounded border border-gray-200">
+                        <img 
+                          src={watermarkImageUrl} 
+                          alt="Watermark Preview" 
+                          className="max-h-24 mx-auto"
+                          style={{ opacity: watermarkOpacity }}
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Quick select from existing assets */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-900">Or select from your assets:</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {brandingAssets
+                        .filter(asset => asset.asset_type === 'watermark' || asset.asset_type === 'logo')
+                        .map((asset) => (
+                          <button
+                            key={asset.id}
+                            onClick={() => setWatermarkImageUrl(asset.file_url)}
+                            className={`p-2 border-2 rounded-lg hover:border-blue-500 transition ${
+                              watermarkImageUrl === asset.file_url ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
+                            }`}
+                          >
+                            <img src={asset.file_url} alt={asset.asset_name} className="w-full h-16 object-contain" />
+                            <p className="text-xs text-gray-600 mt-1 truncate">{asset.asset_name}</p>
+                          </button>
+                        ))}
+                    </div>
+                  </div>
+
+                  {/* Opacity Slider */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-900">
+                      Opacity: {(watermarkOpacity * 100).toFixed(0)}%
+                    </label>
+                    <input
+                      type="range"
+                      min="5"
+                      max="50"
+                      value={watermarkOpacity * 100}
+                      onChange={(e) => setWatermarkOpacity(parseInt(e.target.value) / 100)}
+                      className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>5% (Very Light)</span>
+                      <span>50% (Visible)</span>
+                    </div>
+                  </div>
+
+                  {/* Position Selector */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-900">Position</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { value: 'top-left', label: 'Top Left' },
+                        { value: 'center', label: 'Center' },
+                        { value: 'top-right', label: 'Top Right' },
+                        { value: 'bottom-left', label: 'Bottom Left' },
+                        { value: 'repeat', label: 'Repeat' },
+                        { value: 'bottom-right', label: 'Bottom Right' }
+                      ].map((pos) => (
+                        <button
+                          key={pos.value}
+                          onClick={() => setWatermarkPosition(pos.value as any)}
+                          className={`px-3 py-2 text-sm border rounded-md transition ${
+                            watermarkPosition === pos.value
+                              ? 'border-blue-500 bg-blue-50 text-blue-700 font-medium'
+                              : 'border-gray-300 text-gray-700 hover:border-blue-300'
+                          }`}
+                        >
+                          {pos.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Size Selector */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-900">Size</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {[
+                        { value: 'small', label: 'Small (40%)' },
+                        { value: 'medium', label: 'Medium (60%)' },
+                        { value: 'large', label: 'Large (80%)' },
+                        { value: 'full', label: 'Full (100%)' }
+                      ].map((size) => (
+                        <button
+                          key={size.value}
+                          onClick={() => setWatermarkSize(size.value as any)}
+                          className={`px-3 py-2 text-sm border rounded-md transition ${
+                            watermarkSize === size.value
+                              ? 'border-blue-500 bg-blue-50 text-blue-700 font-medium'
+                              : 'border-gray-300 text-gray-700 hover:border-blue-300'
+                          }`}
+                        >
+                          {size.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Rotation Slider */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-900">
+                      Rotation: {watermarkRotation}°
+                    </label>
+                    <input
+                      type="range"
+                      min="-45"
+                      max="45"
+                      value={watermarkRotation}
+                      onChange={(e) => setWatermarkRotation(parseInt(e.target.value))}
+                      className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>-45° (Left)</span>
+                      <span>0° (Straight)</span>
+                      <span>45° (Right)</span>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Save Button */}
+              <div className="flex justify-end pt-4 border-t border-gray-200">
+                <button
+                  onClick={handleSaveWatermarkSettings}
+                  disabled={savingWatermark}
+                  className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {savingWatermark ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle className="w-4 h-4" />
+                      Save Watermark Settings
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Info Box */}
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <div className="flex-shrink-0">
+                <svg className="w-5 h-5 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h4 className="text-sm font-medium text-blue-900 mb-1">How Automatic Watermarking Works</h4>
+                <ul className="text-sm text-blue-800 space-y-1 list-disc list-inside">
+                  <li>Watermark is applied during HTML-to-PDF generation (instant, no delays)</li>
+                  <li>No external API calls required (free and scalable)</li>
+                  <li>Works offline and handles unlimited reports</li>
+                  <li>Settings apply to all templates unless overridden</li>
+                </ul>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

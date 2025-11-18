@@ -24,3 +24,20 @@
 .gjs-mdl-bg {
   z-index: 60 !important;
 }
+
+/* Fix CKEditor toolbar z-index to appear above content */
+.ck.ck-toolbar,
+.ck.ck-balloon-panel,
+.ck.ck-dropdown__panel {
+  z-index: 9999 !important;
+}
+
+.ck-editor__editable {
+  position: relative;
+  z-index: 1;
+}
+
+/* Ensure CKEditor sticky toolbar stays on top */
+.ck-sticky-panel__content {
+  z-index: 10000 !important;
+}

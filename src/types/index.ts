@@ -167,6 +167,20 @@ export interface TestGroup {
   lab_id?: string;
   to_be_copied: boolean;
   description?: string;
+  // New test configuration fields
+  test_type?: 'Default' | 'Special' | 'Urgent' | 'Routine';
+  gender?: 'Male' | 'Female' | 'Both';
+  sample_color?: 'Red' | 'Blue' | 'Green' | 'Yellow' | 'Purple' | 'Gray' | 'Pink' | 'Orange';
+  barcode_suffix?: string;
+  lmp_required?: boolean;
+  id_required?: boolean;
+  consent_form?: boolean;
+  pre_collection_guidelines?: string;
+  flabs_id?: string;
+  only_female?: boolean;
+  only_male?: boolean;
+  only_billing?: boolean;
+  start_from_next_page?: boolean;
   created_at: string;
   updated_at: string;
 }

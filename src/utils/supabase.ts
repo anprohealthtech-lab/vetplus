@@ -3635,7 +3635,21 @@ export const database = {
           default_ai_processing_type: testGroupData.default_ai_processing_type || 'ocr_report',
           group_level_prompt: testGroupData.group_level_prompt || null,
           lab_id: testGroupData.lab_id || null,
-          to_be_copied: testGroupData.to_be_copied || false
+          to_be_copied: testGroupData.to_be_copied || false,
+          // New configuration fields
+          test_type: testGroupData.testType || 'Default',
+          gender: testGroupData.gender || 'Both',
+          sample_color: testGroupData.sampleColor || 'Red',
+          barcode_suffix: testGroupData.barcodeSuffix || null,
+          lmp_required: testGroupData.lmpRequired || false,
+          id_required: testGroupData.idRequired || false,
+          consent_form: testGroupData.consentForm || false,
+          pre_collection_guidelines: testGroupData.preCollectionGuidelines || null,
+          flabs_id: testGroupData.flabsId || null,
+          only_female: testGroupData.onlyFemale || false,
+          only_male: testGroupData.onlyMale || false,
+          only_billing: testGroupData.onlyBilling || false,
+          start_from_next_page: testGroupData.startFromNextPage || false
         };
 
         console.log('Creating test group with data:', sanitizedData);
@@ -3694,6 +3708,20 @@ export const database = {
             is_active: updates.isActive,
             default_ai_processing_type: updates.default_ai_processing_type,
             group_level_prompt: updates.group_level_prompt,
+            // New configuration fields
+            test_type: updates.testType,
+            gender: updates.gender,
+            sample_color: updates.sampleColor,
+            barcode_suffix: updates.barcodeSuffix,
+            lmp_required: updates.lmpRequired,
+            id_required: updates.idRequired,
+            consent_form: updates.consentForm,
+            pre_collection_guidelines: updates.preCollectionGuidelines,
+            flabs_id: updates.flabsId,
+            only_female: updates.onlyFemale,
+            only_male: updates.onlyMale,
+            only_billing: updates.onlyBilling,
+            start_from_next_page: updates.startFromNextPage,
             updated_at: new Date().toISOString()
           })
           .eq('id', id)

@@ -10,6 +10,8 @@ import {
   Sparkles,
   Trash2,
   Wand2,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 import TemplateAIConsole from '../components/TemplateStudio/TemplateAIConsole';
@@ -23,6 +25,15 @@ import '../styles/report-baseline.css';
 interface LabTemplateRecord {
   id: string;
   template_name: string;
+    Alignment,
+    Indent,
+    IndentBlock,
+    Subscript,
+    Superscript,
+    FontFamily,
+    FontSize,
+    FontColor,
+    FontBackgroundColor,
   template_description?: string | null;
   gjs_html?: string | null;
   gjs_css?: string | null;
@@ -257,6 +268,7 @@ const buildPremiumEditorConfig = (
     FindAndReplace,
     GeneralHtmlSupport,
     Heading,
+    Alignment,
     HorizontalLine,
     HtmlComment,
     // HtmlEmbed, // Removed - not allowed by license
@@ -317,11 +329,20 @@ const buildPremiumEditorConfig = (
     'showBlocks',
     '|',
     'heading',
+      'alignment',
+    '|',
+    'fontFamily',
+    'fontSize',
     '|',
     'bold',
     'italic',
+    'subscript',
+    'superscript',
     'code',
     'removeFormat',
+    '|',
+    'fontColor',
+    'fontBackgroundColor',
     '|',
     'emoji',
     'specialCharacters',
@@ -337,6 +358,9 @@ const buildPremiumEditorConfig = (
     'bulletedList',
     'numberedList',
     'todoList',
+    '|',
+    'outdent',
+    'indent',
   ];
 
   const plugins = [
@@ -356,6 +380,15 @@ const buildPremiumEditorConfig = (
     FindAndReplace,
     GeneralHtmlSupport,
     Heading,
+    Alignment,
+    Indent,
+    IndentBlock,
+    Subscript,
+    Superscript,
+    FontFamily,
+    FontSize,
+    FontColor,
+    FontBackgroundColor,
     HorizontalLine,
     HtmlComment,
     // HtmlEmbed, // Removed - not allowed by license
@@ -395,6 +428,7 @@ const buildPremiumEditorConfig = (
     TextTransformation,
     TodoList,
     WordCount,
+    Alignment,
   ];
 
   if (aiEnabled) {
@@ -408,8 +442,8 @@ const buildPremiumEditorConfig = (
     },
     plugins,
     balloonToolbar: aiEnabled
-      ? ['aiAssistant', '|', 'bold', 'italic', '|', 'link', 'insertImage', '|', 'bulletedList', 'numberedList']
-      : ['bold', 'italic', '|', 'link', 'insertImage', '|', 'bulletedList', 'numberedList'],
+      ? ['aiAssistant', '|', 'bold', 'italic', 'subscript', 'superscript', 'alignment', '|', 'link', 'insertImage', '|', 'bulletedList', 'numberedList']
+      : ['bold', 'italic', 'subscript', 'superscript', 'alignment', '|', 'link', 'insertImage', '|', 'bulletedList', 'numberedList'],
     initialData: options.initialData || '',
     licenseKey: options.licenseKey || '',
     placeholder: 'Type or paste your content here!',
@@ -437,6 +471,21 @@ const buildPremiumEditorConfig = (
         'ckboxImageEdit',
       ],
     },
+    table: {
+      contentToolbar: [
+        'tableColumn',
+        'tableRow',
+        'mergeTableCells',
+        'tableProperties',
+        'tableCellProperties',
+      ],
+      tableProperties: {
+        defaultProperties: { borderStyle: 'solid', borderColor: '#e5e7eb', borderWidth: '1px', alignment: 'center' },
+      },
+      tableCellProperties: {
+        defaultProperties: { horizontalAlignment: 'center', padding: '4px' },
+      }
+    },
     link: {
       addTargetToExternalLinks: true,
       defaultProtocol: 'https://',
@@ -456,6 +505,35 @@ const buildPremiumEditorConfig = (
         startIndex: true,
         reversed: true,
       },
+    },
+    alignment: {
+      options: [ 'left', 'center', 'right', 'justify' ]
+    },
+    fontFamily: {
+      options: [
+        'default',
+        'Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial, sans-serif',
+        'Arial, Helvetica, sans-serif',
+        'Times New Roman, Times, serif',
+        'Georgia, serif',
+      ],
+      supportAllValues: true,
+    },
+    fontSize: {
+      options: [10, 12, 14, 16, 18, 20, 24],
+      supportAllValues: true,
+    },
+    fontColor: {
+      columns: 8,
+      documentColors: 16,
+    },
+    fontBackgroundColor: {
+      columns: 8,
+      documentColors: 16,
+    },
+    indentBlock: {
+      offset: 24,
+      unit: 'px',
     },
     mention: {
       feeds: [
@@ -488,9 +566,6 @@ const buildPremiumEditorConfig = (
           minimumCharacters: 0,
         },
       ],
-    },
-    table: {
-      contentToolbar: ['tableColumn', 'tableRow', 'mergeTableCells', 'tableProperties', 'tableCellProperties'],
     },
     wordCount: {
       onUpdate: (stats: any) => {
@@ -1180,6 +1255,60 @@ const TemplateStudioCKE: React.FC = () => {
     } catch (err) {
       console.error('Failed to convert to watermark:', err);
       alert('Failed to apply watermark styling. Please try again.');
+    }
+  }, [ckeditorInstance]);
+
+  // Sidebar collapse/expand for more editor space
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  const handleAddImageOverlay = useCallback(() => {
+    const instance = ckeditorInstance || editorInstanceRef.current;
+    if (!instance) {
+      alert('Editor is not ready');
+      return;
+    }
+
+    try {
+      const selection = instance.model.document.selection;
+      const selectedElement = selection.getSelectedElement();
+
+      if (!selectedElement || !selectedElement.is('element', 'imageBlock')) {
+        alert('Please select an image first to add text overlay');
+        return;
+      }
+
+      const overlayText = prompt('Enter the text to display over the image:', 'Sample Overlay Text');
+      if (!overlayText) return;
+
+      const imageUrl = selectedElement.getAttribute('src');
+      
+      // Create HTML with image and overlay text
+      const overlayHtml = `
+        <div style="position:relative;display:inline-block;max-width:100%;">
+          <img src="${imageUrl}" style="display:block;width:100%;height:auto;" />
+          <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:10;background:rgba(0,0,0,0.6);color:white;padding:12px 24px;border-radius:8px;font-size:18px;font-weight:bold;text-align:center;white-space:nowrap;">
+            ${overlayText}
+          </div>
+        </div>
+      `;
+
+      instance.model.change((writer: any) => {
+        // Convert HTML to CKEditor model
+        const viewFragment = instance.data.processor.toView(overlayHtml);
+        const modelFragment = instance.data.toModel(viewFragment);
+        
+        // Replace the selected image with the overlay container
+        const parent = selectedElement.parent;
+        const index = parent.getChildIndex(selectedElement);
+        
+        writer.remove(selectedElement);
+        writer.insert(modelFragment, parent, index);
+      });
+
+      alert('✅ Text overlay added to image!\n\nYou can edit the HTML to customize:\n• Text content\n• Colors\n• Position\n• Background\n• Font size');
+    } catch (err) {
+      console.error('Failed to add image overlay:', err);
+      alert('Failed to add overlay. Please try again.');
     }
   }, [ckeditorInstance]);
 
@@ -2000,6 +2129,19 @@ const TemplateStudioCKE: React.FC = () => {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            onClick={() => setSidebarCollapsed((v) => !v)}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+            title={sidebarCollapsed ? 'Show Template Details' : 'Hide Template Details'}
+          >
+            {sidebarCollapsed ? (
+              <ChevronRight className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronLeft className="h-3.5 w-3.5" />
+            )}
+            {sidebarCollapsed ? 'Show Details' : 'Hide Details'}
+          </button>
+          <button
+            type="button"
             onClick={() => setIsSourcePreviewOpen(true)}
             className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
           >
@@ -2022,6 +2164,17 @@ const TemplateStudioCKE: React.FC = () => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
             </svg>
             Send to Background
+          </button>
+          <button
+            type="button"
+            onClick={handleAddImageOverlay}
+            title="Select an image and add text overlay on top of it"
+            className="inline-flex items-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-3 py-1.5 text-xs font-medium text-teal-700 transition hover:bg-teal-100"
+          >
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+            </svg>
+            Add Text Overlay
           </button>
           <button
             type="button"
@@ -2056,7 +2209,8 @@ const TemplateStudioCKE: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-visible">
+        {!sidebarCollapsed && (
         <aside className="w-full max-w-xs shrink-0 border-r border-gray-200 bg-gray-50 px-4 py-4">
           <div className="space-y-4 text-sm">
             <section>
@@ -2204,6 +2358,7 @@ const TemplateStudioCKE: React.FC = () => {
             ) : null}
           </div>
         </aside>
+        )}
 
         <main className="flex-1 overflow-y-auto px-6 py-6">
           {saveError ? (

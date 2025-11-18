@@ -907,6 +907,20 @@ const Tests: React.FC = () => {
             createdDate: group.created_at,
             default_ai_processing_type: group.default_ai_processing_type,
             group_level_prompt: group.group_level_prompt,
+            // New configuration fields
+            testType: group.test_type || 'Default',
+            gender: group.gender || 'Both',
+            sampleColor: group.sample_color || 'Red',
+            barcodeSuffix: group.barcode_suffix,
+            lmpRequired: group.lmp_required || false,
+            idRequired: group.id_required || false,
+            consentForm: group.consent_form || false,
+            preCollectionGuidelines: group.pre_collection_guidelines,
+            flabsId: group.flabs_id,
+            onlyFemale: group.only_female || false,
+            onlyMale: group.only_male || false,
+            onlyBilling: group.only_billing || false,
+            startFromNextPage: group.start_from_next_page || false,
             analytes: group.test_group_analytes ? group.test_group_analytes.map(tga => tga.analyte_id) : []
           }));
           setTestGroups(transformedTestGroups);

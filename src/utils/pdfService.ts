@@ -1903,6 +1903,66 @@ const renderMultipleTestGroupTemplates = async (
   };
 };
 
+/**
+ * Inject watermark HTML into report based on lab settings
+ */
+const injectWatermarkIfEnabled = async (html: string, labId: string): Promise<string> => {
+  try {
+    const { data: labSettings, error } = await supabase
+      .from('labs')
+      .select('watermark_enabled, watermark_image_url, watermark_opacity, watermark_position, watermark_size, watermark_rotation')
+      .eq('id', labId)
+      .single();
+    
+    if (error || !labSettings || !labSettings.watermark_enabled || !labSettings.watermark_image_url) {
+      return html; // No watermark configured
+    }
+
+    console.log('💧 Injecting automatic watermark:', {
+      url: labSettings.watermark_image_url,
+      opacity: labSettings.watermark_opacity,
+      position: labSettings.watermark_position,
+      size: labSettings.watermark_size,
+      rotation: labSettings.watermark_rotation
+    });
+
+    // Calculate size percentage
+    const sizeMap = { small: '40%', medium: '60%', large: '80%', full: '100%' };
+    const maxWidth = sizeMap[labSettings.watermark_size as keyof typeof sizeMap] || '60%';
+
+    // Calculate position styles
+    const positionMap: Record<string, string> = {
+      'center': 'top:50%;left:50%;transform:translate(-50%, -50%)',
+      'top-left': 'top:10%;left:10%',
+      'top-right': 'top:10%;right:10%',
+      'bottom-left': 'bottom:10%;left:10%',
+      'bottom-right': 'bottom:10%;right:10%',
+      'repeat': 'top:0;left:0;width:100%;height:100%;background-image:url(' + labSettings.watermark_image_url + ');background-repeat:repeat;background-size:30%;opacity:' + labSettings.watermark_opacity
+    };
+
+    const isRepeat = labSettings.watermark_position === 'repeat';
+    const positionStyle = positionMap[labSettings.watermark_position] || positionMap['center'];
+    const rotation = labSettings.watermark_rotation || 0;
+
+    const watermarkHtml = isRepeat 
+      ? `<div style="position:absolute;${positionStyle};z-index:1;pointer-events:none;"></div>`
+      : `<img src="${labSettings.watermark_image_url}" style="position:absolute;${positionStyle};${rotation !== 0 ? `transform:translate(-50%, -50%) rotate(${rotation}deg);` : ''}max-width:${maxWidth};height:auto;opacity:${labSettings.watermark_opacity};z-index:1;pointer-events:none;" alt="Watermark" />`;
+
+    // Inject watermark after body opening tag or at the start of main content
+    const bodyMatch = html.match(/<body[^>]*>/i);
+    if (bodyMatch) {
+      const insertIndex = bodyMatch.index! + bodyMatch[0].length;
+      return html.slice(0, insertIndex) + watermarkHtml + html.slice(insertIndex);
+    }
+
+    // Fallback: inject at the beginning
+    return watermarkHtml + html;
+  } catch (error) {
+    console.error('Failed to inject watermark:', error);
+    return html; // Return original HTML on error
+  }
+};
+
 const prepareReportHtml = async (
   reportData: ReportData,
   isDraft: boolean,
@@ -1915,23 +1975,22 @@ const prepareReportHtml = async (
   const context = reportData.templateContext;
   const hasMultipleTestGroups = context?.testGroupIds && context.testGroupIds.length > 1;
   
+  let finalHtml = '';
+  let bundle = null;
+
   if (hasMultipleTestGroups && allTemplates && allTemplates.length > 0) {
     console.log(`🔀 Detected ${context!.testGroupIds!.length} test groups, attempting multi-template merge`);
     
     try {
-      const { html, bundle } = await renderMultipleTestGroupTemplates(
+      const result = await renderMultipleTestGroupTemplates(
         reportData,
         isDraft,
         brandingDefaults,
         allTemplates
       );
       
-      return {
-        html,
-        bundle,
-        filenameBase,
-        brandingDefaults,
-      };
+      finalHtml = result.html;
+      bundle = result.bundle;
     } catch (error) {
       console.error('❌ Multi-template merge failed, falling back to single template:', error);
       // Fall through to single-template rendering
@@ -1939,8 +1998,8 @@ const prepareReportHtml = async (
   }
 
   // Single template rendering (original logic)
-  if (reportData.labTemplateRecord?.gjs_html && context) {
-    const bundle = renderLabTemplateHtmlBundle(reportData.labTemplateRecord, {
+  if (!finalHtml && reportData.labTemplateRecord?.gjs_html && context) {
+    bundle = renderLabTemplateHtmlBundle(reportData.labTemplateRecord, {
       context,
       overrides: {
         ...(reportData.placeholderOverrides ?? {}),
@@ -1950,17 +2009,22 @@ const prepareReportHtml = async (
       brandingDefaults,
     });
 
-    return {
-      html: bundle.previewHtml,
-      bundle,
-      filenameBase,
-      brandingDefaults,
-    };
+    finalHtml = bundle.previewHtml;
+  }
+
+  // Fallback to universal template
+  if (!finalHtml) {
+    finalHtml = generateUniversalHTMLTemplate(reportData, isDraft);
+  }
+
+  // Inject automatic watermark if lab has it configured
+  if (context?.labId) {
+    finalHtml = await injectWatermarkIfEnabled(finalHtml, context.labId);
   }
 
   return {
-    html: generateUniversalHTMLTemplate(reportData, isDraft),
-    bundle: null,
+    html: finalHtml,
+    bundle,
     filenameBase,
     brandingDefaults,
   };

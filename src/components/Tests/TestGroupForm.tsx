@@ -40,6 +40,20 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     isActive: testGroup?.isActive ?? true,
     default_ai_processing_type: testGroup?.default_ai_processing_type || 'ocr_report',
     group_level_prompt: testGroup?.group_level_prompt || '',
+    // New fields from the screenshot
+    testType: testGroup?.testType || 'Default',
+    gender: testGroup?.gender || 'Both',
+    sampleColor: testGroup?.sampleColor || 'Red',
+    barcodeSuffix: testGroup?.barcodeSuffix || '',
+    lmpRequired: testGroup?.lmpRequired ?? false,
+    idRequired: testGroup?.idRequired ?? false,
+    consentForm: testGroup?.consentForm ?? false,
+    preCollectionGuidelines: testGroup?.preCollectionGuidelines || '',
+    flabsId: testGroup?.flabsId || '',
+    onlyFemale: testGroup?.onlyFemale ?? false,
+    onlyMale: testGroup?.onlyMale ?? false,
+    onlyBilling: testGroup?.onlyBilling ?? false,
+    startFromNextPage: testGroup?.startFromNextPage ?? false,
   });
 
   const [analytes, setAnalytes] = useState([]);
@@ -302,6 +316,314 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             </div>
           </div>
 
+          {/* Test Configuration - Enhanced Settings */}
+          <div className="space-y-4 border-t border-gray-200 pt-6">
+            <h3 className="text-lg font-medium text-gray-900 flex items-center">
+              <Settings className="h-5 w-5 mr-2 text-purple-600" />
+              Test Configuration Settings
+            </h3>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Test Type */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Test Type
+                </label>
+                <select
+                  name="testType"
+                  value={formData.testType}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                >
+                  <option value="Default">Default</option>
+                  <option value="Special">Special</option>
+                  <option value="Urgent">Urgent</option>
+                  <option value="Routine">Routine</option>
+                </select>
+              </div>
+
+              {/* Gender */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Gender *
+                </label>
+                <div className="flex items-center space-x-4">
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="gender"
+                      value="Male"
+                      checked={formData.gender === 'Male'}
+                      onChange={handleChange}
+                      className="h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300"
+                    />
+                    <span className="ml-2 text-sm text-gray-700">Male</span>
+                  </label>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="gender"
+                      value="Female"
+                      checked={formData.gender === 'Female'}
+                      onChange={handleChange}
+                      className="h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300"
+                    />
+                    <span className="ml-2 text-sm text-gray-700">Female</span>
+                  </label>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="gender"
+                      value="Both"
+                      checked={formData.gender === 'Both'}
+                      onChange={handleChange}
+                      className="h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300"
+                    />
+                    <span className="ml-2 text-sm text-gray-700">Both</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Test Code (moved here for better organization) */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Test Code *
+                </label>
+                <input
+                  type="text"
+                  name="code"
+                  required
+                  value={formData.code}
+                  onChange={handleChange}
+                  placeholder="e.g., 17OHP"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Sample Color */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Sample Color
+                </label>
+                <select
+                  name="sampleColor"
+                  value={formData.sampleColor}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                >
+                  <option value="Red">Red</option>
+                  <option value="Blue">Blue</option>
+                  <option value="Green">Green</option>
+                  <option value="Yellow">Yellow</option>
+                  <option value="Purple">Purple</option>
+                  <option value="Gray">Gray</option>
+                  <option value="Pink">Pink</option>
+                  <option value="Orange">Orange</option>
+                </select>
+              </div>
+
+              {/* Barcode Suffix */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Barcode Suffix
+                </label>
+                <input
+                  type="text"
+                  name="barcodeSuffix"
+                  value={formData.barcodeSuffix}
+                  onChange={handleChange}
+                  placeholder="Enter suffix"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                />
+              </div>
+
+              {/* Price */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Price (₹) *
+                </label>
+                <input
+                  type="number"
+                  name="price"
+                  required
+                  min="0"
+                  step="0.01"
+                  value={formData.price}
+                  onChange={handleChange}
+                  placeholder="0"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Flabs ID */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Flabs ID
+                </label>
+                <input
+                  type="text"
+                  name="flabsId"
+                  value={formData.flabsId}
+                  onChange={handleChange}
+                  placeholder="FLT0625"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                />
+              </div>
+            </div>
+
+            {/* Required Fields */}
+            <div className="bg-blue-50 rounded-lg p-4">
+              <label className="block text-sm font-medium text-gray-900 mb-3">
+                Required Fields
+              </label>
+              <div className="flex flex-wrap gap-4">
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="lmpRequired"
+                    checked={formData.lmpRequired}
+                    onChange={handleChange}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">LMP Required</span>
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="idRequired"
+                    checked={formData.idRequired}
+                    onChange={handleChange}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">ID Required</span>
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="consentForm"
+                    checked={formData.consentForm}
+                    onChange={handleChange}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">Consent Form</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Additional Options */}
+            <div className="bg-amber-50 rounded-lg p-4">
+              <label className="block text-sm font-medium text-gray-900 mb-3">
+                Additional Options
+              </label>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="isActive"
+                    checked={formData.isActive}
+                    onChange={handleChange}
+                    className="h-4 w-4 text-green-600 focus:ring-green-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">Is Active</span>
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="requiresFasting"
+                    checked={formData.requiresFasting}
+                    onChange={handleChange}
+                    className="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">Requires Fasting</span>
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="onlyFemale"
+                    checked={formData.onlyFemale}
+                    onChange={handleChange}
+                    className="h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">Only Female</span>
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="onlyMale"
+                    checked={formData.onlyMale}
+                    onChange={handleChange}
+                    className="h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">Only Male</span>
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="onlyBilling"
+                    checked={formData.onlyBilling}
+                    onChange={handleChange}
+                    className="h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">Only Billing</span>
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="startFromNextPage"
+                    checked={formData.startFromNextPage}
+                    onChange={handleChange}
+                    className="h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">Start from Next Page</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Pre-Collection Guidelines */}
+            <div className="bg-green-50 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-3">
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={!!formData.preCollectionGuidelines}
+                    onChange={(e) => {
+                      if (!e.target.checked) {
+                        setFormData(prev => ({ ...prev, preCollectionGuidelines: '' }));
+                      } else {
+                        setFormData(prev => ({ ...prev, preCollectionGuidelines: ' ' }));
+                      }
+                    }}
+                    className="h-4 w-4 text-green-600 focus:ring-green-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm font-medium text-gray-900">Pre-Collection Guidelines</span>
+                </label>
+                {formData.preCollectionGuidelines && (
+                  <button
+                    type="button"
+                    onClick={() => setFormData(prev => ({ ...prev, preCollectionGuidelines: '' }))}
+                    className="text-sm text-green-600 hover:text-green-700"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              {formData.preCollectionGuidelines && (
+                <textarea
+                  name="preCollectionGuidelines"
+                  rows={3}
+                  value={formData.preCollectionGuidelines}
+                  onChange={handleChange}
+                  placeholder="Enter pre-collection guidelines for this test (e.g., fasting requirements, timing instructions)..."
+                  className="w-full px-3 py-2 border border-green-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                />
+              )}
+            </div>
+          </div>
+
           {/* Analyte Selection */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
@@ -415,79 +737,6 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 </div>
               </div>
             )}
-          </div>
-
-          {/* Pricing & Timing */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-medium text-gray-900 flex items-center">
-              <DollarSign className="h-5 w-5 mr-2" />
-              Pricing & Timing
-            </h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Price (₹) *
-                </label>
-                <input
-                  type="number"
-                  name="price"
-                  required
-                  min="0"
-                  step="0.01"
-                  value={formData.price}
-                  onChange={handleChange}
-                  placeholder="0.00"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Turnaround Time *
-                </label>
-                <input
-                  type="text"
-                  name="turnaroundTime"
-                  required
-                  value={formData.turnaroundTime}
-                  onChange={handleChange}
-                  placeholder="e.g., 2-4 hours, Same day"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Settings */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-medium text-gray-900 flex items-center">
-              <Settings className="h-5 w-5 mr-2" />
-              Test Group Settings
-            </h3>
-            
-            <div className="space-y-3">
-              <label className="flex items-center">
-                <input
-                  type="checkbox"
-                  name="isActive"
-                  checked={formData.isActive}
-                  onChange={handleChange}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                />
-                <span className="ml-2 text-sm text-gray-700">Test group is active and available for ordering</span>
-              </label>
-              
-              <label className="flex items-center">
-                <input
-                  type="checkbox"
-                  name="requiresFasting"
-                  checked={formData.requiresFasting}
-                  onChange={handleChange}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                />
-                <span className="ml-2 text-sm text-gray-700">Requires fasting</span>
-              </label>
-            </div>
           </div>
 
           {/* AI Configuration */}

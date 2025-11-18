@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
-import { Plus, Search, Filter, Edit, Eye, Phone, Mail, QrCode, Trash2 } from 'lucide-react';
+import { Plus, Search, Filter, Edit, Eye, Phone, Mail, QrCode, Trash2, Users, Copy } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { generateQRCodeData } from '../utils/colorAssignment';
 import PatientForm from '../components/Patients/PatientForm';
 import PatientDetails from '../components/Patients/PatientDetails';
 import PatientTestHistory from '../components/Patients/PatientTestHistory';
+import PatientMergeModal from '../components/Patients/PatientMergeModal';
+import ViewDuplicatesModal from '../components/Patients/ViewDuplicatesModal';
 import { database, supabase, auth } from '../utils/supabase';
 
 interface Patient {
@@ -32,6 +34,9 @@ interface Patient {
   created_at: string;
   updated_at: string;
   test_count?: number;
+  duplicate_count?: number;
+  duplicate_patient_ids?: string[];
+  duplicate_patient_names?: string[];
 }
 
 const Patients: React.FC = () => {
@@ -47,6 +52,9 @@ const Patients: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [showMergeModal, setShowMergeModal] = useState(false);
+  const [showDuplicatesModal, setShowDuplicatesModal] = useState(false);
+  const [mergePatient, setMergePatient] = useState<Patient | null>(null);
   
   // Load patients from Supabase on component mount
   React.useEffect(() => {
@@ -68,8 +76,11 @@ const Patients: React.FC = () => {
   const loadPatients = async () => {
     try {
       setLoading(true);
-      // Get active patients with their test counts
-      const { data, error } = await database.patients.getAllWithTestCounts();
+      // Use v_patients_with_duplicates view to only show unique/master patients
+      const { data, error } = await supabase
+        .from('v_patients_with_duplicates')
+        .select('*')
+        .order('registration_date', { ascending: false });
       
       if (error) {
         setError(error.message);
@@ -309,6 +320,27 @@ const Patients: React.FC = () => {
     setSelectedPatient(patient);
     setShowTestHistory(true);
   };
+
+  const handleMergeClick = (patient: Patient) => {
+    setMergePatient(patient);
+    setShowMergeModal(true);
+  };
+
+  const handleViewDuplicates = (patient: Patient) => {
+    setSelectedPatient(patient);
+    setShowDuplicatesModal(true);
+  };
+
+  const handleMergeSuccess = () => {
+    setShowMergeModal(false);
+    setMergePatient(null);
+    loadPatients(); // Reload to refresh duplicate counts
+  };
+
+  const handleUnmergeSuccess = () => {
+    loadPatients(); // Reload to refresh duplicate counts
+  };
+  
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-64">
@@ -333,13 +365,30 @@ const Patients: React.FC = () => {
 
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold text-gray-900">Patient Management</h1>
-        <button
-          onClick={() => setShowForm(true)}
-          className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          <Plus className="h-5 w-5 mr-2" />
-          Register Patient
-        </button>
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={() => {
+              if (patients.length === 0) {
+                alert('No patients available. Please add patients first.');
+                return;
+              }
+              // Use the first patient as default master for merge modal
+              setMergePatient(patients[0]);
+              setShowMergeModal(true);
+            }}
+            className="flex items-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+          >
+            <Users className="h-5 w-5 mr-2" />
+            Merge Patients
+          </button>
+          <button
+            onClick={() => setShowForm(true)}
+            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            <Plus className="h-5 w-5 mr-2" />
+            Register Patient
+          </button>
+        </div>
       </div>
 
       {/* Search and Filter Bar */}
@@ -426,9 +475,17 @@ const Patients: React.FC = () => {
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                      {patient.test_count || 0} tests
-                    </span>
+                    <div className="flex items-center space-x-2">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                        {patient.test_count || 0} tests
+                      </span>
+                      {patient.duplicate_count && patient.duplicate_count > 0 && (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                          <Copy className="h-3 w-3 mr-1" />
+                          {patient.duplicate_count} duplicate{patient.duplicate_count > 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   {isAdmin && (
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -475,11 +532,27 @@ const Patients: React.FC = () => {
                     >
                       <Edit className="h-4 w-4" />
                     </button>
+                    {patient.duplicate_count && patient.duplicate_count > 0 && (
+                      <button
+                        onClick={() => handleViewDuplicates(patient)}
+                        className="text-amber-600 hover:text-amber-900 p-1 rounded"
+                        title="View Merged Duplicates"
+                      >
+                        <Users className="h-4 w-4" />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleMergeClick(patient)}
+                      className="text-purple-600 hover:text-purple-900 p-1 rounded"
+                      title="Merge Duplicate into This Patient"
+                    >
+                      <Copy className="h-4 w-4" />
+                    </button>
                     {patient.qr_code_data && (
                       <button
                         onClick={() => setSelectedPatient(patient)}
                         className="text-red-600 hover:text-red-900 p-1 rounded" 
-                        title="Mask Patient"
+                        title="View QR Code"
                       >
                         <QrCode className="h-4 w-4" />
                       </button>
@@ -530,6 +603,30 @@ const Patients: React.FC = () => {
             setShowTestHistory(false);
             setSelectedPatient(null);
           }}
+        />
+      )}
+
+      {/* Patient Merge Modal */}
+      {showMergeModal && mergePatient && (
+        <PatientMergeModal
+          masterPatient={mergePatient}
+          onClose={() => {
+            setShowMergeModal(false);
+            setMergePatient(null);
+          }}
+          onSuccess={handleMergeSuccess}
+        />
+      )}
+
+      {/* View Duplicates Modal */}
+      {showDuplicatesModal && selectedPatient && (
+        <ViewDuplicatesModal
+          patientId={selectedPatient.id}
+          onClose={() => {
+            setShowDuplicatesModal(false);
+            setSelectedPatient(null);
+          }}
+          onUnmerge={handleUnmergeSuccess}
         />
       )}
     </div>
