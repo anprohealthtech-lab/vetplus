@@ -25,15 +25,6 @@ import '../styles/report-baseline.css';
 interface LabTemplateRecord {
   id: string;
   template_name: string;
-    Alignment,
-    Indent,
-    IndentBlock,
-    Subscript,
-    Superscript,
-    FontFamily,
-    FontSize,
-    FontColor,
-    FontBackgroundColor,
   template_description?: string | null;
   gjs_html?: string | null;
   gjs_css?: string | null;
@@ -269,6 +260,14 @@ const buildPremiumEditorConfig = (
     GeneralHtmlSupport,
     Heading,
     Alignment,
+    Indent,
+    IndentBlock,
+    Subscript,
+    Superscript,
+    FontFamily,
+    FontSize,
+    FontColor,
+    FontBackgroundColor,
     HorizontalLine,
     HtmlComment,
     // HtmlEmbed, // Removed - not allowed by license
