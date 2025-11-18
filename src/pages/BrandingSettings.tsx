@@ -9,7 +9,7 @@ import {
   CheckCircle,
   Loader2
 } from 'lucide-react';
-import { auth, database } from '../utils/supabase';
+import { supabase, auth, database } from '../utils/supabase';
 import { useBrandingProcessingStatus } from '../hooks/useBrandingProcessingStatus';
 import { BrandingAssetUploader } from '../components/Branding/BrandingAssetUploader';
 import { SignatureUploader } from '../components/Branding/SignatureUploader';
@@ -120,7 +120,7 @@ export const BrandingSettings: React.FC = () => {
       setCurrentUserId(user.id);
 
       // Load lab watermark settings
-      const { data: labData, error: labError } = await database.supabase
+      const { data: labData, error: labError } = await supabase
         .from('labs')
         .select('watermark_enabled, watermark_image_url, watermark_opacity, watermark_position, watermark_size, watermark_rotation')
         .eq('id', currentLabId)
@@ -264,7 +264,7 @@ export const BrandingSettings: React.FC = () => {
     
     setSavingWatermark(true);
     try {
-      const { error } = await database.supabase
+      const { error } = await supabase
         .from('labs')
         .update({
           watermark_enabled: watermarkEnabled,
