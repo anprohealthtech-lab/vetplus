@@ -686,7 +686,7 @@ const Tests: React.FC = () => {
 
       {/* Create Modal */}
       {showCreateModal && (
-        <div className="fixed top-0 bottom-0 left-64 right-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
+        <div className="fixed top-0 bottom-0 left-72 right-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
           <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto mx-8">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-semibold">Create Test Group</h2>
@@ -770,7 +770,7 @@ const Tests: React.FC = () => {
 
       {/* Edit Modal */}
       {showEditModal && editingTestGroup && (
-        <div className="fixed top-0 bottom-0 left-64 right-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
+        <div className="fixed top-0 bottom-0 left-72 right-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
           <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto mx-8">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-semibold">Edit Test Group</h2>
@@ -1109,7 +1109,7 @@ const Tests: React.FC = () => {
 
       {/* Analyte Search & Edit Modal */}
       {showAnalyteSearchModal && (
-        <div className="fixed top-0 bottom-0 left-64 right-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
+        <div className="fixed top-0 bottom-0 left-72 right-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
           <div className="bg-white rounded-lg p-6 w-full max-w-6xl max-h-[90vh] overflow-y-auto mx-8">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-semibold">Search & Edit Analytes</h2>
@@ -1246,7 +1246,7 @@ const Tests: React.FC = () => {
 
       {/* Enhanced TestGroupForm Modal */}
       {showTestGroupFormModal && (
-        <div style={{ position: 'fixed', top: 0, bottom: 0, left: '16rem', right: 0, zIndex: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
+        <div style={{ position: 'fixed', top: 0, bottom: 0, left: '18rem', right: 0, zIndex: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
           <div style={{ maxWidth: '90%', margin: '0 2rem' }}>
           <TestGroupForm
             testGroup={useEnhancedFormForEdit ? editingTestGroup : undefined}
@@ -1387,7 +1387,7 @@ const Tests: React.FC = () => {
 
       {/* AI Test Configurator Modal */}
       {showAIConfigurator && (
-        <div className="fixed top-0 bottom-0 left-64 right-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
+        <div className="fixed top-0 bottom-0 left-72 right-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
           <div className="bg-white rounded-lg w-full max-w-3xl max-h-[90vh] overflow-y-auto mx-8">
             <div className="flex justify-between items-center p-6 border-b border-gray-200 sticky top-0 bg-white">
               <h2 className="text-2xl font-bold text-gray-900">AI Test Configuration Assistant</h2>
