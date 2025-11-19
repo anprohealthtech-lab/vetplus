@@ -1266,7 +1266,7 @@ const Tests: React.FC = () => {
                     .from('test_groups')
                     .update({
                       name: data.name,
-                      test_code: data.code,
+                      code: data.code,
                       category: data.category,
                       clinical_purpose: data.clinicalPurpose,
                       price: data.price,
@@ -1324,7 +1324,7 @@ const Tests: React.FC = () => {
                     .from('test_groups')
                     .insert({
                       name: data.name,
-                      test_code: data.code,
+                      code: data.code,
                       category: data.category,
                       clinical_purpose: data.clinicalPurpose,
                       price: data.price,
