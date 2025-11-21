@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Link, Users, Activity, ChevronRight, ChevronDown, Search, TestTube, X, Calendar, CheckCircle, AlertCircle, FlaskConical } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
+import { OrderStatusDisplay } from './OrderStatusDisplay';
 
 interface Order {
   id: string;
@@ -273,9 +274,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                   
                   {/* Right Section: Status & Actions */}
                   <div className="flex items-center space-x-3">
-                    <span className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap ${getStatusColor(order.status)}`}>
-                      {order.status}
-                    </span>
+                    <OrderStatusDisplay order={order} compact={true} />
                     
                     {order.can_add_tests && (
                       <button

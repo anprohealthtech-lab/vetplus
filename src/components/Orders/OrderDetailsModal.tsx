@@ -47,6 +47,7 @@ import BatchImageViewer from "../Upload/BatchImageViewer";
 import SingleImageViewer from "../Upload/SingleImageViewer";
 import PopoutInput from "./PopoutInput";
 import PhlebotomistSelector from "../Users/PhlebotomistSelector";
+import { OrderStatusDisplay } from "./OrderStatusDisplay";
 
 interface WorkflowStep {
   name: string;
@@ -146,30 +147,32 @@ const getWorkflowSteps = (currentStatus: string, order?: any): WorkflowStep[] =>
     { name: "Delivered", description: "Results delivered to patient" },
   ];
 
-  const statusOrder = [
-    "Order Created",
-    "Sample Collection",
-    "In Progress",
-    "Pending Approval",
-    "Completed",
-    "Delivered",
-  ];
-  const currentIndex = statusOrder.indexOf(currentStatus);
+  // Map current status to workflow position
+  const getStatusIndex = (status: string, hasSample: boolean) => {
+    if (status === 'Pending Collection' || status === 'Order Created') return hasSample ? 2 : 1;
+    if (status === 'In Progress') return 2;
+    if (status === 'Pending Approval') return 3;
+    if (status === 'Report Ready' || status === 'Completed') return 4;
+    if (status === 'Delivered') return 5;
+    return 0;
+  };
+
+  const hasSampleCollected = !!order?.sample_collected_at;
+  const currentIndex = getStatusIndex(currentStatus, hasSampleCollected);
 
   return allSteps.map((step, index) => {
     let completed = index < currentIndex;
     let current = index === currentIndex;
 
-    // Keep true sample collection state
+    // Sample Collection step logic
     if (step.name === "Sample Collection") {
-      const sampleCollected = order?.sample_collected_at;
-      if (sampleCollected) {
+      if (hasSampleCollected) {
         completed = true;
         current = false;
-      } else if (currentStatus === "Sample Collection") {
+      } else if (currentStatus === "Pending Collection" || currentStatus === "Order Created") {
         completed = false;
         current = true;
-      } else if (currentIndex > 1) {
+      } else {
         completed = false;
         current = false;
       }
@@ -183,15 +186,19 @@ const getWorkflowSteps = (currentStatus: string, order?: any): WorkflowStep[] =>
         completed || current
           ? step.name === "Sample Collection" && order?.sample_collected_at
             ? order.sample_collected_at
-            : new Date().toISOString()
+            : undefined
           : undefined,
     };
   });
 };
 
 const getNextSteps = (currentStatus: string, order: any): NextStep[] => {
+  // Normalize status - handle both old and new status names
+  const hasSample = !!order?.sample_collected_at;
+  
   switch (currentStatus) {
     case "Order Created":
+    case "Pending Collection":
       return [
         {
           action: "Collect Sample",
@@ -203,6 +210,23 @@ const getNextSteps = (currentStatus: string, order: any): NextStep[] => {
         },
       ];
     case "Sample Collection":
+      // Legacy status - redirect to proper handling
+      if (hasSample) {
+        return [
+          {
+            action: "Complete Testing",
+            description: "Finish all laboratory tests and enter results",
+            priority: "medium",
+            assignedTo: "Lab Technicians",
+          },
+          {
+            action: "Enter Results",
+            description: "Input test results into the system",
+            priority: "high",
+            assignedTo: "Data Entry Team",
+          },
+        ];
+      }
       return [
         {
           action: "Begin Laboratory Analysis",
@@ -238,6 +262,7 @@ const getNextSteps = (currentStatus: string, order: any): NextStep[] => {
           deadline: order.expected_date,
         },
       ];
+    case "Report Ready":
     case "Completed":
       return [
         {
@@ -2509,10 +2534,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     <div className="text-blue-700 text-sm">{order.patient_id}</div>
                   </div>
                   <div>
-                    <div className="text-blue-600 font-medium">Status</div>
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(order.status)}`}>
-                      {order.status}
-                    </span>
+                    <div className="text-blue-600 font-medium mb-2">Status</div>
+                    <OrderStatusDisplay order={order} showDetails={true} />
                   </div>
                   <div>
                     <div className="text-blue-600 font-medium">Priority</div>

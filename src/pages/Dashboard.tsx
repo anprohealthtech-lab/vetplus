@@ -11,6 +11,7 @@ import OrderForm from "../components/Orders/OrderForm";
 import OrderDetailsModal from "../components/Orders/OrderDetailsModal";
 import CreateInvoiceModal from "../components/Billing/CreateInvoiceModal";
 import PaymentCapture from "../components/Billing/PaymentCapture";
+import { OrderStatusDisplay } from "../components/Orders/OrderStatusDisplay";
 
 /* ===========================
    Types
@@ -668,14 +669,7 @@ const Dashboard: React.FC = () => {
                             <div className="text-xs text-gray-600">
                               {pct}% ({o.enteredTotal}/{o.expectedTotal})
                             </div>
-                            <span className={`inline-flex items-center px-2 py-1 rounded-lg text-xs font-bold ${
-                              o.status === "Completed" || o.status === "Delivered" ? 'bg-green-100 text-green-800' :
-                              o.status === "Pending Approval" ? 'bg-yellow-100 text-yellow-800' :
-                              o.status === "In Progress" ? 'bg-blue-100 text-blue-800' :
-                              'bg-gray-100 text-gray-800'
-                            }`}>
-                              {o.status === "In Progress" ? "In Process" : o.status}
-                            </span>
+                            <OrderStatusDisplay order={o} compact={true} />
                             {getBillingBadge(o)}
                             <span className="text-sm font-bold text-green-600">₹{Number(o.total_amount || 0).toLocaleString()}</span>
                             {o.priority !== 'Normal' && (
@@ -722,9 +716,7 @@ const Dashboard: React.FC = () => {
                           </div>
 
                           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                            <span className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm font-bold border-2 bg-blue-100 text-blue-800 border-blue-200">
-                              ● {o.status === "In Progress" ? "In Process" : o.status}
-                            </span>
+                            <OrderStatusDisplay order={o} compact={false} />
                             {/* Billing Badge */}
                             {getBillingBadge(o)}
                             <button

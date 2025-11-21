@@ -10,6 +10,7 @@ import OrderForm from "../components/Orders/OrderForm";
 import OrderDetailsModal from "../components/Orders/OrderDetailsModal";
 import EnhancedOrdersPage from "../components/Orders/EnhancedOrdersPage";
 import OrderFiltersBar, { OrderFilters } from "../components/Orders/OrderFiltersBar";
+import { OrderStatusDisplay } from "../components/Orders/OrderStatusDisplay";
 
 /* ===========================
    Types
