@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import ReactDOM from "react-dom";
 import {
   Search,
   Calendar,
@@ -65,7 +66,7 @@ type Analyte = {
 };
 
 type TrendData = {
-  bill_date: string;
+  order_date: string;
   test_name: string;
   value: string;
   unit: string;
@@ -526,15 +527,29 @@ const ResultVerificationConsole: React.FC = () => {
     try {
       const { data, error } = await supabase
         .from('v_report_template_context')
-        .select('bill_date, test_name, value, unit, reference_range, flag')
+        .select('order_date, analytes')
         .eq('patient_id', patientId)
-        .eq('parameter', parameter)
-        .order('bill_date', { ascending: false })
+        .order('order_date', { ascending: false })
         .limit(10);
 
       if (error) throw error;
+      
+      // Extract relevant analyte data from jsonb array
+      const extractedTrend = data?.flatMap((row: any) => {
+        const analytes = row.analytes || [];
+        return analytes
+          .filter((a: any) => a.parameter === parameter)
+          .map((a: any) => ({
+            order_date: row.order_date,
+            test_name: a.parameter,
+            value: a.value,
+            unit: a.unit,
+            reference_range: a.reference_range,
+            flag: a.flag
+          }));
+      }) || [];
 
-      setTrendData((prev) => ({ ...prev, [cacheKey]: (data || []) as TrendData[] }));
+      setTrendData((prev) => ({ ...prev, [cacheKey]: extractedTrend as TrendData[] }));
       setSelectedAnalyteTrend({ parameter, patientId });
       setShowTrendModal(true);
     } catch (error) {
@@ -1110,7 +1125,7 @@ const ResultVerificationConsole: React.FC = () => {
     const cacheKey = `${selectedAnalyteTrend.patientId}-${selectedAnalyteTrend.parameter}`;
     const trends = trendData[cacheKey] || [];
 
-    return (
+    return ReactDOM.createPortal(
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
         <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
           <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-4 flex items-center justify-between">
@@ -1145,7 +1160,7 @@ const ResultVerificationConsole: React.FC = () => {
                     <div>
                       <span className="text-gray-600 font-medium">Date Range:</span>
                       <span className="ml-2 text-gray-900 font-bold">
-                        {trends.length > 0 && fmtDate(trends[trends.length - 1].bill_date)} - {trends.length > 0 && fmtDate(trends[0].bill_date)}
+                        {trends.length > 0 && fmtDate(trends[trends.length - 1].order_date)} - {trends.length > 0 && fmtDate(trends[0].order_date)}
                       </span>
                     </div>
                   </div>
@@ -1156,7 +1171,7 @@ const ResultVerificationConsole: React.FC = () => {
                     <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
                       <tr>
                         <th className="px-4 py-3 text-left text-sm font-bold text-gray-700 uppercase">
-                          Bill Date
+                          Order Date
                         </th>
                         <th className="px-4 py-3 text-left text-sm font-bold text-gray-700 uppercase">
                           Test Name
@@ -1186,7 +1201,7 @@ const ResultVerificationConsole: React.FC = () => {
                             } transition-colors`}
                           >
                             <td className="px-4 py-3 text-sm text-gray-900">
-                              {fmtDate(trend.bill_date)}
+                              {fmtDate(trend.order_date)}
                               {isLatest && (
                                 <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-800">
                                   Latest
@@ -1232,7 +1247,8 @@ const ResultVerificationConsole: React.FC = () => {
             )}
           </div>
         </div>
-      </div>
+      </div>,
+      document.body
     );
   };
 

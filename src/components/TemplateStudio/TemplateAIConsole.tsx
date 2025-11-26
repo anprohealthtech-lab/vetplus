@@ -233,8 +233,9 @@ const TemplateAIConsole: React.FC<TemplateAIConsoleProps> = ({
 
     const placeholderCheck = validatePlaceholders(lastHtmlBeforeAI || '', nextHtml);
     if (!placeholderCheck.ok) {
-      setError(`AI response missing placeholders: ${placeholderCheck.missing.join(', ')}`);
-      return;
+      // Show warning but don't block - user can decide whether to apply
+      setError(`⚠️ Warning: AI response missing placeholders: ${placeholderCheck.missing.join(', ')}. Changes will be applied anyway.`);
+      // Continue with application instead of returning
     }
 
     try {
@@ -292,7 +293,7 @@ const TemplateAIConsole: React.FC<TemplateAIConsoleProps> = ({
       )}
       style={{ pointerEvents: open ? 'auto' : 'none' }}
     >
-      <div className="flex h-full flex-col border-l border-gray-200">
+      <div className="flex h-full max-h-screen flex-col border-l border-gray-200">
         <header className="flex items-start justify-between border-b border-gray-200 bg-gray-50 px-4 py-3">
           <div>
             <h2 className="text-sm font-semibold text-gray-900">Template Assistant</h2>
@@ -316,7 +317,7 @@ const TemplateAIConsole: React.FC<TemplateAIConsoleProps> = ({
 
         {aiEnabled && (
           <>
-            <div ref={contentRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
+            <div ref={contentRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3 max-h-[calc(100vh-280px)]">
                   {messages.map((msg) => (
                     <div
                       key={msg.id}

@@ -1,6 +1,6 @@
 @page {
   size: A4;
-  margin: 0;
+  margin: 15mm 15mm;
 }
 
 :root {
@@ -13,12 +13,16 @@
   --report-accent-color: #2563eb;
   --report-background-color: #ffffff;
   --report-section-gap: 1.5rem;
-  --report-horizontal-padding: 36px;
-  --report-body-padding-top: 160px;
-  --report-body-padding-bottom: 140px;
-  --report-header-height: 144px;
-  --report-footer-height: 120px;
+  --report-horizontal-padding: 48px;
+  --report-body-padding-top: 20px;
+  --report-body-padding-bottom: 20px;
+  --report-header-height: 80px;
+  --report-footer-height: 80px;
+  --report-page-height: 1123px; /* 297mm at 96dpi */
+  --report-usable-body-height: 963px; /* 1123 - 80 - 80 */
 }
+
+/* ---------- Base layout ---------- */
 
 .limsv2-report {
   position: relative;
@@ -29,7 +33,6 @@
   line-height: 1.6;
   margin: 0 auto;
   max-width: 820px;
-  min-height: calc(297mm - 40px);
   box-sizing: border-box;
   z-index: 0;
 }
@@ -40,10 +43,10 @@
 
 .limsv2-report-header,
 .limsv2-report-footer {
-  padding: 16px var(--report-horizontal-padding);
+  padding: 12px var(--report-horizontal-padding);
   background: var(--report-background-color);
   position: relative;
-  z-index: 2;
+  z-index: 5;
 }
 
 .limsv2-report-header {
@@ -51,12 +54,15 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 0.5rem;
+  gap: 0.25rem;
   border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+  padding: 12px var(--report-horizontal-padding);
 }
 
 .limsv2-report-body {
-  padding: var(--report-body-padding-top) var(--report-horizontal-padding) var(--report-body-padding-bottom);
+  padding: var(--report-body-padding-top)
+    var(--report-horizontal-padding)
+    var(--report-body-padding-bottom);
   position: relative;
   z-index: 2;
 }
@@ -70,8 +76,9 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 0.35rem;
+  gap: 0.25rem;
   border-top: 1px solid rgba(15, 23, 42, 0.12);
+  padding: 12px var(--report-horizontal-padding);
 }
 
 .report-region {
@@ -79,7 +86,8 @@
   z-index: 2;
 }
 
-/* Watermark background layer */
+/* ---------- Watermark ---------- */
+
 .report-watermark {
   position: absolute !important;
   top: 50% !important;
@@ -92,13 +100,23 @@
   height: auto !important;
 }
 
-/* Ensure all content (tables, text, etc.) appears above watermark */
+/* Everything else sits above watermark */
 .limsv2-report-body > *:not(.report-watermark),
-.report-region > *:not(.report-watermark),
-table, p, h1, h2, h3, h4, h5, h6, div {
+.limsv2-report .report-region > *:not(.report-watermark),
+.limsv2-report table,
+.limsv2-report p,
+.limsv2-report h1,
+.limsv2-report h2,
+.limsv2-report h3,
+.limsv2-report h4,
+.limsv2-report h5,
+.limsv2-report h6,
+.limsv2-report div {
   position: relative;
-  z-index: 3;
+  z-index: 1;
 }
+
+/* ---------- Editable regions (builder mode) ---------- */
 
 .report-region-placeholder {
   font-size: 0.85rem;
@@ -141,6 +159,8 @@ table, p, h1, h2, h3, h4, h5, h6, div {
   padding: 0 6px;
 }
 
+/* ---------- Typography ---------- */
+
 .limsv2-report h1,
 .limsv2-report h2,
 .limsv2-report h3,
@@ -149,7 +169,7 @@ table, p, h1, h2, h3, h4, h5, h6, div {
 .limsv2-report h6 {
   font-family: var(--report-heading-font-family);
   color: var(--report-heading-color);
-  margin: 0 0 0.75rem;
+  margin: 0 0 0.25rem;
   line-height: 1.3;
 }
 
@@ -160,13 +180,33 @@ table, p, h1, h2, h3, h4, h5, h6, div {
 .limsv2-report h5 { font-size: 1rem; }
 .limsv2-report h6 { font-size: 0.875rem; }
 
+/* Only truly empty headings are hidden */
+.limsv2-report h1:empty,
+.limsv2-report h2:empty,
+.limsv2-report h3:empty,
+.limsv2-report h4:empty,
+.limsv2-report h5:empty,
+.limsv2-report h6:empty {
+  display: none;
+  margin: 0;
+}
+
 .limsv2-report p {
-  margin: 0 0 1rem;
+  margin: 0 0 0.5rem;
   color: var(--report-text-color);
 }
 
 .limsv2-report p:last-child {
   margin-bottom: 0;
+}
+
+.limsv2-report figure {
+  margin: 0;
+  display: block;
+}
+
+.limsv2-report figure.table {
+  margin: 0.75rem 0;
 }
 
 .limsv2-report .text-muted,
@@ -194,6 +234,8 @@ table, p, h1, h2, h3, h4, h5, h6, div {
   margin: 1.5rem 0;
 }
 
+/* ---------- Images & tables ---------- */
+
 .limsv2-report img {
   max-width: 100%;
   height: auto;
@@ -203,7 +245,7 @@ table, p, h1, h2, h3, h4, h5, h6, div {
 .limsv2-report table {
   width: 100%;
   border-collapse: collapse;
-  margin: var(--report-section-gap) 0;
+  margin: 0.75rem 0;
   font-size: 0.95rem;
 }
 
@@ -226,9 +268,18 @@ table, p, h1, h2, h3, h4, h5, h6, div {
   vertical-align: top;
 }
 
+/* Prevent empty cells from visually collapsing */
+.limsv2-report table th:empty::after,
+.limsv2-report table td:empty::after {
+  content: "\00a0"; /* Non-breaking space */
+  visibility: hidden;
+}
+
 .limsv2-report table tbody tr:nth-child(even) {
   background-color: #f8fafc;
 }
+
+/* ---------- Section layout helpers ---------- */
 
 .limsv2-report .report-section {
   margin-bottom: var(--report-section-gap);
@@ -236,6 +287,37 @@ table, p, h1, h2, h3, h4, h5, h6, div {
 
 .limsv2-report .report-section:last-child {
   margin-bottom: 0;
+}
+
+/* ---------- Signature styling ---------- */
+
+.limsv2-report .signature-section,
+.limsv2-report .approver-signature,
+.limsv2-report .doctor-signature,
+.limsv2-report [class*="signature"] {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  margin-top: 2rem;
+  gap: 0.5rem;
+}
+
+.limsv2-report .signature-section img,
+.limsv2-report .approver-signature img,
+.limsv2-report .doctor-signature img,
+.limsv2-report [class*="signature"] img {
+  max-width: 200px;
+  height: auto;
+  margin-left: auto;
+}
+
+.limsv2-report .approver-name,
+.limsv2-report .approver-designation,
+.limsv2-report [class*="approver"] {
+  text-align: right;
+  font-weight: 600;
+  color: var(--report-heading-color);
 }
 
 .limsv2-report .report-header,
@@ -298,7 +380,8 @@ table, p, h1, h2, h3, h4, h5, h6, div {
 
 .limsv2-report code,
 .limsv2-report pre {
-  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas,
+    "Liberation Mono", Menlo, monospace;
   background-color: #f3f4f6;
   border-radius: 4px;
   padding: 0.15rem 0.35rem;
@@ -333,6 +416,8 @@ table, p, h1, h2, h3, h4, h5, h6, div {
   margin-bottom: 0.75rem;
 }
 
+/* ---------- Responsive preview (browser) ---------- */
+
 @media (max-width: 960px) {
   .limsv2-report {
     padding: 24px 20px;
@@ -340,25 +425,77 @@ table, p, h1, h2, h3, h4, h5, h6, div {
   }
 }
 
+/* ---------- Print / PDF rules ---------- */
+
 @media print {
   body {
     background: transparent;
   }
 
   .limsv2-report {
-    margin: 0 auto;
+    margin: 0;
     max-width: 100%;
-    color-adjust: exact;
+    print-color-adjust: exact;
     -webkit-print-color-adjust: exact;
     padding: 0;
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 0 !important;
+    orphans: 3;
+    widows: 3;
   }
 
+  .limsv2-report-body {
+    padding-top: calc(var(--report-header-height) + 20px);
+    padding-bottom: calc(var(--report-footer-height) + 20px);
+    padding-left: 0;
+    padding-right: 0;
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 0 !important;
+    background-image: none !important;
+  }
+
+  .limsv2-report-body.limsv2-report-body--pdf {
+    padding-top: calc(var(--report-header-height) + 20px) !important;
+    padding-bottom: calc(var(--report-footer-height) + 20px) !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  /* Collapse empty paragraphs/divs */
+  .limsv2-report p:empty,
+  .limsv2-report div:empty {
+    display: none !important;
+  }
+
+  /* Hide completely empty headings */
+  .limsv2-report h1:empty,
+  .limsv2-report h2:empty,
+  .limsv2-report h3:empty,
+  .limsv2-report h4:empty,
+  .limsv2-report h5:empty,
+  .limsv2-report h6:empty {
+    display: none !important;
+    margin: 0 !important;
+    height: 0 !important;
+  }
+
+  .limsv2-report-body > *:last-child {
+    margin-bottom: 0 !important;
+    padding-bottom: 0 !important;
+  }
+
+  /* Fixed header/footer for each printed page */
   .limsv2-report-header {
     position: fixed;
     top: 0;
     left: 0;
     right: 0;
+    width: 100%;
     height: var(--report-header-height);
+    padding: 16px var(--report-horizontal-padding);
+    box-sizing: border-box;
   }
 
   .limsv2-report-footer {
@@ -366,23 +503,25 @@ table, p, h1, h2, h3, h4, h5, h6, div {
     bottom: 0;
     left: 0;
     right: 0;
+    width: 100%;
     height: var(--report-footer-height);
+    padding: 16px var(--report-horizontal-padding);
+    box-sizing: border-box;
   }
 
-  .limsv2-report-body {
-    padding-top: var(--report-body-padding-top);
-    padding-bottom: var(--report-body-padding-bottom);
-  }
-
+  /* Only elements you explicitly mark should try to avoid breaking */
   .limsv2-report .avoid-break {
     break-inside: avoid;
     page-break-inside: avoid;
   }
 
+  /* Allow tables to break by default – avoids huge white gaps */
   .limsv2-report table {
-    page-break-inside: avoid;
+    break-inside: auto;
+    page-break-inside: auto;
   }
 
+  /* Optional helpers if you ever want manual breaks */
   .limsv2-report .page-break-before {
     break-before: page;
     page-break-before: always;
@@ -394,6 +533,7 @@ table, p, h1, h2, h3, h4, h5, h6, div {
   }
 }
 
+/* Optional: manual page-break marker element (only if you actually insert it) */
 .report-page-break-marker {
   position: relative;
   display: block;
@@ -403,7 +543,7 @@ table, p, h1, h2, h3, h4, h5, h6, div {
 }
 
 .report-page-break-marker::after {
-  content: 'Page break';
+  content: "Page break";
   position: absolute;
   top: -12px;
   left: 12px;
@@ -414,3 +554,4 @@ table, p, h1, h2, h3, h4, h5, h6, div {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+  

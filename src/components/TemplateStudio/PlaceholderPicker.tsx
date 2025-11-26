@@ -21,11 +21,12 @@ interface PlaceholderPickerProps {
   options: PlaceholderOption[];
   onInsert: (option: PlaceholderOption) => void;
   onClose: () => void;
+  onRefresh?: () => void;
   loading?: boolean;
   errorMessage?: string | null;
 }
 
-const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert, onClose, loading = false, errorMessage = null }) => {
+const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert, onClose, onRefresh, loading = false, errorMessage = null }) => {
   const grouped = useMemo(() => {
     const result: Record<PlaceholderGroup, PlaceholderOption[]> = {
       lab: [],
@@ -41,6 +42,8 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
       }
       result[bucket as PlaceholderGroup].push(option);
     });
+    console.log('PlaceholderPicker grouped:', result);
+    console.log('Test group count:', result.test.length);
     return result;
   }, [options]);
 
@@ -143,12 +146,24 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
             <h2 className="text-sm font-semibold text-gray-900">Insert Placeholder</h2>
             <p className="text-[11px] text-gray-500">Choose a placeholder to insert into the template.</p>
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100"
-          >
-            Close
-          </button>
+          <div className="flex gap-2">
+            {onRefresh && (
+              <button
+                onClick={onRefresh}
+                disabled={loading}
+                className="rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-xs text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                title="Refresh placeholder data"
+              >
+                {loading ? 'Loading...' : '↻ Refresh'}
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100"
+            >
+              Close
+            </button>
+          </div>
         </div>
         {loading && (
           <div className="border-b border-dashed border-gray-200 bg-gray-50 px-4 py-2 text-[11px] text-gray-500">

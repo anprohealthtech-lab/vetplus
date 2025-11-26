@@ -1,17 +1,3 @@
-/**
- * newpdfServiceFull.ts
- *
- * This file is a verbatim copy of the original `pdfService.ts` with the
- * addition of high-level section markers. These comments help indicate
- * where major conceptual units of the service begin—such as imports,
- * configuration, sanitization helpers, interfaces, context builders,
- * HTML generation, PDF generation, storage operations, and debugging
- * utilities. No functional changes have been introduced; the code
- * executes exactly as in the original. See the original file for
- * detailed implementation notes.
- */
-
-// === Section: Imports ===
 import { supabase } from './supabase';
 import type { ReportTemplateContext, ReportTemplateAnalyteRow } from './supabase';
 import nunjucks from 'nunjucks';
@@ -48,7 +34,7 @@ export {
 // Export Puppeteer utilities
 export { warmupPuppeteer, analyzePDFComplexity };
 
-// === Section: PDF.co API configuration (loaded from config) ===
+// PDF.co API configuration (loaded from config)
 const getPDFCOConfig = () => {
   const config = getPDFConfig();
   return {
@@ -58,7 +44,6 @@ const getPDFCOConfig = () => {
   };
 };
 
-// === Section: Nunjucks Environment ===
 const nunjucksEnv = nunjucks.configure({
   autoescape: true,
   throwOnUndefined: false,
@@ -66,7 +51,6 @@ const nunjucksEnv = nunjucks.configure({
   lstripBlocks: true,
 });
 
-// === Section: Branding constants and sanitization helpers ===
 const BASELINE_STYLE_TAG_ID = 'lims-report-baseline';
 const REPORT_BASELINE_CLASS = 'limsv2-report';
 const DEFAULT_HEADER_HTML = '';
@@ -170,7 +154,6 @@ const sanitizeRegionHtml = (html?: string | null): string | null => {
   return workingHtml;
 };
 
-// === Section: Type & Interface Definitions ===
 export interface LabTemplateRecord {
   id: string;
   lab_id: string;
@@ -184,7 +167,6 @@ export interface LabTemplateRecord {
   is_default?: boolean | null;
 }
 
-// === Section: Default template context builder ===
 const buildDefaultTemplateContext = (): Record<string, string> => ({
   labName: 'MediLab Diagnostics',
   labAddress: '123 Health Street, Medical District, City - 560001',
@@ -212,6 +194,11 @@ const buildDefaultTemplateContext = (): Record<string, string> => ({
   eosinophilsPct: '3',
   basophilsPct: '1',
   plateletCount: '245',
+  approverSignature: 'https://via.placeholder.com/150x60/4F46E5/FFFFFF?text=Signature',
+  approvedByName: 'Dr. Sarah Johnson',
+  approverName: 'Dr. Sarah Johnson',
+  locationName: 'Main Laboratory',
+  sampleId: 'SMP-2025-001',
 });
 
 export const buildSampleTemplateContext = (overrides: Record<string, any> = {}): Record<string, any> => ({
@@ -233,7 +220,6 @@ const normalizeDateValue = (value: string | null | undefined): string => {
   }
 };
 
-// === Section: Context derivation utilities ===
 const buildContextFromReportTemplate = (context: ReportTemplateContext): Record<string, any> => {
   const patient = context.patient ?? ({} as ReportTemplateContext['patient']);
   const order = context.order ?? ({} as ReportTemplateContext['order']);
@@ -271,7 +257,6 @@ const buildContextFromReportTemplate = (context: ReportTemplateContext): Record<
   );
 };
 
-// === Section: Template rendering options & helpers ===
 export interface TemplateRenderOptions {
   context?: ReportTemplateContext | null;
   overrides?: Record<string, any>;
@@ -284,7 +269,6 @@ interface BuildReportHtmlOptions {
   brandingDefaults?: LabBrandingHtmlDefaults;
 }
 
-// === Section: HTML sanitization helpers ===
 const sanitizeHtmlFragment = (raw: string): string => {
   if (!raw) {
     return '';
@@ -355,7 +339,6 @@ interface PreparedReportHtml {
   brandingDefaults: LabBrandingHtmlDefaults;
 }
 
-// === Section: HTML document builders (preview, PDF body, print body) ===
 const buildPreviewDocument = (
   bodyHtml: string,
   headerHtml: string,
@@ -363,9 +346,65 @@ const buildPreviewDocument = (
   customCss: string,
   brandingDefaults?: LabBrandingHtmlDefaults
 ): string => {
+  // Add preview-specific CSS to simulate PDF layout
+  const previewCss = `
+    /* Preview mode: simulate actual PDF layout */
+    .limsv2-report {
+      position: relative;
+      min-height: calc(297mm - 40px);
+    }
+    
+    /* Show header/footer space visually */
+    .limsv2-report-header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: white;
+      border-bottom: 2px dashed rgba(37, 99, 235, 0.2);
+    }
+    
+    .limsv2-report-header:empty::before {
+      content: "HEADER AREA (100px reserved in PDF)";
+      display: block;
+      padding: 40px 20px;
+      text-align: center;
+      color: rgba(37, 99, 235, 0.5);
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(37, 99, 235, 0.05);
+    }
+    
+    .limsv2-report-footer {
+      position: sticky;
+      bottom: 0;
+      z-index: 10;
+      background: white;
+      border-top: 2px dashed rgba(37, 99, 235, 0.2);
+    }
+    
+    .limsv2-report-footer:empty::before {
+      content: "FOOTER AREA (80px reserved in PDF)";
+      display: block;
+      padding: 30px 20px;
+      text-align: center;
+      color: rgba(37, 99, 235, 0.5);
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(37, 99, 235, 0.05);
+    }
+    
+    /* Body accounts for header/footer space */
+    .limsv2-report-body {
+      padding-top: var(--report-body-padding-top);
+      padding-bottom: var(--report-body-padding-bottom);
+      min-height: calc(297mm - var(--report-header-height) - var(--report-footer-height) - 80px);
+    }
+  `;
+  
   const styles = [
     `<style id="${BASELINE_STYLE_TAG_ID}">${reportBaselineCss}</style>`,
     customCss ? `<style id="${CUSTOM_STYLE_TAG_ID}">${customCss}</style>` : '',
+    `<style id="preview-layout">${previewCss}</style>`,
   ]
     .filter(Boolean)
     .join('\n');
@@ -395,10 +434,107 @@ const buildPreviewDocument = (
   ].join('');
 };
 
+/**
+ * Clean HTML by removing headings that only contain whitespace, nbsp, or empty strong tags
+ */
+const cleanWhitespaceHeadings = (html: string): string => {
+  // Remove h1-h6 tags that only contain whitespace, &nbsp;, or empty/whitespace-only strong/em/b/i tags
+  // Pattern 1: <h2><strong>&nbsp; &nbsp;</strong></h2> (only whitespace in strong)
+  let cleaned = html.replace(/<h[1-6][^>]*>\s*<(strong|b|em|i)>\s*(?:&nbsp;|\s)*\s*<\/(strong|b|em|i)>\s*<\/h[1-6]>/gi, '');
+  
+  // Pattern 2: <h2>&nbsp;</h2> (only nbsp/whitespace, no tags)
+  cleaned = cleaned.replace(/<h[1-6][^>]*>\s*(?:&nbsp;|\s)*\s*<\/h[1-6]>/gi, '');
+  
+  // Pattern 3: <h2><strong></strong></h2> (truly empty tags)
+  cleaned = cleaned.replace(/<h[1-6][^>]*>\s*<(strong|b|em|i)>\s*<\/(strong|b|em|i)>\s*<\/h[1-6]>/gi, '');
+  
+  return cleaned;
+};
+
 const buildPdfBodyDocument = (bodyHtml: string, customCss: string): string => {
+  // Clean the HTML first
+  const cleanedBodyHtml = cleanWhitespaceHeadings(bodyHtml);
+  
+  // PDF-specific CSS to account for header/footer reserved space and margins
+  const pdfCss = `
+    /* Reset body and ensure proper width calculation */
+    body {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 100% !important;
+      box-sizing: border-box !important;
+    }
+    
+    /* Container respects PDF.co margins */
+    .limsv2-report {
+      max-width: 100% !important;
+      width: 100% !important;
+      margin: 0 !important;
+      padding: 0 20px !important;
+      box-sizing: border-box !important;
+      overflow: hidden !important;
+      min-height: 0 !important;
+    }
+    
+    /* Body content with proper padding and no excessive height */
+    .limsv2-report-body--pdf {
+      padding: 20px 0 !important;
+      margin: 0 !important;
+      max-width: 100% !important;
+      width: 100% !important;
+      box-sizing: border-box !important;
+      min-height: 0 !important;
+    }
+    
+    /* Remove empty elements to prevent blank pages */
+    .limsv2-report p:empty,
+    .limsv2-report div:empty:not([class*="signature"]):not([class*="watermark"]) {
+      display: none !important;
+      height: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+    
+    /* Remove excessive bottom spacing */
+    .limsv2-report-body--pdf > *:last-child {
+      margin-bottom: 0 !important;
+      padding-bottom: 0 !important;
+    }
+    
+    /* Orphan and widow control */
+    .limsv2-report p,
+    .limsv2-report div {
+      orphans: 3;
+      widows: 3;
+    }
+    
+    /* Ensure tables don't overflow */
+    .limsv2-report table {
+      max-width: 100% !important;
+      width: 100% !important;
+      table-layout: auto !important;
+      word-wrap: break-word !important;
+      overflow-wrap: break-word !important;
+    }
+    
+    .limsv2-report table td,
+    .limsv2-report table th {
+      word-wrap: break-word !important;
+      overflow-wrap: break-word !important;
+      max-width: 100% !important;
+    }
+    
+    /* Prevent images from overflowing */
+    .limsv2-report img {
+      max-width: 100% !important;
+      height: auto !important;
+    }
+  `;
+  
   const styles = [
     `<style id="${BASELINE_STYLE_TAG_ID}">${reportBaselineCss}</style>`,
     customCss ? `<style id="${CUSTOM_STYLE_TAG_ID}">${customCss}</style>` : '',
+    `<style id="pdf-overrides">${pdfCss}</style>`,
   ]
     .filter(Boolean)
     .join('\n');
@@ -532,7 +668,6 @@ const buildPrintBodyDocument = (bodyHtml: string, customCss: string): string => 
   ].join('');
 };
 
-// === Section: Report HTML bundling ===
 export const buildReportHtmlBundle = (options: BuildReportHtmlOptions): ReportHtmlBundle => {
   const fragment = sanitizeHtmlFragment(options.html);
   const customCss = normalizeCustomCss(options.css);
@@ -563,7 +698,6 @@ const buildReportFilenameBase = (reportData: ReportData, isDraft: boolean): stri
 export const buildReportHtml = (options: BuildReportHtmlOptions): string =>
   buildReportHtmlBundle(options).previewHtml;
 
-// === Section: PDF.co API helpers (requests & polling) ===
 interface PdfCoRequestOptions {
   displayHeaderFooter?: boolean;
   headerHtml?: string;
@@ -624,7 +758,7 @@ const sendHtmlToPdfCo = async (
     throw new Error('PDF.co API key not configured');
   }
 
-  const margins = options.margins ?? '40px 20px 40px 20px';
+  const margins = options.margins ?? '40px 40px 40px 40px';
   const mediaType = options.mediaType ?? 'print';
   const printBackground = options.printBackground ?? true;
   const scale = options.scale ?? 1.0;
@@ -742,7 +876,7 @@ const sendPrintHtmlToPdfCo = async (
     mediaType: 'print',
     printBackground: false,  // No backgrounds - using physical letterhead
     displayHeaderFooter: false,  // No Chrome header/footer reservation
-    margins: '40px 20px 40px 20px',  // Safe print margins
+    margins: '40px 40px 40px 40px',  // Safe print margins
   });
 
   return {
@@ -1426,7 +1560,7 @@ const generateUniversalHTMLTemplate = (data: ReportData, isDraft = false): strin
   const draftWatermarkHTML = isDraft ? `
     <div class="draft-watermark">DRAFT</div>
     <div class="draft-indicator">
-     ⚠️ DRAFT REPORT - Some results may still be pending verification
+      ⚠️ DRAFT REPORT - Some results may still be pending verification
     </div>
   ` : '';
   
@@ -1781,7 +1915,6 @@ const groupAnalytesByTestGroup = (analytes: ReportTemplateAnalyteRow[]): Map<str
 /**
  * Render multiple test group templates and merge them into a single HTML
  */
-// === Section: Multi-test-group rendering ===
 const renderMultipleTestGroupTemplates = async (
   reportData: ReportData,
   isDraft: boolean,
@@ -1931,7 +2064,6 @@ const renderMultipleTestGroupTemplates = async (
 /**
  * Inject watermark HTML into report based on lab settings
  */
-// === Section: Watermark injection ===
 const injectWatermarkIfEnabled = async (html: string, labId: string): Promise<string> => {
   try {
     const { data: labSettings, error } = await supabase
@@ -1989,7 +2121,6 @@ const injectWatermarkIfEnabled = async (html: string, labId: string): Promise<st
   }
 };
 
-// === Section: Report HTML preparation ===
 const prepareReportHtml = async (
   reportData: ReportData,
   isDraft: boolean,
@@ -2049,6 +2180,71 @@ const prepareReportHtml = async (
     finalHtml = await injectWatermarkIfEnabled(finalHtml, context.labId);
   }
 
+  // Fetch and inject attachments marked for report inclusion
+  try {
+    const orderId = reportData.report?.reportId || context?.orderId;
+    if (!orderId) {
+      console.warn('No order ID available for attachment fetching');
+    } else {
+      const { data: reportAttachments, error: attachmentError } = await supabase
+        .from('attachments')
+        .select(`
+          id,
+          file_url,
+          file_name,
+          description,
+          order_test_id,
+          order_tests(
+            test_groups(name)
+          )
+        `)
+        .eq('order_id', orderId)
+        .eq('tag', 'include_in_report')
+        .order('order_test_id', { ascending: true });
+
+      if (!attachmentError && reportAttachments && reportAttachments.length > 0) {
+        console.log('📎 Found', reportAttachments.length, 'attachments for report');
+      
+      // Group attachments by test
+      const groupedAttachments: Record<string, Array<{ url: string; heading: string; fileName: string }>> = {};
+      reportAttachments.forEach((att: any) => {
+        const testName = att.order_tests?.test_groups?.name || 'Additional Information';
+        if (!groupedAttachments[testName]) {
+          groupedAttachments[testName] = [];
+        }
+        groupedAttachments[testName].push({
+          url: att.file_url,
+          heading: att.description || att.file_name || 'Attachment',
+          fileName: att.file_name || 'attachment'
+        });
+      });
+
+      // Generate HTML for attachments
+      let attachmentHtml = '<div style="page-break-before: always; padding: 20px;">';
+      attachmentHtml += '<h2 style="text-align: center; margin-bottom: 30px; color: #333; border-bottom: 2px solid #4A90E2; padding-bottom: 10px;">Supporting Documentation</h2>';
+      
+      for (const [testName, attachments] of Object.entries(groupedAttachments)) {
+        attachmentHtml += `<h3 style="margin-top: 30px; margin-bottom: 15px; color: #555; font-size: 18px;">${testName}</h3>`;
+        
+        attachments.forEach((att) => {
+          attachmentHtml += '<div style="margin-bottom: 30px; border: 1px solid #ddd; border-radius: 8px; padding: 15px; background-color: #f9f9f9;">';
+          attachmentHtml += `<h4 style="margin: 0 0 10px 0; color: #333; font-size: 16px;">${att.heading}</h4>`;
+          attachmentHtml += `<img src="${att.url}" alt="${att.fileName}" style="max-width: 100%; height: auto; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" />`;
+          attachmentHtml += '</div>';
+        });
+      }
+      
+      attachmentHtml += '</div>';
+      
+      // Insert attachment HTML before closing body tag
+      finalHtml = finalHtml.replace('</body>', `${attachmentHtml}</body>`);
+      console.log('✅ Attachments injected into report HTML');
+    }
+    }
+  } catch (error) {
+    console.error('Failed to fetch attachments:', error);
+  }
+
   return {
     html: finalHtml,
     bundle,
@@ -2086,6 +2282,12 @@ export const generatePDFWithAPI = async (
     footerHtml = await convertHtmlImagestoBase64(rawFooterHtml);
   }
 
+  console.log('📄 Generating PDF with PDF.co API (direct call)...');
+  console.log('  HTML length:', ready.html.length);
+  console.log('  Has header:', !!headerHtml);
+  console.log('  Has footer:', !!footerHtml);
+  console.log('  Has attachments:', ready.html.includes('Supporting Documentation'));
+
   try {
     return await sendHtmlToPdfCo(ready.html, filename, {
       displayHeaderFooter: true,
@@ -2095,6 +2297,7 @@ export const generatePDFWithAPI = async (
       footerHeight: '80px',
       mediaType: 'screen',
       printBackground: true,
+      margins: '40px 40px 40px 40px',
     });
   } catch (error) {
     console.error('PDF.co generation failed:', error);
@@ -2148,7 +2351,6 @@ export const generatePDFWithBrowser = async (reportData: ReportData): Promise<st
 // Enhanced Save PDF to Supabase storage - For public bucket
 type PdfVariant = 'final' | 'draft' | 'print';
 
-// === Section: Storage operations ===
 export const savePDFToStorage = async (
   pdfBlob: Blob,
   orderId: string,
@@ -2276,7 +2478,6 @@ export const updateReportWithPrintPDFInfo = async (
 };
 
 // Main PDF generation function with comprehensive error handling and progress tracking
-// === Section: Main generation pipeline with progress ===
 export async function generateAndSavePDFReportWithProgress(
   orderId: string, 
   reportData: ReportData,
@@ -2631,7 +2832,6 @@ export async function generateAndSavePDFReportWithProgress(
 }
 
 // Enhanced download function with progress callbacks
-// === Section: Robust PDF download helpers ===
 export const downloadLargePDFWithProgress = async (
   url: string, 
   onProgress?: (stage: string, progress?: number) => void,
@@ -2747,7 +2947,6 @@ export const downloadLargePDFWithProgress = async (
 };
 
 // Main PDF generation function with comprehensive error handling and authentication
-// === Section: Main generation pipeline (non-progress variant) ===
 export async function generateAndSavePDFReport(orderId: string, reportData: ReportData, isDraft = false): Promise<string | null> {
   console.log('generateAndSavePDFReport called for order:', orderId);
   
@@ -2951,7 +3150,6 @@ export async function generateAndSavePDFReport(orderId: string, reportData: Repo
 }
 
 // View PDF report (opens in new tab)
-// === Section: Report viewing ===
 export async function viewPDFReport(orderId: string, reportData: ReportData): Promise<string | null> {
   console.log('viewPDFReport called for order:', orderId);
   
@@ -2972,7 +3170,6 @@ export async function viewPDFReport(orderId: string, reportData: ReportData): Pr
 }
 
 // Enhanced Download PDF report with progress callback
-// === Section: Report download with progress ===
 export async function downloadPDFReport(
   orderId: string, 
   reportData: ReportData, 
@@ -3030,7 +3227,6 @@ export async function downloadPDFReport(
 }
 
 // Generate sample report data for testing
-// === Section: Sample data generation ===
 export const generateSampleReportData = (template: LabTemplate = defaultLabTemplate): ReportData => {
   return {
     patient: {
@@ -3062,7 +3258,6 @@ export const generateSampleReportData = (template: LabTemplate = defaultLabTempl
 };
 
 // Utility function to download PDF from URL
-// === Section: Simple PDF download helper ===
 export const downloadPDFFromURL = async (url: string, filename: string): Promise<void> => {
   try {
     console.log('Downloading PDF from URL:', url);
@@ -3095,7 +3290,6 @@ export const downloadPDFFromURL = async (url: string, filename: string): Promise
 };
 
 // Function to test PDF generation without saving to database
-// === Section: Testing utilities ===
 export const testPDFGeneration = async (): Promise<void> => {
   console.log('Testing PDF generation...');
   
@@ -3115,7 +3309,6 @@ export const testPDFGeneration = async (): Promise<void> => {
 };
 
 // Debug function to test storage upload directly
-// === Section: Storage upload testing ===
 export const testStorageUpload = async (): Promise<void> => {
   console.log('Testing storage upload...');
   
@@ -3305,7 +3498,6 @@ export const downloadLargePDF = async (url: string, maxRetries: number = 3): Pro
 };
 
 // Comprehensive debug function to test the entire PDF pipeline
-// === Section: Comprehensive debug pipeline ===
 export const debugPDFPipeline = async (): Promise<void> => {
   console.log('🔍 Starting comprehensive PDF pipeline debug...');
   

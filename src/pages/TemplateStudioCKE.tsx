@@ -22,6 +22,8 @@ import { database, LabBrandingAsset, LabUserSignature } from '../utils/supabase'
 import { ensureReportRegions } from '../utils/reportTemplateRegions';
 import '../styles/report-baseline.css';
 
+type PlaceholderGroup = 'lab' | 'test' | 'patient' | 'branding' | 'signature';
+
 interface LabTemplateRecord {
   id: string;
   template_name: string;
@@ -317,6 +319,8 @@ const buildPremiumEditorConfig = (
   const aiEnabled = Boolean(options.aiKey && AIAssistant && OpenAITextAdapter);
 
   const toolbarItems = [
+    'alignment',
+    '|',
     'undo',
     'redo',
     '|',
@@ -328,7 +332,7 @@ const buildPremiumEditorConfig = (
     'showBlocks',
     '|',
     'heading',
-      'alignment',
+    'alignment',
     '|',
     'fontFamily',
     'fontSize',
@@ -425,9 +429,7 @@ const buildPremiumEditorConfig = (
     TableProperties,
     TableToolbar,
     TextTransformation,
-    TodoList,
     WordCount,
-    Alignment,
   ];
 
   if (aiEnabled) {
@@ -481,6 +483,10 @@ const buildPremiumEditorConfig = (
         'mergeTableCells',
         'tableProperties',
         'tableCellProperties',
+        '|',
+        'alignment',
+        'bold',
+        'italic',
       ],
       tableProperties: {
         defaultProperties: { borderStyle: 'solid', borderColor: '#e5e7eb', borderWidth: '1px', alignment: 'center' },
@@ -510,7 +516,7 @@ const buildPremiumEditorConfig = (
       },
     },
     alignment: {
-      options: [ 'left', 'center', 'right', 'justify' ]
+      options: ['left', 'center', 'right', 'justify']
     },
     fontFamily: {
       options: [
@@ -1031,17 +1037,21 @@ const TemplateStudioCKE: React.FC = () => {
         if (testError) {
           console.warn('Test group parameter fetch failed:', testError);
         } else if (testParams?.length) {
-          aggregated.push(
-            ...testParams.map((item) => ({
-              ...item,
-              group: 'test' as const,
-            }))
-          );
+          console.log('Raw testParams from API:', testParams);
+          const mappedParams = testParams.map((item) => ({
+            ...item,
+            group: 'test' as const,
+          }));
+          console.log('Mapped testParams with group:', mappedParams);
+          aggregated.push(...mappedParams);
         }
       }
     }
 
     aggregated.push(...PATIENT_PLACEHOLDER_OPTIONS);
+
+    console.log('Aggregated before deduplication:', aggregated);
+    console.log('Test group items before dedup:', aggregated.filter(o => o.group === 'test'));
 
     const uniqueByPlaceholder = new Map<string, PlaceholderOption>();
     aggregated.forEach((option) => {
@@ -1051,15 +1061,28 @@ const TemplateStudioCKE: React.FC = () => {
         return;
       }
 
+      // If groups differ, prioritize: test > lab > others
       if (existing.group !== option.group) {
+        let finalGroup: PlaceholderGroup;
+        if (option.group === 'test' || existing.group === 'test') {
+          finalGroup = 'test'; // Test group takes highest priority
+        } else if (option.group === 'lab' || existing.group === 'lab') {
+          finalGroup = 'lab'; // Lab takes second priority
+        } else {
+          finalGroup = option.group || existing.group || 'lab';
+        }
+        
         uniqueByPlaceholder.set(option.placeholder, {
           ...existing,
-          group: existing.group === 'lab' ? existing.group : option.group,
+          group: finalGroup,
         });
       }
     });
 
-    return Array.from(uniqueByPlaceholder.values());
+    const finalOptions = Array.from(uniqueByPlaceholder.values());
+    console.log('Final options after dedup:', finalOptions);
+    console.log('Test group items after dedup:', finalOptions.filter(o => o.group === 'test'));
+    return finalOptions;
   }, [LAB_META_PLACEHOLDER_OPTIONS, PATIENT_PLACEHOLDER_OPTIONS, labId, templateMeta?.test_group_id, user?.id]);
 
   const loadPlaceholderOptions = useCallback(async () => {
@@ -1086,6 +1109,15 @@ const TemplateStudioCKE: React.FC = () => {
       console.warn('Placeholder loader rejected:', err);
     });
   }, [loadPlaceholderOptions, placeholderPickerOpen]);
+
+  // Reload placeholder options when template or test_group_id changes
+  useEffect(() => {
+    if (placeholderPickerOpen && templateMeta?.id) {
+      loadPlaceholderOptions().catch((err) => {
+        console.warn('Placeholder reload on template change failed:', err);
+      });
+    }
+  }, [templateMeta?.test_group_id, templateMeta?.id, placeholderPickerOpen, loadPlaceholderOptions]);
 
   useEffect(() => {
     const editor = editorInstanceRef.current;
@@ -1149,7 +1181,7 @@ const TemplateStudioCKE: React.FC = () => {
             if (option.removeBackground) {
               styleSegments.push('background:none transparent', 'background-image:none');
             }
-            
+
             // Add background layer styling for watermarks
             if (option.assetType === 'watermark') {
               styleSegments.push(
@@ -1252,7 +1284,7 @@ const TemplateStudioCKE: React.FC = () => {
 
         writer.setAttribute('style', watermarkStyles, selectedElement);
         writer.setAttribute('class', 'report-watermark', selectedElement);
-        
+
         alert('✅ Image converted to watermark background layer!\n\nThe image now has:\n• Low opacity (15%)\n• Centered position\n• Behind content (z-index: 1)\n• Content will appear above it (z-index: 3)');
       });
     } catch (err) {
@@ -1284,7 +1316,7 @@ const TemplateStudioCKE: React.FC = () => {
       if (!overlayText) return;
 
       const imageUrl = selectedElement.getAttribute('src');
-      
+
       // Create HTML with image and overlay text
       const overlayHtml = `
         <div style="position:relative;display:inline-block;max-width:100%;">
@@ -1299,11 +1331,11 @@ const TemplateStudioCKE: React.FC = () => {
         // Convert HTML to CKEditor model
         const viewFragment = instance.data.processor.toView(overlayHtml);
         const modelFragment = instance.data.toModel(viewFragment);
-        
+
         // Replace the selected image with the overlay container
         const parent = selectedElement.parent;
         const index = parent.getChildIndex(selectedElement);
-        
+
         writer.remove(selectedElement);
         writer.insert(modelFragment, parent, index);
       });
@@ -1582,7 +1614,7 @@ const TemplateStudioCKE: React.FC = () => {
       // Get the HTML content
       const htmlContent = template.gjs_html || '';
       console.log('💾 Loading HTML content (length):', htmlContent.length);
-      
+
       // Update all state - React will remount editor due to key change
       setSelectedTemplateId(templateId);
       setTemplateMeta(template);
@@ -1590,13 +1622,13 @@ const TemplateStudioCKE: React.FC = () => {
       setCssContent(template.gjs_css || '');
       htmlRef.current = htmlContent;
       cssRef.current = template.gjs_css || '';
-      
+
       setLastSavedAt(template?.updated_at ? new Date(template.updated_at) : null);
       setSaveMessage(null);
       setSaveError(null);
       setAuditSuccessMessage(null);
       setAuditRevertSnapshot(null);
-      
+
       console.log('✅ Template state updated, editor will remount');
     },
     [templates, setHtmlContent, setCssContent]
@@ -2059,7 +2091,7 @@ const TemplateStudioCKE: React.FC = () => {
     setIsDeleting(true);
     try {
       const { error } = await database.labTemplates.delete(selectedTemplateId);
-      
+
       if (error) {
         console.error('Failed to delete template:', error);
         alert('Failed to delete template. Please try again.');
@@ -2069,7 +2101,7 @@ const TemplateStudioCKE: React.FC = () => {
       // Refresh templates list
       const { data: updatedTemplates } = await database.labTemplates.list(labId);
       setTemplates(updatedTemplates || []);
-      
+
       // Clear current template if it was deleted
       if (updatedTemplates && updatedTemplates.length > 0) {
         const firstTemplate = updatedTemplates[0];
@@ -2083,7 +2115,7 @@ const TemplateStudioCKE: React.FC = () => {
         setCssContent('');
         setMetadataDraft({ name: '', description: '', category: '', testGroupId: '' });
       }
-      
+
       setIsDeleteConfirmOpen(false);
     } catch (err) {
       console.error('Unexpected error deleting template:', err);
@@ -2118,6 +2150,17 @@ const TemplateStudioCKE: React.FC = () => {
 
   return (
     <div className="flex h-full flex-col bg-white">
+      <style>{`
+        :root {
+          --ck-z-default: 100;
+          --ck-z-modal: 999999;
+        }
+        .ck-balloon-panel,
+        .ck-dropdown__panel,
+        .ck-body-wrapper {
+          z-index: 999999 !important;
+        }
+      `}</style>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-6 py-4">
         <div>
           <h1 className="text-lg font-semibold text-gray-900">Template Studio · CKEditor</h1>
@@ -2207,160 +2250,160 @@ const TemplateStudioCKE: React.FC = () => {
             className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-400"
           >
             <Save className="h-3.5 w-3.5" />
-            {isSaving ? 'Saving…' : 'Save' }
+            {isSaving ? 'Saving…' : 'Save'}
           </button>
         </div>
       </div>
 
       <div className="flex flex-1 overflow-visible">
         {!sidebarCollapsed && (
-        <aside className="w-full max-w-xs shrink-0 border-r border-gray-200 bg-gray-50 px-4 py-4">
-          <div className="space-y-4 text-sm">
-            <section>
-              <div className="flex items-center justify-between">
-                <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Templates</h2>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setIsDeleteConfirmOpen(true)}
-                    disabled={!selectedTemplateId || templates.length <= 1}
-                    className="inline-flex items-center gap-1 rounded-md border border-red-300 px-2 py-1 text-[11px] font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-                    title={templates.length <= 1 ? "Cannot delete the only template" : "Delete current template"}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleCreateTemplate}
-                    className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-[11px] font-medium text-gray-600 transition hover:bg-white"
-                  >
-                    <FilePlus2 className="h-3 w-3" /> New
-                  </button>
+          <aside className="w-full max-w-xs shrink-0 border-r border-gray-200 bg-gray-50 px-4 py-4">
+            <div className="space-y-4 text-sm">
+              <section>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Templates</h2>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsDeleteConfirmOpen(true)}
+                      disabled={!selectedTemplateId || templates.length <= 1}
+                      className="inline-flex items-center gap-1 rounded-md border border-red-300 px-2 py-1 text-[11px] font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                      title={templates.length <= 1 ? "Cannot delete the only template" : "Delete current template"}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCreateTemplate}
+                      className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-[11px] font-medium text-gray-600 transition hover:bg-white"
+                    >
+                      <FilePlus2 className="h-3 w-3" /> New
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <select
-                value={selectedTemplateId || ''}
-                onChange={(event) => handleTemplateSelect(event.target.value)}
-                className="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
-              >
-                {templates.map((template) => (
-                  <option key={template.id} value={template.id}>
-                    {template.template_name || 'Untitled Template'}
-                  </option>
-                ))}
-              </select>
-              {lastSavedAt ? (
-                <p className="mt-2 text-[11px] text-gray-500">Last saved {lastSavedAt.toLocaleString()}</p>
-              ) : null}
-              {saveMessage ? (
-                <p className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] text-emerald-700">
-                  {saveMessage}
-                </p>
-              ) : null}
-              {saveError ? (
-                <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-1 text-[11px] text-red-700">
-                  {saveError}
-                </p>
-              ) : null}
-            </section>
-
-            <section className="rounded-lg border border-gray-200 bg-white px-3 py-3">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Template Details</h3>
-              <div className="mt-2 space-y-3 text-sm">
-                <div>
-                  <label className="text-[11px] font-medium text-gray-600">Name</label>
-                  <input
-                    type="text"
-                    value={metadataDraft.name}
-                    onChange={(event) =>
-                      setMetadataDraft((prev) => ({ ...prev, name: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
-                  />
-                </div>
-                <div>
-                  <label className="text-[11px] font-medium text-gray-600">Description</label>
-                  <textarea
-                    value={metadataDraft.description}
-                    onChange={(event) =>
-                      setMetadataDraft((prev) => ({ ...prev, description: event.target.value }))
-                    }
-                    className="mt-1 h-20 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
-                  />
-                </div>
-                <div>
-                  <label className="text-[11px] font-medium text-gray-600">Category</label>
-                  <input
-                    type="text"
-                    value={metadataDraft.category}
-                    onChange={(event) =>
-                      setMetadataDraft((prev) => ({ ...prev, category: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
-                  />
-                </div>
-                <div>
-                  <label className="text-[11px] font-medium text-gray-600">Linked Test Group</label>
-                  <select
-                    value={metadataDraft.testGroupId}
-                    onChange={(event) =>
-                      setMetadataDraft((prev) => ({ ...prev, testGroupId: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
-                  >
-                    <option value="">Not linked</option>
-                    {testGroups.map((group) => (
-                      <option key={group.id} value={group.id}>
-                        {group.name}
-                      </option>
-                    ))}
-                  </select>
-                  {testGroupsLoading ? (
-                    <p className="mt-1 text-[11px] text-gray-500">Loading test groups…</p>
-                  ) : null}
-                  {testGroupsError ? (
-                    <p className="mt-1 text-[11px] text-red-600">{testGroupsError}</p>
-                  ) : null}
-                  {attachedTestGroupName ? (
-                    <p className="mt-1 text-[11px] text-gray-500">Linked to {attachedTestGroupName}</p>
-                  ) : null}
-                </div>
-                <button
-                  type="button"
-                  onClick={handleMetadataSave}
-                  disabled={metadataSaving}
-                  className="w-full rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                <select
+                  value={selectedTemplateId || ''}
+                  onChange={(event) => handleTemplateSelect(event.target.value)}
+                  className="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
                 >
-                  {metadataSaving ? 'Saving…' : 'Save Details'}
-                </button>
-                {metadataMessage ? (
-                  <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] text-emerald-700">
-                    {metadataMessage}
+                  {templates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.template_name || 'Untitled Template'}
+                    </option>
+                  ))}
+                </select>
+                {lastSavedAt ? (
+                  <p className="mt-2 text-[11px] text-gray-500">Last saved {lastSavedAt.toLocaleString()}</p>
+                ) : null}
+                {saveMessage ? (
+                  <p className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] text-emerald-700">
+                    {saveMessage}
                   </p>
                 ) : null}
-                {metadataError ? (
-                  <p className="rounded-md border border-red-200 bg-red-50 px-3 py-1 text-[11px] text-red-700">
-                    {metadataError}
+                {saveError ? (
+                  <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-1 text-[11px] text-red-700">
+                    {saveError}
                   </p>
                 ) : null}
-              </div>
-            </section>
-
-            {auditResult ? (
-              <section className="rounded-lg border border-gray-200 bg-white px-3 py-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Last Audit</h3>
-                <p className="mt-2 text-sm text-gray-700">{auditResult.summary}</p>
-                <button
-                  type="button"
-                  onClick={() => setIsAuditModalOpen(true)}
-                  className="mt-3 inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-50 px-3 py-1 text-[11px] font-medium text-purple-700 hover:bg-purple-100"
-                >
-                  Review audit
-                </button>
               </section>
-            ) : null}
-          </div>
-        </aside>
+
+              <section className="rounded-lg border border-gray-200 bg-white px-3 py-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Template Details</h3>
+                <div className="mt-2 space-y-3 text-sm">
+                  <div>
+                    <label className="text-[11px] font-medium text-gray-600">Name</label>
+                    <input
+                      type="text"
+                      value={metadataDraft.name}
+                      onChange={(event) =>
+                        setMetadataDraft((prev) => ({ ...prev, name: event.target.value }))
+                      }
+                      className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-medium text-gray-600">Description</label>
+                    <textarea
+                      value={metadataDraft.description}
+                      onChange={(event) =>
+                        setMetadataDraft((prev) => ({ ...prev, description: event.target.value }))
+                      }
+                      className="mt-1 h-20 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-medium text-gray-600">Category</label>
+                    <input
+                      type="text"
+                      value={metadataDraft.category}
+                      onChange={(event) =>
+                        setMetadataDraft((prev) => ({ ...prev, category: event.target.value }))
+                      }
+                      className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-medium text-gray-600">Linked Test Group</label>
+                    <select
+                      value={metadataDraft.testGroupId}
+                      onChange={(event) =>
+                        setMetadataDraft((prev) => ({ ...prev, testGroupId: event.target.value }))
+                      }
+                      className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
+                    >
+                      <option value="">Not linked</option>
+                      {testGroups.map((group) => (
+                        <option key={group.id} value={group.id}>
+                          {group.name}
+                        </option>
+                      ))}
+                    </select>
+                    {testGroupsLoading ? (
+                      <p className="mt-1 text-[11px] text-gray-500">Loading test groups…</p>
+                    ) : null}
+                    {testGroupsError ? (
+                      <p className="mt-1 text-[11px] text-red-600">{testGroupsError}</p>
+                    ) : null}
+                    {attachedTestGroupName ? (
+                      <p className="mt-1 text-[11px] text-gray-500">Linked to {attachedTestGroupName}</p>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleMetadataSave}
+                    disabled={metadataSaving}
+                    className="w-full rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {metadataSaving ? 'Saving…' : 'Save Details'}
+                  </button>
+                  {metadataMessage ? (
+                    <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] text-emerald-700">
+                      {metadataMessage}
+                    </p>
+                  ) : null}
+                  {metadataError ? (
+                    <p className="rounded-md border border-red-200 bg-red-50 px-3 py-1 text-[11px] text-red-700">
+                      {metadataError}
+                    </p>
+                  ) : null}
+                </div>
+              </section>
+
+              {auditResult ? (
+                <section className="rounded-lg border border-gray-200 bg-white px-3 py-3">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Last Audit</h3>
+                  <p className="mt-2 text-sm text-gray-700">{auditResult.summary}</p>
+                  <button
+                    type="button"
+                    onClick={() => setIsAuditModalOpen(true)}
+                    className="mt-3 inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-50 px-3 py-1 text-[11px] font-medium text-purple-700 hover:bg-purple-100"
+                  >
+                    Review audit
+                  </button>
+                </section>
+              ) : null}
+            </div>
+          </aside>
         )}
 
         <main className="flex-1 overflow-y-auto px-6 py-6">
@@ -2405,6 +2448,7 @@ const TemplateStudioCKE: React.FC = () => {
           options={placeholderOptions}
           onInsert={handleInsertPlaceholder}
           onClose={() => setPlaceholderPickerOpen(false)}
+          onRefresh={loadPlaceholderOptions}
           loading={placeholderLoading}
           errorMessage={placeholderError}
         />
@@ -2473,7 +2517,7 @@ const TemplateStudioCKE: React.FC = () => {
       ) : null}
 
       {isA4PreviewOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+        <div className="fixed inset-0 z-[200000] flex items-center justify-center bg-black/60 px-4">
           <div className="h-[90vh] w-full max-w-6xl rounded-lg border border-gray-200 bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
               <div>
@@ -2488,19 +2532,19 @@ const TemplateStudioCKE: React.FC = () => {
                 Close
               </button>
             </div>
-            
+
             <div className="flex h-[calc(90vh-80px)] overflow-hidden">
               {/* A4 Preview Container */}
               <div className="flex-1 overflow-auto bg-gray-100 p-8">
-                <div className="mx-auto bg-white shadow-lg" style={{ 
-                  width: '210mm', 
+                <div className="mx-auto bg-white shadow-lg" style={{
+                  width: '210mm',
                   minHeight: '297mm',
                   padding: '20mm',
                   position: 'relative'
                 }}>
                   {/* Template Content with proper CSS injection */}
-                  <div 
-                    dangerouslySetInnerHTML={{ 
+                  <div
+                    dangerouslySetInnerHTML={{
                       __html: `
                         <style>
                           /* Reset and base styles for A4 preview */
@@ -2516,8 +2560,8 @@ const TemplateStudioCKE: React.FC = () => {
                           /* Typography */
                           body {
                             font-family: 'Arial', 'Helvetica', sans-serif;
-                            font-size: 12px;
-                            line-height: 1.4;
+                            font-size: 14px;
+                            line-height: 1.6;
                             color: #000;
                             background: transparent;
                           }
@@ -2533,6 +2577,11 @@ const TemplateStudioCKE: React.FC = () => {
                           p {
                             margin-bottom: 8px;
                             text-align: left;
+                          }
+
+                          /* Figures */
+                          figure {
+                            margin: 0;
                           }
                           
                           /* Tables */
@@ -2635,60 +2684,99 @@ const TemplateStudioCKE: React.FC = () => {
                   />
                 </div>
               </div>
-              
+
               {/* Information Panel */}
               <div className="w-80 border-l border-gray-200 bg-gray-50 p-6">
                 <h3 className="text-sm font-semibold text-gray-900 mb-4">A4 Document Info</h3>
-                
+
                 <div className="space-y-3 text-sm">
                   <div>
                     <dt className="font-medium text-gray-700">Paper Size</dt>
                     <dd className="text-gray-600">A4 (210 × 297 mm)</dd>
                   </div>
-                  
+
                   <div>
                     <dt className="font-medium text-gray-700">Margins</dt>
                     <dd className="text-gray-600">20mm all sides</dd>
                   </div>
-                  
+
                   <div>
                     <dt className="font-medium text-gray-700">Content Area</dt>
                     <dd className="text-gray-600">170 × 257 mm</dd>
                   </div>
-                  
+
                   <div>
                     <dt className="font-medium text-gray-700">Template</dt>
                     <dd className="text-gray-600">{templateMeta?.template_name || 'Untitled'}</dd>
                   </div>
-                  
+
                   {templateMeta?.template_description && (
                     <div>
                       <dt className="font-medium text-gray-700">Description</dt>
                       <dd className="text-gray-600">{templateMeta.template_description}</dd>
                     </div>
                   )}
-                  
+
                   <div className="pt-4 border-t border-gray-200">
                     <dt className="font-medium text-gray-700 mb-2">CSS Applied</dt>
                     <dd className="text-xs text-gray-500 font-mono bg-gray-100 p-2 rounded">
                       {cssContent ? 'Custom CSS active' : 'No custom CSS'}
                     </dd>
                   </div>
-                  
+
                   <div className="pt-4">
                     <button
                       type="button"
                       onClick={() => {
                         const printWindow = window.open('', '_blank');
                         if (printWindow) {
+                          // Extract regions from current template
+                          const headerRegion = document.querySelector('[data-report-region="header"]');
+                          const bodyRegion = document.querySelector('[data-report-region="body"]') || editorContainerRef.current;
+                          const footerRegion = document.querySelector('[data-report-region="footer"]');
+                          
+                          let headerHtml = headerRegion?.innerHTML || 'Place header content here';
+                          let bodyHtml = bodyRegion?.innerHTML || 'Place body content here';
+                          let footerHtml = footerRegion?.innerHTML || 'Place footer content here';
+                          
+                          // Render placeholders with sample data
+                          const sampleContext = {
+                            patientName: 'John Doe',
+                            patientAge: '45',
+                            registrationDate: '2025-11-26',
+                            locationName: 'Main Lab',
+                            sampleCollectedAt: '2025-11-26 10:30 AM',
+                            approvedAt: '2025-11-26 2:45 PM',
+                            referringDoctorName: 'Dr. Smith',
+                            crpResult: '66',
+                            crpRemarks: 'Elevated levels',
+                            approverSignature: 'https://via.placeholder.com/150x60/4F46E5/FFFFFF?text=Signature',
+                            approvedByName: 'Dr. Sarah Johnson',
+                            approverName: 'Dr. Sarah Johnson',
+                          };
+                          
+                          // Simple placeholder replacement (regex-based for print preview)
+                          const replacePlaceholders = (html: string) => {
+                            let result = html;
+                            Object.entries(sampleContext).forEach(([key, value]) => {
+                              const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'g');
+                              result = result.replace(regex, String(value));
+                            });
+                            return result;
+                          };
+                          
+                          headerHtml = replacePlaceholders(headerHtml);
+                          bodyHtml = replacePlaceholders(bodyHtml);
+                          footerHtml = replacePlaceholders(footerHtml);
+                          
                           printWindow.document.write(`
                             <html>
                               <head>
-                                <title>A4 Template Preview - ${templateMeta?.template_name || 'Untitled'}</title>
+                                <title>Print Preview - ${templateMeta?.template_name || 'Untitled'}</title>
                                 <style>
                                   @page { 
                                     size: A4; 
-                                    margin: 20mm; 
+                                    margin: 15mm 15mm; 
                                   }
                                   
                                   /* Reset and base styles */
@@ -2804,10 +2892,67 @@ const TemplateStudioCKE: React.FC = () => {
                                   
                                   /* Custom CSS from template */
                                   ${cssContent || ''}
+                                  
+                                  /* PDF Layout Structure */
+                                  .pdf-container {
+                                    width: 210mm;
+                                    min-height: 297mm;
+                                    margin: 0 auto;
+                                    background: white;
+                                    position: relative;
+                                  }
+                                  
+                                  .pdf-header {
+                                    min-height: 100px;
+                                    padding: 16px 36px;
+                                    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+                                    background: white;
+                                  }
+                                  
+                                  .pdf-body {
+                                    padding: 48px 36px;
+                                    min-height: calc(297mm - 200px);
+                                  }
+                                  
+                                  .pdf-footer {
+                                    min-height: 80px;
+                                    padding: 16px 36px;
+                                    border-top: 1px solid rgba(0, 0, 0, 0.1);
+                                    background: white;
+                                    position: absolute;
+                                    bottom: 0;
+                                    left: 0;
+                                    right: 0;
+                                  }
+                                  
+                                  @media print {
+                                    .pdf-header {
+                                      position: fixed;
+                                      top: 0;
+                                      left: 0;
+                                      right: 0;
+                                    }
+                                    
+                                    .pdf-footer {
+                                      position: fixed;
+                                      bottom: 0;
+                                      left: 0;
+                                      right: 0;
+                                    }
+                                    
+                                    .pdf-body {
+                                      padding-top: 160px;
+                                      padding-bottom: 140px;
+                                    }
+                                  }
                                 </style>
                               </head>
                               <body>
-                                ${htmlContent || '<p>No content available</p>'}
+                                <div class="pdf-container">
+                                  <div class="pdf-header">${headerHtml}</div>
+                                  <div class="pdf-body">${bodyHtml}</div>
+                                  <div class="pdf-footer">${footerHtml}</div>
+                                </div>
                               </body>
                             </html>
                           `);
@@ -2839,13 +2984,13 @@ const TemplateStudioCKE: React.FC = () => {
                 <p className="text-sm text-gray-500">This action cannot be undone</p>
               </div>
             </div>
-            
+
             <div className="px-6 py-4">
               <p className="text-sm text-gray-700 mb-4">
-                Are you sure you want to delete the template <strong>"{templateMeta?.template_name || 'Untitled Template'}"</strong>? 
+                Are you sure you want to delete the template <strong>"{templateMeta?.template_name || 'Untitled Template'}"</strong>?
                 This will permanently remove the template and all its versions.
               </p>
-              
+
               <div className="flex justify-end gap-3">
                 <button
                   type="button"

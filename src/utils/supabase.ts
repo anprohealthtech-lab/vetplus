@@ -1451,11 +1451,18 @@ export const database = {
         return { data: [], error: new Error('testGroupId is required') };
       }
 
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: [], error: new Error('No lab_id found for current user') };
+      }
+
+      // Get lab-specific analytes for this test group
       const { data, error } = await supabase
         .from('test_group_analytes')
         .select(
           `analyte_id,
-           analytes ( id, name, unit, reference_range )`
+           created_at,
+           analytes!inner ( id, name, unit, reference_range )`
         )
         .eq('test_group_id', testGroupId)
         .order('created_at', { ascending: true });
@@ -1464,20 +1471,48 @@ export const database = {
         return { data: [], error };
       }
 
+      // Get lab-specific overrides for these analytes
+      const analyteIds = (data || []).map((row: any) => row.analyte_id).filter(Boolean);
+      
+      let labAnalytesMap: Record<string, any> = {};
+      if (analyteIds.length > 0) {
+        const { data: labAnalytes } = await supabase
+          .from('lab_analytes')
+          .select('*')
+          .eq('lab_id', labId)
+          .in('analyte_id', analyteIds);
+
+        if (labAnalytes) {
+          labAnalytesMap = Object.fromEntries(
+            labAnalytes.map((la: any) => [la.analyte_id, la])
+          );
+        }
+      }
+
       const mapped = (data || []).map((row: any) => {
-        const analyte = row.analytes || {};
-        const label = analyte.name || 'Unnamed Analyte';
+        const baseAnalyte = row.analytes || {};
+        const labOverride = labAnalytesMap[row.analyte_id] || {};
+        
+        // Prefer lab-specific values over base analyte values
+        const label = (
+          labOverride.lab_specific_name ||
+          labOverride.name ||
+          baseAnalyte.name ||
+          'Unnamed Analyte'
+        ).trim();
+        
         const baseSlug = label
           .replace(/[^a-zA-Z0-9]+/g, ' ')
           .trim()
           .replace(/\s+/g, '');
         const finalSlug = baseSlug.replace(/^(\d+)/, 'n$1');
+        
         return {
-          id: analyte.id || row.analyte_id,
+          id: baseAnalyte.id || row.analyte_id,
           label,
           placeholder: `{{${finalSlug}}}`,
-          unit: analyte.unit || null,
-          referenceRange: analyte.reference_range || null,
+          unit: labOverride.lab_specific_unit || labOverride.unit || baseAnalyte.unit || null,
+          referenceRange: labOverride.lab_specific_reference_range || labOverride.reference_range || baseAnalyte.reference_range || null,
         };
       });
 
@@ -3517,6 +3552,11 @@ export const database = {
     },
 
     getAll: async () => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+      
       const { data, error } = await supabase
         .from('test_groups')
         .select(`
@@ -3549,6 +3589,7 @@ export const database = {
             )
           )
         `)
+        .eq('lab_id', lab_id)
         .eq('is_active', true)
         .order('name');
       return { data, error };
