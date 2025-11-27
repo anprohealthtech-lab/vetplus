@@ -2559,12 +2559,26 @@ export const database = {
         return { data: null, error };
       }
       
-      // Add paid_amount = 0 to all invoices (will be calculated by payments functionality later)
-      const invoicesWithPayments = (data || []).map(invoice => ({
-        ...invoice,
-        paid_amount: 0,
-        payment_status: invoice.status
-      }));
+      // Calculate paid_amount from payments table for each invoice
+      const invoicesWithPayments = await Promise.all(
+        (data || []).map(async (invoice) => {
+          const { data: payments } = await supabase
+            .from('payments')
+            .select('amount')
+            .eq('invoice_id', invoice.id);
+          
+          const paid_amount = (payments || []).reduce(
+            (sum, p) => sum + parseFloat(p.amount || '0'), 
+            0
+          );
+          
+          return {
+            ...invoice,
+            paid_amount,
+            payment_status: invoice.status
+          };
+        })
+      );
       
       return { data: invoicesWithPayments, error: null };
     },
@@ -3127,6 +3141,7 @@ export const database = {
       reason_details?: string;
       refunded_items?: any[];
     }) => {
+      // RPC function handles user authentication and lookup via email
       const { data, error } = await supabase.rpc('create_refund_request', {
         p_invoice_id: refundData.invoice_id,
         p_refund_amount: refundData.refund_amount,
@@ -3172,11 +3187,12 @@ export const database = {
         return { data: null, error: new Error('User not authenticated') };
       }
       
-      // Get user's internal ID
+      // Get user's internal ID using email (matches getCurrentUserLabId pattern)
       const { data: userData, error: userError } = await supabase
         .from('users')
         .select('id')
-        .eq('auth_user_id', user.id)
+        .eq('email', user.email)
+        .eq('status', 'Active')
         .single();
       
       if (userError || !userData) {

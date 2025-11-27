@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, Search, Filter, DollarSign, FileText, Download, Eye, CreditCard, Calendar, TrendingUp, Clock as ClockIcon, Calculator, Building, RotateCcw } from 'lucide-react';
-import { useSearchParams } from 'react-router-dom';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Plus, Search, DollarSign, FileText, Download, Eye, CreditCard, Calendar, TrendingUp, Clock as ClockIcon, Calculator, Building, RotateCcw } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { generateAndDownloadReport, getLabTemplate, ReportData } from '../utils/pdfGenerator';
 import { database } from '../utils/supabase';
 import InvoiceForm from '../components/Billing/InvoiceForm';
@@ -9,6 +9,9 @@ import CashReconciliation from '../components/Billing/CashReconciliation';
 import MonthlyAccountBilling from '../components/Billing/MonthlyAccountBilling';
 import RefundRequestModal from '../components/Billing/RefundRequestModal';
 import RefundApprovalConsole from '../components/Billing/RefundApprovalConsole';
+
+type DateRangePreset = 'custom' | 'today' | '7d' | '30d' | '90d' | 'all';
+type PendingScope = 'pending' | 'all';
 
 interface InvoiceItem {
   id: string;
@@ -49,7 +52,8 @@ interface Invoice {
 }
 
 const Billing: React.FC = () => {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const view = searchParams.get('view') || 'invoices';
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -60,6 +64,10 @@ const Billing: React.FC = () => {
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [downloadingInvoices, setDownloadingInvoices] = useState<Set<string>>(new Set());
   const [showInvoiceForm, setShowInvoiceForm] = useState(false);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [datePreset, setDatePreset] = useState<DateRangePreset>('today');
+  const [pendingScope, setPendingScope] = useState<PendingScope>('pending');
 
   // State for payment modal
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -73,6 +81,45 @@ const Billing: React.FC = () => {
   useEffect(() => {
     fetchInvoices();
   }, []);
+
+  const formatISODate = (date: Date) => date.toISOString().split('T')[0];
+
+  const applyQuickRange = useCallback((preset: DateRangePreset) => {
+    if (preset === 'custom') {
+      setDatePreset('custom');
+      return;
+    }
+
+    setDatePreset(preset);
+
+    if (preset === 'all') {
+      setDateFrom('');
+      setDateTo('');
+      return;
+    }
+
+    const today = new Date();
+    const endDate = formatISODate(today);
+    const startDate = new Date(today);
+
+    const offsets: Record<Exclude<DateRangePreset, 'custom'>, number> = {
+      today: 0,
+      '7d': 7,
+      '30d': 30,
+      '90d': 90,
+      all: 0,
+    };
+
+    const offset = offsets[preset];
+    startDate.setDate(startDate.getDate() - offset);
+
+    setDateFrom(formatISODate(startDate));
+    setDateTo(endDate);
+  }, []);
+
+  useEffect(() => {
+    applyQuickRange('today');
+  }, [applyQuickRange]);
 
   const fetchInvoices = async () => {
     setLoading(true);
@@ -174,11 +221,31 @@ const Billing: React.FC = () => {
 
   const statuses = ['All', 'Draft', 'Sent', 'Paid', 'Overdue'];
 
+  const normalizeInvoiceDate = (value?: string | null) => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      const trimmed = value.split('T')[0];
+      return trimmed || null;
+    }
+    return formatISODate(parsed);
+  };
+
   const filteredInvoices = invoices.filter(invoice => {
     const matchesSearch = (invoice.patient_name || invoice.patientName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
                          invoice.id.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = selectedStatus === 'All' || invoice.status === selectedStatus;
-    return matchesSearch && matchesStatus;
+    const invoiceDateIso = normalizeInvoiceDate(invoice.invoice_date || invoice.invoiceDate || null);
+    const matchesDate = (() => {
+      if (!dateFrom && !dateTo) return true;
+      if (!invoiceDateIso) return false;
+      if (dateFrom && invoiceDateIso < dateFrom) return false;
+      if (dateTo && invoiceDateIso > dateTo) return false;
+      return true;
+    })();
+    const paymentState = invoice.payment_status || invoice.status;
+    const matchesPendingScope = pendingScope === 'all' ? true : paymentState !== 'Paid';
+    return matchesSearch && matchesStatus && matchesDate && matchesPendingScope;
   });
 
   const getStatusColor = (status: string) => {
@@ -314,31 +381,98 @@ const Billing: React.FC = () => {
         </div>
 
         {/* Search and Filter Bar */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-          <div className="flex flex-col sm:flex-row gap-4">
-            <div className="flex-1 relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search by patient name or invoice ID..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10 pr-4 py-2 w-full border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 space-y-4">
+          <div className="flex flex-col lg:flex-row gap-4">
+            <div className="flex-1">
+              <label className="text-sm font-medium text-gray-600 mb-1 block">Search</label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search by patient name or invoice ID..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10 pr-4 py-2 w-full border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
             </div>
-            <select
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
-              className="px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              {statuses.map(status => (
-                <option key={status} value={status}>{status}</option>
+            <div className="w-full lg:w-56">
+              <label className="text-sm font-medium text-gray-600 mb-1 block">Invoice Status</label>
+              <select
+                value={selectedStatus}
+                onChange={(e) => setSelectedStatus(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full"
+              >
+                {statuses.map(status => (
+                  <option key={status} value={status}>{status}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="flex flex-col xl:flex-row xl:items-end gap-4">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-4 flex-1">
+              <div className="flex flex-col">
+                <span className="text-sm font-medium text-gray-600 mb-1">From</span>
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => {
+                    setDateFrom(e.target.value);
+                    setDatePreset('custom');
+                  }}
+                  className="px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-sm font-medium text-gray-600 mb-1">To</span>
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => {
+                    setDateTo(e.target.value);
+                    setDatePreset('custom');
+                  }}
+                  className="px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 flex-1">
+              {[
+                { label: 'Today', value: 'today' },
+                { label: '7 days', value: '7d' },
+                { label: '30 days', value: '30d' },
+                { label: '90 days', value: '90d' },
+                { label: 'All Dates', value: 'all' },
+              ].map(({ label, value }) => (
+                <button
+                  key={value}
+                  onClick={() => applyQuickRange(value as DateRangePreset)}
+                  className={`px-3 py-1.5 text-sm rounded-md border ${datePreset === value ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'}`}
+                >
+                  {label}
+                </button>
               ))}
-            </select>
-            <button className="flex items-center px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
-              <Filter className="h-4 w-4 mr-2" />
-              Date Range
-            </button>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-medium text-gray-600">Payment Scope</span>
+              <div className="inline-flex bg-gray-100 rounded-full p-1">
+                <button
+                  onClick={() => setPendingScope('pending')}
+                  className={`px-3 py-1 text-sm font-semibold rounded-full ${pendingScope === 'pending' ? 'bg-amber-500 text-white shadow' : 'text-gray-600'}`}
+                >
+                  Pending
+                </button>
+                <button
+                  onClick={() => setPendingScope('all')}
+                  className={`px-3 py-1 text-sm font-semibold rounded-full ${pendingScope === 'all' ? 'bg-blue-600 text-white shadow' : 'text-gray-600'}`}
+                >
+                  All
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -488,7 +622,7 @@ const Billing: React.FC = () => {
                                 <CreditCard className="h-4 w-4" />
                               </button>
                             )}
-                            {(invoice.paid_amount && invoice.paid_amount > 0) && (
+                            {(((invoice.paid_amount ?? 0) > 0) || invoice.payment_status === 'Paid' || invoice.status === 'Paid') && (
                               <button 
                                 onClick={() => {
                                   setInvoiceForRefund(invoice);
@@ -524,7 +658,11 @@ const Billing: React.FC = () => {
         {/* View Tabs */}
         <div className="flex gap-2">
           <button
-            onClick={() => (window.location.href = '/billing?view=invoices')}
+            onClick={() => {
+              const params = new URLSearchParams(searchParams);
+              params.set('view', 'invoices');
+              setSearchParams(params);
+            }}
             className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${
               view === 'invoices' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
@@ -533,7 +671,11 @@ const Billing: React.FC = () => {
             Invoices
           </button>
           <button
-            onClick={() => (window.location.href = '/billing?view=b2b-monthly')}
+            onClick={() => {
+              const params = new URLSearchParams(searchParams);
+              params.set('view', 'b2b-monthly');
+              setSearchParams(params);
+            }}
             className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${
               view === 'b2b-monthly' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
@@ -542,7 +684,11 @@ const Billing: React.FC = () => {
             B2B Monthly
           </button>
           <button
-            onClick={() => (window.location.href = '/billing?view=cash-reconciliation')}
+            onClick={() => {
+              const params = new URLSearchParams(searchParams);
+              params.set('view', 'cash-reconciliation');
+              setSearchParams(params);
+            }}
             className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${
               view === 'cash-reconciliation' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
@@ -551,7 +697,11 @@ const Billing: React.FC = () => {
             Cash Reconciliation
           </button>
           <button
-            onClick={() => (window.location.href = '/billing?view=refund-approvals')}
+            onClick={() => {
+              const params = new URLSearchParams(searchParams);
+              params.set('view', 'refund-approvals');
+              setSearchParams(params);
+            }}
             className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${
               view === 'refund-approvals' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
@@ -615,22 +765,34 @@ const Billing: React.FC = () => {
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
           
           <div className="space-y-3">
-            <button className="w-full flex items-center justify-center px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+            <button
+              className="w-full flex items-center justify-center px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              onClick={() => setShowInvoiceForm(true)}
+            >
               <Plus className="h-5 w-5 mr-2" />
-              <span onClick={() => setShowInvoiceForm(true)}>Create New Invoice</span>
+              Create New Invoice
             </button>
             
-            <button className="w-full flex items-center justify-center px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors">
+            <button
+              className="w-full flex items-center justify-center px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+              onClick={() => navigate('/reports?tab=billing')}
+            >
               <FileText className="h-5 w-5 mr-2" />
               Generate Payment Report
             </button>
             
-            <button className="w-full flex items-center justify-center px-4 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors">
+            <button
+              className="w-full flex items-center justify-center px-4 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors"
+              onClick={() => navigate('/whatsapp')}
+            >
               <Calendar className="h-5 w-5 mr-2" />
               Send Payment Reminders
             </button>
             
-            <button className="w-full flex items-center justify-center px-4 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors">
+            <button
+              className="w-full flex items-center justify-center px-4 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+              onClick={() => navigate('/dashboard2')}
+            >
               <TrendingUp className="h-5 w-5 mr-2" />
               Financial Analytics
             </button>

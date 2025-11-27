@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { supabase, database } from "../utils/supabase";
 import AttachmentSelector from "../components/Reports/AttachmentSelector";
+import OrderVerificationView from "./OrderVerificationView";
 import { useAIResultIntelligence, type VerifierSummaryResponse, type ClinicalSummaryResponse, type GeneratedInterpretation } from "../hooks/useAIResultIntelligence";
 import { generateAndSaveTrendCharts, saveClinicalSummary } from "../utils/reportExtrasService";
 
@@ -89,6 +90,7 @@ type Attachment = {
 };
 
 type StateFilter = "all" | "pending" | "partial" | "ready";
+type ViewMode = "panel" | "order";
 
 /* =========================================
    Helpers
@@ -348,6 +350,7 @@ const ResultVerificationConsole: React.FC = () => {
   const [to, setTo] = useState(todayISO());
   const [q, setQ] = useState("");
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
+  const [viewMode, setViewMode] = useState<ViewMode>("panel");
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
   // attachment view mode
@@ -1885,6 +1888,10 @@ const ResultVerificationConsole: React.FC = () => {
     );
   };
 
+  if (viewMode === "order") {
+    return <OrderVerificationView onBackToPanel={() => setViewMode("panel")} />;
+  }
+
   /* ----------------- Render ----------------- */
 
   return (
@@ -1913,6 +1920,20 @@ const ResultVerificationConsole: React.FC = () => {
             </div>
 
             <div className="flex items-center space-x-4">
+              <div className="flex items-center bg-gray-100 rounded-full p-1">
+                <button
+                  onClick={() => setViewMode("panel")}
+                  className={`px-4 py-2 text-sm font-semibold rounded-full transition-colors ${viewMode === "panel" ? "bg-white shadow text-blue-600" : "text-gray-600"}`}
+                >
+                  Panel View
+                </button>
+                <button
+                  onClick={() => setViewMode("order")}
+                  className={`px-4 py-2 text-sm font-semibold rounded-full transition-colors ${viewMode === "order" ? "bg-white shadow text-blue-600" : "text-gray-600"}`}
+                >
+                  Order View
+                </button>
+              </div>
               <button
                 onClick={loadPanels}
                 className="inline-flex items-center px-6 py-3 bg-white border-2 border-gray-300 rounded-xl hover:border-gray-400 hover:shadow-md transition-all duration-200 font-semibold"
