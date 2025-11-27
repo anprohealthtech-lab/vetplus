@@ -13,13 +13,13 @@
   --report-accent-color: #2563eb;
   --report-background-color: #ffffff;
   --report-section-gap: 1.5rem;
-  --report-horizontal-padding: 48px;
+  --report-horizontal-padding: 60px;
   --report-body-padding-top: 20px;
   --report-body-padding-bottom: 20px;
-  --report-header-height: 80px;
+  --report-header-height: 100px;
   --report-footer-height: 80px;
   --report-page-height: 1123px; /* 297mm at 96dpi */
-  --report-usable-body-height: 963px; /* 1123 - 80 - 80 */
+  --report-usable-body-height: 943px; /* 1123 - 100 - 80 */
 }
 
 /* ---------- Base layout ---------- */

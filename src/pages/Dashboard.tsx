@@ -100,6 +100,10 @@ type CardOrder = {
   // Billing fields
   billing_status?: 'pending' | 'partial' | 'billed' | null;
   is_billed?: boolean | null;
+  invoice_id?: string | null;
+  paid_amount?: number;
+  due_amount?: number;
+  payment_status?: 'unpaid' | 'partial' | 'paid' | null;
 
   patient?: { name?: string | null; age?: string | null; gender?: string | null } | null;
   tests: string[];
@@ -214,9 +218,24 @@ const Dashboard: React.FC = () => {
       byOrder.set(r.order_id, arr);
     });
 
-    // 3) shape cards with new buckets
+    // 3) Fetch invoices and payments for each order
+    const invoicePromises = orderIds.map(async (orderId) => {
+      const { data: invoice } = await database.invoices.getByOrderId(orderId);
+      if (!invoice) return { orderId, invoice: null, payments: [], paidAmount: 0 };
+      
+      const { data: payments } = await database.payments.getByInvoiceId(invoice.id);
+      const paidAmount = (payments || []).reduce((sum, p) => sum + (p.amount || 0), 0);
+      
+      return { orderId, invoice, payments: payments || [], paidAmount };
+    });
+    
+    const invoiceData = await Promise.all(invoicePromises);
+    const invoiceMap = new Map(invoiceData.map(d => [d.orderId, d]));
+
+    // 4) shape cards with new buckets
     const cards: CardOrder[] = orderRows.map((o) => {
       const rows = byOrder.get(o.id) || [];
+      const invoiceInfo = invoiceMap.get(o.id);
       const panels: Panel[] = rows.map((r) => ({
         name: r.test_group_name || "Test",
         expected: r.expected_analytes || 0,
@@ -268,6 +287,17 @@ const Dashboard: React.FC = () => {
         // Billing fields
         billing_status: o.billing_status,
         is_billed: o.is_billed,
+        invoice_id: invoiceInfo?.invoice?.id || null,
+        paid_amount: invoiceInfo?.paidAmount || 0,
+        due_amount: invoiceInfo?.invoice 
+          ? Math.max(0, (invoiceInfo.invoice.total || invoiceInfo.invoice.total_amount || 0) - (invoiceInfo.paidAmount || 0))
+          : o.total_amount,
+        payment_status: !invoiceInfo?.invoice ? 'unpaid' : 
+          (() => {
+            const total = invoiceInfo.invoice.total || invoiceInfo.invoice.total_amount || 0;
+            const paid = invoiceInfo.paidAmount || 0;
+            return paid > 0 && paid >= total ? 'paid' : (paid > 0 ? 'partial' : 'unpaid');
+          })(),
 
         patient: o.patients,
         tests: (o.order_tests || []).map((t) => t.test_name),
@@ -783,8 +813,33 @@ const Dashboard: React.FC = () => {
                               {pct}% ({o.enteredTotal}/{o.expectedTotal})
                             </div>
                             <OrderStatusDisplay order={o} compact={true} />
-                            {getBillingBadge(o)}
-                            <span className="text-sm font-bold text-green-600">₹{Number(o.total_amount || 0).toLocaleString()}</span>
+                            
+                            {/* Combined Billing & Payment Status Badge */}
+                            {o.payment_status === 'paid' ? (
+                              <span className="px-2 py-1 text-xs font-bold rounded-full bg-green-100 text-green-800 border border-green-300">
+                                ✓ Fully Paid
+                              </span>
+                            ) : o.payment_status === 'partial' ? (
+                              <span className="px-2 py-1 text-xs font-bold rounded-full bg-orange-100 text-orange-800 border border-orange-300">
+                                ₹{(o.paid_amount || 0).toLocaleString()} Paid
+                              </span>
+                            ) : o.billing_status === 'billed' ? (
+                              <span className="px-2 py-1 text-xs font-bold rounded-full bg-red-100 text-red-800 border border-red-300">
+                                Unpaid/Billed
+                              </span>
+                            ) : (
+                              <span className="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300">
+                                Not Billed
+                              </span>
+                            )}
+                            
+                            {/* Amount with Due Highlight */}
+                            <div className="flex flex-col items-end">
+                              <span className="text-base font-bold text-gray-900">₹{Number(o.total_amount || 0).toLocaleString()}</span>
+                              {o.payment_status !== 'paid' && o.due_amount > 0 && (
+                                <span className="text-xs font-semibold text-red-600">Due: ₹{(o.due_amount || 0).toLocaleString()}</span>
+                              )}
+                            </div>
                             {o.priority !== 'Normal' && (
                               <span className={`px-2 py-1 text-xs rounded-full ${
                                 o.priority === 'Urgent' ? 'bg-orange-100 text-orange-800' : 'bg-red-100 text-red-800'
@@ -912,10 +967,45 @@ const Dashboard: React.FC = () => {
                           </div>
 
                           <div className="text-right">
-                            <div className="text-xl sm:text-2xl font-bold text-green-600">
+                            <div className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">
                               ₹{Number(o.total_amount || 0).toLocaleString()}
                             </div>
-                            <div className="text-sm text-gray-600">
+                            
+                            {/* Enhanced Payment Status Badge */}
+                            <div className="flex flex-col items-end gap-2 mb-3">
+                              {o.payment_status === 'paid' ? (
+                                <div className="inline-flex items-center px-4 py-2 rounded-lg bg-green-100 border-2 border-green-500">
+                                  <span className="text-lg font-bold text-green-700">✓ Fully Paid</span>
+                                </div>
+                              ) : o.payment_status === 'partial' ? (
+                                <>
+                                  <div className="inline-flex items-center px-4 py-2 rounded-lg bg-orange-100 border-2 border-orange-500">
+                                    <span className="text-base font-bold text-orange-700">Partially Paid</span>
+                                  </div>
+                                  <div className="text-sm">
+                                    <div className="text-green-600 font-semibold">Paid: ₹{(o.paid_amount || 0).toLocaleString()}</div>
+                                    <div className="text-red-600 font-bold text-base">Due: ₹{(o.due_amount || 0).toLocaleString()}</div>
+                                  </div>
+                                </>
+                              ) : o.billing_status === 'billed' ? (
+                                <>
+                                  <div className="inline-flex items-center px-4 py-2 rounded-lg bg-red-100 border-2 border-red-500">
+                                    <span className="text-lg font-bold text-red-700">Unpaid / Fully Billed</span>
+                                  </div>
+                                  <div className="text-red-600 font-bold text-xl">
+                                    Due: ₹{(o.due_amount || 0).toLocaleString()}
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="inline-flex items-center px-4 py-2 rounded-lg bg-yellow-100 border-2 border-yellow-500">
+                                    <span className="text-base font-bold text-yellow-700">Not Billed Yet</span>
+                                  </div>
+                                  <div className="text-gray-600 text-sm">Amount: ₹{(o.total_amount || 0).toLocaleString()}</div>
+                                </>
+                              )}
+                            </div>
+                            <div className="text-sm text-gray-600 mt-2">
                               <div>Ordered: {new Date(o.order_date).toLocaleDateString()}</div>
                               <div className={`${new Date(o.expected_date) < new Date() ? "text-red-600 font-bold" : ""}`}>
                                 Expected: {new Date(o.expected_date).toLocaleDateString()}

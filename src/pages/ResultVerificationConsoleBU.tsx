@@ -903,8 +903,8 @@ const ResultVerificationConsole: React.FC = () => {
                   disabled={isBusy}
                   onClick={() => rejectAnalyte(a.id)}
                   className={`inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold transition-all duration-200 shadow-sm ${status === "rejected"
-                      ? "bg-gradient-to-r from-red-600 to-rose-600 text-white"
-                      : "bg-gradient-to-r from-red-100 to-rose-100 text-red-700 hover:from-red-200 hover:to-rose-200"
+                    ? "bg-gradient-to-r from-red-600 to-rose-600 text-white"
+                    : "bg-gradient-to-r from-red-100 to-rose-100 text-red-700 hover:from-red-200 hover:to-rose-200"
                     }`}
                 >
                   <XCircle className="h-4 w-4 mr-2" />
@@ -978,8 +978,8 @@ const ResultVerificationConsole: React.FC = () => {
                   <div className="w-24 bg-gray-200 h-3 rounded-full overflow-hidden">
                     <div
                       className={`h-3 rounded-full transition-all duration-500 ${pct >= 100 ? 'bg-gradient-to-r from-green-500 to-emerald-500' :
-                          pct >= 50 ? 'bg-gradient-to-r from-amber-500 to-orange-500' :
-                            'bg-gradient-to-r from-red-500 to-rose-500'
+                        pct >= 50 ? 'bg-gradient-to-r from-amber-500 to-orange-500' :
+                          'bg-gradient-to-r from-red-500 to-rose-500'
                         }`}
                       style={{ width: `${pct}%` }}
                     />
@@ -1279,8 +1279,8 @@ const ResultVerificationConsole: React.FC = () => {
                     <button
                       onClick={() => setAttachmentViewMode('test')}
                       className={`text-xs px-3 py-1 rounded-full transition-colors ${attachmentViewMode === 'test'
-                          ? 'bg-blue-100 text-blue-700 font-medium'
-                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        ? 'bg-blue-100 text-blue-700 font-medium'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                         }`}
                     >
                       Test Only
@@ -1293,8 +1293,8 @@ const ResultVerificationConsole: React.FC = () => {
                     <button
                       onClick={() => setAttachmentViewMode('all')}
                       className={`text-xs px-3 py-1 rounded-full transition-colors ${attachmentViewMode === 'all'
-                          ? 'bg-blue-100 text-blue-700 font-medium'
-                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        ? 'bg-blue-100 text-blue-700 font-medium'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                         }`}
                     >
                       All
@@ -1443,10 +1443,10 @@ const ResultVerificationConsole: React.FC = () => {
                               {trend.flag && (
                                 <span
                                   className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${trend.flag === 'H' || trend.flag === 'Critical'
-                                      ? 'bg-red-100 text-red-800'
-                                      : trend.flag === 'L'
-                                        ? 'bg-blue-100 text-blue-800'
-                                        : 'bg-orange-100 text-orange-800'
+                                    ? 'bg-red-100 text-red-800'
+                                    : trend.flag === 'L'
+                                      ? 'bg-blue-100 text-blue-800'
+                                      : 'bg-orange-100 text-orange-800'
                                     }`}
                                 >
                                   {trend.flag}
@@ -2017,8 +2017,8 @@ const ResultVerificationConsole: React.FC = () => {
                 <button
                   onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
                   className={`inline-flex items-center px-4 py-4 border-2 rounded-xl transition-all duration-200 font-semibold ${showAdvancedFilters
-                      ? 'bg-blue-100 border-blue-300 text-blue-700'
-                      : 'border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50'
+                    ? 'bg-blue-100 border-blue-300 text-blue-700'
+                    : 'border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50'
                     }`}
                 >
                   <FilterIcon className="h-5 w-5 mr-2" />
@@ -2302,31 +2302,33 @@ const ResultVerificationConsole: React.FC = () => {
       {/* AI Summary Modal */}
       <AISummaryModal />
 
-      {/* AI Interpretations Modal */}
-      <AIInterpretationsModal />
+      {/              * AI Interpretations Modal */}
+      <A IInterpretationsModal />
 
-      {/* Attachment Selector Modal */}
-      {showAttachmentSelector && selectedOrderForAttachments && (
-        <AttachmentSelector
-          orderId={selectedOrderForAttachments}
-          onClose={() => {
-            setShowAttachmentSelector(false);
-            setSelectedOrderForAttachments(null);
-          }}
-          onSave={() => {
-            // Reload attachments after save
-            if (selectedOrderForAttachments) {
-              setAttachmentsByOrder(prev => {
-                const updated = { ...prev };
-                delete updated[selectedOrderForAttachments];
-                return updated;
-              });
-              loadAttachments(selectedOrderForAttachments);
-            }
-          }}
-        />
-      )}
-    </div>
+      {/              * Attachment Selector Modal */}
+      {
+        sh              owAttachmentSelector && selectedOrderForAttachments && (
+      <A ttachmentSelector
+        or derId={selectedOrderForAttachments}
+        on Close={() => {
+        se              tShowAttachmentSelector(false);
+        se              tSelectedOrderForAttachments(null);
+        }}
+        on Save={() => {
+          //               Reload attachments after save
+          if (selectedOrderForAttachments) {
+          se              tAttachmentsByOrder(prev => {
+            co              nst updated = { ...prev };
+            de              lete updated[selectedOrderForAttachments];
+            re              turn updated;
+          });
+          lo              adAttachments(selectedOrderForAttachments);
+          }
+        }}
+      />
+      )              
+}
+    </div >
   );
 };
 

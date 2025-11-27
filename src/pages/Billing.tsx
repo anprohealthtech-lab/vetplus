@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Filter, DollarSign, FileText, Download, Eye, CreditCard, Calendar, TrendingUp, Clock as ClockIcon, Calculator, Building } from 'lucide-react';
+import { Plus, Search, Filter, DollarSign, FileText, Download, Eye, CreditCard, Calendar, TrendingUp, Clock as ClockIcon, Calculator, Building, RotateCcw } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { generateAndDownloadReport, getLabTemplate, ReportData } from '../utils/pdfGenerator';
 import { database } from '../utils/supabase';
@@ -7,6 +7,8 @@ import InvoiceForm from '../components/Billing/InvoiceForm';
 import MarkAsPaidModal from '../components/Billing/MarkAsPaidModal';
 import CashReconciliation from '../components/Billing/CashReconciliation';
 import MonthlyAccountBilling from '../components/Billing/MonthlyAccountBilling';
+import RefundRequestModal from '../components/Billing/RefundRequestModal';
+import RefundApprovalConsole from '../components/Billing/RefundApprovalConsole';
 
 interface InvoiceItem {
   id: string;
@@ -62,6 +64,10 @@ const Billing: React.FC = () => {
   // State for payment modal
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [invoiceForPayment, setInvoiceForPayment] = useState<Invoice | null>(null);
+
+  // State for refund modal
+  const [showRefundModal, setShowRefundModal] = useState(false);
+  const [invoiceForRefund, setInvoiceForRefund] = useState<Invoice | null>(null);
 
   // Fetch invoices from Supabase on component mount
   useEffect(() => {
@@ -250,6 +256,7 @@ const Billing: React.FC = () => {
   const renderContent = () => {
     if (view === 'cash-reconciliation') return <CashReconciliation />;
     if (view === 'b2b-monthly') return <MonthlyAccountBilling />;
+    if (view === 'refund-approvals') return <RefundApprovalConsole />;
 
     // Render the existing invoices UI
     return (
@@ -481,6 +488,18 @@ const Billing: React.FC = () => {
                                 <CreditCard className="h-4 w-4" />
                               </button>
                             )}
+                            {(invoice.paid_amount && invoice.paid_amount > 0) && (
+                              <button 
+                                onClick={() => {
+                                  setInvoiceForRefund(invoice);
+                                  setShowRefundModal(true);
+                                }}
+                                className="text-purple-600 hover:text-purple-900 p-1 rounded"
+                                title="Request Refund"
+                              >
+                                <RotateCcw className="h-4 w-4" />
+                              </button>
+                            )}
                           </td>
                         </tr>
                       );
@@ -530,6 +549,15 @@ const Billing: React.FC = () => {
           >
             <Calculator className="w-4 h-4" />
             Cash Reconciliation
+          </button>
+          <button
+            onClick={() => (window.location.href = '/billing?view=refund-approvals')}
+            className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${
+              view === 'refund-approvals' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+            }`}
+          >
+            <RotateCcw className="w-4 h-4" />
+            Refunds
           </button>
         </div>
       </div>
@@ -756,6 +784,24 @@ const Billing: React.FC = () => {
           invoiceTotal={invoiceForPayment.total}
           paidAmount={invoiceForPayment.paid_amount || 0}
           onSubmit={handleMarkInvoiceAsPaid}
+        />
+      )}
+
+      {/* Refund Request Modal */}
+      {showRefundModal && invoiceForRefund && (
+        <RefundRequestModal
+          isOpen={showRefundModal}
+          onClose={() => {
+            setShowRefundModal(false);
+            setInvoiceForRefund(null);
+          }}
+          invoiceId={invoiceForRefund.id}
+          invoiceTotal={invoiceForRefund.total}
+          amountPaid={invoiceForRefund.paid_amount || 0}
+          totalRefunded={(invoiceForRefund as any).total_refunded_amount || 0}
+          patientName={invoiceForRefund.patient_name || invoiceForRefund.patientName}
+          invoiceItems={invoiceForRefund.invoice_items || []}
+          onSuccess={() => fetchInvoices()}
         />
       )}
     </div>

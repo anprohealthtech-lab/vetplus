@@ -139,6 +139,14 @@ const Reports: React.FC = () => {
     try {
       setLoading(true);
 
+      // Get current lab context
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        console.error('No lab context available');
+        setLoading(false);
+        return;
+      }
+
       // Get date range based on filter
       let dateRange = { start: new Date(), end: new Date() };
       const now = new Date();
@@ -172,6 +180,7 @@ const Reports: React.FC = () => {
       const { data, error } = await supabase
         .from('view_approved_results')
         .select('*')
+        .eq('lab_id', lab_id)
         .gte('verified_at', dateRange.start.toISOString())
         .lte('verified_at', dateRange.end.toISOString())
         .order('verified_at', { ascending: false });

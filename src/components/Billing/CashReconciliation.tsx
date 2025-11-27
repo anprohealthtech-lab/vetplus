@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { DollarSign, AlertCircle, Calculator, Check } from 'lucide-react';
+import { DollarSign, AlertCircle, Calculator, Check, RotateCcw } from 'lucide-react';
 import { database } from '../../utils/supabase';
 
 type Shift = 'morning' | 'afternoon' | 'night' | 'full_day';
@@ -10,6 +10,14 @@ interface Location {
   supports_cash_collection?: boolean;
 }
 
+interface CashRefund {
+  id: string;
+  refund_amount: number;
+  patient_name?: string;
+  paid_at: string;
+  refund_method: string;
+}
+
 const CashReconciliation: React.FC = () => {
   const [locations, setLocations] = useState<Location[]>([]);
   const [selectedLocation, setSelectedLocation] = useState<string>('');
@@ -18,6 +26,7 @@ const CashReconciliation: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [register, setRegister] = useState<any>(null);
   const [payments, setPayments] = useState<any[]>([]);
+  const [refunds, setRefunds] = useState<CashRefund[]>([]);
   const [actualAmount, setActualAmount] = useState('');
   const [reconciliationNotes, setReconciliationNotes] = useState('');
   const [processing, setProcessing] = useState(false);
@@ -52,20 +61,53 @@ const CashReconciliation: React.FC = () => {
         setReconciliationNotes('');
       }
 
+      // Fetch cash payments
       const { data: cashPayments, error: payErr } = await database.payments.getByDateRange(
         selectedDate,
         selectedDate,
         selectedLocation
       );
       if (payErr) throw payErr;
-
       setPayments(cashPayments || []);
 
+      // Fetch cash refunds for this date and location
+      const { data: refundData, error: refundErr } = await database.refundRequests.getAll({
+        status: 'paid',
+        location_id: selectedLocation
+      });
+      
+      // Filter to only cash refunds for the selected date
+      const dailyRefunds = (refundData || [])
+        .filter((r: any) => 
+          r.refund_method === 'cash' && 
+          r.paid_at && 
+          r.paid_at.split('T')[0] === selectedDate
+        )
+        .map((r: any) => ({
+          id: r.id,
+          refund_amount: r.refund_amount,
+          patient_name: r.patients?.name || r.invoices?.patient_name,
+          paid_at: r.paid_at,
+          refund_method: r.refund_method
+        }));
+      setRefunds(dailyRefunds);
+
+      // Calculate totals including refunds
       if (!reg.reconciled) {
-        const totalCash = (cashPayments || []).reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
-        const newSystemAmount = (reg.opening_balance || 0) + totalCash;
-        await database.cashRegister.update(reg.id, { system_amount: newSystemAmount });
-        setRegister({ ...reg, system_amount: newSystemAmount });
+        const totalCollections = (cashPayments || []).reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
+        const totalRefunds = dailyRefunds.reduce((sum: number, r: CashRefund) => sum + (r.refund_amount || 0), 0);
+        const newSystemAmount = (reg.opening_balance || 0) + totalCollections - totalRefunds;
+        await database.cashRegister.update(reg.id, { 
+          system_amount: newSystemAmount,
+          total_collections: totalCollections,
+          total_refunds: totalRefunds
+        });
+        setRegister({ 
+          ...reg, 
+          system_amount: newSystemAmount,
+          total_collections: totalCollections,
+          total_refunds: totalRefunds
+        });
       }
     } catch (e) {
       console.error('Error loading register data:', e);
@@ -162,7 +204,7 @@ const CashReconciliation: React.FC = () => {
       {/* Key Figures */}
       {register && (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm text-gray-600">Opening Balance</span>
@@ -174,20 +216,31 @@ const CashReconciliation: React.FC = () => {
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm text-gray-600">Cash Collections</span>
-                <DollarSign className="w-4 h-4 text-blue-600" />
+                <DollarSign className="w-4 h-4 text-green-600" />
               </div>
-              <div className="text-2xl font-bold text-blue-600">
-                {formatCurrency(Math.max(0, (register.system_amount || 0) - (register.opening_balance || 0)))}
+              <div className="text-2xl font-bold text-green-600">
+                {formatCurrency(register.total_collections || payments.reduce((sum: number, p: any) => sum + (p.amount || 0), 0))}
               </div>
               <div className="text-xs text-gray-500 mt-1">{payments.length} transactions</div>
             </div>
 
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+            <div className="bg-white rounded-lg shadow-sm border border-red-200 p-4">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-600">System Total</span>
-                <Calculator className="w-4 h-4 text-gray-400" />
+                <span className="text-sm text-gray-600">Cash Refunds</span>
+                <RotateCcw className="w-4 h-4 text-red-600" />
               </div>
-              <div className="text-2xl font-bold text-gray-900">{formatCurrency(register.system_amount || 0)}</div>
+              <div className="text-2xl font-bold text-red-600">
+                -{formatCurrency(register.total_refunds || refunds.reduce((sum, r) => sum + (r.refund_amount || 0), 0))}
+              </div>
+              <div className="text-xs text-gray-500 mt-1">{refunds.length} refunds</div>
+            </div>
+
+            <div className="bg-white rounded-lg shadow-sm border border-blue-200 p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-gray-600">Net Cash (System)</span>
+                <Calculator className="w-4 h-4 text-blue-600" />
+              </div>
+              <div className="text-2xl font-bold text-blue-600">{formatCurrency(register.system_amount || 0)}</div>
             </div>
 
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
@@ -205,7 +258,7 @@ const CashReconciliation: React.FC = () => {
           {payments.length > 0 && (
             <div className="bg-white rounded-lg shadow-sm border border-gray-200">
               <div className="px-4 py-3 border-b border-gray-200">
-                <h3 className="text-lg font-medium">Cash Transactions</h3>
+                <h3 className="text-lg font-medium">Cash Collections</h3>
               </div>
               <div className="divide-y divide-gray-200">
                 {payments.map((p) => (
@@ -215,8 +268,34 @@ const CashReconciliation: React.FC = () => {
                       <div className="text-sm text-gray-500">Invoice #{String(p.invoice_id).slice(0, 8)}</div>
                     </div>
                     <div className="text-right">
-                      <div className="font-medium">{formatCurrency(p.amount)}</div>
+                      <div className="font-medium text-green-600">+{formatCurrency(p.amount)}</div>
                       <div className="text-sm text-gray-500">{new Date(p.payment_date).toLocaleTimeString()}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Refunds list */}
+          {refunds.length > 0 && (
+            <div className="bg-white rounded-lg shadow-sm border border-red-200">
+              <div className="px-4 py-3 border-b border-red-200 bg-red-50">
+                <h3 className="text-lg font-medium text-red-900 flex items-center gap-2">
+                  <RotateCcw className="w-5 h-5" />
+                  Cash Refunds
+                </h3>
+              </div>
+              <div className="divide-y divide-gray-200">
+                {refunds.map((r) => (
+                  <div key={r.id} className="px-4 py-3 flex justify-between items-center">
+                    <div>
+                      <div className="font-medium">{r.patient_name || 'Patient'}</div>
+                      <div className="text-sm text-gray-500">Refund #{String(r.id).slice(0, 8)}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-medium text-red-600">-{formatCurrency(r.refund_amount)}</div>
+                      <div className="text-sm text-gray-500">{new Date(r.paid_at).toLocaleTimeString()}</div>
                     </div>
                   </div>
                 ))}

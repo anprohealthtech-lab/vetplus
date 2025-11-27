@@ -2296,6 +2296,83 @@ export const database = {
         .eq('attachment_id', attachmentId)
         .order('entered_date', { ascending: false });
       return { data, error };
+    },
+
+    // Get report extras (trend charts, clinical summary) for a result
+    getReportExtras: async (resultId: string) => {
+      const { data, error } = await supabase
+        .from('results')
+        .select('report_extras')
+        .eq('id', resultId)
+        .single();
+      return { data: data?.report_extras || null, error };
+    },
+
+    // Update report extras (merge with existing)
+    updateReportExtras: async (resultId: string, extras: Record<string, any>) => {
+      // First get existing extras
+      const { data: existing } = await supabase
+        .from('results')
+        .select('report_extras')
+        .eq('id', resultId)
+        .single();
+
+      const merged = {
+        ...(existing?.report_extras || {}),
+        ...extras,
+        last_updated: new Date().toISOString(),
+      };
+
+      const { data, error } = await supabase
+        .from('results')
+        .update({ report_extras: merged })
+        .eq('id', resultId)
+        .select('report_extras')
+        .single();
+
+      return { data: data?.report_extras || null, error };
+    },
+
+    // Get report extras for all results in an order (for PDF generation)
+    getReportExtrasForOrder: async (orderId: string) => {
+      const { data, error } = await supabase
+        .from('results')
+        .select('id, report_extras')
+        .eq('order_id', orderId)
+        .not('report_extras', 'is', null);
+
+      if (error || !data) {
+        return { data: null, error };
+      }
+
+      // Merge all report extras from different results
+      const merged: Record<string, any> = {
+        trend_charts: [],
+        include_trends_in_report: false,
+        include_summary_in_report: false,
+      };
+
+      for (const result of data) {
+        const extras = result.report_extras as Record<string, any>;
+        if (!extras) continue;
+
+        // Merge trend charts
+        if (extras.trend_charts && extras.trend_charts.length > 0) {
+          merged.trend_charts = [...merged.trend_charts, ...extras.trend_charts];
+          if (extras.include_trends_in_report) {
+            merged.include_trends_in_report = true;
+          }
+        }
+
+        // Use the first clinical summary found
+        if (extras.clinical_summary && !merged.clinical_summary) {
+          merged.clinical_summary = extras.clinical_summary;
+          merged.include_summary_in_report = extras.include_summary_in_report;
+        }
+      }
+
+      const hasData = merged.trend_charts?.length || merged.clinical_summary;
+      return { data: hasData ? merged : null, error: null };
     }
   },
 
@@ -2533,11 +2610,11 @@ export const database = {
           if (user) {
             const { data: userData } = await supabase
               .from('users')
-              .select('location_id')
+              .select('default_location_id')
               .eq('id', user.id)
               .single();
-            if (userData?.location_id) {
-              location_id = userData.location_id;
+            if (userData?.default_location_id) {
+              location_id = userData.default_location_id;
             }
           }
         }
@@ -2826,11 +2903,11 @@ export const database = {
           if (user) {
             const { data: userData } = await supabase
               .from('users')
-              .select('location_id')
+              .select('default_location_id')
               .eq('id', user.id)
               .single();
-            if (userData?.location_id) {
-              paymentData.location_id = userData.location_id;
+            if (userData?.default_location_id) {
+              paymentData.location_id = userData.default_location_id;
             }
           }
         }
@@ -2950,6 +3027,218 @@ export const database = {
         .lte('payment_date', toDate)
         .order('created_at');
       return { data, error };
+    }
+  },
+
+  // =============================================
+  // REFUND REQUESTS
+  // =============================================
+  refundRequests: {
+    // Get all refund requests for the lab
+    getAll: async (filters?: { status?: string; location_id?: string }) => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+      
+      let query = supabase
+        .from('refund_requests')
+        .select(`
+          *,
+          invoices(total, patient_name),
+          patients(name, phone),
+          users!refund_requests_requested_by_fkey(name)
+        `)
+        .eq('lab_id', lab_id)
+        .order('created_at', { ascending: false });
+      
+      if (filters?.status) {
+        query = query.eq('status', filters.status);
+      }
+      
+      if (filters?.location_id) {
+        query = query.eq('location_id', filters.location_id);
+      }
+      
+      const { data, error } = await query;
+      return { data, error };
+    },
+
+    // Get refund requests for a specific invoice
+    getByInvoiceId: async (invoiceId: string) => {
+      const { data, error } = await supabase
+        .from('refund_requests')
+        .select(`
+          *,
+          users!refund_requests_requested_by_fkey(name),
+          users!refund_requests_approved_by_fkey(name),
+          users!refund_requests_paid_by_fkey(name)
+        `)
+        .eq('invoice_id', invoiceId)
+        .order('created_at', { ascending: false });
+      return { data, error };
+    },
+
+    // Get pending approvals (admin view)
+    getPendingApprovals: async () => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+      
+      const { data, error } = await supabase
+        .from('v_pending_refund_approvals')
+        .select('*')
+        .eq('lab_id', lab_id)
+        .order('created_at', { ascending: true });
+      return { data, error };
+    },
+
+    // Get daily cash summary with refunds
+    getDailyCashSummary: async (date?: string, locationId?: string) => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+      
+      let query = supabase
+        .from('v_daily_cash_summary')
+        .select('*')
+        .eq('lab_id', lab_id);
+      
+      if (date) {
+        query = query.eq('summary_date', date);
+      }
+      
+      if (locationId) {
+        query = query.eq('location_id', locationId);
+      }
+      
+      const { data, error } = await query.order('summary_date', { ascending: false });
+      return { data, error };
+    },
+
+    // Create a new refund request (calls RPC function)
+    create: async (refundData: {
+      invoice_id: string;
+      refund_amount: number;
+      refund_method: string;
+      reason_category?: string;
+      reason_details?: string;
+      refunded_items?: any[];
+    }) => {
+      const { data, error } = await supabase.rpc('create_refund_request', {
+        p_invoice_id: refundData.invoice_id,
+        p_refund_amount: refundData.refund_amount,
+        p_refund_method: refundData.refund_method,
+        p_reason_category: refundData.reason_category || null,
+        p_reason_details: refundData.reason_details || null,
+        p_refunded_items: refundData.refunded_items || []
+      });
+      return { data, error };
+    },
+
+    // Approve a refund request (admin only, calls RPC function)
+    approve: async (refundId: string, adminNotes?: string) => {
+      const { data, error } = await supabase.rpc('approve_refund', {
+        p_refund_id: refundId,
+        p_admin_notes: adminNotes || null
+      });
+      return { data, error };
+    },
+
+    // Reject a refund request (admin only, calls RPC function)
+    reject: async (refundId: string, rejectionReason: string) => {
+      const { data, error } = await supabase.rpc('reject_refund', {
+        p_refund_id: refundId,
+        p_rejection_reason: rejectionReason
+      });
+      return { data, error };
+    },
+
+    // Mark refund as paid (admin only, calls RPC function)
+    markPaid: async (refundId: string, paymentReference?: string) => {
+      const { data, error } = await supabase.rpc('mark_refund_paid', {
+        p_refund_id: refundId,
+        p_payment_reference: paymentReference || null
+      });
+      return { data, error };
+    },
+
+    // Cancel a refund request (by requester)
+    cancel: async (refundId: string) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        return { data: null, error: new Error('User not authenticated') };
+      }
+      
+      // Get user's internal ID
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_user_id', user.id)
+        .single();
+      
+      if (userError || !userData) {
+        return { data: null, error: new Error('User not found') };
+      }
+      
+      const { data, error } = await supabase
+        .from('refund_requests')
+        .update({
+          status: 'cancelled',
+          cancelled_by: userData.id,
+          cancelled_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', refundId)
+        .in('status', ['draft', 'pending_approval'])
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    // Get refund statistics for dashboard
+    getStats: async () => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+      
+      const { data, error } = await supabase
+        .from('refund_requests')
+        .select('status, refund_amount')
+        .eq('lab_id', lab_id);
+      
+      if (error) return { data: null, error };
+      
+      const stats = {
+        pending_count: 0,
+        pending_amount: 0,
+        approved_count: 0,
+        approved_amount: 0,
+        paid_count: 0,
+        paid_amount: 0,
+        rejected_count: 0,
+        total_count: data?.length || 0
+      };
+      
+      (data || []).forEach(r => {
+        if (r.status === 'pending_approval') {
+          stats.pending_count++;
+          stats.pending_amount += r.refund_amount;
+        } else if (r.status === 'approved') {
+          stats.approved_count++;
+          stats.approved_amount += r.refund_amount;
+        } else if (r.status === 'paid') {
+          stats.paid_count++;
+          stats.paid_amount += r.refund_amount;
+        } else if (r.status === 'rejected') {
+          stats.rejected_count++;
+        }
+      });
+      
+      return { data: stats, error: null };
     }
   },
 
@@ -3515,6 +3804,71 @@ export const database = {
     getUsageStats: async () => {
       const { data, error } = await supabase.rpc('get_analyte_lab_usage_stats');
       return { data, error };
+    },
+
+    // Bulk update interpretations for multiple analytes (used by AI interpretation generator)
+    updateInterpretations: async (labId: string, interpretations: Array<{
+      analyte_id: string;
+      interpretation_low?: string;
+      interpretation_normal?: string;
+      interpretation_high?: string;
+    }>) => {
+      const results: { success: string[]; failed: string[] } = { success: [], failed: [] };
+      
+      for (const interp of interpretations) {
+        const updates: Record<string, string> = {};
+        if (interp.interpretation_low) updates.interpretation_low = interp.interpretation_low;
+        if (interp.interpretation_normal) updates.interpretation_normal = interp.interpretation_normal;
+        if (interp.interpretation_high) updates.interpretation_high = interp.interpretation_high;
+        
+        if (Object.keys(updates).length === 0) continue;
+        
+        // First check if lab_analyte exists
+        const { data: existing } = await supabase
+          .from('lab_analytes')
+          .select('id')
+          .eq('lab_id', labId)
+          .eq('analyte_id', interp.analyte_id)
+          .single();
+        
+        if (existing) {
+          // Update existing lab_analyte
+          const { error } = await supabase
+            .from('lab_analytes')
+            .update(updates)
+            .eq('lab_id', labId)
+            .eq('analyte_id', interp.analyte_id);
+          
+          if (error) {
+            console.error(`Failed to update interpretations for analyte ${interp.analyte_id}:`, error);
+            results.failed.push(interp.analyte_id);
+          } else {
+            results.success.push(interp.analyte_id);
+          }
+        } else {
+          // Create new lab_analyte with interpretations
+          const { error } = await supabase
+            .from('lab_analytes')
+            .insert({
+              lab_id: labId,
+              analyte_id: interp.analyte_id,
+              is_active: true,
+              ...updates
+            });
+          
+          if (error) {
+            console.error(`Failed to create lab_analyte with interpretations for ${interp.analyte_id}:`, error);
+            results.failed.push(interp.analyte_id);
+          } else {
+            results.success.push(interp.analyte_id);
+          }
+        }
+      }
+      
+      return { 
+        data: results, 
+        error: results.failed.length > 0 ? new Error(`Failed to update ${results.failed.length} analytes`) : null 
+      };
     },
     // ...existing code...
   },

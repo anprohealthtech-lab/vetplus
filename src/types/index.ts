@@ -500,3 +500,82 @@ export interface PaymentSummary {
   total_amount: number;
   transaction_count: number;
 }
+
+// Refund Management Types
+export type RefundStatus = 'draft' | 'pending_approval' | 'approved' | 'rejected' | 'paid' | 'cancelled';
+export type RefundMethod = 'cash' | 'card' | 'upi' | 'cheque' | 'net_banking' | 'wallet' | 'bank_transfer' | 'credit_adjustment';
+export type RefundReasonCategory = 'test_cancelled' | 'duplicate_billing' | 'patient_request' | 'price_correction' | 'insurance_adjustment' | 'error_correction' | 'other';
+
+export interface RefundedItem {
+  item_id?: string;
+  test_name: string;
+  amount: number;
+  reason?: string;
+}
+
+export interface RefundRequest {
+  id: string;
+  lab_id: string;
+  location_id?: string;
+  invoice_id: string;
+  order_id?: string;
+  patient_id: string;
+  refund_amount: number;
+  refunded_items: RefundedItem[];
+  refund_method: RefundMethod;
+  status: RefundStatus;
+  reason_category?: RefundReasonCategory;
+  reason_details?: string;
+  admin_notes?: string;
+  rejection_reason?: string;
+  
+  // Audit trail
+  requested_by: string;
+  approved_by?: string;
+  rejected_by?: string;
+  paid_by?: string;
+  cancelled_by?: string;
+  
+  // Timestamps
+  created_at: string;
+  submitted_at?: string;
+  approved_at?: string;
+  rejected_at?: string;
+  paid_at?: string;
+  cancelled_at?: string;
+  updated_at?: string;
+  
+  // Joined fields (from views/queries)
+  invoice_total?: number;
+  amount_paid?: number;
+  already_refunded?: number;
+  max_refundable?: number;
+  patient_name?: string;
+  patient_phone?: string;
+  requested_by_name?: string;
+  location_name?: string;
+  hours_pending?: number;
+}
+
+export interface RefundRequestCreateData {
+  invoice_id: string;
+  refund_amount: number;
+  refund_method: RefundMethod;
+  reason_category?: RefundReasonCategory;
+  reason_details?: string;
+  refunded_items?: RefundedItem[];
+}
+
+export interface DailyCashSummary {
+  lab_id: string;
+  location_id?: string;
+  location_name?: string;
+  summary_date: string;
+  cash_collections: number;
+  non_cash_collections: number;
+  total_collections: number;
+  cash_refunds: number;
+  net_cash: number;
+  payment_count: number;
+  invoice_count: number;
+}

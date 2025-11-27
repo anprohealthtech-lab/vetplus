@@ -17,6 +17,7 @@ import type { ReportTemplateContext, ReportTemplateAnalyteRow } from './supabase
 import nunjucks from 'nunjucks';
 import { reportBaselineCss } from '../styles/reportBaselineString';
 import { ensureReportRegions, extractReportRegions } from './reportTemplateRegions';
+import { generateReportExtrasHtml, getReportExtrasForOrder } from './reportExtrasService';
 
 // PDF Provider Configuration
 import {
@@ -1993,7 +1994,8 @@ const injectWatermarkIfEnabled = async (html: string, labId: string): Promise<st
 const prepareReportHtml = async (
   reportData: ReportData,
   isDraft: boolean,
-  allTemplates?: LabTemplateRecord[]
+  allTemplates?: LabTemplateRecord[],
+  forPrint = false  // New parameter: when true, use table-based fallback for trends
 ): Promise<PreparedReportHtml> => {
   const filenameBase = buildReportFilenameBase(reportData, isDraft);
   const brandingDefaults = resolveReportBrandingDefaults(reportData);
@@ -2047,6 +2049,29 @@ const prepareReportHtml = async (
   // Inject automatic watermark if lab has it configured
   if (context?.labId) {
     finalHtml = await injectWatermarkIfEnabled(finalHtml, context.labId);
+  }
+
+  // Inject report extras (trend charts and clinical summary) if available
+  if (context?.orderId) {
+    try {
+      const reportExtras = await getReportExtrasForOrder(context.orderId);
+      if (reportExtras && (reportExtras.trend_charts?.length || reportExtras.clinical_summary)) {
+        console.log(`📊 Injecting report extras for order ${context.orderId}:`, {
+          trendChartsCount: reportExtras.trend_charts?.length || 0,
+          hasClinicalSummary: !!reportExtras.clinical_summary,
+          forPrint,
+        });
+        
+        const extrasHtml = generateReportExtrasHtml(reportExtras, forPrint);
+        if (extrasHtml) {
+          // Insert before </body> tag (same pattern as attachments)
+          finalHtml = finalHtml.replace('</body>', `${extrasHtml}</body>`);
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to inject report extras:', error);
+      // Don't fail PDF generation if extras injection fails
+    }
   }
 
   return {
@@ -2440,11 +2465,14 @@ export async function generateAndSavePDFReportWithProgress(
             try {
               onProgress?.('Generating print-ready PDF...', 93);
               
+              // Generate print-specific HTML with table-based trends (no background colors)
+              const printPreparedHtml = await prepareReportHtml(reportData, isDraft, allTemplates, true);
+              
               // ⏱️ 5-second timeout for print PDF too
               const printUrl = await Promise.race([
                 generatePDFWithPuppeteer({
                   orderId,
-                  html: preparedHtml.html,
+                  html: printPreparedHtml.html,
                   variant: 'print',
                   cacheKey: `${orderId}_print`
                 }),
