@@ -579,3 +579,95 @@ export interface DailyCashSummary {
   payment_count: number;
   invoice_count: number;
 }
+
+// =============================================
+// AI-Enhanced Result Values
+// =============================================
+export interface ResultValue {
+  id: string;
+  result_id: string;
+  order_id: string;
+  analyte_id: string;
+  analyte_name: string;
+  value: string;
+  unit?: string;
+  reference_range?: string;
+  flag?: string; // Final flag (L/H/C/N)
+  interpretation?: string; // Final interpretation
+  
+  // AI-suggested fields (populated by AI, reviewed by verifier)
+  ai_suggested_flag?: string;
+  ai_suggested_interpretation?: string;
+  verifier_notes?: string;
+  
+  // Override tracking
+  flag_override_by?: string;
+  flag_override_at?: string;
+  interpretation_override_by?: string;
+  interpretation_override_at?: string;
+  
+  created_at: string;
+  updated_at: string;
+}
+
+// =============================================
+// Report with AI Summary & Trend Graphs
+// =============================================
+export interface Report {
+  id: string;
+  order_id: string;
+  patient_id: string;
+  report_type: 'standard' | 'consolidated' | 'interim';
+  status: 'draft' | 'final' | 'amended';
+  generated_date: string;
+  pdf_url?: string;
+  pdf_generated_at?: string;
+  print_pdf_url?: string;
+  print_pdf_generated_at?: string;
+  
+  // AI Doctor Summary
+  ai_doctor_summary?: string;
+  ai_summary_generated_at?: string;
+  ai_summary_reviewed_by?: string;
+  ai_summary_reviewed_at?: string;
+  
+  // Trend Graphs
+  include_trend_graphs: boolean;
+  trend_graphs_config?: TrendGraphConfig;
+  
+  lab_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TrendGraphConfig {
+  analytes: string[]; // Array of analyte IDs to show trends for
+  date_range_days?: number; // How many days of history
+  show_reference_range?: boolean;
+  show_flags?: boolean;
+}
+
+// =============================================
+// Order with Trend Data
+// =============================================
+export interface TrendGraphData {
+  analytes: TrendAnalyteData[];
+  patient_id: string;
+  generated_at: string;
+}
+
+export interface TrendAnalyteData {
+  analyte_id: string;
+  analyte_name: string;
+  unit: string;
+  reference_range: string;
+  data_points: TrendDataPoint[];
+}
+
+export interface TrendDataPoint {
+  date: string;
+  value: number;
+  flag?: string;
+  order_id: string;
+  sample_id?: string;
+}

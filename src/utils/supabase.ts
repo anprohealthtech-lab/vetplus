@@ -386,6 +386,9 @@ export const auth = {
 
 // Database helper functions for patients
 export const database = { 
+  // Expose supabase client for direct queries when needed
+  supabase,
+  
   // Helper to get current user's lab ID
   getCurrentUserLabId: async () => {
     const { data: { user }, error } = await supabase.auth.getUser();
@@ -3129,6 +3132,45 @@ export const database = {
       }
       
       const { data, error } = await query.order('summary_date', { ascending: false });
+      return { data, error };
+    },
+
+    // Get cash refunds paid on a specific date (for reconciliation view)
+    getCashRefundsByDate: async (date: string, locationId?: string) => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const startOfDay = `${date}T00:00:00`;
+      const endOfDay = `${date}T23:59:59.999`;
+
+      let query = supabase
+        .from('refund_requests')
+        .select(`
+          id,
+          invoice_id,
+          refund_amount,
+          refund_method,
+          reason_category,
+          reason_details,
+          paid_at,
+          status,
+          locations(name),
+          users!refund_requests_requested_by_fkey(name)
+        `)
+        .eq('lab_id', lab_id)
+        .eq('refund_method', 'cash')
+        .eq('status', 'paid')
+        .gte('paid_at', startOfDay)
+        .lte('paid_at', endOfDay)
+        .order('paid_at', { ascending: false });
+
+      if (locationId && locationId !== 'all') {
+        query = query.eq('location_id', locationId);
+      }
+
+      const { data, error } = await query;
       return { data, error };
     },
 
@@ -6862,6 +6904,236 @@ const workflowAI = {
   }
 };
 
+// Add AI Analysis & Trends namespace
+export const aiAnalysis = {
+  /**
+   * Save trend graph data for an order
+   */
+  saveTrendData: async (orderId: string, trendData: any, userId?: string) => {
+    try {
+      if (!userId) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user?.email) {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('id')
+            .eq('email', user.email)
+            .eq('status', 'Active')
+            .single();
+          userId = userData?.id;
+        }
+      }
+      
+      const { data, error } = await supabase.rpc('save_trend_graph_data', {
+        p_order_id: orderId,
+        p_trend_data: trendData,
+        p_user_id: userId
+      });
+      
+      if (error) throw error;
+      return { data, error: null };
+    } catch (error) {
+      console.error('Failed to save trend data:', error);
+      return { data: null, error };
+    }
+  },
+
+  /**
+   * Save AI-generated doctor summary to report
+   */
+  saveDoctorSummary: async (orderId: string, summary: string, userId?: string) => {
+    try {
+      if (!userId) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user?.email) {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('id')
+            .eq('email', user.email)
+            .eq('status', 'Active')
+            .single();
+          userId = userData?.id;
+        }
+      }
+      
+      const { data, error } = await supabase.rpc('generate_ai_doctor_summary', {
+        p_order_id: orderId,
+        p_summary_text: summary,
+        p_user_id: userId
+      });
+      
+      if (error) throw error;
+      return { data, error: null };
+    } catch (error) {
+      console.error('Failed to save AI summary:', error);
+      return { data: null, error };
+    }
+  },
+
+  /**
+   * Apply AI suggestions to result value (flag + interpretation)
+   */
+  applyAISuggestions: async (
+    resultValueId: string,
+    options?: {
+      applyFlag?: boolean;
+      applyInterpretation?: boolean;
+      customFlag?: string;
+      customInterpretation?: string;
+    }
+  ) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      let userId = null;
+      if (user?.email) {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('id')
+          .eq('email', user.email)
+          .eq('status', 'Active')
+          .single();
+        userId = userData?.id;
+      }
+      
+      const { data, error } = await supabase.rpc('apply_ai_suggestions_to_result_value', {
+        p_result_value_id: resultValueId,
+        p_user_id: userId,
+        p_apply_flag: options?.applyFlag ?? true,
+        p_apply_interpretation: options?.applyInterpretation ?? true,
+        p_custom_flag: options?.customFlag ?? null,
+        p_custom_interpretation: options?.customInterpretation ?? null
+      });
+      
+      if (error) throw error;
+      return { data, error: null };
+    } catch (error) {
+      console.error('Failed to apply AI suggestions:', error);
+      return { data: null, error };
+    }
+  },
+
+  /**
+   * Get trend data for an order
+   */
+  getTrendData: async (orderId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('trend_graph_data, trend_graph_generated_at, trend_graph_generated_by')
+        .eq('id', orderId)
+        .maybeSingle();
+      
+      if (error) throw error;
+      // Return null data if order not found (graceful handling)
+      return { data: data || null, error: null };
+    } catch (error) {
+      console.error('Failed to get trend data:', error);
+      return { data: null, error };
+    }
+  },
+
+  /**
+   * Update include_in_report flag for trend data and generate/upload images if included
+   */
+  updateTrendIncludeInReport: async (orderId: string, includeInReport: boolean) => {
+    try {
+      // First get the existing trend data
+      const { data: orderData, error: fetchError } = await supabase
+        .from('orders')
+        .select('trend_graph_data')
+        .eq('id', orderId)
+        .single();
+      
+      if (fetchError) throw fetchError;
+      
+      const existingData = orderData?.trend_graph_data || {};
+      let updatedData = {
+        ...existingData,
+        include_in_report: includeInReport,
+        include_in_report_updated_at: new Date().toISOString()
+      };
+      
+      // If including in report and we have analytes, generate and upload images
+      if (includeInReport && existingData.analytes && existingData.analytes.length > 0) {
+        console.log(`📸 Generating trend graph images for ${existingData.analytes.length} analytes...`);
+        
+        // Dynamically import trendChartGenerator to avoid circular dependency
+        const { generateTrendSVG, svgToPngBlob, uploadChartImage } = await import('./trendChartGenerator');
+        
+        const analytesWithImages = await Promise.all(
+          existingData.analytes.map(async (analyte: any) => {
+            try {
+              // Convert stored data format to TrendDataPoint format for SVG generation
+              const trendDataPoints = analyte.dataPoints?.map((dp: any) => ({
+                order_date: dp.date || dp.timestamp,
+                value: dp.value,
+                unit: analyte.unit,
+                reference_range: `${analyte.reference_range?.min || 0}-${analyte.reference_range?.max || 100}`,
+                flag: dp.flag || null,
+              })) || [];
+              
+              if (trendDataPoints.length < 2) {
+                console.log(`⏭️ Skipping ${analyte.analyte_name}: insufficient data points`);
+                return analyte;
+              }
+              
+              // Generate SVG
+              const svg = generateTrendSVG(trendDataPoints, {
+                width: 500,
+                height: 250,
+                backgroundColor: 'white',
+                showReferenceRange: true,
+              });
+              
+              // Convert to PNG
+              const pngBlob = await svgToPngBlob(svg, 500, 250);
+              
+              if (pngBlob) {
+                // Upload to storage
+                const imageUrl = await uploadChartImage(pngBlob, orderId, analyte.analyte_name);
+                
+                if (imageUrl) {
+                  console.log(`✅ Uploaded trend image for ${analyte.analyte_name}`);
+                  return {
+                    ...analyte,
+                    image_url: imageUrl,
+                    image_generated_at: new Date().toISOString(),
+                  };
+                }
+              }
+              
+              return analyte;
+            } catch (err) {
+              console.error(`Failed to generate image for ${analyte.analyte_name}:`, err);
+              return analyte;
+            }
+          })
+        );
+        
+        updatedData = {
+          ...updatedData,
+          analytes: analytesWithImages,
+          images_generated_at: new Date().toISOString(),
+        };
+        
+        console.log(`📊 Generated images for ${analytesWithImages.filter((a: any) => a.image_url).length}/${analytesWithImages.length} analytes`);
+      }
+      
+      const { data, error } = await supabase
+        .from('orders')
+        .update({ trend_graph_data: updatedData })
+        .eq('id', orderId)
+        .select();
+      
+      if (error) throw error;
+      return { data, error: null };
+    } catch (error) {
+      console.error('Failed to update trend include in report:', error);
+      return { data: null, error };
+    }
+  }
+};
+
 // Add workflow helpers to database object
 Object.assign(database, {
   workflowVersions,
@@ -6869,7 +7141,8 @@ Object.assign(database, {
   aiProtocols,
   testWorkflowMap,
   attachmentBatch,
-  workflowAI
+  workflowAI,
+  aiAnalysis
 });
 
 async function syncLabBrandingDefaultsForLab(

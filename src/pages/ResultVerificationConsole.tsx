@@ -36,8 +36,10 @@ import {
 import { supabase, database } from "../utils/supabase";
 import AttachmentSelector from "../components/Reports/AttachmentSelector";
 import OrderVerificationView from "./OrderVerificationView";
-import { useAIResultIntelligence, type VerifierSummaryResponse, type ClinicalSummaryResponse, type GeneratedInterpretation } from "../hooks/useAIResultIntelligence";
+import { useAIResultIntelligence, type VerifierSummaryResponse, type ClinicalSummaryResponse, type GeneratedInterpretation, type ResultValue } from "../hooks/useAIResultIntelligence";
 import { generateAndSaveTrendCharts, saveClinicalSummary } from "../utils/reportExtrasService";
+import TrendGraphPanel from "../components/Results/TrendGraphPanel";
+import AIResultSuggestionCard from "../components/Results/AIResultSuggestionCard";
 
 /* =========================================
    Types
@@ -60,6 +62,7 @@ type PanelRow = {
 type Analyte = {
   id: string;
   result_id: string;
+  analyte_id: string; // UUID reference to analytes table
   parameter: string;
   value: string | null;
   unit: string;
@@ -382,6 +385,8 @@ const ResultVerificationConsole: React.FC = () => {
   const [aiGeneratedInterpretations, setAiGeneratedInterpretations] = useState<Record<string, GeneratedInterpretation[]>>({});
   const [showInterpretationsModal, setShowInterpretationsModal] = useState(false);
   const [interpretationsTargetResultId, setInterpretationsTargetResultId] = useState<string | null>(null);
+  // New: AI suggestions for actual result values (not templates)
+  const [aiResultSuggestions, setAiResultSuggestions] = useState<Record<string, ResultValue[]>>({});
   const [currentLabId, setCurrentLabId] = useState<string | null>(null);
   const [trendData, setTrendData] = useState<Record<string, TrendData[]>>({});
   const [showTrendModal, setShowTrendModal] = useState(false);
@@ -432,13 +437,33 @@ const ResultVerificationConsole: React.FC = () => {
     }
   };
 
-  /* ----------------- Ensure analytes loaded ----------------- */
+  // Load current lab ID on mount
+  useEffect(() => {
+    const loadLabId = async () => {
+      const labId = await database.getCurrentUserLabId();
+      setCurrentLabId(labId);
+    };
+    loadLabId();
+  }, []);
+
+  /* ----------------- Load panels with lab filter ----------------- */
   const loadPanels = async () => {
     setLoading(true);
     setErr(null);
+    
+    // Get current lab ID for filtering
+    const labId = currentLabId || await database.getCurrentUserLabId();
+    if (!labId) {
+      setErr("No lab context found. Please log in again.");
+      setPanels([]);
+      setLoading(false);
+      return;
+    }
+
     const { data, error } = await supabase
       .from("v_result_panel_status")
       .select("*")
+      .eq("lab_id", labId)
       .gte("order_date", from)
       .lte("order_date", to)
       .order("order_date", { ascending: false });
@@ -453,17 +478,10 @@ const ResultVerificationConsole: React.FC = () => {
   };
 
   useEffect(() => {
-    loadPanels();
-  }, [from, to]);
-
-  // Load current lab ID for saving interpretations
-  useEffect(() => {
-    const loadLabId = async () => {
-      const labId = await database.getCurrentUserLabId();
-      setCurrentLabId(labId);
-    };
-    loadLabId();
-  }, []);
+    if (currentLabId) {
+      loadPanels();
+    }
+  }, [from, to, currentLabId]);
 
   /* ----------------- Filter panels ----------------- */
   const filteredPanels = useMemo(() => {
@@ -502,6 +520,7 @@ const ResultVerificationConsole: React.FC = () => {
         [
           "id",
           "result_id",
+          "analyte_id",
           "parameter",
           "value",
           "unit",
@@ -523,7 +542,7 @@ const ResultVerificationConsole: React.FC = () => {
       if (String(error.message || "").includes("column") && String(error.message).includes("verify_status")) {
         const { data: data2, error: e2 } = await supabase
           .from("result_values")
-          .select("id,result_id,parameter,value,unit,reference_range,flag")
+          .select("id,result_id,analyte_id,parameter,value,unit,reference_range,flag")
           .eq("result_id", result_id)
           .order("parameter", { ascending: true });
 
@@ -531,6 +550,7 @@ const ResultVerificationConsole: React.FC = () => {
           const mapped = (data2 || []).map((r: any) => ({
             id: r.id,
             result_id: r.result_id,
+            analyte_id: r.analyte_id,
             parameter: r.parameter,
             value: r.value,
             unit: r.unit,
@@ -816,6 +836,7 @@ const ResultVerificationConsole: React.FC = () => {
     const isBusy = !!busy[a.id];
     const cacheKey = `${patientId}-${a.parameter}`;
     const hasTrend = trendData[cacheKey] && trendData[cacheKey].length > 0;
+    const [showAISuggestion, setShowAISuggestion] = useState(false);
 
     const getFlagBadge = (flag: string | null) => {
       if (!flag) return null;
@@ -838,92 +859,124 @@ const ResultVerificationConsole: React.FC = () => {
     };
 
     return (
-      <tr className="hover:bg-blue-50 transition-colors">
-        <td className="px-4 py-4">
-          <div className="flex items-center space-x-2">
-            <div className="font-semibold text-gray-900">{a.parameter}</div>
-            <button
-              onClick={() => loadTrendData(patientId, a.parameter)}
-              disabled={loadingTrend}
-              className="inline-flex items-center text-blue-600 hover:text-blue-800 transition-colors"
-              title="View trend"
-            >
-              {loadingTrend && selectedAnalyteTrend?.parameter === a.parameter ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <TrendingUp className="h-4 w-4" />
+      <>
+        <tr className="hover:bg-blue-50 transition-colors">
+          <td className="px-4 py-4">
+            <div className="flex items-center space-x-2">
+              <div className="font-semibold text-gray-900">{a.parameter}</div>
+              <button
+                onClick={() => loadTrendData(patientId, a.parameter)}
+                disabled={loadingTrend}
+                className="inline-flex items-center text-blue-600 hover:text-blue-800 transition-colors"
+                title="View trend"
+              >
+                {loadingTrend && selectedAnalyteTrend?.parameter === a.parameter ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <TrendingUp className="h-4 w-4" />
+                )}
+              </button>
+              {hasTrend && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                  {trendData[cacheKey].length}
+                </span>
               )}
-            </button>
-            {hasTrend && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                {trendData[cacheKey].length}
-              </span>
-            )}
-          </div>
-          {a.value && (
-            <div className="text-sm text-gray-600 mt-1">
-              Last updated: {a.verified_at ? new Date(a.verified_at).toLocaleString() : 'Never'}
+              <button
+                onClick={() => setShowAISuggestion(!showAISuggestion)}
+                className="inline-flex items-center text-purple-600 hover:text-purple-800 transition-colors"
+                title="Toggle AI suggestions"
+              >
+                <Sparkles className="h-4 w-4" />
+              </button>
             </div>
-          )}
-        </td>
-        <td className="px-4 py-4">
-          <div className="font-bold text-lg text-gray-900">{a.value ?? "—"}</div>
-        </td>
-        <td className="px-4 py-4">
-          <span className="font-medium text-gray-700">{a.unit}</span>
-        </td>
-        <td className="px-4 py-4">
-          <div className="text-sm text-gray-600 max-w-xs">
-            {a.reference_range}
-          </div>
-        </td>
-        <td className="px-4 py-4">
-          {getFlagBadge(a.flag)}
-        </td>
-        <td className="px-4 py-4">
-          <div className="flex items-center space-x-3">
-            {status === "approved" ? (
-              <span className="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-green-600 to-emerald-600 text-white shadow-sm">
-                <CheckSquare className="h-4 w-4 mr-2" />
-                Approved
-              </span>
-            ) : (
-              <div className="flex items-center space-x-2">
-                <button
-                  disabled={isBusy}
-                  onClick={() => approveAnalyte(a.id)}
-                  className="inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-green-500 to-emerald-500 text-white hover:from-green-600 hover:to-emerald-600 transition-all duration-200 shadow-sm disabled:opacity-50"
-                >
-                  {isBusy ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="h-4 w-4 mr-2" />
-                  )}
-                  Approve
-                </button>
-
-                <button
-                  disabled={isBusy}
-                  onClick={() => rejectAnalyte(a.id)}
-                  className={`inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold transition-all duration-200 shadow-sm ${status === "rejected"
-                      ? "bg-gradient-to-r from-red-600 to-rose-600 text-white"
-                      : "bg-gradient-to-r from-red-100 to-rose-100 text-red-700 hover:from-red-200 hover:to-rose-200"
-                    }`}
-                >
-                  <XCircle className="h-4 w-4 mr-2" />
-                  {status === "rejected" ? "Rejected" : "Reject"}
-                </button>
+            {a.value && (
+              <div className="text-sm text-gray-600 mt-1">
+                Last updated: {a.verified_at ? new Date(a.verified_at).toLocaleString() : 'Never'}
               </div>
             )}
-          </div>
-
-          {a.verify_note && (
-            <div className="text-xs text-gray-500 mt-2 italic bg-gray-50 p-2 rounded border">
-              Note: {a.verify_note}
+          </td>
+          <td className="px-4 py-4">
+            <div className="font-bold text-lg text-gray-900">{a.value ?? "—"}</div>
+          </td>
+          <td className="px-4 py-4">
+            <span className="font-medium text-gray-700">{a.unit}</span>
+          </td>
+          <td className="px-4 py-4">
+            <div className="text-sm text-gray-600 max-w-xs">
+              {a.reference_range}
             </div>
-          )}
-        </td>
-      </tr>
+          </td>
+          <td className="px-4 py-4">
+            {getFlagBadge(a.flag)}
+          </td>
+          <td className="px-4 py-4">
+            <div className="flex items-center space-x-3">
+              {status === "approved" ? (
+                <span className="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-green-600 to-emerald-600 text-white shadow-sm">
+                  <CheckSquare className="h-4 w-4 mr-2" />
+                  Approved
+                </span>
+              ) : (
+                <div className="flex items-center space-x-2">
+                  <button
+                    disabled={isBusy}
+                    onClick={() => approveAnalyte(a.id)}
+                    className="inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-green-500 to-emerald-500 text-white hover:from-green-600 hover:to-emerald-600 transition-all duration-200 shadow-sm disabled:opacity-50"
+                  >
+                    {isBusy ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4 mr-2" />
+                    )}
+                    Approve
+                  </button>
+
+                  <button
+                    disabled={isBusy}
+                    onClick={() => rejectAnalyte(a.id)}
+                    className={`inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold transition-all duration-200 shadow-sm ${status === "rejected"
+                        ? "bg-gradient-to-r from-red-600 to-rose-600 text-white"
+                        : "bg-gradient-to-r from-red-100 to-rose-100 text-red-700 hover:from-red-200 hover:to-rose-200"
+                      }`}
+                  >
+                    <XCircle className="h-4 w-4 mr-2" />
+                    {status === "rejected" ? "Rejected" : "Reject"}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {a.verify_note && (
+              <div className="text-xs text-gray-500 mt-2 italic bg-gray-50 p-2 rounded border">
+                Note: {a.verify_note}
+              </div>
+            )}
+          </td>
+        </tr>
+        {showAISuggestion && (
+          <tr>
+            <td colSpan={6} className="px-4 py-2 bg-gray-50">
+              <AIResultSuggestionCard
+                resultValue={{
+                  id: a.id,
+                  analyte_name: a.parameter,
+                  value: a.value || '',
+                  unit: a.unit,
+                  reference_range: a.reference_range,
+                  flag: a.flag as 'H' | 'L' | 'C' | null,
+                  ai_suggested_flag: null,
+                  ai_suggested_interpretation: null,
+                  trend_interpretation: null
+                }}
+                onApplied={async () => {
+                  // Reload analytes after applying AI suggestions
+                  await ensureAnalytesLoaded(a.result_id);
+                }}
+              />
+            </td>
+          </tr>
+        )}
+      </>
     );
   };
 
@@ -1048,58 +1101,13 @@ const ResultVerificationConsole: React.FC = () => {
                       onChange={(e) => setIncludeSummaryInReport(prev => ({ ...prev, [row.order_id]: e.target.checked }))}
                       disabled={!aiClinicalSummary[row.order_id]}
                       className="w-3.5 h-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:opacity-50"
-                      title={aiClinicalSummary[row.order_id] ? "Include clinical summary in report" : "Generate Doctor Summary first"}
+                      title={aiClinicalSummary[row.order_id] ? "Include clinical summary in report" : "Generate Doctor Summary from expanded panel first"}
                     />
                     <Stethoscope className="h-3.5 w-3.5" />
                     <span className={!aiClinicalSummary[row.order_id] ? "opacity-50" : ""}>Summary</span>
                   </label>
                 </div>
-                {/* Clinical Summary for Doctor Button */}
-                <button
-                  disabled={aiIntelligence.loading}
-                  onClick={async () => {
-                    try {
-                      // Get all panels for this order to generate comprehensive clinical summary
-                      const orderPanels = panels.filter(p => p.order_id === row.order_id);
-                      const testGroupsData = await Promise.all(
-                        orderPanels.map(async (panel) => {
-                          // Ensure analytes are loaded
-                          if (!rowsByResult[panel.result_id]) {
-                            await ensureAnalytesLoaded(panel.result_id);
-                          }
-                          const panelAnalytes = rowsByResult[panel.result_id] || [];
-                          return {
-                            name: panel.test_group_name || 'Unknown',
-                            category: 'General',
-                            result_values: panelAnalytes.map(a => ({
-                              analyte_name: a.parameter,
-                              value: a.value || '',
-                              unit: a.unit,
-                              reference_range: a.reference_range,
-                              flag: a.flag as 'H' | 'L' | 'C' | null,
-                            })),
-                          };
-                        })
-                      );
-                      const summary = await aiIntelligence.getClinicalSummary(testGroupsData);
-                      setAiClinicalSummary(prev => ({ ...prev, [row.order_id]: summary }));
-                      setAiSummaryTarget({ type: 'clinical', orderId: row.order_id });
-                      setShowAiSummaryModal(true);
-                    } catch (error) {
-                      console.error('Clinical Summary failed:', error);
-                      alert('Failed to generate clinical summary: ' + (error instanceof Error ? error.message : 'Unknown error'));
-                    }
-                  }}
-                  className="inline-flex items-center px-3 py-2 sm:px-4 sm:py-2 bg-gradient-to-r from-cyan-600 to-teal-600 text-white rounded-lg sm:rounded-xl hover:from-cyan-700 hover:to-teal-700 transition-all duration-200 shadow-sm font-semibold text-xs sm:text-sm disabled:opacity-50"
-                  title="Generate AI clinical summary for referring doctor"
-                >
-                  {aiIntelligence.loading ? (
-                    <Loader2 className="h-4 w-4 sm:mr-2 animate-spin" />
-                  ) : (
-                    <Stethoscope className="h-4 w-4 sm:mr-2" />
-                  )}
-                  <span className="hidden sm:inline">Doctor Summary</span>
-                </button>
+                {/* Doctor Summary removed - it's at ORDER level, available in expanded panel's AIDoctorSummaryPanel component */}
                 <button
                   onClick={() => {
                     setSelectedOrderForAttachments(row.order_id);
@@ -1137,33 +1145,41 @@ const ResultVerificationConsole: React.FC = () => {
                 <span className="font-semibold ml-2">Approved:</span> {row.approved_analytes}
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {/* AI Generate Interpretations Button */}
+                {/* AI Generate Interpretations Button - Uses new system for actual values */}
                 <button
                   disabled={aiIntelligence.loading || analytes.length === 0}
                   onClick={async () => {
                     try {
-                      const testGroup = {
-                        test_group_name: row.test_group_name || 'Unknown',
-                        test_group_code: row.test_group_id || '',
-                        category: 'General',
-                      };
-                      // Convert analytes to the format expected by AI
-                      const analyteData = analytes.map(a => ({
-                        id: a.id,
-                        name: a.parameter,
-                        unit: a.unit,
-                        reference_range: a.reference_range,
-                        interpretation_low: null,
-                        interpretation_normal: null,
-                        interpretation_high: null,
-                      }));
-                      const response = await aiIntelligence.generateMissingInterpretations(analyteData, testGroup);
-                      if (response.interpretations.length > 0) {
-                        setAiGeneratedInterpretations(prev => ({ ...prev, [row.result_id]: response.interpretations }));
+                      // Convert analytes to ResultValue format for AI analysis
+                      const resultValues: ResultValue[] = analytes
+                        .filter(a => a.value) // Only analyze analytes with values
+                        .map(a => ({
+                          id: a.id, // result_value ID for saving
+                          analyte_id: a.id,
+                          analyte_name: a.parameter,
+                          value: a.value || '',
+                          unit: a.unit,
+                          reference_range: a.reference_range,
+                          flag: a.flag as 'H' | 'L' | 'C' | null,
+                        }));
+
+                      if (resultValues.length === 0) {
+                        alert('No analyte values to analyze. Please enter values first.');
+                        return;
+                      }
+
+                      // Call new AI function for actual value analysis
+                      const suggestions = await aiIntelligence.generateResultValueSuggestions(
+                        resultValues,
+                        undefined // patient context - could be added
+                      );
+
+                      if (suggestions.length > 0) {
+                        setAiResultSuggestions(prev => ({ ...prev, [row.result_id]: suggestions }));
                         setInterpretationsTargetResultId(row.result_id);
                         setShowInterpretationsModal(true);
                       } else {
-                        alert('All analytes already have interpretations!');
+                        alert('No suggestions generated. Please try again.');
                       }
                     } catch (error) {
                       console.error('AI Interpretations failed:', error);
@@ -1171,7 +1187,7 @@ const ResultVerificationConsole: React.FC = () => {
                     }
                   }}
                   className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-lg hover:from-amber-600 hover:to-orange-600 transition-all duration-200 shadow-sm font-medium text-sm disabled:opacity-50"
-                  title="Generate AI interpretations for analytes and save to database"
+                  title="Generate AI flag and interpretation for actual result values"
                 >
                   {aiIntelligence.loading ? (
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -1316,6 +1332,24 @@ const ResultVerificationConsole: React.FC = () => {
                   viewMode={attachmentViewMode}
                 />
               </div>
+            </div>
+
+            {/* AI Trend Graphs Section */}
+            <div className="mt-6">
+              <TrendGraphPanel
+                orderId={row.order_id}
+                patientId={row.patient_id}
+                analyteIds={analytes.filter(a => a.analyte_id).map(a => a.analyte_id)}
+                analyteNames={analytes.map(a => a.parameter)}
+                includeInReport={includeTrendsInReport[row.order_id] ?? false}
+                onIncludeInReportChange={(include) => {
+                  setIncludeTrendsInReport(prev => ({ ...prev, [row.order_id]: include }));
+                }}
+                onSaved={() => {
+                  // Auto-enable include in report when trends are saved
+                  setIncludeTrendsInReport(prev => ({ ...prev, [row.order_id]: true }));
+                }}
+              />
             </div>
           </div>
         )}
@@ -1751,35 +1785,71 @@ const ResultVerificationConsole: React.FC = () => {
     );
   };
 
-  /* ----------------- AI Interpretations Modal Component ----------------- */
+  /* ----------------- AI Interpretations Modal Component (New: Actual Value Analysis) ----------------- */
   const AIInterpretationsModal: React.FC = () => {
     const [saving, setSaving] = useState(false);
 
     if (!showInterpretationsModal || !interpretationsTargetResultId) return null;
 
-    const interpretations = aiGeneratedInterpretations[interpretationsTargetResultId] || [];
+    // Get AI suggestions for actual result values
+    const suggestions = aiResultSuggestions[interpretationsTargetResultId] || [];
 
     const handleSaveToDb = async () => {
-      if (!currentLabId) {
-        alert('Unable to determine lab ID. Please try again.');
+      if (suggestions.length === 0) {
+        alert('No suggestions to save.');
         return;
       }
 
       setSaving(true);
       try {
-        const result = await aiIntelligence.saveInterpretationsToDb(currentLabId, interpretations);
-        if (result.success.length > 0) {
-          alert(`Successfully saved interpretations for ${result.success.length} analyte(s)!${result.failed.length > 0 ? `\n${result.failed.length} failed.` : ''}`);
+        // Save AI suggestions to result_values table (also updates the actual flag column)
+        const result = await aiIntelligence.saveResultValueSuggestions(suggestions, true);
+        
+        if (result.success > 0) {
+          alert(`Successfully saved interpretations for ${result.success} analyte(s)!${result.failed > 0 ? ` (${result.failed} failed)` : ''}\n\nThe flags have been updated.`);
+          
+          // Clear the cached analytes for this result to force reload
+          const targetResultId = interpretationsTargetResultId;
+          setRowsByResult(prev => {
+            const newState = { ...prev };
+            delete newState[targetResultId];
+            return newState;
+          });
+          
           setShowInterpretationsModal(false);
           setInterpretationsTargetResultId(null);
-        } else if (result.failed.length > 0) {
-          alert(`Failed to save ${result.failed.length} interpretation(s). Check console for details.`);
+          
+          // Reload panels to show updated flags
+          await loadPanels();
+        } else {
+          alert('Failed to save interpretations. Please try again.');
         }
       } catch (error) {
         console.error('Failed to save interpretations:', error);
         alert('Failed to save interpretations: ' + (error instanceof Error ? error.message : 'Unknown error'));
       } finally {
         setSaving(false);
+      }
+    };
+
+    // Helper to get flag color
+    const getFlagColor = (flag: string | null | undefined) => {
+      switch (flag) {
+        case 'H': return 'bg-red-100 text-red-800 border-red-200';
+        case 'L': return 'bg-blue-100 text-blue-800 border-blue-200';
+        case 'C': return 'bg-purple-100 text-purple-800 border-purple-200';
+        case 'N': return 'bg-green-100 text-green-800 border-green-200';
+        default: return 'bg-gray-100 text-gray-600 border-gray-200';
+      }
+    };
+
+    const getFlagLabel = (flag: string | null | undefined) => {
+      switch (flag) {
+        case 'H': return 'High';
+        case 'L': return 'Low';
+        case 'C': return 'Critical';
+        case 'N': return 'Normal';
+        default: return 'Unknown';
       }
     };
 
@@ -1793,7 +1863,7 @@ const ResultVerificationConsole: React.FC = () => {
                 AI-Generated Interpretations
               </h3>
               <span className="bg-white bg-opacity-20 px-2 py-1 rounded-full text-sm text-white">
-                {interpretations.length} analytes
+                {suggestions.length} analytes
               </span>
             </div>
             <button
@@ -1808,42 +1878,91 @@ const ResultVerificationConsole: React.FC = () => {
           </div>
 
           <div className="p-6 overflow-y-auto max-h-[calc(90vh-160px)]">
-            {interpretations.length === 0 ? (
+            {suggestions.length === 0 ? (
               <div className="text-center py-12">
                 <CheckCircle2 className="h-16 w-16 text-green-300 mx-auto mb-4" />
-                <p className="text-gray-500 text-lg">All analytes already have interpretations!</p>
+                <p className="text-gray-500 text-lg">No suggestions available.</p>
               </div>
             ) : (
               <div className="space-y-4">
-                {interpretations.map((interp, idx) => (
-                  <div key={interp.analyte_id || idx} className="bg-gray-50 rounded-xl p-4 border border-gray-200">
-                    <h4 className="font-bold text-gray-900 mb-3 flex items-center">
-                      <Activity className="h-5 w-5 mr-2 text-amber-600" />
-                      {interp.analyte_name}
-                    </h4>
-                    <div className="grid md:grid-cols-3 gap-3">
-                      <div className="bg-blue-50 rounded-lg p-3 border border-blue-200">
-                        <div className="text-xs font-semibold text-blue-700 uppercase mb-1 flex items-center">
-                          <ChevronDown className="h-3 w-3 mr-1" />
-                          Low
-                        </div>
-                        <p className="text-sm text-gray-700">{interp.interpretation_low}</p>
-                      </div>
-                      <div className="bg-green-50 rounded-lg p-3 border border-green-200">
-                        <div className="text-xs font-semibold text-green-700 uppercase mb-1 flex items-center">
-                          <CheckCircle2 className="h-3 w-3 mr-1" />
-                          Normal
-                        </div>
-                        <p className="text-sm text-gray-700">{interp.interpretation_normal}</p>
-                      </div>
-                      <div className="bg-red-50 rounded-lg p-3 border border-red-200">
-                        <div className="text-xs font-semibold text-red-700 uppercase mb-1 flex items-center">
-                          <ChevronUp className="h-3 w-3 mr-1" />
-                          High
-                        </div>
-                        <p className="text-sm text-gray-700">{interp.interpretation_high}</p>
+                {suggestions.map((suggestion, idx) => (
+                  <div key={suggestion.id || idx} className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="font-bold text-gray-900 flex items-center">
+                        <Activity className="h-5 w-5 mr-2 text-amber-600" />
+                        {suggestion.analyte_name}
+                      </h4>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm text-gray-500">
+                          Value: <strong className="text-gray-900">{suggestion.value} {suggestion.unit}</strong>
+                        </span>
+                        <span className="text-sm text-gray-500">
+                          Ref: {suggestion.reference_range}
+                        </span>
                       </div>
                     </div>
+                    
+                    <div className="grid md:grid-cols-2 gap-4">
+                      {/* AI Suggested Flag */}
+                      <div className={`rounded-lg p-3 border ${getFlagColor(suggestion.ai_suggested_flag)}`}>
+                        <div className="text-xs font-semibold uppercase mb-1 flex items-center">
+                          <Target className="h-3 w-3 mr-1" />
+                          AI Suggested Flag
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg font-bold">
+                            {suggestion.ai_suggested_flag || 'N'}
+                          </span>
+                          <span className="text-sm">
+                            ({getFlagLabel(suggestion.ai_suggested_flag)})
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Current Flag Comparison */}
+                      <div className="bg-white rounded-lg p-3 border border-gray-200">
+                        <div className="text-xs font-semibold text-gray-500 uppercase mb-1 flex items-center">
+                          <ShieldCheck className="h-3 w-3 mr-1" />
+                          Current Flag
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-lg font-bold ${suggestion.flag ? 'text-gray-900' : 'text-gray-400'}`}>
+                            {suggestion.flag || '-'}
+                          </span>
+                          {suggestion.flag !== suggestion.ai_suggested_flag && suggestion.ai_suggested_flag && (
+                            <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded">
+                              Differs from AI
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* AI Interpretation */}
+                    {suggestion.ai_suggested_interpretation && (
+                      <div className="mt-3 bg-white rounded-lg p-4 border border-gray-200">
+                        <div className="text-xs font-semibold text-gray-500 uppercase mb-2 flex items-center">
+                          <Stethoscope className="h-3 w-3 mr-1" />
+                          AI Clinical Interpretation
+                        </div>
+                        <p className="text-sm text-gray-700 leading-relaxed">
+                          {suggestion.ai_suggested_interpretation}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Trend Interpretation (if available) */}
+                    {suggestion.trend_interpretation && (
+                      <div className="mt-3 bg-blue-50 rounded-lg p-4 border border-blue-200">
+                        <div className="text-xs font-semibold text-blue-700 uppercase mb-2 flex items-center">
+                          <TrendingUp className="h-3 w-3 mr-1" />
+                          Trend Analysis
+                        </div>
+                        <p className="text-sm text-blue-800">
+                          {suggestion.trend_interpretation}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1851,11 +1970,11 @@ const ResultVerificationConsole: React.FC = () => {
           </div>
 
           {/* Footer with Save Button */}
-          {interpretations.length > 0 && (
+          {suggestions.length > 0 && (
             <div className="border-t bg-gray-50 px-6 py-4 flex items-center justify-between">
               <p className="text-sm text-gray-600">
                 <AlertCircle className="h-4 w-4 inline mr-1 text-amber-500" />
-                Review the interpretations above before saving to your lab's database.
+                Review the AI suggestions above before saving to result_values.
               </p>
               <div className="flex items-center gap-3">
                 <button
@@ -1869,7 +1988,7 @@ const ResultVerificationConsole: React.FC = () => {
                 </button>
                 <button
                   onClick={handleSaveToDb}
-                  disabled={saving || !currentLabId}
+                  disabled={saving}
                   className="inline-flex items-center px-6 py-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg hover:from-green-700 hover:to-emerald-700 transition-all duration-200 shadow-sm font-semibold disabled:opacity-50"
                 >
                   {saving ? (

@@ -12,6 +12,46 @@ import {
   generateTrendSectionHtml 
 } from './trendChartGenerator';
 
+// ============ Helper Functions ============
+
+/**
+ * Clean and format clinical summary text
+ * - Removes duplicate headers
+ * - Converts markdown bold (**text**) to HTML
+ * - Preserves line breaks
+ */
+const formatClinicalSummaryText = (text: string, forHtml: boolean = true): string => {
+  if (!text) return '';
+  
+  let cleaned = text;
+  
+  // Remove duplicate "**Executive Summary**" headers (keep only the first occurrence's content)
+  // Pattern: multiple consecutive **Executive Summary** lines
+  cleaned = cleaned.replace(/(\*\*Executive Summary\*\*\s*\n?){2,}/gi, '**Executive Summary**\n');
+  
+  // Remove standalone duplicate headers at the start
+  cleaned = cleaned.replace(/^(\*\*Executive Summary\*\*\s*\n)+/gi, '');
+  
+  if (forHtml) {
+    // Convert markdown bold to HTML bold
+    cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    
+    // Convert bullet points to HTML list items
+    cleaned = cleaned.replace(/^[•\-]\s*(.+)$/gm, '<li>$1</li>');
+    
+    // Wrap consecutive <li> items in <ul>
+    cleaned = cleaned.replace(/(<li>[\s\S]*?<\/li>\s*)+/g, (match) => `<ul style="margin: 8px 0; padding-left: 20px;">${match}</ul>`);
+    
+    // Convert line breaks to <br> for remaining text
+    cleaned = cleaned.replace(/\n/g, '<br>');
+  } else {
+    // For plain text (jsPDF), just remove markdown markers
+    cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
+  }
+  
+  return cleaned.trim();
+};
+
 // ============ Types ============
 
 export interface ClinicalSummaryData {
@@ -190,6 +230,57 @@ export const toggleSummaryInReport = async (
   });
 };
 
+/**
+ * Toggle inclusion of clinical summary in report at order level
+ * Stores the flag in orders.trend_graph_data JSONB
+ */
+export const toggleOrderSummaryInReport = async (
+  orderId: string,
+  include: boolean
+): Promise<{ success: boolean; error?: string }> => {
+  try {
+    // Update the dedicated column for include_clinical_summary_in_report
+    // Also update trend_graph_data for backward compatibility
+    const { data: orderData, error: fetchError } = await supabase
+      .from('orders')
+      .select('trend_graph_data')
+      .eq('id', orderId)
+      .single();
+
+    if (fetchError) {
+      console.error('Error fetching order data:', fetchError);
+      return { success: false, error: fetchError.message };
+    }
+
+    // Merge the include flag with existing trend_graph_data for backward compatibility
+    const existingData = (orderData?.trend_graph_data || {}) as Record<string, any>;
+    const updatedData = {
+      ...existingData,
+      include_summary_in_report: include,
+    };
+
+    // Update both the new dedicated column AND trend_graph_data for backward compatibility
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update({ 
+        include_clinical_summary_in_report: include,
+        trend_graph_data: updatedData 
+      })
+      .eq('id', orderId);
+
+    if (updateError) {
+      console.error('Error updating order include flag:', updateError);
+      return { success: false, error: updateError.message };
+    }
+
+    console.log(`✅ Order ${orderId}: include_clinical_summary_in_report = ${include}`);
+    return { success: true };
+  } catch (error) {
+    console.error('Error toggling summary in report:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+};
+
 // ============ HTML Generation for PDF ============
 
 /**
@@ -199,6 +290,9 @@ export const generateClinicalSummaryHtml = (summary: ClinicalSummaryData): strin
   if (!summary?.text) {
     return '';
   }
+
+  // Format the text - convert markdown to HTML
+  const formattedText = formatClinicalSummaryText(summary.text, true);
 
   const recommendationHtml = summary.recommendation ? `
     <div style="margin-top: 12px; padding: 10px; background: #fef3c7; border-left: 3px solid #f59e0b; border-radius: 4px;">
@@ -213,7 +307,7 @@ export const generateClinicalSummaryHtml = (summary: ClinicalSummaryData): strin
         🩺 Clinical Summary for Referring Physician
       </h3>
       <div style="padding: 15px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px;">
-        <p style="margin: 0; line-height: 1.6; color: #0c4a6e; white-space: pre-line;">${summary.text}</p>
+        <div style="margin: 0; line-height: 1.6; color: #0c4a6e;">${formattedText}</div>
         ${recommendationHtml}
       </div>
       <p style="margin-top: 8px; font-size: 10px; color: #6b7280; font-style: italic;">
@@ -232,6 +326,9 @@ export const generateClinicalSummaryHtmlPrint = (summary: ClinicalSummaryData): 
     return '';
   }
 
+  // Format the text - convert markdown to HTML
+  const formattedText = formatClinicalSummaryText(summary.text, true);
+
   const recommendationHtml = summary.recommendation ? `
     <div style="margin-top: 12px; padding: 10px; border-left: 3px solid #333;">
       <strong>Recommendation:</strong>
@@ -245,7 +342,7 @@ export const generateClinicalSummaryHtmlPrint = (summary: ClinicalSummaryData): 
         Clinical Summary for Referring Physician
       </h3>
       <div style="padding: 12px; border: 1px solid #ccc;">
-        <p style="margin: 0; line-height: 1.6; white-space: pre-line;">${summary.text}</p>
+        <div style="margin: 0; line-height: 1.6;">${formattedText}</div>
         ${recommendationHtml}
       </div>
     </div>
@@ -266,18 +363,24 @@ export const generateReportExtrasHtml = (
 
   const parts: string[] = [];
 
-  // Add clinical summary if included
-  if (extras.include_summary_in_report && extras.clinical_summary?.text) {
-    parts.push(
-      forPrint 
-        ? generateClinicalSummaryHtmlPrint(extras.clinical_summary)
-        : generateClinicalSummaryHtml(extras.clinical_summary)
-    );
-  }
-
-  // Add trend charts if included
+  // Add trend charts FIRST (before clinical summary)
   if (extras.include_trends_in_report && extras.trend_charts && extras.trend_charts.length > 0) {
     parts.push(generateTrendSectionHtml(extras.trend_charts, forPrint));
+  }
+
+  // Add clinical summary LAST (on its own section/page)
+  if (extras.include_summary_in_report && extras.clinical_summary?.text) {
+    // Add page break before clinical summary if there are trend charts
+    const summaryHtml = forPrint 
+      ? generateClinicalSummaryHtmlPrint(extras.clinical_summary)
+      : generateClinicalSummaryHtml(extras.clinical_summary);
+    
+    if (parts.length > 0) {
+      // If there are trend charts, put summary on new page with padding for fixed header
+      parts.push(`<div style="page-break-before: always; padding-top: 120px;">${summaryHtml}</div>`);
+    } else {
+      parts.push(summaryHtml);
+    }
   }
 
   if (parts.length === 0) {
@@ -285,8 +388,21 @@ export const generateReportExtrasHtml = (
   }
 
   // Wrap in page break section for appendix placement
+  // Need padding-top to account for fixed header (100px + some margin)
+  // Print version: black & white styling, no colors
+  if (forPrint) {
+    return `
+      <div class="report-extras-section" style="page-break-before: always; padding: 15px; padding-top: 120px;">
+        <h2 style="text-align: center; margin-bottom: 20px; color: #000; border-bottom: 1px solid #333; padding-bottom: 8px; font-size: 16px;">
+          Additional Analysis & Summary
+        </h2>
+        ${parts.join('\n')}
+      </div>
+    `;
+  }
+
   return `
-    <div class="report-extras-section" style="page-break-before: always; padding: 20px;">
+    <div class="report-extras-section" style="page-break-before: always; padding: 20px; padding-top: 120px;">
       <h2 style="text-align: center; margin-bottom: 25px; color: #1e3a8a; border-bottom: 2px solid #3b82f6; padding-bottom: 10px;">
         Additional Analysis & Summary
       </h2>
@@ -296,53 +412,164 @@ export const generateReportExtrasHtml = (
 };
 
 /**
- * Fetch report extras for an order (across all results)
+ * Fetch report extras for an order (across all results + order-level data)
  * Used during PDF generation
+ * 
+ * Sources checked:
+ * 1. orders.trend_graph_data - Trend graphs generated from TrendGraphPanel
+ * 2. reports.ai_doctor_summary - Clinical summary for doctor
+ * 3. results.report_extras - Legacy per-result extras
  */
 export const getReportExtrasForOrder = async (orderId: string): Promise<ReportExtras | null> => {
   try {
-    const { data, error } = await supabase
+    // 1. Check order-level trend graph data AND clinical summary (from TrendGraphPanel and Clinical Summary)
+    const { data: orderData, error: orderError } = await supabase
+      .from('orders')
+      .select('trend_graph_data, ai_clinical_summary, ai_clinical_summary_generated_at, include_clinical_summary_in_report')
+      .eq('id', orderId)
+      .single();
+
+    if (orderError && orderError.code !== 'PGRST116') {
+      console.error('Error fetching order trend data:', orderError);
+    }
+
+    // 2. Check reports table for AI doctor summary (fallback for older data)
+    const { data: reportData, error: reportError } = await supabase
+      .from('reports')
+      .select('ai_doctor_summary, ai_summary_generated_at, include_trend_graphs')
+      .eq('order_id', orderId)
+      .order('generated_date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (reportError && reportError.code !== 'PGRST116') {
+      console.error('Error fetching report data:', reportError);
+    }
+
+    // 3. Also check results table for legacy report_extras
+    const { data: resultsData, error: resultsError } = await supabase
       .from('results')
       .select('id, report_extras')
       .eq('order_id', orderId)
       .not('report_extras', 'is', null);
 
-    if (error) {
-      console.error('Error fetching report extras for order:', error);
-      return null;
+    if (resultsError) {
+      console.error('Error fetching report extras:', resultsError);
     }
 
-    if (!data || data.length === 0) {
-      return null;
-    }
-
-    // Merge all report extras from different results
+    // Build merged result
     const merged: ReportExtras = {
       trend_charts: [],
       include_trends_in_report: false,
       include_summary_in_report: false,
     };
 
-    for (const result of data) {
-      const extras = result.report_extras as ReportExtras;
-      if (!extras) continue;
+    // Process order-level trend graph data (new system via TrendGraphPanel)
+    if (orderData?.trend_graph_data) {
+      console.log('📊 Raw trend_graph_data from database:', JSON.stringify(orderData.trend_graph_data, null, 2).substring(0, 500));
+      
+      const trendData = orderData.trend_graph_data as {
+        analytes?: Array<{
+          analyte_id: string;
+          analyte_name: string;
+          unit: string;
+          reference_range: { min: number; max: number };
+          dataPoints: Array<{ date: string; value: number; flag?: string; timestamp?: string }>;
+          trend: string;
+          image_url?: string;  // Pre-generated image URL
+          image_generated_at?: string;
+        }>;
+        include_in_report?: boolean;
+        images_generated_at?: string;
+      };
 
-      // Merge trend charts
-      if (extras.trend_charts && extras.trend_charts.length > 0) {
-        merged.trend_charts = [...(merged.trend_charts || []), ...extras.trend_charts];
-        if (extras.include_trends_in_report) {
-          merged.include_trends_in_report = true;
-        }
-      }
+      console.log('📊 Trend data parsed:', {
+        include_in_report: trendData.include_in_report,
+        analytesCount: trendData.analytes?.length || 0,
+        analytesWithImageUrl: trendData.analytes?.filter(a => a.image_url).length || 0,
+        firstAnalyteImageUrl: trendData.analytes?.[0]?.image_url || 'NONE',
+      });
 
-      // Use the first clinical summary found (typically order-level)
-      if (extras.clinical_summary && !merged.clinical_summary) {
-        merged.clinical_summary = extras.clinical_summary;
-        merged.include_summary_in_report = extras.include_summary_in_report;
+      // Only include if flag is true
+      if (trendData.include_in_report && trendData.analytes && trendData.analytes.length > 0) {
+        const analytesWithImages = trendData.analytes.filter(a => a.image_url);
+        console.log(`📊 Found ${trendData.analytes.length} trend analytes, ${analytesWithImages.length} with pre-generated images`);
+        
+        // Convert to TrendChartResult format for HTML generation
+        merged.trend_charts = trendData.analytes.map(analyte => ({
+          analyte_name: analyte.analyte_name,
+          image_url: analyte.image_url || null,  // Use pre-generated image URL
+          image_base64: null,
+          data: analyte.dataPoints.map(dp => ({
+            order_date: dp.date || dp.timestamp || '',
+            value: dp.value,
+            unit: analyte.unit,
+            reference_range: `${analyte.reference_range.min}-${analyte.reference_range.max}`,
+            flag: dp.flag || null,
+          })),
+          reference_range: `${analyte.reference_range.min}-${analyte.reference_range.max}`,
+          unit: analyte.unit,
+          generated_at: analyte.image_generated_at || new Date().toISOString(),
+        }));
+        
+        merged.include_trends_in_report = true;
       }
     }
 
-    return merged.trend_charts?.length || merged.clinical_summary ? merged : null;
+    // Process clinical summary - check orders table first (new system), then reports table (legacy)
+    if (orderData?.ai_clinical_summary) {
+      merged.clinical_summary = {
+        text: orderData.ai_clinical_summary,
+        generated_at: orderData.ai_clinical_summary_generated_at || new Date().toISOString(),
+        generated_by: 'ai',
+      };
+      // Use the dedicated column for include flag
+      merged.include_summary_in_report = orderData.include_clinical_summary_in_report === true;
+      console.log('📝 Using clinical summary from orders table');
+    } else if (reportData?.ai_doctor_summary) {
+      // Fallback to reports table for older data
+      merged.clinical_summary = {
+        text: reportData.ai_doctor_summary,
+        generated_at: reportData.ai_summary_generated_at || new Date().toISOString(),
+        generated_by: 'ai',
+      };
+      // Check if user explicitly opted to include summary from trend_graph_data
+      const trendData = orderData?.trend_graph_data as { include_summary_in_report?: boolean } | null;
+      merged.include_summary_in_report = trendData?.include_summary_in_report === true;
+      console.log('📝 Using clinical summary from reports table (legacy)');
+    }
+
+    // Process legacy results.report_extras
+    if (resultsData && resultsData.length > 0) {
+      for (const result of resultsData) {
+        const extras = result.report_extras as ReportExtras;
+        if (!extras) continue;
+
+        // Merge trend charts (if not already from order-level)
+        if (!merged.include_trends_in_report && extras.trend_charts && extras.trend_charts.length > 0) {
+          merged.trend_charts = [...(merged.trend_charts || []), ...extras.trend_charts];
+          if (extras.include_trends_in_report) {
+            merged.include_trends_in_report = true;
+          }
+        }
+
+        // Use clinical summary from results if not found at report level
+        if (!merged.clinical_summary && extras.clinical_summary) {
+          merged.clinical_summary = extras.clinical_summary;
+          merged.include_summary_in_report = extras.include_summary_in_report;
+        }
+      }
+    }
+
+    const hasData = merged.trend_charts?.length || merged.clinical_summary;
+    console.log(`📋 Report extras for order ${orderId}:`, {
+      trendCount: merged.trend_charts?.length || 0,
+      includeTrends: merged.include_trends_in_report,
+      hasSummary: !!merged.clinical_summary,
+      includeSummary: merged.include_summary_in_report,
+    });
+
+    return hasData ? merged : null;
   } catch (error) {
     console.error('Error in getReportExtrasForOrder:', error);
     return null;

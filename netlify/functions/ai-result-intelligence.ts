@@ -26,12 +26,23 @@ interface AnalyteData {
 }
 
 interface ResultValue {
+  id?: string; // result_value ID
+  analyte_id?: string;
   analyte_name: string;
   value: string;
   unit: string;
   reference_range: string;
   flag: 'H' | 'L' | 'C' | null;
   interpretation?: string | null;
+  ai_suggested_flag?: string | null;
+  ai_suggested_interpretation?: string | null;
+  trend_interpretation?: string | null;
+  // Historical data for trend analysis
+  historical_values?: Array<{
+    date: string;
+    value: string;
+    flag?: string | null;
+  }>;
 }
 
 interface TestGroupContext {
@@ -71,7 +82,14 @@ interface ClinicalSummaryRequest {
   patient?: PatientContext;
 }
 
-type AIRequest = GenerateInterpretationsRequest | VerifierSummaryRequest | ClinicalSummaryRequest;
+interface AnalyzeResultValuesRequest {
+  action: 'analyze_result_values';
+  result_values: ResultValue[];
+  patient?: PatientContext;
+  trend_data?: any;
+}
+
+type AIRequest = GenerateInterpretationsRequest | VerifierSummaryRequest | ClinicalSummaryRequest | AnalyzeResultValuesRequest;
 
 /**
  * Generate interpretations for analytes missing them
@@ -214,6 +232,53 @@ Return ONLY the JSON object, no additional text.`;
 }
 
 /**
+ * Analyze result values and generate AI suggestions
+ */
+function buildAnalyzeResultValuesPrompt(request: AnalyzeResultValuesRequest): string {
+  const { result_values, patient, trend_data } = request;
+  
+  return `You are an AI assistant helping laboratory technicians by suggesting flags and interpretations for test result values.
+
+${patient?.age ? `Patient Age: ${patient.age} years` : ''}
+${patient?.gender ? `Patient Gender: ${patient.gender}` : ''}
+${patient?.clinical_notes ? `Clinical Notes: ${patient.clinical_notes}` : ''}
+
+For each result value below, analyze and provide:
+1. **Suggested Flag**: Based on reference range comparison (L=Low, H=High, C=Critical, N=Normal)
+2. **Value Interpretation**: Clinical interpretation of THIS specific result value (2-3 sentences)
+3. **Trend Interpretation**: If historical data is provided, comment on the trend (improving/worsening/stable)
+
+Result Values to Analyze:
+${result_values.map((rv, i) => `
+${i + 1}. ID: "${rv.id || 'unknown'}"
+   Analyte: ${rv.analyte_name}
+   Current Value: ${rv.value} ${rv.unit}
+   Reference Range: ${rv.reference_range}
+   ${rv.historical_values ? `Historical Values: ${rv.historical_values.map(h => `${h.date}: ${h.value}${h.flag ? ` (${h.flag})` : ''}`).join(', ')}` : 'No historical data'}
+`).join('\n')}
+
+Guidelines:
+- For Flag: Compare value to reference range. Use 'C' for critically abnormal values that require immediate attention.
+- For Value Interpretation: Explain what this result means clinically. Be specific and concise.
+- For Trend Interpretation: Only if historical data exists, comment on whether the value is improving, worsening, or stable over time.
+
+IMPORTANT: You MUST include the exact "id" value from the input in your response for each result.
+
+Respond with a JSON array:
+[
+  {
+    "id": "exact id from input - REQUIRED",
+    "analyte_name": "name",
+    "ai_suggested_flag": "L|H|C|N",
+    "ai_suggested_interpretation": "Clinical interpretation of this specific value...",
+    "trend_interpretation": "Trend analysis if historical data provided, otherwise null"
+  }
+]
+
+Return ONLY the JSON array, no additional text.`;
+}
+
+/**
  * Extract JSON from Gemini response
  */
 function extractJsonFromResponse(response: any): any {
@@ -348,6 +413,17 @@ async function handler(req: Request): Promise<Response> {
           );
         }
         prompt = buildClinicalSummaryPrompt(body as ClinicalSummaryRequest);
+        result = await callGemini(prompt, apiKey);
+        break;
+
+      case 'analyze_result_values':
+        if (!body.result_values) {
+          return new Response(
+            JSON.stringify({ error: 'result_values are required for analyze_result_values' }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+        prompt = buildAnalyzeResultValuesPrompt(body as AnalyzeResultValuesRequest);
         result = await callGemini(prompt, apiKey);
         break;
 

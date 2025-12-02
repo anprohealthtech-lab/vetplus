@@ -93,6 +93,7 @@ interface Order {
   expected_date: string;
   total_amount: number;
   doctor: string | null;
+  lab_id: string;
   sample_id?: string;
   color_code?: string;
   color_name?: string;
@@ -104,8 +105,10 @@ interface Order {
 interface OrderDetailsModalProps {
   order: Order;
   onClose: () => void;
-  onUpdateStatus: (orderId: string, newStatus: string) => void;
-  onSubmitResults: (orderId: string, resultsData: ExtractedValue[]) => void;
+  onUpdateStatus?: (orderId: string, newStatus: string) => void;
+  onSubmitResults?: (orderId: string, resultsData: ExtractedValue[]) => void;
+  onAfterSubmit?: () => void | Promise<void>;
+  onAfterSaveDraft?: () => void | Promise<void>;
 }
 
 interface TestGroupResult {
@@ -354,6 +357,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   onClose,
   onUpdateStatus,
   onSubmitResults,
+  onAfterSubmit,
+  onAfterSaveDraft,
 }) => {
   // =========================================================
   // #region State
@@ -1742,6 +1747,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       }
 
       setSaveMessage("Draft saved successfully!");
+      
+      // Call the callback if provided
+      if (onAfterSaveDraft) {
+        await onAfterSaveDraft();
+      }
+      
       setTimeout(() => setSaveMessage(null), 3000);
     } catch (err) {
       console.error("Error saving draft:", err);
@@ -1857,7 +1868,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       // Notify parent and close modal shortly after success
       setTimeout(() => {
-        onSubmitResults(order.id, validResults);
+        // Call whichever callback is provided
+        if (onSubmitResults) {
+          onSubmitResults(order.id, validResults);
+        } else if (onAfterSubmit) {
+          onAfterSubmit();
+        }
         onClose(); // <=== P0: close the modal after submit
       }, 500);
 
@@ -2371,6 +2387,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   <QuickStatusButtons
                     orderId={order.id}
                     currentStatus={order.status}
+                    labId={order.lab_id}
                     onStatusChanged={async () => {
                       // Parent will refresh and/or close
                       if (onUpdateStatus) await onUpdateStatus(order.id, order.status);

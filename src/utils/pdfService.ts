@@ -2116,7 +2116,7 @@ export const generatePDFWithAPI = async (
       displayHeaderFooter: true,
       headerHtml,
       footerHtml,
-      headerHeight: '100px',
+      headerHeight: '90px',
       footerHeight: '80px',
       mediaType: 'screen',
       printBackground: true,
@@ -2140,15 +2140,16 @@ const generatePrintPDFWithAPI = async (
   const ready = prepared instanceof Promise ? await prepared : prepared;
   const filename = `${ready.filenameBase}_PRINT.pdf`;
 
-  if (ready.bundle) {
-    return sendPrintHtmlToPdfCo(ready.bundle, filename);
-  }
-
-  console.warn('Print PDF requested but no template bundle available. Falling back to preview HTML.');
+  // Always use the full prepared HTML which includes report extras (trend graphs, clinical summary)
+  // The bundle.bodyHtml doesn't include injected extras
+  console.log('📄 Print PDF using full prepared HTML (includes report extras)');
   const url = await sendHtmlToPdfCo(ready.html, filename, {
-    displayHeaderFooter: false,
+    headerHtml: '',
+    footerHtml: '',
     mediaType: 'print',
-    printBackground: true,
+    printBackground: false,  // No backgrounds - using physical letterhead
+    displayHeaderFooter: false,  // No Chrome header/footer reservation
+    margins: '40px 20px 40px 20px',  // Safe print margins
   });
 
   return {
@@ -2521,8 +2522,17 @@ export async function generateAndSavePDFReportWithProgress(
     onProgress?.(`Generating ${reportType} PDF with PDF.co...`, 35);
     try {
       // ⚡ PARALLEL OPTIMIZATION: Generate both main and print PDFs at the same time
+      // Note: Print PDF needs forPrint=true for black & white styling
       const mainPdfPromise = generatePDFWithAPI(reportData, isDraft, preparedHtml);
-      const printPdfPromise = !isDraft ? generatePrintPDFWithAPI(reportData, preparedHtml) : null;
+      
+      // Generate print-specific HTML with forPrint=true for black & white styling
+      let printPdfPromise: Promise<PrintPdfResult> | null = null;
+      if (!isDraft) {
+        const printPreparedHtml = prepareReportHtml(reportData, isDraft, allTemplates, true);
+        printPdfPromise = printPreparedHtml.then(printHtml => 
+          generatePrintPDFWithAPI(reportData, printHtml)
+        );
+      }
       
       console.log('⚡ Generating main and print PDFs in parallel...');
       

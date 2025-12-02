@@ -11,11 +11,14 @@ import {
   ChevronUp,
   ClipboardList,
   Clock,
+  Edit,
   Eye,
   FileImage,
   FileText,
   Loader2,
   RefreshCcw,
+  RefreshCw,
+  Save,
   Search,
   ShieldCheck,
   Sparkles,
@@ -34,8 +37,9 @@ import {
   type GeneratedInterpretation,
   type VerifierSummaryResponse
 } from "../hooks/useAIResultIntelligence";
-import { supabase, database } from "../utils/supabase";
-import { generateAndSaveTrendCharts, saveClinicalSummary } from "../utils/reportExtrasService";
+import { supabase, database, aiAnalysis } from "../utils/supabase";
+import { generateAndSaveTrendCharts, saveClinicalSummary, toggleOrderSummaryInReport } from "../utils/reportExtrasService";
+import TrendGraphPanel from "../components/Results/TrendGraphPanel";
 
 interface PanelRow {
   order_id: string;
@@ -136,6 +140,10 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const [aiSummaryTarget, setAiSummaryTarget] = useState<{ type: "verifier" | "clinical"; resultId?: string; orderId?: string } | null>(null);
   const [showInterpretationsModal, setShowInterpretationsModal] = useState(false);
   const [interpretationsTargetResultId, setInterpretationsTargetResultId] = useState<string | null>(null);
+  // Track clinical summary options per order
+  const [sendSummaryToDoctor, setSendSummaryToDoctor] = useState<Record<string, boolean>>({});
+  // Loading state for clinical summary generation per order
+  const [generatingClinicalSummary, setGeneratingClinicalSummary] = useState<Record<string, boolean>>({});
 
   const aiIntelligence = useAIResultIntelligence();
 
@@ -150,9 +158,20 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const loadPanels = async () => {
     setLoading(true);
     setError(null);
+    
+    // Get current lab ID for filtering
+    const labId = currentLabId || await database.getCurrentUserLabId();
+    if (!labId) {
+      setError("No lab context found. Please log in again.");
+      setPanels([]);
+      setLoading(false);
+      return;
+    }
+
     const { data, error } = await supabase
       .from("v_result_panel_status")
       .select("*")
+      .eq("lab_id", labId)
       .gte("order_date", from)
       .lte("order_date", to)
       .order("order_date", { ascending: false });
@@ -167,8 +186,10 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   };
 
   useEffect(() => {
-    loadPanels();
-  }, [from, to]);
+    if (currentLabId) {
+      loadPanels();
+    }
+  }, [from, to, currentLabId]);
 
   const groupByOrder = useMemo(() => {
     const filtered = panels.filter(row => {
@@ -223,8 +244,10 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     return { totalOrders, readyOrders, pendingOrders, partialOrders };
   }, [groupByOrder]);
 
-  const ensureAnalytesLoaded = async (resultId: string) => {
-    if (rowsByResult[resultId]) return;
+  // Returns analytes data directly AND caches in state
+  const ensureAnalytesLoaded = async (resultId: string): Promise<Analyte[]> => {
+    // Return cached data if available
+    if (rowsByResult[resultId]) return rowsByResult[resultId];
 
     const { data, error } = await supabase
       .from("result_values")
@@ -235,8 +258,9 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       .order("parameter", { ascending: true });
 
     if (!error && data) {
-      setRowsByResult(prev => ({ ...prev, [resultId]: data as unknown as Analyte[] }));
-      return;
+      const analytes = data as unknown as Analyte[];
+      setRowsByResult(prev => ({ ...prev, [resultId]: analytes }));
+      return analytes;
     }
 
     if (error && `${error.message}`.includes("verify_status")) {
@@ -259,10 +283,13 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           verify_note: null,
           verified_by: null,
           verified_at: null
-        }));
+        })) as Analyte[];
         setRowsByResult(prev => ({ ...prev, [resultId]: mapped }));
+        return mapped;
       }
     }
+    
+    return []; // Return empty array if all else fails
   };
 
   const loadAttachments = async (orderId: string) => {
@@ -474,12 +501,73 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     setBulkProcessing(false);
   };
 
-  const handleGenerateClinicalSummary = async (order: OrderGroup) => {
+  const handleGenerateClinicalSummary = async (order: OrderGroup, forceRegenerate: boolean = false) => {
+    // Set loading state
+    setGeneratingClinicalSummary(prev => ({ ...prev, [order.orderId]: true }));
+    
     try {
+      // First, check if a saved summary already exists (unless force regenerate)
+      if (!forceRegenerate) {
+        // Check orders table first (preferred location during verification)
+        const { data: existingOrder, error: orderError } = await database.supabase
+          .from('orders')
+          .select('ai_clinical_summary, ai_clinical_summary_generated_at')
+          .eq('id', order.orderId)
+          .single();
+
+        let savedText: string | null = null;
+        let savedAt: string | null = null;
+
+        if (!orderError && existingOrder?.ai_clinical_summary) {
+          savedText = existingOrder.ai_clinical_summary;
+          savedAt = existingOrder.ai_clinical_summary_generated_at;
+          console.log('Found clinical summary in orders table');
+        } else {
+          // Fallback: check reports table
+          const { data: existingReport, error: reportError } = await database.supabase
+            .from('reports')
+            .select('ai_doctor_summary, ai_summary_generated_at')
+            .eq('order_id', order.orderId)
+            .order('generated_date', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (!reportError && existingReport?.ai_doctor_summary) {
+            savedText = existingReport.ai_doctor_summary;
+            savedAt = existingReport.ai_summary_generated_at;
+            console.log('Found clinical summary in reports table');
+          }
+        }
+
+        if (savedText) {
+          console.log('Showing saved clinical summary');
+          
+          // Create a mock ClinicalSummaryResponse for the modal
+          const parsedSummary: ClinicalSummaryResponse = {
+            executive_summary: savedText, // Show the full saved text
+            significant_findings: [],
+            suggested_followup: [],
+            urgent_findings: [],
+            clinical_interpretation: '',
+            overall_impression: 'Previously saved summary',
+            _savedFromDb: true, // Flag to indicate this is saved
+            _generatedAt: savedAt
+          };
+          
+          setAiClinicalSummary(prev => ({ ...prev, [order.orderId]: parsedSummary }));
+          setAiSummaryTarget({ type: "clinical", orderId: order.orderId });
+          setShowAiSummaryModal(true);
+          setGeneratingClinicalSummary(prev => ({ ...prev, [order.orderId]: false }));
+          return;
+        }
+      }
+      
+      // No existing summary or force regenerate - generate new
       const testGroups = await Promise.all(
         order.panels.map(async panel => {
-          await ensureAnalytesLoaded(panel.result_id);
-          const analytes = rowsByResult[panel.result_id] || [];
+          // Get analytes directly from the returned data, not from state
+          const analytes = await ensureAnalytesLoaded(panel.result_id);
+          console.log(`Panel ${panel.test_group_name}: ${analytes.length} analytes loaded`, analytes.map(a => ({ name: a.parameter, value: a.value })));
           return {
             name: panel.test_group_name || "Unnamed Panel",
             category: "panel",
@@ -495,11 +583,22 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         })
       );
 
+      console.log('Sending to AI:', JSON.stringify(testGroups, null, 2));
+
       const summary = await aiIntelligence.getClinicalSummary(testGroups, {
         age: undefined,
         gender: undefined,
         clinical_notes: undefined
       });
+
+      // Auto-save to database immediately after generating
+      try {
+        await handleSaveClinicalSummary(order.orderId, summary);
+        console.log('Clinical summary auto-saved to database');
+      } catch (saveError) {
+        console.error('Failed to auto-save clinical summary:', saveError);
+        // Don't block the UI, still show the modal
+      }
 
       setAiClinicalSummary(prev => ({ ...prev, [order.orderId]: summary }));
       setAiSummaryTarget({ type: "clinical", orderId: order.orderId });
@@ -507,6 +606,9 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     } catch (err) {
       console.error("Failed to generate clinical summary", err);
       alert("Failed to generate clinical summary");
+    } finally {
+      // Clear loading state
+      setGeneratingClinicalSummary(prev => ({ ...prev, [order.orderId]: false }));
     }
   };
 
@@ -567,6 +669,52 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       console.error("Failed to generate interpretations", err);
       alert("Failed to generate interpretations");
     }
+  };
+
+  // Handler to save clinical summary to reports table
+  const handleSaveClinicalSummary = async (orderId: string, summary: ClinicalSummaryResponse) => {
+    // Format the summary as a readable text for the report
+    const summaryText = `
+**Executive Summary**
+${summary.executive_summary}
+
+${summary.significant_findings.length > 0 ? `**Significant Findings**
+${summary.significant_findings.map(f => `• ${f.finding}: ${f.clinical_significance}`).join('\n')}` : ''}
+
+${summary.suggested_followup.length > 0 ? `**Suggested Follow-up**
+${summary.suggested_followup.map(f => `• ${f}`).join('\n')}` : ''}
+
+${summary.urgent_findings && summary.urgent_findings.length > 0 ? `**Urgent Findings**
+${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
+    `.trim();
+
+    const { error } = await aiAnalysis.saveDoctorSummary(orderId, summaryText);
+    if (error) throw error;
+  };
+
+  // Handle include in report option - persist to database
+  const handleIncludeInReport = async (orderId: string, include: boolean) => {
+    setIncludeSummaryInReport(prev => ({ ...prev, [orderId]: include }));
+    
+    // Save to database so PDF generation picks it up
+    try {
+      const result = await toggleOrderSummaryInReport(orderId, include);
+      if (!result.success) {
+        console.error('Failed to save include flag:', result.error);
+      } else {
+        console.log(`✅ Order ${orderId}: Include summary in report saved = ${include}`);
+      }
+    } catch (error) {
+      console.error('Error saving include flag:', error);
+    }
+  };
+
+  // Handle send to doctor option
+  const handleSendToDoctor = async (orderId: string, summary: ClinicalSummaryResponse) => {
+    setSendSummaryToDoctor(prev => ({ ...prev, [orderId]: true }));
+    // This will be used when sending the report to the doctor
+    // The WhatsApp/email sending will include this summary
+    console.log(`Order ${orderId}: Will send clinical summary to doctor with report`);
   };
 
   const setDateRange = (days: number) => {
@@ -951,9 +1099,15 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
                           </button>
                           <button
                             onClick={() => handleGenerateClinicalSummary(order)}
-                            className="inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-teal-600 to-cyan-600 text-white"
+                            disabled={generatingClinicalSummary[order.orderId]}
+                            className={`inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-teal-600 to-cyan-600 text-white transition-all duration-200 ${generatingClinicalSummary[order.orderId] ? 'opacity-75 cursor-wait' : 'hover:from-teal-700 hover:to-cyan-700 active:scale-95'}`}
                           >
-                            <Stethoscope className="h-4 w-4 mr-2" /> Clinical Summary
+                            {generatingClinicalSummary[order.orderId] ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <Stethoscope className="h-4 w-4 mr-2" />
+                            )}
+                            {generatingClinicalSummary[order.orderId] ? 'Generating...' : 'Clinical Summary'}
                           </button>
                           <button
                             onClick={() => approveEntireOrder(order)}
@@ -1126,6 +1280,29 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
                           <AttachmentViewer orderId={order.orderId} />
                         </div>
                       </div>
+
+                      {/* Historical Trends Section - using shared TrendGraphPanel component */}
+                      {(() => {
+                        // Collect all analytes from all panels for this order
+                        const allAnalytes = order.panels.flatMap(panel => rowsByResult[panel.result_id] || []);
+                        return (
+                          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 mt-6">
+                            <TrendGraphPanel
+                              orderId={order.orderId}
+                              patientId={order.patientId}
+                              analyteIds={allAnalytes.filter((a: any) => a.analyte_id).map((a: any) => a.analyte_id)}
+                              analyteNames={allAnalytes.map((a: any) => a.parameter)}
+                              includeInReport={includeTrendsInReport[order.orderId] ?? false}
+                              onIncludeInReportChange={(include) => {
+                                setIncludeTrendsInReport(prev => ({ ...prev, [order.orderId]: include }));
+                              }}
+                              onSaved={() => {
+                                setIncludeTrendsInReport(prev => ({ ...prev, [order.orderId]: true }));
+                              }}
+                            />
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
@@ -1168,6 +1345,16 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
             setShowAiSummaryModal(false);
             setAiSummaryTarget(null);
           }}
+          onSaveClinicalSummary={handleSaveClinicalSummary}
+          onIncludeInReport={handleIncludeInReport}
+          onSendToDoctor={handleSendToDoctor}
+          onRegenerate={(orderId) => {
+            // Find the order and force regenerate
+            const order = groupByOrder.find(o => o.orderId === orderId);
+            if (order) {
+              handleGenerateClinicalSummary(order, true);
+            }
+          }}
         />
       )}
 
@@ -1201,11 +1388,20 @@ interface AISummaryModalProps {
     clinical: Record<string, ClinicalSummaryResponse>;
   };
   onClose: () => void;
+  onSaveClinicalSummary?: (orderId: string, summary: ClinicalSummaryResponse) => Promise<void>;
+  onIncludeInReport?: (orderId: string, include: boolean) => void;
+  onSendToDoctor?: (orderId: string, summary: ClinicalSummaryResponse) => void;
+  onRegenerate?: (orderId: string) => void;
 }
 
-const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onClose }) => {
+const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onClose, onSaveClinicalSummary, onIncludeInReport, onSendToDoctor, onRegenerate }) => {
+  const [includeInReport, setIncludeInReport] = useState(false);
+  const [sendToDoctor, setSendToDoctor] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  
   const isVerifier = target.type === "verifier";
-  const summary = isVerifier
+  const originalSummary = isVerifier
     ? target.resultId
       ? summaries.verifier[target.resultId]
       : null
@@ -1213,7 +1409,71 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
     ? summaries.clinical[target.orderId]
     : null;
 
-  if (!summary) return null;
+  // Editable state for clinical summary
+  const [editedSummary, setEditedSummary] = useState<ClinicalSummaryResponse | null>(
+    !isVerifier && originalSummary && 'executive_summary' in originalSummary
+      ? { ...originalSummary } as ClinicalSummaryResponse
+      : null
+  );
+
+  // Update editedSummary when originalSummary changes
+  React.useEffect(() => {
+    if (!isVerifier && originalSummary && 'executive_summary' in originalSummary) {
+      setEditedSummary({ ...originalSummary } as ClinicalSummaryResponse);
+    }
+  }, [originalSummary, isVerifier]);
+
+  if (!originalSummary) return null;
+
+  const summary = isEditing && editedSummary ? editedSummary : originalSummary;
+
+  const handleSaveEdits = async () => {
+    if (!editedSummary || !target.orderId || !onSaveClinicalSummary) return;
+    
+    setSaving(true);
+    try {
+      await onSaveClinicalSummary(target.orderId, editedSummary);
+      setIsEditing(false);
+      alert('Clinical summary saved successfully!');
+    } catch (error) {
+      console.error('Failed to save clinical summary:', error);
+      alert('Failed to save clinical summary');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleConfirmOptions = async () => {
+    if (!isVerifier && target.orderId) {
+      setSaving(true);
+      try {
+        // If including in report, ALWAYS save the clinical summary to the database first
+        if (includeInReport && onSaveClinicalSummary) {
+          await onSaveClinicalSummary(target.orderId, summary as ClinicalSummaryResponse);
+          console.log('✅ Clinical summary saved to database');
+        }
+        
+        // Notify parent about report inclusion preference
+        onIncludeInReport?.(target.orderId, includeInReport);
+        
+        // Handle send to doctor
+        if (sendToDoctor && onSendToDoctor) {
+          onSendToDoctor(target.orderId, summary as ClinicalSummaryResponse);
+        }
+      } catch (error) {
+        console.error('Failed to save clinical summary:', error);
+        alert('Failed to save clinical summary to database');
+        setSaving(false);
+        return; // Don't close if save failed
+      }
+      setSaving(false);
+    }
+    onClose();
+  };
+
+  // Check if this is a saved summary from database
+  const isSavedSummary = !isVerifier && 'executive_summary' in summary && (summary as ClinicalSummaryResponse)._savedFromDb;
+  const savedAt = isSavedSummary ? (summary as ClinicalSummaryResponse)._generatedAt : null;
 
   return ReactDOM.createPortal(
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -1221,19 +1481,45 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
         <div className="bg-gradient-to-r from-purple-600 to-indigo-600 px-6 py-4 flex items-center justify-between">
           <div className="flex items-center space-x-3">
             {isVerifier ? <ClipboardList className="h-6 w-6 text-white" /> : <Stethoscope className="h-6 w-6 text-white" />}
-            <h3 className="text-xl font-bold text-white">
-              {isVerifier ? "AI Verifier Summary" : "Clinical Summary"}
-            </h3>
+            <div>
+              <h3 className="text-xl font-bold text-white">
+                {isVerifier ? "AI Verifier Summary" : "Clinical Summary"}
+              </h3>
+              {isSavedSummary && (
+                <p className="text-xs text-purple-200">
+                  Saved {savedAt ? new Date(savedAt).toLocaleString() : 'previously'}
+                </p>
+              )}
+            </div>
+            {isSavedSummary && (
+              <span className="ml-2 px-2 py-1 bg-green-500 text-white text-xs rounded-full font-medium">
+                Saved
+              </span>
+            )}
           </div>
-          <button
-            onClick={onClose}
-            className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2"
-          >
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex items-center space-x-2">
+            {isSavedSummary && onRegenerate && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onRegenerate(target.orderId!);
+                }}
+                className="flex items-center space-x-1 px-3 py-1.5 bg-white bg-opacity-20 text-white rounded-lg hover:bg-opacity-30 text-sm"
+              >
+                <RefreshCw className="h-4 w-4" />
+                <span>Regenerate</span>
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
-        <div className="p-6 overflow-y-auto max-h-[calc(90vh-80px)]">
+        <div className="p-6 overflow-y-auto max-h-[calc(90vh-280px)]">
           {isVerifier && "overall_assessment" in summary ? (
             <div className="space-y-6">
               <div className="bg-purple-50 rounded-xl p-4 border border-purple-200">
@@ -1263,12 +1549,80 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
             </div>
           ) : (
             <div className="space-y-6">
+              {/* Executive Summary - Editable */}
               <div className="bg-blue-50 rounded-xl p-4 border border-blue-200">
-                <h4 className="text-lg font-semibold text-blue-900">Executive Summary</h4>
-                <p className="text-blue-800">{summary.executive_summary}</p>
+                <h4 className="text-lg font-semibold text-blue-900 mb-2">Executive Summary</h4>
+                {isEditing && editedSummary ? (
+                  <textarea
+                    value={editedSummary.executive_summary}
+                    onChange={(e) => setEditedSummary(prev => prev ? { ...prev, executive_summary: e.target.value } : null)}
+                    className="w-full p-3 border border-blue-300 rounded-lg text-blue-800 bg-white min-h-[100px] focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Enter executive summary..."
+                  />
+                ) : (
+                  <p className="text-blue-800">{(summary as ClinicalSummaryResponse).executive_summary}</p>
+                )}
               </div>
-              {summary.significant_findings.length > 0 && (
-                <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+
+              {/* Significant Findings - Editable */}
+              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+                  <h4 className="text-lg font-semibold text-gray-900">Significant Findings</h4>
+                  {isEditing && editedSummary && (
+                    <button
+                      onClick={() => setEditedSummary(prev => prev ? {
+                        ...prev,
+                        significant_findings: [...prev.significant_findings, { finding: '', clinical_significance: '', test_group: '' }]
+                      } : null)}
+                      className="text-xs px-3 py-1 bg-blue-100 text-blue-700 rounded-full hover:bg-blue-200"
+                    >
+                      + Add Finding
+                    </button>
+                  )}
+                </div>
+                {isEditing && editedSummary ? (
+                  <div className="p-4 space-y-3">
+                    {editedSummary.significant_findings.map((finding, idx) => (
+                      <div key={idx} className="flex gap-3 items-start">
+                        <div className="flex-1 space-y-2">
+                          <input
+                            value={finding.finding}
+                            onChange={(e) => {
+                              const updated = [...editedSummary.significant_findings];
+                              updated[idx] = { ...updated[idx], finding: e.target.value };
+                              setEditedSummary(prev => prev ? { ...prev, significant_findings: updated } : null);
+                            }}
+                            className="w-full p-2 border border-gray-300 rounded-lg text-sm"
+                            placeholder="Finding..."
+                          />
+                          <input
+                            value={finding.clinical_significance}
+                            onChange={(e) => {
+                              const updated = [...editedSummary.significant_findings];
+                              updated[idx] = { ...updated[idx], clinical_significance: e.target.value };
+                              setEditedSummary(prev => prev ? { ...prev, significant_findings: updated } : null);
+                            }}
+                            className="w-full p-2 border border-gray-300 rounded-lg text-sm"
+                            placeholder="Clinical significance..."
+                          />
+                        </div>
+                        <button
+                          onClick={() => {
+                            const updated = editedSummary.significant_findings.filter((_, i) => i !== idx);
+                            setEditedSummary(prev => prev ? { ...prev, significant_findings: updated } : null);
+                          }}
+                          className="p-2 text-red-500 hover:bg-red-50 rounded-lg"
+                          title="Remove finding"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ))}
+                    {editedSummary.significant_findings.length === 0 && (
+                      <p className="text-sm text-gray-500 text-center py-2">No findings. Click "Add Finding" to add one.</p>
+                    )}
+                  </div>
+                ) : (summary as ClinicalSummaryResponse).significant_findings.length > 0 ? (
                   <table className="min-w-full">
                     <thead className="bg-gray-50">
                       <tr>
@@ -1277,7 +1631,7 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {summary.significant_findings.map((finding, idx) => (
+                      {(summary as ClinicalSummaryResponse).significant_findings.map((finding, idx) => (
                         <tr key={idx}>
                           <td className="px-4 py-3 text-sm text-gray-800">{finding.finding}</td>
                           <td className="px-4 py-3 text-sm text-gray-600">{finding.clinical_significance}</td>
@@ -1285,30 +1639,253 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
                       ))}
                     </tbody>
                   </table>
-                </div>
-              )}
-              {summary.suggested_followup.length > 0 && (
-                <div className="bg-green-50 rounded-xl p-4 border border-green-200">
+                ) : (
+                  <p className="p-4 text-sm text-gray-500">No significant findings.</p>
+                )}
+              </div>
+
+              {/* Suggested Follow-up - Editable */}
+              <div className="bg-green-50 rounded-xl p-4 border border-green-200">
+                <div className="flex items-center justify-between mb-2">
                   <h4 className="text-lg font-semibold text-green-900">Suggested Follow-up</h4>
+                  {isEditing && editedSummary && (
+                    <button
+                      onClick={() => setEditedSummary(prev => prev ? {
+                        ...prev,
+                        suggested_followup: [...prev.suggested_followup, '']
+                      } : null)}
+                      className="text-xs px-3 py-1 bg-green-100 text-green-700 rounded-full hover:bg-green-200"
+                    >
+                      + Add Item
+                    </button>
+                  )}
+                </div>
+                {isEditing && editedSummary ? (
+                  <div className="space-y-2">
+                    {editedSummary.suggested_followup.map((item, idx) => (
+                      <div key={idx} className="flex gap-2 items-center">
+                        <input
+                          value={item}
+                          onChange={(e) => {
+                            const updated = [...editedSummary.suggested_followup];
+                            updated[idx] = e.target.value;
+                            setEditedSummary(prev => prev ? { ...prev, suggested_followup: updated } : null);
+                          }}
+                          className="flex-1 p-2 border border-green-300 rounded-lg text-sm bg-white"
+                          placeholder="Follow-up suggestion..."
+                        />
+                        <button
+                          onClick={() => {
+                            const updated = editedSummary.suggested_followup.filter((_, i) => i !== idx);
+                            setEditedSummary(prev => prev ? { ...prev, suggested_followup: updated } : null);
+                          }}
+                          className="p-2 text-red-500 hover:bg-red-50 rounded-lg"
+                          title="Remove item"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ))}
+                    {editedSummary.suggested_followup.length === 0 && (
+                      <p className="text-sm text-green-700">No follow-up suggestions. Click "Add Item" to add one.</p>
+                    )}
+                  </div>
+                ) : (summary as ClinicalSummaryResponse).suggested_followup.length > 0 ? (
                   <ul className="list-disc list-inside text-green-800">
-                    {summary.suggested_followup.map((item, idx) => (
+                    {(summary as ClinicalSummaryResponse).suggested_followup.map((item, idx) => (
                       <li key={idx}>{item}</li>
                     ))}
                   </ul>
+                ) : (
+                  <p className="text-sm text-green-700">No follow-up suggestions.</p>
+                )}
+              </div>
+
+              {/* Urgent Findings - Editable */}
+              <div className="bg-red-50 rounded-xl p-4 border border-red-200">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-lg font-semibold text-red-900">Urgent Findings</h4>
+                  {isEditing && editedSummary && (
+                    <button
+                      onClick={() => setEditedSummary(prev => prev ? {
+                        ...prev,
+                        urgent_findings: [...(prev.urgent_findings || []), '']
+                      } : null)}
+                      className="text-xs px-3 py-1 bg-red-100 text-red-700 rounded-full hover:bg-red-200"
+                    >
+                      + Add Urgent Finding
+                    </button>
+                  )}
                 </div>
-              )}
+                {isEditing && editedSummary ? (
+                  <div className="space-y-2">
+                    {(editedSummary.urgent_findings || []).map((item, idx) => (
+                      <div key={idx} className="flex gap-2 items-center">
+                        <input
+                          value={item}
+                          onChange={(e) => {
+                            const updated = [...(editedSummary.urgent_findings || [])];
+                            updated[idx] = e.target.value;
+                            setEditedSummary(prev => prev ? { ...prev, urgent_findings: updated } : null);
+                          }}
+                          className="flex-1 p-2 border border-red-300 rounded-lg text-sm bg-white"
+                          placeholder="Urgent finding..."
+                        />
+                        <button
+                          onClick={() => {
+                            const updated = (editedSummary.urgent_findings || []).filter((_, i) => i !== idx);
+                            setEditedSummary(prev => prev ? { ...prev, urgent_findings: updated } : null);
+                          }}
+                          className="p-2 text-red-500 hover:bg-red-50 rounded-lg"
+                          title="Remove item"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ))}
+                    {(!editedSummary.urgent_findings || editedSummary.urgent_findings.length === 0) && (
+                      <p className="text-sm text-red-700">No urgent findings. Click "Add Urgent Finding" to add one.</p>
+                    )}
+                  </div>
+                ) : (summary as ClinicalSummaryResponse).urgent_findings && (summary as ClinicalSummaryResponse).urgent_findings!.length > 0 ? (
+                  <ul className="list-disc list-inside text-red-800">
+                    {(summary as ClinicalSummaryResponse).urgent_findings!.map((item, idx) => (
+                      <li key={idx}>{item}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-red-700">No urgent findings.</p>
+                )}
+              </div>
             </div>
           )}
         </div>
 
-        <div className="border-t bg-gray-50 px-6 py-4 flex items-center justify-between">
-          <p className="text-sm text-gray-600">Use this intelligence as a guide before final approval.</p>
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-          >
-            Close
-          </button>
+        <div className="border-t bg-gray-50 px-6 py-4">
+          {!isVerifier && target.orderId ? (
+            <div className="space-y-4">
+              {/* Status indicator */}
+              {!isEditing && (
+                <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 px-3 py-2 rounded-lg">
+                  <CheckCircle2 className="h-4 w-4" />
+                  <span>Clinical summary has been automatically saved to database</span>
+                </div>
+              )}
+              
+              {isEditing && (
+                <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 px-3 py-2 rounded-lg">
+                  <Edit className="h-4 w-4" />
+                  <span>Editing mode - make your changes and click "Save Changes"</span>
+                </div>
+              )}
+              
+              {/* Options */}
+              <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeInReport}
+                    onChange={(e) => setIncludeInReport(e.target.checked)}
+                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700">Include in final PDF report</span>
+                </label>
+                
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={sendToDoctor}
+                    onChange={(e) => setSendToDoctor(e.target.checked)}
+                    className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500"
+                  />
+                  <span className="text-sm text-gray-700">Send summary with report to doctor</span>
+                </label>
+              </div>
+              
+              {/* Actions */}
+              <div className="flex items-center justify-between pt-2">
+                {/* Edit/Save toggle */}
+                <div className="flex items-center gap-2">
+                  {!isEditing ? (
+                    <button
+                      onClick={() => setIsEditing(true)}
+                      className="inline-flex items-center px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                    >
+                      <Edit className="h-4 w-4 mr-2" />
+                      Edit Summary
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => {
+                          setIsEditing(false);
+                          // Reset to original
+                          if (originalSummary && 'executive_summary' in originalSummary) {
+                            setEditedSummary({ ...originalSummary } as ClinicalSummaryResponse);
+                          }
+                        }}
+                        className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                      >
+                        Cancel Edit
+                      </button>
+                      <button
+                        onClick={handleSaveEdits}
+                        disabled={saving}
+                        className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg hover:from-green-700 hover:to-emerald-700 transition-all duration-200 shadow-sm font-semibold disabled:opacity-50"
+                      >
+                        {saving ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <Save className="h-4 w-4 mr-2" />
+                        )}
+                        Save Changes
+                      </button>
+                    </>
+                  )}
+                </div>
+                
+                {/* Confirm/Close */}
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={onClose}
+                    disabled={saving}
+                    className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    Close
+                  </button>
+                  {!isEditing && (
+                    <button
+                      onClick={handleConfirmOptions}
+                      disabled={saving}
+                      className="inline-flex items-center px-6 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all duration-200 shadow-sm font-semibold disabled:opacity-50"
+                    >
+                      {saving ? (
+                        <>
+                          <span className="animate-spin h-5 w-5 mr-2 border-2 border-white border-t-transparent rounded-full"></span>
+                          Saving...
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="h-5 w-5 mr-2" />
+                          Confirm Options
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-gray-600">Use this intelligence as a guide before final approval.</p>
+              <button
+                onClick={onClose}
+                className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>,

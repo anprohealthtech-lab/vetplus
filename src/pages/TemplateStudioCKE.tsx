@@ -158,12 +158,10 @@ const formatVariantLabel = (variantKey: string) =>
   );
 
 const CKEDITOR_VERSION = '47.1.0';
-const CKBOX_VERSION = '2.6.1';
 const CKEDITOR_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.umd.js`;
 const CKEDITOR_PREMIUM_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5-premium-features/${CKEDITOR_VERSION}/ckeditor5-premium-features.umd.js`;
 const CKEDITOR_CSS_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.css`;
 const CKEDITOR_PREMIUM_CSS_URL = `https://cdn.ckeditor.com/ckeditor5-premium-features/${CKEDITOR_VERSION}/ckeditor5-premium-features.css`;
-const CKBOX_SCRIPT_URL = `https://cdn.ckbox.io/ckbox/${CKBOX_VERSION}/ckbox.js`;
 
 const resourcePromises: Record<string, Promise<void>> = {};
 
@@ -228,14 +226,12 @@ const loadCkeditorResources = async () => {
     ensureStylesheet(CKEDITOR_PREMIUM_CSS_URL),
     ensureScript(CKEDITOR_SCRIPT_URL),
     ensureScript(CKEDITOR_PREMIUM_SCRIPT_URL),
-    ensureScript(CKBOX_SCRIPT_URL),
   ]);
 };
 
 interface PremiumEditorConfigOptions {
   initialData: string;
   licenseKey?: string;
-  tokenUrl?: string;
   aiKey?: string;
 }
 
@@ -251,9 +247,9 @@ const buildPremiumEditorConfig = (
     Autosave,
     BalloonToolbar,
     Bold,
-    CKBox,
-    CKBoxImageEdit,
-    CloudServices,
+    // CKBox, // Removed - requires cloud services token
+    // CKBoxImageEdit, // Removed - requires cloud services token
+    // CloudServices, // Removed - requires cloud services token
     Code,
     CodeBlock,
     Emoji,
@@ -314,6 +310,12 @@ const buildPremiumEditorConfig = (
     OpenAITextAdapter,
     PasteFromOfficeEnhanced,
     SourceEditingEnhanced,
+    Pagination,
+    TableOfContents,
+    MergeFields,
+    FormatPainter,
+    SlashCommand,
+    Template,
   } = premiumFeatures;
 
   const aiEnabled = Boolean(options.aiKey && AIAssistant && OpenAITextAdapter);
@@ -351,7 +353,7 @@ const buildPremiumEditorConfig = (
     'specialCharacters',
     'link',
     'insertImage',
-    'ckbox',
+    // 'ckbox', // Removed - requires cloud token
     'insertTable',
     'horizontalLine',
     'pageBreak',
@@ -364,8 +366,13 @@ const buildPremiumEditorConfig = (
     '|',
     'outdent',
     'indent',
+    '|',
+    'tableOfContents',
+    'mergeField',
+    'formatPainter',
   ];
 
+  // Build plugins array - add premium features conditionally (only if they exist)
   const plugins = [
     Autoformat,
     AutoImage,
@@ -373,9 +380,9 @@ const buildPremiumEditorConfig = (
     Autosave,
     BalloonToolbar,
     Bold,
-    CKBox,
-    CKBoxImageEdit,
-    CloudServices,
+    // CKBox, // Removed - requires cloud services token
+    // CKBoxImageEdit, // Removed - requires cloud services token
+    // CloudServices, // Removed - requires cloud services token
     Code,
     CodeBlock,
     Emoji,
@@ -429,8 +436,17 @@ const buildPremiumEditorConfig = (
     TableProperties,
     TableToolbar,
     TextTransformation,
+    TodoList,
     WordCount,
   ];
+
+  // Add premium plugins (conditionally if they exist from the bundle)
+  if (Pagination) plugins.push(Pagination);
+  if (TableOfContents) plugins.push(TableOfContents);
+  if (MergeFields) plugins.push(MergeFields);
+  if (FormatPainter) plugins.push(FormatPainter);
+  if (SlashCommand) plugins.push(SlashCommand);
+  if (Template) plugins.push(Template);
 
   if (aiEnabled) {
     plugins.push(AIAssistant, OpenAITextAdapter);
@@ -439,7 +455,7 @@ const buildPremiumEditorConfig = (
   const config: any = {
     toolbar: {
       items: toolbarItems,
-      shouldNotGroupWhenFull: false,
+      shouldNotGroupWhenFull: true,
     },
     plugins,
     balloonToolbar: aiEnabled
@@ -472,8 +488,7 @@ const buildPremiumEditorConfig = (
         'alignment:left',
         'alignment:center',
         'alignment:right',
-        '|',
-        'ckboxImageEdit',
+        // 'ckboxImageEdit', // Removed - requires cloud token
       ],
     },
     table: {
@@ -600,11 +615,12 @@ const buildPremiumEditorConfig = (
     };
   }
 
-  if (options.tokenUrl) {
-    config.cloudServices = {
-      tokenUrl: options.tokenUrl,
-    };
-  }
+  // Cloud Services removed - not using CKBox or real-time collaboration
+  // if (options.tokenUrl) {
+  //   config.cloudServices = {
+  //     tokenUrl: options.tokenUrl,
+  //   };
+  // }
 
   return config;
 };
@@ -820,7 +836,7 @@ const TemplateStudioCKE: React.FC = () => {
   const cssRef = useRef(cssContent);
 
   const ckeditorLicenseKey = import.meta.env.VITE_CKEDITOR_LICENSE_KEY as string | undefined;
-  const ckeditorTokenUrl = import.meta.env.VITE_CKEDITOR_TOKEN_URL as string | undefined;
+  // const ckeditorTokenUrl = import.meta.env.VITE_CKEDITOR_TOKEN_URL as string | undefined; // Removed - not using cloud services
   const ckeditorAiApiKey = import.meta.env.VITE_CKEDITOR_AI_API_KEY as string | undefined;
 
   useEffect(() => {
@@ -878,7 +894,7 @@ const TemplateStudioCKE: React.FC = () => {
           {
             initialData: htmlRef.current,
             licenseKey: ckeditorLicenseKey,
-            tokenUrl: ckeditorTokenUrl,
+            // tokenUrl removed - not using cloud services
             aiKey: ckeditorAiApiKey,
           },
           CKEDITOR,
@@ -925,7 +941,7 @@ const TemplateStudioCKE: React.FC = () => {
       }
       editorInstanceRef.current = null;
     };
-  }, [ckeditorAiApiKey, ckeditorLicenseKey, ckeditorTokenUrl, isLoading, selectedTemplateId]);
+  }, [ckeditorAiApiKey, ckeditorLicenseKey, isLoading, selectedTemplateId]);
 
   const fetchAvailablePlaceholderOptions = useCallback(async (): Promise<PlaceholderOption[]> => {
     const aggregated: PlaceholderOption[] = [...LAB_META_PLACEHOLDER_OPTIONS];
@@ -2149,7 +2165,7 @@ const TemplateStudioCKE: React.FC = () => {
     : null;
 
   return (
-    <div className="flex h-full flex-col bg-white">
+    <div className="flex h-screen flex-col bg-white overflow-hidden">
       <style>{`
         :root {
           --ck-z-default: 100;
@@ -2160,8 +2176,78 @@ const TemplateStudioCKE: React.FC = () => {
         .ck-body-wrapper {
           z-index: 999999 !important;
         }
+        /* Custom scrollbar for main content */
+        main::-webkit-scrollbar {
+          width: 12px;
+          height: 12px;
+        }
+        main::-webkit-scrollbar-track {
+          background: #e5e7eb;
+          border-radius: 6px;
+        }
+        main::-webkit-scrollbar-thumb {
+          background: #6b7280;
+          border-radius: 6px;
+          border: 2px solid #e5e7eb;
+        }
+        main::-webkit-scrollbar-thumb:hover {
+          background: #4b5563;
+        }
+        main::-webkit-scrollbar-corner {
+          background: #e5e7eb;
+        }
+        /* Force horizontal scrollbar visibility */
+        main {
+          overflow-x: auto !important;
+          overflow-y: auto !important;
+        }
+        /* CKEditor container should not constrain width */
+        .ck-editor {
+          min-width: 800px !important;
+        }
+        .ck-editor__main {
+          min-width: 100%;
+          overflow: visible !important;
+        }
+        .ck-content {
+          min-width: 100%;
+          width: max-content !important;
+          max-width: none !important;
+          overflow: visible !important;
+        }
+        /* Ensure the editor container doesn't limit width */
+        .editor-wrapper {
+          min-width: 800px;
+          width: max-content;
+          display: inline-block;
+        }
+        /* Make CKEditor toolbar sticky */
+        .ck-editor__top {
+          position: sticky !important;
+          top: 0 !important;
+          z-index: 1000 !important;
+          background: white !important;
+          border-bottom: 1px solid #e5e7eb !important;
+        }
+        /* Make toolbar wrap in multiple rows */
+        .ck-toolbar {
+          flex-wrap: wrap !important;
+          max-height: none !important;
+        }
+        .ck-toolbar__items {
+          flex-wrap: wrap !important;
+        }
+        /* Sticky action buttons bar */
+        .sticky-actions-bar {
+          position: sticky;
+          top: 0;
+          z-index: 1001;
+          background: white;
+          border-bottom: 1px solid #e5e7eb;
+          padding: 12px 24px;
+        }
       `}</style>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-6 py-4">
+      <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-6 py-4">
         <div>
           <h1 className="text-lg font-semibold text-gray-900">Template Studio · CKEditor</h1>
           <p className="text-xs text-gray-500">Rich text editor with AI assistance and placeholder catalog.</p>
@@ -2255,9 +2341,9 @@ const TemplateStudioCKE: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-visible">
+      <div className="flex flex-1 overflow-hidden">
         {!sidebarCollapsed && (
-          <aside className="w-full max-w-xs shrink-0 border-r border-gray-200 bg-gray-50 px-4 py-4">
+          <aside className="w-full max-w-xs shrink-0 overflow-y-auto border-r border-gray-200 bg-gray-50 px-4 py-4">
             <div className="space-y-4 text-sm">
               <section>
                 <div className="flex items-center justify-between">
@@ -2406,26 +2492,54 @@ const TemplateStudioCKE: React.FC = () => {
           </aside>
         )}
 
-        <main className="flex-1 overflow-y-auto px-6 py-6">
+        <main className="flex-1 overflow-x-auto overflow-y-auto px-6 py-6">
+          <div className="sticky-actions-bar">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleConvertToWatermark}
+                title="Select an image and click to send it to background as watermark"
+                className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 transition hover:bg-indigo-100"
+              >
+                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                </svg>
+                Send to Background
+              </button>
+              <button
+                type="button"
+                onClick={handleAddImageOverlay}
+                title="Select an image and add text overlay on top of it"
+                className="inline-flex items-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-3 py-1.5 text-xs font-medium text-teal-700 transition hover:bg-teal-100"
+              >
+                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                </svg>
+                Add Text Overlay
+              </button>
+            </div>
+          </div>
+
           {saveError ? (
             <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {saveError}
             </div>
           ) : null}
 
-          <div className="relative rounded-lg border border-gray-200 bg-white">
-            {editorBooting ? (
-              <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/80">
-                <div className="flex items-center gap-2 text-sm text-gray-600">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Initialising editor…
+          <div className="editor-wrapper" style={{ display: 'inline-block', minWidth: '100%' }}>
+            <div className="relative rounded-lg border border-gray-200 bg-white min-w-[800px]" style={{ width: 'max-content', minWidth: '100%' }}>
+              {editorBooting ? (
+                <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/80">
+                  <div className="flex items-center gap-2 text-sm text-gray-600">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Initialising editor…
+                  </div>
                 </div>
-              </div>
-            ) : null}
-            <div key={selectedTemplateId || 'new-template'} ref={editorContainerRef} className="min-h-[560px]" />
-          </div>
+              ) : null}
+              <div key={selectedTemplateId || 'new-template'} ref={editorContainerRef} className="min-h-[560px] min-w-[800px]" />
+            </div>
 
-          <div className="mt-6">
+            <div className="mt-6 min-w-[800px]">
             <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">Custom CSS (optional)</label>
             <textarea
               value={cssContent}
@@ -2433,10 +2547,11 @@ const TemplateStudioCKE: React.FC = () => {
               className="mt-2 h-40 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
               placeholder="/* Add template-specific styles here */"
             />
+            </div>
           </div>
 
           {saveMessage ? (
-            <p className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            <p className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 max-w-2xl">
               {saveMessage}
             </p>
           ) : null}
@@ -2675,6 +2790,36 @@ const TemplateStudioCKE: React.FC = () => {
                             padding: 8px;
                           }
                           
+                          /* Page breaks */
+                          .page-break {
+                            page-break-after: always;
+                            break-after: page;
+                            display: block;
+                            height: 0;
+                            border-top: 2px dashed #999;
+                            margin: 20px 0;
+                            position: relative;
+                          }
+                          
+                          .page-break::after {
+                            content: 'Page Break';
+                            position: absolute;
+                            top: -10px;
+                            left: 50%;
+                            transform: translateX(-50%);
+                            background: white;
+                            padding: 0 8px;
+                            font-size: 10px;
+                            color: #666;
+                          }
+                          
+                          /* Hide merge field placeholders (double curly braces) in preview */
+                          *[data-placeholder],
+                          .ck-placeholder {
+                            background: transparent !important;
+                            color: inherit !important;
+                          }
+                          
                           /* Custom CSS from template */
                           ${cssContent || ''}
                         </style>
@@ -2888,6 +3033,41 @@ const TemplateStudioCKE: React.FC = () => {
                                     white-space: pre-wrap;
                                     margin: 8px 0;
                                     padding: 8px;
+                                  }
+                                  
+                                  /* Page breaks - visible in print */
+                                  .page-break {
+                                    page-break-after: always;
+                                    break-after: page;
+                                    display: block;
+                                    height: 1px;
+                                    background: transparent;
+                                    border: none;
+                                  }
+                                  
+                                  @media print {
+                                    .page-break {
+                                      page-break-after: always;
+                                      break-after: page;
+                                    }
+                                  }
+                                  
+                                  @media screen {
+                                    .page-break {
+                                      border-top: 2px dashed #999;
+                                      margin: 20mm 0;
+                                      position: relative;
+                                    }
+                                    .page-break::after {
+                                      content: 'Page Break';
+                                      position: absolute;
+                                      top: -10px;
+                                      left: 50%;
+                                      transform: translateX(-50%);\n                                      background: white;
+                                      padding: 0 8px;
+                                      font-size: 10px;
+                                      color: #666;
+                                    }
                                   }
                                   
                                   /* Custom CSS from template */

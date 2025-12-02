@@ -221,10 +221,15 @@ export const generateTrendSVG = (
     return `<text x="${xScale(i)}" y="${yScale(d.numericValue) - 10}" text-anchor="middle" fill="${color}" font-size="11" font-weight="600">${d.numericValue}</text>`;
   }).join('');
 
-  // Date labels (show first, last, and middle if > 3 points)
+  // Date labels - show all dates when <= 6 points, otherwise show first, middle, last
   const dateLabels = numericData
-    .filter((_, i) => i === 0 || i === numericData.length - 1 || (numericData.length > 4 && i === Math.floor(numericData.length / 2)))
-    .map((d, _, arr) => {
+    .filter((_, i) => {
+      // Show all dates when 6 or fewer points
+      if (numericData.length <= 6) return true;
+      // For more points, show first, middle, and last
+      return i === 0 || i === numericData.length - 1 || i === Math.floor(numericData.length / 2);
+    })
+    .map((d) => {
       const i = numericData.indexOf(d);
       const date = new Date(d.order_date);
       const formatted = date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
@@ -499,31 +504,97 @@ export const generateTrendTableHtml = (trendResult: TrendChartResult): string =>
 };
 
 /**
+ * Generate print-friendly HTML table for trend data (black & white, no backgrounds)
+ */
+export const generateTrendTableHtmlPrint = (trendResult: TrendChartResult): string => {
+  if (!trendResult.data || trendResult.data.length === 0) {
+    return '';
+  }
+
+  const rows = trendResult.data.map((d, i) => {
+    const date = new Date(d.order_date).toLocaleDateString('en-IN', { 
+      day: '2-digit', 
+      month: 'short', 
+      year: '2-digit' 
+    });
+    const isLatest = i === trendResult.data.length - 1;
+    const flagStyle = d.flag ? 'font-weight: bold;' : '';
+    const latestMarker = isLatest ? ' *' : '';
+    
+    return `<tr>
+      <td style="padding: 4px 8px; border: 1px solid #333;">${date}${latestMarker}</td>
+      <td style="padding: 4px 8px; border: 1px solid #333; font-weight: 600; ${flagStyle}">${d.value}</td>
+      <td style="padding: 4px 8px; border: 1px solid #333;">${d.flag || '-'}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <div style="margin-bottom: 15px;">
+      <h4 style="margin: 0 0 8px 0; color: #000; font-size: 12px;">
+        ${trendResult.analyte_name} ${trendResult.unit ? `(${trendResult.unit})` : ''}
+        ${trendResult.reference_range ? `<span style="font-weight: normal; font-size: 10px;"> | Ref: ${trendResult.reference_range}</span>` : ''}
+      </h4>
+      <table style="border-collapse: collapse; font-size: 10px; width: auto;">
+        <thead>
+          <tr>
+            <th style="padding: 4px 8px; border: 1px solid #333; text-align: left;">Date</th>
+            <th style="padding: 4px 8px; border: 1px solid #333; text-align: left;">Value</th>
+            <th style="padding: 4px 8px; border: 1px solid #333; text-align: left;">Flag</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p style="margin: 4px 0 0 0; font-size: 9px; color: #333;">* Latest result</p>
+    </div>
+  `;
+};
+
+/**
  * Generate complete trend section HTML with either images or tables
+ * forPrint: When true, uses black & white styling suitable for printing
  */
 export const generateTrendSectionHtml = (
   trends: TrendChartResult[],
-  useTables: boolean = false
+  forPrint: boolean = false
 ): string => {
   if (!trends || trends.length === 0) {
     return '';
   }
 
   const content = trends.map(trend => {
-    if (useTables || !trend.image_url) {
-      return generateTrendTableHtml(trend);
+    // If no image URL available, fall back to table
+    if (!trend.image_url) {
+      return forPrint ? generateTrendTableHtmlPrint(trend) : generateTrendTableHtml(trend);
     }
+    
+    // Use image for both print and e-copy
+    const borderStyle = forPrint ? 'border: 1px solid #333;' : 'border: 1px solid #e5e7eb; border-radius: 4px;';
+    const titleColor = forPrint ? 'color: #000;' : 'color: #333;';
+    // Add grayscale filter for print version
+    const imageFilter = forPrint ? 'filter: grayscale(1);' : '';
     
     return `
       <div style="margin-bottom: 20px; text-align: center;">
-        <h4 style="margin: 0 0 8px 0; color: #333; font-size: 13px;">
+        <h4 style="margin: 0 0 8px 0; ${titleColor} font-size: 13px;">
           ${trend.analyte_name} Trend
           ${trend.unit ? `(${trend.unit})` : ''}
         </h4>
-        <img src="${trend.image_url}" alt="${trend.analyte_name} Trend" style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;"/>
+        <img src="${trend.image_url}" alt="${trend.analyte_name} Trend" style="max-width: 100%; height: auto; ${borderStyle} ${imageFilter}"/>
       </div>
     `;
   }).join('');
+
+  // Print version: black & white header, no emoji
+  if (forPrint) {
+    return `
+      <div style="margin-top: 20px;">
+        <h3 style="font-size: 14px; color: #000; border-bottom: 1px solid #333; padding-bottom: 6px; margin-bottom: 12px;">
+          Historical Trend Analysis
+        </h3>
+        ${content}
+      </div>
+    `;
+  }
 
   return `
     <div style="margin-top: 20px;">
@@ -545,5 +616,6 @@ export default {
   generateTrendChart,
   generateTrendChartsForAnalytes,
   generateTrendTableHtml,
+  generateTrendTableHtmlPrint,
   generateTrendSectionHtml,
 };

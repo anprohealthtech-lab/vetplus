@@ -50,9 +50,21 @@ export const useOrderStatusCentral = () => {
     }
   }, [user]);
 
-  const markSampleCollected = useCallback(async (orderId: string) => {
-    return updateOrderStatus(orderId, 'Sample Collection');
-  }, [updateOrderStatus]);
+  const markSampleCollected = useCallback(async (orderId: string, collectedBy?: string, collectorUserId?: string) => {
+    setIsUpdating(true);
+    try {
+      // Use the database function directly to support collector info
+      const { data, error } = await database.orders.markSampleCollected(orderId, collectedBy, collectorUserId);
+      if (error) {
+        return { success: false, message: `Failed to mark sample collected: ${String(error)}` };
+      }
+      return { success: true, message: 'Sample marked as collected', updatedOrder: data };
+    } catch (err) {
+      return { success: false, message: 'Unexpected error while marking sample collected' };
+    } finally {
+      setIsUpdating(false);
+    }
+  }, []);
 
   const startProcessing = useCallback(async (orderId: string) => {
     return updateOrderStatus(orderId, 'In Progress');

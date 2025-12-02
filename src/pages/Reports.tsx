@@ -41,6 +41,7 @@ import {
   createReportDataFromContext,
   selectTemplateForContext,
 } from '../utils/pdfService';
+import { quickViewPDF } from '../utils/pdfViewerService';
 import type { LabTemplateRecord, ReportData, LabBrandingHtmlDefaults } from '../utils/pdfService';
 import PDFProgressModal from '../components/PDFProgressModal';
 import { usePDFGeneration, isOrderReportReady } from '../hooks/usePDFGeneration';
@@ -416,14 +417,21 @@ const Reports: React.FC = () => {
     }
 
     try {
-      const reportData = await prepareReportData(group);
-      const pdfUrl = await viewPDFReport(orderId, reportData);
+      // Use the new lightweight JS-to-PDF viewer service
+      const pdfUrl = await quickViewPDF(orderId);
       
-      if (pdfUrl) {
-        window.open(pdfUrl, '_blank');
-      } else {
-        alert('Failed to generate or view PDF report');
+      if (!pdfUrl) {
+        // Fallback to the old method if quick view fails
+        console.log('Quick view failed, falling back to full PDF generation...');
+        const reportData = await prepareReportData(group);
+        const fallbackUrl = await viewPDFReport(orderId, reportData);
+        if (fallbackUrl) {
+          window.open(fallbackUrl, '_blank');
+        } else {
+          alert('Failed to generate or view PDF report');
+        }
       }
+      // Note: quickViewPDF already opens the PDF in a new tab
     } catch (error) {
       console.error('View failed:', error);
       alert('Failed to view report: ' + (error instanceof Error ? error.message : 'Unknown error'));
