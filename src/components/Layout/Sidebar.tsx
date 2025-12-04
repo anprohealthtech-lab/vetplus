@@ -99,16 +99,18 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
 
       {/* Sidebar */}
       <div className={`
-        fixed inset-y-0 left-0 z-30 bg-white shadow-lg transform transition-all duration-300 ease-in-out overflow-y-auto
+        fixed inset-y-0 left-0 z-30 bg-white shadow-lg transform transition-all duration-300 ease-in-out flex flex-col overflow-hidden
         lg:translate-x-0
         ${isOpen ? 'translate-x-0' : '-translate-x-full'}
         ${isCollapsed ? 'w-20' : 'w-64'}
       `}>
-        <div className="flex items-center justify-between h-16 px-6 bg-blue-600">
-          <div className="flex items-center">
-            <TestTube className="h-8 w-8 text-white" />
-            {!isCollapsed && <span className="ml-2 text-xl font-bold text-white">LIMS Builder</span>}
-          </div>
+        <div className={`flex-none flex items-center justify-between h-16 bg-blue-600 ${isCollapsed ? 'px-2 justify-center' : 'px-6'}`}>
+          {!isCollapsed && (
+            <>
+              <TestTube className="h-8 w-8 text-white" />
+              <span className="ml-2 text-xl font-bold text-white">LIMS Builder</span>
+            </>
+          )}
           <div className="flex items-center gap-2">
             <button
               onClick={() => setIsCollapsed(!isCollapsed)}
@@ -126,235 +128,258 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
           </div>
         </div>
 
-        <nav className="mt-8 px-4 space-y-1">
-          {/* Core Laboratory Workflow */}
-          <div className="mb-6">
-            {!isCollapsed && (
-              <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-                🔬 Daily Operations
-              </h3>
-            )}
-            {navigation.filter(item => item.category === 'core').map((item) => {
-              const isActive = location.pathname === item.href;
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  title={isCollapsed ? item.name : ''}
-                  className={`
+        <div className="flex-1 overflow-y-auto">
+          <nav className="mt-8 px-4 space-y-1 pb-4">
+            {/* Core Laboratory Workflow */}
+            <div className="mb-6">
+              {!isCollapsed && (
+                <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                  🔬 Daily Operations
+                </h3>
+              )}
+              {navigation.filter(item => item.category === 'core').map((item) => {
+                const isActive = location.pathname === item.href;
+                return (
+                  <Link
+                    key={item.name}
+                    to={item.href}
+                    title={isCollapsed ? item.name : ''}
+                    className={`
                     flex items-center rounded-lg text-sm font-medium transition-colors duration-200 mb-1
                     border-l-4 border-l-blue-500
                     ${isCollapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'}
                     ${isActive
-                      ? 'bg-blue-50 text-blue-700 border-l-blue-700'
-                      : 'text-gray-600 hover:bg-blue-50 hover:text-blue-700 border-l-transparent hover:border-l-blue-300'
-                    }
+                        ? 'bg-blue-50 text-blue-700 border-l-blue-700'
+                        : 'text-gray-600 hover:bg-blue-50 hover:text-blue-700 border-l-transparent hover:border-l-blue-300'
+                      }
                   `}
-                  onClick={handleNavClick}
-                >
-                  <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-blue-700' : 'text-gray-400'}`} />
-                  {!isCollapsed && item.name}
-                </Link>
-              );
-            })}
-          </div>
+                    onClick={handleNavClick}
+                  >
+                    <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-blue-700' : 'text-gray-400'}`} />
+                    {!isCollapsed && item.name}
+                  </Link>
+                );
+              })}
+            </div>
 
-          {/* Patient Management */}
-          <div className="mb-6">
-            <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              👥 Patient Management
-            </h3>
-            {navigation.filter(item => item.category === 'management').map((item) => {
-              const isActive = location.pathname === item.href;
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  className={`
-                    flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+            {/* Patient Management */}
+            <div className="mb-6">
+              {!isCollapsed && (
+                <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                  👥 Patient Management
+                </h3>
+              )}
+              {navigation.filter(item => item.category === 'management').map((item) => {
+                const isActive = location.pathname === item.href;
+                return (
+                  <Link
+                    key={item.name}
+                    to={item.href}
+                    className={`
+                    flex items-center rounded-lg text-sm font-medium transition-colors duration-200 mb-1
                     border-l-4 border-l-green-500
+                    ${isCollapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'}
                     ${isActive
-                      ? 'bg-green-50 text-green-700 border-l-green-700'
-                      : 'text-gray-600 hover:bg-green-50 hover:text-green-700 border-l-transparent hover:border-l-green-300'
-                    }
+                        ? 'bg-green-50 text-green-700 border-l-green-700'
+                        : 'text-gray-600 hover:bg-green-50 hover:text-green-700 border-l-transparent hover:border-l-green-300'
+                      }
                   `}
-                  onClick={handleNavClick}
-                >
-                  <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-green-700' : 'text-gray-400'}`} />
-                  {item.name}
-                </Link>
-              );
-            })}
-          </div>
+                    onClick={handleNavClick}
+                  >
+                    <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-green-700' : 'text-gray-400'}`} />
+                    {!isCollapsed && item.name}
+                  </Link>
+                );
+              })}
+            </div>
 
-          {/* Business & Reports */}
-          <div className="mb-6">
-            <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              💼 Business & Reports
-            </h3>
-            {navigation.filter(item => item.category === 'business').map((item) => {
-              const isActive = location.pathname === item.href;
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  className={`
-                    flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+            {/* Business & Reports */}
+            <div className="mb-6">
+              {!isCollapsed && (
+                <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                  💼 Business & Reports
+                </h3>
+              )}
+              {navigation.filter(item => item.category === 'business').map((item) => {
+                const isActive = location.pathname === item.href;
+                return (
+                  <Link
+                    key={item.name}
+                    to={item.href}
+                    className={`
+                    flex items-center rounded-lg text-sm font-medium transition-colors duration-200 mb-1
                     border-l-4 border-l-purple-500
+                    ${isCollapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'}
                     ${isActive
-                      ? 'bg-purple-50 text-purple-700 border-l-purple-700'
-                      : 'text-gray-600 hover:bg-purple-50 hover:text-purple-700 border-l-transparent hover:border-l-purple-300'
-                    }
+                        ? 'bg-purple-50 text-purple-700 border-l-purple-700'
+                        : 'text-gray-600 hover:bg-purple-50 hover:text-purple-700 border-l-transparent hover:border-l-purple-300'
+                      }
                   `}
-                  onClick={handleNavClick}
-                >
-                  <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-purple-700' : 'text-gray-400'}`} />
-                  {item.name}
-                </Link>
-              );
-            })}
-          </div>
+                    onClick={handleNavClick}
+                  >
+                    <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-purple-700' : 'text-gray-400'}`} />
+                    {!isCollapsed && item.name}
+                  </Link>
+                );
+              })}
+            </div>
 
-          {/* Communication */}
-          <div className="mb-6">
-            <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              💬 Communication
-            </h3>
-            {navigation.filter(item => item.category === 'communication').map((item) => {
-              const isActive = location.pathname === item.href;
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  className={`
-                    flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+            {/* Communication */}
+            <div className="mb-6">
+              {!isCollapsed && (
+                <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                  💬 Communication
+                </h3>
+              )}
+              {navigation.filter(item => item.category === 'communication').map((item) => {
+                const isActive = location.pathname === item.href;
+                return (
+                  <Link
+                    key={item.name}
+                    to={item.href}
+                    className={`
+                    flex items-center rounded-lg text-sm font-medium transition-colors duration-200 mb-1
                     border-l-4 border-l-sky-500
+                    ${isCollapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'}
                     ${isActive
-                      ? 'bg-sky-50 text-sky-700 border-l-sky-700'
-                      : 'text-gray-600 hover:bg-sky-50 hover:text-sky-700 border-l-transparent hover:border-l-sky-300'
-                    }
+                        ? 'bg-sky-50 text-sky-700 border-l-sky-700'
+                        : 'text-gray-600 hover:bg-sky-50 hover:text-sky-700 border-l-transparent hover:border-l-sky-300'
+                      }
                   `}
-                  onClick={handleNavClick}
-                >
-                  <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-sky-700' : 'text-gray-400'}`} />
-                  {item.name}
-                </Link>
-              );
-            })}
-          </div>
+                    onClick={handleNavClick}
+                  >
+                    <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-sky-700' : 'text-gray-400'}`} />
+                    {!isCollapsed && item.name}
+                  </Link>
+                );
+              })}
+            </div>
 
-          {/* AI Workflow Management */}
-          <div className="mb-6">
-            <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              🤖 AI Workflows
-            </h3>
-            {navigation.filter(item => item.category === 'workflows').map((item) => {
-              const isActive = location.pathname === item.href;
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  className={`
-                    flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+            {/* AI Workflow Management */}
+            <div className="mb-6">
+              {!isCollapsed && (
+                <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                  🤖 AI Workflows
+                </h3>
+              )}
+              {navigation.filter(item => item.category === 'workflows').map((item) => {
+                const isActive = location.pathname === item.href;
+                return (
+                  <Link
+                    key={item.name}
+                    to={item.href}
+                    className={`
+                    flex items-center rounded-lg text-sm font-medium transition-colors duration-200 mb-1
                     border-l-4 border-l-indigo-500
+                    ${isCollapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'}
                     ${isActive
-                      ? 'bg-indigo-50 text-indigo-700 border-l-indigo-700'
-                      : 'text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 border-l-transparent hover:border-l-indigo-300'
-                    }
+                        ? 'bg-indigo-50 text-indigo-700 border-l-indigo-700'
+                        : 'text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 border-l-transparent hover:border-l-indigo-300'
+                      }
                   `}
-                  onClick={handleNavClick}
-                >
-                  <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-indigo-700' : 'text-gray-400'}`} />
-                  {item.name}
-                </Link>
-              );
-            })}
-          </div>
+                    onClick={handleNavClick}
+                  >
+                    <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-indigo-700' : 'text-gray-400'}`} />
+                    {!isCollapsed && item.name}
+                  </Link>
+                );
+              })}
+            </div>
 
-          {/* Master Data Management */}
-          <div className="mb-6">
-            <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              📊 Master Data
-            </h3>
-            {navigation.filter(item => item.category === 'masters').map((item) => {
-              const isActive = location.pathname === item.href;
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  className={`
-                    flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+            {/* Master Data Management */}
+            <div className="mb-6">
+              {!isCollapsed && (
+                <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                  📊 Master Data
+                </h3>
+              )}
+              {navigation.filter(item => item.category === 'masters').map((item) => {
+                const isActive = location.pathname === item.href;
+                return (
+                  <Link
+                    key={item.name}
+                    to={item.href}
+                    className={`
+                    flex items-center rounded-lg text-sm font-medium transition-colors duration-200 mb-1
                     border-l-4 border-l-orange-500
+                    ${isCollapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'}
                     ${isActive
-                      ? 'bg-orange-50 text-orange-700 border-l-orange-700'
-                      : 'text-gray-600 hover:bg-orange-50 hover:text-orange-700 border-l-transparent hover:border-l-orange-300'
-                    }
+                        ? 'bg-orange-50 text-orange-700 border-l-orange-700'
+                        : 'text-gray-600 hover:bg-orange-50 hover:text-orange-700 border-l-transparent hover:border-l-orange-300'
+                      }
                   `}
-                  onClick={handleNavClick}
-                >
-                  <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-orange-700' : 'text-gray-400'}`} />
-                  {item.name}
-                </Link>
-              );
-            })}
-          </div>
+                    onClick={handleNavClick}
+                  >
+                    <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-orange-700' : 'text-gray-400'}`} />
+                    {!isCollapsed && item.name}
+                  </Link>
+                );
+              })}
+            </div>
 
-          {/* Outsourced Reports */}
-          <div className="mb-6">
-            <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              🏥 Outsourced Labs
-            </h3>
-            {navigation.filter(item => item.category === 'outsourced').map((item) => {
-              const isActive = location.pathname === item.href;
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  className={`
-                    flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+            {/* Outsourced Reports */}
+            <div className="mb-6">
+              {!isCollapsed && (
+                <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                  🏥 Outsourced Labs
+                </h3>
+              )}
+              {navigation.filter(item => item.category === 'outsourced').map((item) => {
+                const isActive = location.pathname === item.href;
+                return (
+                  <Link
+                    key={item.name}
+                    to={item.href}
+                    className={`
+                    flex items-center rounded-lg text-sm font-medium transition-colors duration-200 mb-1
                     border-l-4 border-l-teal-500
+                    ${isCollapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'}
                     ${isActive
-                      ? 'bg-teal-50 text-teal-700 border-l-teal-700'
-                      : 'text-gray-600 hover:bg-teal-50 hover:text-teal-700 border-l-transparent hover:border-l-teal-300'
-                    }
+                        ? 'bg-teal-50 text-teal-700 border-l-teal-700'
+                        : 'text-gray-600 hover:bg-teal-50 hover:text-teal-700 border-l-transparent hover:border-l-teal-300'
+                      }
                   `}
-                  onClick={handleNavClick}
-                >
-                  <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-teal-700' : 'text-gray-400'}`} />
-                  {item.name}
-                </Link>
-              );
-            })}
-          </div>
+                    onClick={handleNavClick}
+                  >
+                    <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-teal-700' : 'text-gray-400'}`} />
+                    {!isCollapsed && item.name}
+                  </Link>
+                );
+              })}
+            </div>
 
-          {/* Tools & Settings */}
-          <div>
-            <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              🛠️ Tools & Settings
-            </h3>
-            {navigation.filter(item => item.category === 'tools').map((item) => {
-              const isActive = location.pathname === item.href;
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  className={`
-                    flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+            {/* Tools & Settings */}
+            <div>
+              {!isCollapsed && (
+                <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                  🛠️ Tools & Settings
+                </h3>
+              )}
+              {navigation.filter(item => item.category === 'tools').map((item) => {
+                const isActive = location.pathname === item.href;
+                return (
+                  <Link
+                    key={item.name}
+                    to={item.href}
+                    className={`
+                    flex items-center rounded-lg text-sm font-medium transition-colors duration-200 mb-1
                     border-l-4 border-l-gray-500
+                    ${isCollapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'}
                     ${isActive
-                      ? 'bg-gray-50 text-gray-700 border-l-gray-700'
-                      : 'text-gray-600 hover:bg-gray-50 hover:text-gray-700 border-l-transparent hover:border-l-gray-300'
-                    }
+                        ? 'bg-gray-50 text-gray-700 border-l-gray-700'
+                        : 'text-gray-600 hover:bg-gray-50 hover:text-gray-700 border-l-transparent hover:border-l-gray-300'
+                      }
                   `}
-                  onClick={handleNavClick}
-                >
-                  <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-gray-700' : 'text-gray-400'}`} />
-                  {item.name}
-                </Link>
-              );
-            })}
-          </div>
-        </nav>
+                    onClick={handleNavClick}
+                  >
+                    <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-gray-700' : 'text-gray-400'}`} />
+                    {!isCollapsed && item.name}
+                  </Link>
+                );
+              })}
+            </div>
+          </nav>
+        </div>
       </div>
     </>
   );

@@ -572,6 +572,58 @@ export const database = {
         console.error('Error fetching default approval signature:', error);
         return null;
       }
+    },
+
+    getById: async (labId?: string): Promise<{ data: any; error: any }> => {
+      try {
+        const id = labId || await database.getCurrentUserLabId();
+        if (!id) {
+          return { data: null, error: new Error('No lab_id found') };
+        }
+
+        const { data, error } = await supabase
+          .from('labs')
+          .select('*')
+          .eq('id', id)
+          .single();
+
+        return { data, error };
+      } catch (error) {
+        console.error('Error fetching lab:', error);
+        return { data: null, error };
+      }
+    },
+
+    update: async (labId: string, updates: {
+      name?: string;
+      code?: string;
+      address?: string;
+      city?: string;
+      state?: string;
+      pincode?: string;
+      phone?: string;
+      email?: string;
+      license_number?: string;
+      registration_number?: string;
+      watermark_enabled?: boolean;
+      watermark_opacity?: number;
+      watermark_position?: string;
+      watermark_size?: string;
+      watermark_rotation?: number;
+    }): Promise<{ data: any; error: any }> => {
+      try {
+        const { data, error } = await supabase
+          .from('labs')
+          .update({ ...updates, updated_at: new Date().toISOString() })
+          .eq('id', labId)
+          .select()
+          .single();
+
+        return { data, error };
+      } catch (error) {
+        console.error('Error updating lab:', error);
+        return { data: null, error };
+      }
     }
   },
 

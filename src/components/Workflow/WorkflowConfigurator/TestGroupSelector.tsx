@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../../contexts/AuthContext';
 import { database } from '../../../utils/supabase';
+import { Search } from 'lucide-react';
 
 interface TestGroup {
   id: string;
@@ -24,6 +25,7 @@ const TestGroupSelector: React.FC<TestGroupSelectorProps> = ({
   const [loading, setLoading] = useState(true);
   const [selectedTestGroup, setSelectedTestGroup] = useState<TestGroup | null>(null);
   const [error, setError] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     loadUnmappedTestGroups();
@@ -73,6 +75,11 @@ const TestGroupSelector: React.FC<TestGroupSelectorProps> = ({
     }
   };
 
+  const filteredTestGroups = unmappedTestGroups.filter(tg =>
+    tg.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    tg.test_code.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-96">
@@ -117,7 +124,7 @@ const TestGroupSelector: React.FC<TestGroupSelectorProps> = ({
             <h3 className="text-yellow-800 font-medium">No Unmapped Test Groups</h3>
           </div>
           <p className="text-yellow-700 mt-2">
-            All test groups in your lab already have workflow configurations. 
+            All test groups in your lab already have workflow configurations.
             You can edit existing workflows from the Workflow Mappings tab.
           </p>
           {onCancel && (
@@ -134,51 +141,77 @@ const TestGroupSelector: React.FC<TestGroupSelectorProps> = ({
   }
 
   return (
-    <div className="max-w-4xl mx-auto p-6">
+    <div className="max-w-6xl mx-auto p-6">
       <div className="bg-white rounded-lg shadow-sm border border-gray-200">
         <div className="p-6 border-b border-gray-200">
-          <h2 className="text-2xl font-semibold text-gray-900">Select Test Group</h2>
-          <p className="text-gray-600 mt-2">
-            Choose a test group that doesn't have a workflow configuration yet. 
-            You'll create the workflow configuration for the selected test group.
-          </p>
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-semibold text-gray-900">Select Test Group</h2>
+              <p className="text-gray-600 mt-1">
+                Choose a test group to configure.
+              </p>
+            </div>
+            <div className="relative w-full md:w-72">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search test groups..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+          </div>
         </div>
 
         <div className="p-6">
-          <div className="grid gap-4">
-            {unmappedTestGroups.map((testGroup) => (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredTestGroups.map((testGroup) => (
               <div
                 key={testGroup.id}
-                className={`border rounded-lg p-4 cursor-pointer transition-all ${
-                  selectedTestGroup?.id === testGroup.id
-                    ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200'
-                    : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                }`}
+                className={`border rounded-lg p-4 cursor-pointer transition-all h-full flex flex-col ${selectedTestGroup?.id === testGroup.id
+                    ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200 shadow-md'
+                    : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50 hover:shadow-sm'
+                  }`}
                 onClick={() => handleTestGroupSelection(testGroup)}
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center">
+                <div className="flex items-start justify-between mb-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                        {testGroup.test_code}
+                      </span>
                       <input
                         type="radio"
                         name="testGroup"
                         checked={selectedTestGroup?.id === testGroup.id}
                         onChange={() => handleTestGroupSelection(testGroup)}
-                        className="mr-3 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
                       />
-                      <h3 className="text-lg font-medium text-gray-900">{testGroup.name}</h3>
-                      <span className="ml-2 px-2 py-1 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
-                        {testGroup.test_code}
-                      </span>
                     </div>
-                    <p className="text-gray-600 mt-2 ml-7">{testGroup.description || 'No description available'}</p>
-                    <p className="text-sm text-gray-500 mt-1 ml-7">
-                      Created: {new Date(testGroup.created_at).toLocaleDateString()}
-                    </p>
+                    <h3 className="text-lg font-medium text-gray-900 truncate" title={testGroup.name}>
+                      {testGroup.name}
+                    </h3>
                   </div>
+                </div>
+
+                <p className="text-gray-600 text-sm line-clamp-3 mb-4 flex-1">
+                  {testGroup.description || 'No description available'}
+                </p>
+
+                <div className="pt-4 border-t border-gray-100 mt-auto">
+                  <p className="text-xs text-gray-500">
+                    Created: {new Date(testGroup.created_at).toLocaleDateString()}
+                  </p>
                 </div>
               </div>
             ))}
+
+            {filteredTestGroups.length === 0 && (
+              <div className="col-span-full py-12 text-center text-gray-500">
+                No test groups found matching "{searchQuery}"
+              </div>
+            )}
           </div>
 
           <div className="mt-8 flex justify-between">
@@ -193,11 +226,10 @@ const TestGroupSelector: React.FC<TestGroupSelectorProps> = ({
             <button
               onClick={handleProceed}
               disabled={!selectedTestGroup}
-              className={`px-6 py-2 rounded-md font-medium transition-colors ${
-                selectedTestGroup
+              className={`px-6 py-2 rounded-md font-medium transition-colors ${selectedTestGroup
                   ? 'bg-blue-600 text-white hover:bg-blue-700'
                   : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-              }`}
+                }`}
             >
               Configure Workflow for Selected Test Group
             </button>

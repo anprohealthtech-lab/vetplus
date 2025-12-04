@@ -68,9 +68,16 @@ const handler: Handler = async (event, context) => {
     const body = JSON.parse(event.body || '{}');
     
     // Postmark payload structure
-    const { From, Subject, Attachments, MessageID } = body;
+    // OriginalRecipient = the email that was forwarded TO (lab user's email like labA@gmail.com)
+    // From = the sender (outsourced lab email)
+    const { From, Subject, Attachments, MessageID, OriginalRecipient, To } = body;
+    
+    // The forwarding email is key - it identifies which lab user/lab this belongs to
+    // OriginalRecipient is the actual email before forwarding (e.g., labuser@gmail.com)
+    // If not available, fall back to To field
+    const forwardingEmail = OriginalRecipient || To;
 
-    console.log(`Received email from ${From} with subject: ${Subject}`);
+    console.log(`Received email from ${From} to ${forwardingEmail} with subject: ${Subject}`);
 
     if (!Attachments || Attachments.length === 0) {
       console.log('No attachments found');
@@ -155,25 +162,58 @@ const handler: Handler = async (event, context) => {
     }
 
     // 3. Save to Database
-    // We need a lab_id. Since this comes from email, we might not know the tenant lab_id immediately.
-    // For now, we'll try to find a lab that matches the "To" address or use a default/first lab if single tenant.
-    // Or we can store it with null lab_id (if schema allows) and let admin assign it.
-    // Schema says lab_id is NOT NULL.
-    // Let's fetch the first lab for now (assuming single tenant context for this user) 
-    // OR try to find lab by some identifier in the email "To" (e.g. lab1@inbound.postmarkapp.com).
+    // Match lab_id by the FORWARDING EMAIL (lab user's email)
+    // Each lab user registers their forwarding email in their user profile or lab settings
     
-    // For this MVP, we'll fetch the first lab ID.
-    const { data: labs } = await supabase.from('labs').select('id').limit(1);
-    const defaultLabId = labs?.[0]?.id;
+    // Strategy: Look up user by email -> get their lab_id
+    // The forwardingEmail is the lab user's email (e.g., labuser@gmail.com)
+    
+    let labId = null;
+    let matchedUserId = null;
+    
+    // First, try to find a user with this email
+    const { data: matchedUser } = await supabase
+      .from('users')
+      .select('id, lab_id, email')
+      .ilike('email', forwardingEmail?.split('<')?.[1]?.replace('>', '') || forwardingEmail || '')
+      .limit(1)
+      .single();
+    
+    if (matchedUser?.lab_id) {
+      labId = matchedUser.lab_id;
+      matchedUserId = matchedUser.id;
+      console.log(`Matched forwarding email ${forwardingEmail} to lab ${labId} via user email`);
+    } else {
+      // Fallback: Check if any lab has this email registered as lab email
+      const { data: matchedLab } = await supabase
+        .from('labs')
+        .select('id')
+        .ilike('email', forwardingEmail?.split('<')?.[1]?.replace('>', '') || forwardingEmail || '')
+        .limit(1)
+        .single();
+      
+      if (matchedLab?.id) {
+        labId = matchedLab.id;
+        console.log(`Matched forwarding email ${forwardingEmail} to lab ${labId} via lab email`);
+      }
+    }
 
-    if (!defaultLabId) {
-      throw new Error('No lab found to assign report to');
+    if (!labId) {
+      console.error(`Could not match forwarding email "${forwardingEmail}" to any lab. Storing as unassigned.`);
+      // Get first lab as fallback (or you could reject the email)
+      const { data: defaultLab } = await supabase.from('labs').select('id').limit(1).single();
+      labId = defaultLab?.id;
+      
+      if (!labId) {
+        throw new Error(`No lab found for forwarding email: ${forwardingEmail}`);
+      }
     }
 
     const { error: dbError } = await supabase.from('outsourced_reports').insert({
-      lab_id: defaultLabId,
+      lab_id: labId,
       source: 'email_forward',
       sender_email: From,
+      recipient_email: forwardingEmail, // Store the forwarding email for reference
       subject: Subject,
       file_url: fileUrl,
       file_name: validAttachment.Name,
@@ -181,6 +221,7 @@ const handler: Handler = async (event, context) => {
       ai_extracted_data: extractedData,
       ai_confidence: aiConfidence,
       processing_error: extractedData ? null : 'AI Extraction Failed',
+      matched_user_id: matchedUserId, // Track which user received this
     });
 
     if (dbError) {

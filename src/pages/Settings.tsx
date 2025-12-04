@@ -2,43 +2,32 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { database, supabase } from '../utils/supabase';
 import EditUserModal from '../components/Users/EditUserModal';
-import { 
-  Users, 
-  Shield, 
-  BarChart3, 
-  Settings as SettingsIcon, 
-  Plus, 
-  Edit, 
-  Trash2, 
-  Eye, 
-  EyeOff,
+import { NotificationSettings } from '../components/Settings/NotificationSettings';
+import {
+  Users,
+  Shield,
+  BarChart3,
+  Plus,
+  Edit,
+  Trash2,
+  Eye,
   Search,
-  Filter,
-  Download,
-  Upload,
   Bell,
-  Lock,
-  Key,
-  UserCheck,
-  UserX,
   Clock,
   Activity,
   Database,
   Server,
-  Wifi,
   AlertTriangle,
   CheckCircle,
   XCircle,
-  Calendar,
-  Mail,
-  Phone,
-  MapPin,
   Building,
-  Globe,
-  Palette,
-  Monitor,
-  Smartphone,
-  Tablet
+  MapPin,
+  Phone,
+  Mail,
+  FileText,
+  Save,
+  Loader2,
+  UserCheck
 } from 'lucide-react';
 
 interface User {
@@ -74,10 +63,29 @@ interface UsageStats {
   apiLimit: number;
 }
 
+interface LabSettings {
+  id: string;
+  name: string;
+  code: string;
+  address: string;
+  city: string;
+  state: string;
+  pincode: string;
+  phone: string;
+  email: string;
+  license_number: string;
+  registration_number: string;
+  watermark_enabled: boolean;
+  watermark_opacity: number;
+  watermark_position: string;
+  watermark_size: string;
+  watermark_rotation: number;
+}
+
 // Define UserForm component outside of Settings
-const UserFormComponent: React.FC<{ 
-  onClose: () => void; 
-  user?: User; 
+const UserFormComponent: React.FC<{
+  onClose: () => void;
+  user?: User;
   permissions: Permission[],
   availableRoles: any[],
   labId?: string,
@@ -85,7 +93,7 @@ const UserFormComponent: React.FC<{
 }> = ({ onClose, user, permissions, availableRoles, labId, onSave }) => {
   // Initialize roleId by finding matching role from availableRoles
   const initialRoleId = user ? availableRoles.find(r => r.role_name === user.role)?.id || '' : '';
-  
+
   const [formData, setFormData] = useState({
     name: user?.name || '',
     email: user?.email || '',
@@ -99,7 +107,7 @@ const UserFormComponent: React.FC<{
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!labId) {
       console.error('labId is missing in UserFormComponent', { labId, user });
       setError('Lab context not found. Please refresh the page and try again.');
@@ -112,7 +120,7 @@ const UserFormComponent: React.FC<{
 
       // Find role ID from role selection
       const selectedRole = availableRoles.find(r => r.id === formData.roleId);
-      
+
       if (!selectedRole) {
         setError('Please select a valid role');
         return;
@@ -301,7 +309,7 @@ const UserFormComponent: React.FC<{
 
 const Settings: React.FC = () => {
   const { user: authUser } = useAuth();
-  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'system' | 'notifications' | 'appearance'>('team');
+  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -310,11 +318,14 @@ const Settings: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [labId, setLabId] = useState<string | null>(null);
+  const [savingLab, setSavingLab] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   // Real database state
   const [users, setUsers] = useState<User[]>([]);
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [availableRoles, setAvailableRoles] = useState<any[]>([]);
+  const [labSettings, setLabSettings] = useState<LabSettings | null>(null);
   const [usageStats, setUsageStats] = useState<UsageStats>({
     totalUsers: 0,
     activeUsers: 0,
@@ -342,16 +353,39 @@ const Settings: React.FC = () => {
         // Get lab_id using the centralized method
         const currentLabId = await database.getCurrentUserLabId();
         console.log('getCurrentUserLabId result:', currentLabId, 'for user:', authUser.email);
-        
+
         if (!currentLabId) {
           setError('Lab context not found. User may not be assigned to any lab.');
           console.error('No lab_id found for user:', authUser.email);
           return;
         }
-        
+
         // Store lab_id in state for use in modal
         setLabId(currentLabId);
         console.log('Lab ID set to state:', currentLabId);
+
+        // Load lab settings
+        const { data: labData, error: labError } = await database.labs.getById(currentLabId);
+        if (!labError && labData) {
+          setLabSettings({
+            id: labData.id,
+            name: labData.name || '',
+            code: labData.code || '',
+            address: labData.address || '',
+            city: labData.city || '',
+            state: labData.state || '',
+            pincode: labData.pincode || '',
+            phone: labData.phone || '',
+            email: labData.email || '',
+            license_number: labData.license_number || '',
+            registration_number: labData.registration_number || '',
+            watermark_enabled: labData.watermark_enabled || false,
+            watermark_opacity: labData.watermark_opacity || 0.15,
+            watermark_position: labData.watermark_position || 'center',
+            watermark_size: labData.watermark_size || 'medium',
+            watermark_rotation: labData.watermark_rotation || 0,
+          });
+        }
 
         // Load users for this lab
         const { data: labUsers, error: usersError } = await supabase
@@ -461,18 +495,17 @@ const Settings: React.FC = () => {
     { id: 'team', name: 'Team Management', icon: Users },
     { id: 'permissions', name: 'Permissions', icon: Shield },
     { id: 'usage', name: 'Usage & Analytics', icon: BarChart3 },
-    { id: 'system', name: 'System Settings', icon: SettingsIcon },
+    { id: 'lab', name: 'Lab Settings', icon: Building },
     { id: 'notifications', name: 'Notifications', icon: Bell },
-    { id: 'appearance', name: 'Appearance', icon: Palette },
   ];
 
-  const roles = availableRoles.length > 0 
+  const roles = availableRoles.length > 0
     ? ['All', ...availableRoles.map(r => r.role_name)]
     : ['All', 'Admin', 'Lab Manager', 'Technician', 'Receptionist', 'Doctor'];
 
   const filteredUsers = users.filter(user => {
     const matchesSearch = user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         user.email.toLowerCase().includes(searchTerm.toLowerCase());
+      user.email.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesRole = selectedRole === 'All' || user.role === selectedRole;
     return matchesSearch && matchesRole;
   });
@@ -493,6 +526,77 @@ const Settings: React.FC = () => {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete user');
     }
+  };
+
+  // Save lab settings
+  const handleSaveLabSettings = async () => {
+    if (!labSettings || !labId) return;
+
+    try {
+      setSavingLab(true);
+      setError(null);
+
+      const { error: updateError } = await database.labs.update(labId, {
+        name: labSettings.name,
+        code: labSettings.code,
+        address: labSettings.address,
+        city: labSettings.city,
+        state: labSettings.state,
+        pincode: labSettings.pincode,
+        phone: labSettings.phone,
+        email: labSettings.email,
+        license_number: labSettings.license_number,
+        registration_number: labSettings.registration_number,
+        watermark_enabled: labSettings.watermark_enabled,
+        watermark_opacity: labSettings.watermark_opacity,
+        watermark_position: labSettings.watermark_position,
+        watermark_size: labSettings.watermark_size,
+        watermark_rotation: labSettings.watermark_rotation,
+      });
+
+      if (updateError) throw updateError;
+
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (err) {
+      console.error('Error saving lab settings:', err);
+      setError(err instanceof Error ? err.message : 'Failed to save lab settings');
+    } finally {
+      setSavingLab(false);
+    }
+  };
+
+  // Reload users helper
+  const reloadUsers = async () => {
+    if (!labId) return;
+    const { data: labUsers } = await supabase
+      .from('users')
+      .select(`
+        id,
+        name,
+        email,
+        phone,
+        department,
+        status,
+        last_login,
+        join_date,
+        user_roles(role_name, role_code)
+      `)
+      .eq('lab_id', labId)
+      .order('name');
+
+    setUsers((labUsers || []).map((u: any) => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      role: u.user_roles?.role_name || 'Technician',
+      department: u.department || '',
+      status: u.status === 'Active' ? 'Active' : u.status === 'Inactive' ? 'Inactive' : 'Suspended',
+      lastLogin: u.last_login || 'Never',
+      permissions: [],
+      phone: u.phone || '',
+      joinDate: u.join_date || new Date().toISOString(),
+    })));
   };
 
   const getStatusColor = (status: string) => {
@@ -516,631 +620,624 @@ const Settings: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
-          <p className="text-gray-600 mt-1">Manage your LIMS system configuration and team</p>
+    <div className="flex flex-col h-full w-full min-w-0 overflow-hidden bg-gray-50">
+      <div className="flex-none p-6 pb-0 space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
+            <p className="text-gray-600 mt-1">Manage your LIMS system configuration and team</p>
+          </div>
         </div>
-        <div className="flex items-center space-x-3">
-          <button className="flex items-center px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
-            <Download className="h-4 w-4 mr-2" />
-            Export Settings
-          </button>
-          <button className="flex items-center px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
-            <Upload className="h-4 w-4 mr-2" />
-            Import Settings
-          </button>
+
+        {/* Tab Navigation */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-1">
+          <div className="flex space-x-1 overflow-x-auto">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as any)}
+                className={`flex items-center px-4 py-3 rounded-md text-sm font-medium transition-all whitespace-nowrap ${activeTab === tab.id
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+              >
+                <tab.icon className="h-4 w-4 mr-2" />
+                {tab.name}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* Tab Navigation */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-1">
-        <div className="flex space-x-1 overflow-x-auto">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center px-4 py-3 rounded-md text-sm font-medium transition-all whitespace-nowrap ${
-                activeTab === tab.id
-                  ? 'bg-blue-600 text-white shadow-sm'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-              }`}
-            >
-              <tab.icon className="h-4 w-4 mr-2" />
-              {tab.name}
-            </button>
-          ))}
-        </div>
-      </div>
+      <div className="flex-1 overflow-auto p-6">
 
-      {/* Team Management Tab */}
-      {activeTab === 'team' && (
-        <div className="space-y-6">
-          {loading && (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8 text-center">
-              <div className="text-gray-500">Loading team data...</div>
-            </div>
-          )}
+        {/* Team Management Tab */}
+        {activeTab === 'team' && (
+          <div className="space-y-6">
+            {loading && (
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8 text-center">
+                <div className="text-gray-500">Loading team data...</div>
+              </div>
+            )}
 
-          {error && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-              <div className="text-sm text-red-700">{error}</div>
-            </div>
-          )}
-          {/* Team Stats */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center">
-                <div className="bg-blue-100 p-3 rounded-lg">
-                  <Users className="h-6 w-6 text-blue-600" />
-                </div>
-                <div className="ml-4">
-                  <div className="text-2xl font-bold text-gray-900">{usageStats.totalUsers}</div>
-                  <div className="text-sm text-gray-600">Total Users</div>
-                </div>
+            {error && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                <div className="text-sm text-red-700">{error}</div>
               </div>
-            </div>
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center">
-                <div className="bg-green-100 p-3 rounded-lg">
-                  <UserCheck className="h-6 w-6 text-green-600" />
-                </div>
-                <div className="ml-4">
-                  <div className="text-2xl font-bold text-gray-900">{usageStats.activeUsers}</div>
-                  <div className="text-sm text-gray-600">Active Users</div>
-                </div>
-              </div>
-            </div>
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center">
-                <div className="bg-orange-100 p-3 rounded-lg">
-                  <Clock className="h-6 w-6 text-orange-600" />
-                </div>
-                <div className="ml-4">
-                  <div className="text-2xl font-bold text-gray-900">
-                    {users.filter(u => new Date(u.lastLogin) > new Date(Date.now() - 24*60*60*1000)).length}
-                  </div>
-                  <div className="text-sm text-gray-600">Online Today</div>
-                </div>
-              </div>
-            </div>
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center">
-                <div className="bg-purple-100 p-3 rounded-lg">
-                  <Shield className="h-6 w-6 text-purple-600" />
-                </div>
-                <div className="ml-4">
-                  <div className="text-2xl font-bold text-gray-900">
-                    {users.filter(u => u.role === 'Admin').length}
-                  </div>
-                  <div className="text-sm text-gray-600">Administrators</div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Search and Filter */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-            <div className="flex flex-col sm:flex-row gap-4">
-              <div className="flex-1 relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Search users by name or email..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-10 pr-4 py-2 w-full border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <select
-                value={selectedRole}
-                onChange={(e) => setSelectedRole(e.target.value)}
-                className="px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {roles.map(role => (
-                  <option key={role} value={role}>{role}</option>
-                ))}
-              </select>
-              <button
-                onClick={() => {
-                  if (!labId) {
-                    alert('Lab context is still loading. Please wait...');
-                    return;
-                  }
-                  setShowUserForm(true);
-                }}
-                disabled={!labId}
-                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Add User
-              </button>
-            </div>
-
-            {/* Debug: Test Edit Modal */}
-            <div className="flex items-center space-x-4 mb-4">
-              <button
-                onClick={() => {
-                  if (users.length > 0) {
-                    setSelectedUser(users[0]);
-                    setShowEditUserModal(true);
-                  }
-                }}
-                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
-              >
-                🔧 Test Edit Current User
-              </button>
-              <select
-                onChange={(e) => {
-                  const userId = e.target.value;
-                  const user = users.find(u => u.id === userId);
-                  if (user) {
-                    setSelectedUser(user);
-                    setShowEditUserModal(true);
-                  }
-                }}
-                className="px-4 py-2 border border-gray-300 rounded-md"
-              >
-                <option value="">Select user to edit...</option>
-                {users.map(user => (
-                  <option key={user.id} value={user.id}>
-                    {user.name} ({user.email})
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Users Table */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-200">
-              <h3 className="text-lg font-semibold text-gray-900">Team Members ({filteredUsers.length})</h3>
-            </div>
-            
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Department</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Login</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {filteredUsers.map((user) => (
-                    <tr key={user.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <div className="h-10 w-10 bg-blue-500 rounded-full flex items-center justify-center">
-                            <span className="text-white font-medium">
-                              {user.name.split(' ').map(n => n[0]).join('')}
-                            </span>
-                          </div>
-                          <div className="ml-4">
-                            <div className="text-sm font-medium text-gray-900">{user.name}</div>
-                            <div className="text-sm text-gray-500">{user.email}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getRoleColor(user.role)}`}>
-                          {user.role}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                        {user.department}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(user.status)}`}>
-                          {user.status}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                        {new Date(user.lastLogin).toLocaleDateString()}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
-                        <button
-                          onClick={() => setSelectedUser(user)}
-                          className="text-blue-600 hover:text-blue-900 p-1 rounded"
-                        >
-                          <Eye className="h-4 w-4" />
-                        </button>
-                        <button
-                          onClick={() => { setSelectedUser(user); setShowEditUserModal(true); }}
-                          className="text-gray-600 hover:text-gray-900 p-1 rounded"
-                        >
-                          <Edit className="h-4 w-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteUser(user.id)}
-                          className="text-red-600 hover:text-red-900 p-1 rounded"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Permissions Tab */}
-      {activeTab === 'permissions' && (
-        <div className="space-y-6">
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Permission Management</h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {Object.entries(
-                permissions.reduce((acc, permission) => {
-                  if (!acc[permission.category]) acc[permission.category] = [];
-                  acc[permission.category].push(permission);
-                  return acc;
-                }, {} as Record<string, Permission[]>)
-              ).map(([category, categoryPermissions]) => (
-                <div key={category} className="border border-gray-200 rounded-lg p-4">
-                  <h4 className="font-medium text-gray-900 mb-3 flex items-center">
-                    <Shield className="h-4 w-4 mr-2 text-blue-600" />
-                    {category}
-                  </h4>
-                  <div className="space-y-2">
-                    {categoryPermissions.map(permission => (
-                      <div key={permission.id} className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <div className="text-sm font-medium text-gray-900">{permission.name}</div>
-                          <div className="text-xs text-gray-500">{permission.description}</div>
-                        </div>
-                        {permission.isDefault && (
-                          <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">Default</span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Usage & Analytics Tab */}
-      {activeTab === 'usage' && (
-        <div className="space-y-6">
-          {/* Usage Overview */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-2xl font-bold text-gray-900">{usageStats.totalTests.toLocaleString()}</div>
-                  <div className="text-sm text-gray-600">Total Tests</div>
-                </div>
-                <div className="bg-blue-100 p-3 rounded-lg">
-                  <Activity className="h-6 w-6 text-blue-600" />
-                </div>
-              </div>
-            </div>
-            
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-2xl font-bold text-gray-900">{usageStats.totalPatients.toLocaleString()}</div>
-                  <div className="text-sm text-gray-600">Total Patients</div>
-                </div>
-                <div className="bg-green-100 p-3 rounded-lg">
-                  <Users className="h-6 w-6 text-green-600" />
-                </div>
-              </div>
-            </div>
-            
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-2xl font-bold text-gray-900">{usageStats.storageUsed}GB</div>
-                  <div className="text-sm text-gray-600">Storage Used</div>
-                  <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
-                    <div 
-                      className="bg-orange-600 h-2 rounded-full" 
-                      style={{ width: `${(usageStats.storageUsed / usageStats.storageLimit) * 100}%` }}
-                    />
-                  </div>
-                </div>
-                <div className="bg-orange-100 p-3 rounded-lg">
-                  <Database className="h-6 w-6 text-orange-600" />
-                </div>
-              </div>
-            </div>
-            
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-2xl font-bold text-gray-900">{usageStats.apiCalls.toLocaleString()}</div>
-                  <div className="text-sm text-gray-600">API Calls</div>
-                  <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
-                    <div 
-                      className="bg-purple-600 h-2 rounded-full" 
-                      style={{ width: `${(usageStats.apiCalls / usageStats.apiLimit) * 100}%` }}
-                    />
-                  </div>
-                </div>
-                <div className="bg-purple-100 p-3 rounded-lg">
-                  <Server className="h-6 w-6 text-purple-600" />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* System Health */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">System Health</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="flex items-center justify-between p-4 bg-green-50 border border-green-200 rounded-lg">
+            )}
+            {/* Team Stats */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                 <div className="flex items-center">
-                  <CheckCircle className="h-5 w-5 text-green-600 mr-3" />
-                  <div>
-                    <div className="font-medium text-green-900">Database</div>
-                    <div className="text-sm text-green-700">Operational</div>
+                  <div className="bg-blue-100 p-3 rounded-lg">
+                    <Users className="h-6 w-6 text-blue-600" />
+                  </div>
+                  <div className="ml-4">
+                    <div className="text-2xl font-bold text-gray-900">{usageStats.totalUsers}</div>
+                    <div className="text-sm text-gray-600">Total Users</div>
                   </div>
                 </div>
-                <div className="text-green-600">99.9%</div>
               </div>
-              
-              <div className="flex items-center justify-between p-4 bg-green-50 border border-green-200 rounded-lg">
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                 <div className="flex items-center">
-                  <CheckCircle className="h-5 w-5 text-green-600 mr-3" />
-                  <div>
-                    <div className="font-medium text-green-900">API Services</div>
-                    <div className="text-sm text-green-700">Operational</div>
+                  <div className="bg-green-100 p-3 rounded-lg">
+                    <UserCheck className="h-6 w-6 text-green-600" />
+                  </div>
+                  <div className="ml-4">
+                    <div className="text-2xl font-bold text-gray-900">{usageStats.activeUsers}</div>
+                    <div className="text-sm text-gray-600">Active Users</div>
                   </div>
                 </div>
-                <div className="text-green-600">99.8%</div>
               </div>
-              
-              <div className="flex items-center justify-between p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                 <div className="flex items-center">
-                  <AlertTriangle className="h-5 w-5 text-yellow-600 mr-3" />
-                  <div>
-                    <div className="font-medium text-yellow-900">Backup System</div>
-                    <div className="text-sm text-yellow-700">Warning</div>
+                  <div className="bg-orange-100 p-3 rounded-lg">
+                    <Clock className="h-6 w-6 text-orange-600" />
+                  </div>
+                  <div className="ml-4">
+                    <div className="text-2xl font-bold text-gray-900">
+                      {users.filter(u => new Date(u.lastLogin) > new Date(Date.now() - 24 * 60 * 60 * 1000)).length}
+                    </div>
+                    <div className="text-sm text-gray-600">Online Today</div>
                   </div>
                 </div>
-                <div className="text-yellow-600">95.2%</div>
+              </div>
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <div className="flex items-center">
+                  <div className="bg-purple-100 p-3 rounded-lg">
+                    <Shield className="h-6 w-6 text-purple-600" />
+                  </div>
+                  <div className="ml-4">
+                    <div className="text-2xl font-bold text-gray-900">
+                      {users.filter(u => u.role === 'Admin').length}
+                    </div>
+                    <div className="text-sm text-gray-600">Administrators</div>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* System Settings Tab */}
-      {activeTab === 'system' && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* General Settings */}
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">General Settings</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Lab Name</label>
+            {/* Search and Filter */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+              <div className="flex flex-col sm:flex-row gap-4">
+                <div className="flex-1 relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                   <input
                     type="text"
-                    defaultValue="MediLab Diagnostics"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Search users by name or email..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="pl-10 pr-4 py-2 w-full border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Contact Email</label>
-                  <input
-                    type="email"
-                    defaultValue="contact@medilab.com"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Time Zone</label>
-                  <select className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option>Asia/Kolkata (IST)</option>
-                    <option>UTC</option>
-                    <option>America/New_York</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* Security Settings */}
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Security Settings</h3>
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-gray-900">Two-Factor Authentication</div>
-                    <div className="text-sm text-gray-500">Require 2FA for all users</div>
-                  </div>
-                  <button className="relative inline-flex h-6 w-11 items-center rounded-full bg-blue-600">
-                    <span className="inline-block h-4 w-4 transform rounded-full bg-white transition translate-x-6" />
-                  </button>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-gray-900">Session Timeout</div>
-                    <div className="text-sm text-gray-500">Auto logout after inactivity</div>
-                  </div>
-                  <select className="px-3 py-1 border border-gray-300 rounded-md text-sm">
-                    <option>30 minutes</option>
-                    <option>1 hour</option>
-                    <option>2 hours</option>
-                    <option>Never</option>
-                  </select>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-gray-900">Password Policy</div>
-                    <div className="text-sm text-gray-500">Enforce strong passwords</div>
-                  </div>
-                  <button className="relative inline-flex h-6 w-11 items-center rounded-full bg-blue-600">
-                    <span className="inline-block h-4 w-4 transform rounded-full bg-white transition translate-x-6" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Backup & Maintenance */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Backup & Maintenance</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="text-center p-4 border border-gray-200 rounded-lg">
-                <Database className="h-8 w-8 text-blue-600 mx-auto mb-2" />
-                <div className="font-medium text-gray-900">Last Backup</div>
-                <div className="text-sm text-gray-500">2 hours ago</div>
-                <button className="mt-2 px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">
-                  Backup Now
-                </button>
-              </div>
-              <div className="text-center p-4 border border-gray-200 rounded-lg">
-                <Server className="h-8 w-8 text-green-600 mx-auto mb-2" />
-                <div className="font-medium text-gray-900">System Status</div>
-                <div className="text-sm text-green-600">All systems operational</div>
-                <button className="mt-2 px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700">
-                  View Details
-                </button>
-              </div>
-              <div className="text-center p-4 border border-gray-200 rounded-lg">
-                <Wifi className="h-8 w-8 text-orange-600 mx-auto mb-2" />
-                <div className="font-medium text-gray-900">Maintenance</div>
-                <div className="text-sm text-gray-500">Next: Sunday 2 AM</div>
-                <button className="mt-2 px-3 py-1 bg-orange-600 text-white rounded text-sm hover:bg-orange-700">
-                  Schedule
+                <select
+                  value={selectedRole}
+                  onChange={(e) => setSelectedRole(e.target.value)}
+                  className="px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {roles.map(role => (
+                    <option key={role} value={role}>{role}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => {
+                    if (!labId) {
+                      alert('Lab context is still loading. Please wait...');
+                      return;
+                    }
+                    setShowUserForm(true);
+                  }}
+                  disabled={!labId}
+                  className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add User
                 </button>
               </div>
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* Notifications Tab */}
-      {activeTab === 'notifications' && (
-        <div className="space-y-6">
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Notification Preferences</h3>
-            
-            <div className="space-y-6">
-              {[
-                { title: 'Email Notifications', desc: 'Receive notifications via email' },
-                { title: 'SMS Notifications', desc: 'Receive notifications via SMS' },
-                { title: 'Push Notifications', desc: 'Receive browser push notifications' },
-                { title: 'Critical Alerts', desc: 'Immediate alerts for critical values' },
-                { title: 'Daily Reports', desc: 'Daily summary reports' },
-                { title: 'System Updates', desc: 'Notifications about system updates' },
-              ].map((item, index) => (
-                <div key={index} className="flex items-center justify-between py-3 border-b border-gray-200 last:border-b-0">
-                  <div>
-                    <div className="font-medium text-gray-900">{item.title}</div>
-                    <div className="text-sm text-gray-500">{item.desc}</div>
-                  </div>
-                  <button className="relative inline-flex h-6 w-11 items-center rounded-full bg-blue-600">
-                    <span className="inline-block h-4 w-4 transform rounded-full bg-white transition translate-x-6" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+            {/* Users Table */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-200">
+                <h3 className="text-lg font-semibold text-gray-900">Team Members ({filteredUsers.length})</h3>
+              </div>
 
-      {/* Appearance Tab */}
-      {activeTab === 'appearance' && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Theme Settings */}
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Theme Settings</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Color Theme</label>
-                  <div className="grid grid-cols-3 gap-3">
-                    {[
-                      { name: 'Blue', color: 'bg-blue-600' },
-                      { name: 'Green', color: 'bg-green-600' },
-                      { name: 'Purple', color: 'bg-purple-600' },
-                    ].map((theme) => (
-                      <button
-                        key={theme.name}
-                        className={`p-3 rounded-lg border-2 border-blue-600 ${theme.color} text-white font-medium`}
-                      >
-                        {theme.name}
-                      </button>
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Department</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Login</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {filteredUsers.map((user) => (
+                      <tr key={user.id} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex items-center">
+                            <div className="h-10 w-10 bg-blue-500 rounded-full flex items-center justify-center">
+                              <span className="text-white font-medium">
+                                {user.name.split(' ').map(n => n[0]).join('')}
+                              </span>
+                            </div>
+                            <div className="ml-4">
+                              <div className="text-sm font-medium text-gray-900">{user.name}</div>
+                              <div className="text-sm text-gray-500">{user.email}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getRoleColor(user.role)}`}>
+                            {user.role}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                          {user.department}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(user.status)}`}>
+                            {user.status}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                          {new Date(user.lastLogin).toLocaleDateString()}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
+                          <button
+                            onClick={() => setSelectedUser(user)}
+                            className="text-blue-600 hover:text-blue-900 p-1 rounded"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </button>
+                          <button
+                            onClick={() => { setSelectedUser(user); setShowEditUserModal(true); }}
+                            className="text-gray-600 hover:text-gray-900 p-1 rounded"
+                          >
+                            <Edit className="h-4 w-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteUser(user.id)}
+                            className="text-red-600 hover:text-red-900 p-1 rounded"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </td>
+                      </tr>
                     ))}
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Display Mode</label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <button className="p-3 rounded-lg border-2 border-blue-600 bg-blue-50 text-blue-700 font-medium">
-                      Light Mode
-                    </button>
-                    <button className="p-3 rounded-lg border border-gray-300 text-gray-700 font-medium">
-                      Dark Mode
-                    </button>
-                  </div>
-                </div>
+                  </tbody>
+                </table>
               </div>
             </div>
+          </div>
+        )}
 
-            {/* Layout Settings */}
+        {/* Permissions Tab */}
+        {activeTab === 'permissions' && (
+          <div className="space-y-6">
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Layout Settings</h3>
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-gray-900">Compact Mode</div>
-                    <div className="text-sm text-gray-500">Reduce spacing and padding</div>
-                  </div>
-                  <button className="relative inline-flex h-6 w-11 items-center rounded-full bg-gray-200">
-                    <span className="inline-block h-4 w-4 transform rounded-full bg-white transition translate-x-1" />
-                  </button>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-gray-900">Sidebar Collapsed</div>
-                    <div className="text-sm text-gray-500">Start with collapsed sidebar</div>
-                  </div>
-                  <button className="relative inline-flex h-6 w-11 items-center rounded-full bg-gray-200">
-                    <span className="inline-block h-4 w-4 transform rounded-full bg-white transition translate-x-1" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Permission Management</h3>
 
-          {/* Device Preview */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Device Preview</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="text-center p-4 border border-gray-200 rounded-lg">
-                <Monitor className="h-8 w-8 text-blue-600 mx-auto mb-2" />
-                <div className="font-medium text-gray-900">Desktop</div>
-                <div className="text-sm text-gray-500">1920x1080</div>
-              </div>
-              <div className="text-center p-4 border border-gray-200 rounded-lg">
-                <Tablet className="h-8 w-8 text-green-600 mx-auto mb-2" />
-                <div className="font-medium text-gray-900">Tablet</div>
-                <div className="text-sm text-gray-500">768x1024</div>
-              </div>
-              <div className="text-center p-4 border border-gray-200 rounded-lg">
-                <Smartphone className="h-8 w-8 text-orange-600 mx-auto mb-2" />
-                <div className="font-medium text-gray-900">Mobile</div>
-                <div className="text-sm text-gray-500">375x667</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {Object.entries(
+                  permissions.reduce((acc, permission) => {
+                    if (!acc[permission.category]) acc[permission.category] = [];
+                    acc[permission.category].push(permission);
+                    return acc;
+                  }, {} as Record<string, Permission[]>)
+                ).map(([category, categoryPermissions]) => (
+                  <div key={category} className="border border-gray-200 rounded-lg p-4">
+                    <h4 className="font-medium text-gray-900 mb-3 flex items-center">
+                      <Shield className="h-4 w-4 mr-2 text-blue-600" />
+                      {category}
+                    </h4>
+                    <div className="space-y-2">
+                      {categoryPermissions.map(permission => (
+                        <div key={permission.id} className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="text-sm font-medium text-gray-900">{permission.name}</div>
+                            <div className="text-xs text-gray-500">{permission.description}</div>
+                          </div>
+                          {permission.isDefault && (
+                            <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">Default</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+
+        {/* Usage & Analytics Tab */}
+        {activeTab === 'usage' && (
+          <div className="space-y-6">
+            {/* Usage Overview */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-2xl font-bold text-gray-900">{usageStats.totalTests.toLocaleString()}</div>
+                    <div className="text-sm text-gray-600">Total Tests</div>
+                  </div>
+                  <div className="bg-blue-100 p-3 rounded-lg">
+                    <Activity className="h-6 w-6 text-blue-600" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-2xl font-bold text-gray-900">{usageStats.totalPatients.toLocaleString()}</div>
+                    <div className="text-sm text-gray-600">Total Patients</div>
+                  </div>
+                  <div className="bg-green-100 p-3 rounded-lg">
+                    <Users className="h-6 w-6 text-green-600" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-2xl font-bold text-gray-900">{usageStats.storageUsed}GB</div>
+                    <div className="text-sm text-gray-600">Storage Used</div>
+                    <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
+                      <div
+                        className="bg-orange-600 h-2 rounded-full"
+                        style={{ width: `${(usageStats.storageUsed / usageStats.storageLimit) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                  <div className="bg-orange-100 p-3 rounded-lg">
+                    <Database className="h-6 w-6 text-orange-600" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-2xl font-bold text-gray-900">{usageStats.apiCalls.toLocaleString()}</div>
+                    <div className="text-sm text-gray-600">API Calls</div>
+                    <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
+                      <div
+                        className="bg-purple-600 h-2 rounded-full"
+                        style={{ width: `${(usageStats.apiCalls / usageStats.apiLimit) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                  <div className="bg-purple-100 p-3 rounded-lg">
+                    <Server className="h-6 w-6 text-purple-600" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* System Health */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">System Health</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="flex items-center justify-between p-4 bg-green-50 border border-green-200 rounded-lg">
+                  <div className="flex items-center">
+                    <CheckCircle className="h-5 w-5 text-green-600 mr-3" />
+                    <div>
+                      <div className="font-medium text-green-900">Database</div>
+                      <div className="text-sm text-green-700">Operational</div>
+                    </div>
+                  </div>
+                  <div className="text-green-600">99.9%</div>
+                </div>
+
+                <div className="flex items-center justify-between p-4 bg-green-50 border border-green-200 rounded-lg">
+                  <div className="flex items-center">
+                    <CheckCircle className="h-5 w-5 text-green-600 mr-3" />
+                    <div>
+                      <div className="font-medium text-green-900">API Services</div>
+                      <div className="text-sm text-green-700">Operational</div>
+                    </div>
+                  </div>
+                  <div className="text-green-600">99.8%</div>
+                </div>
+
+                <div className="flex items-center justify-between p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                  <div className="flex items-center">
+                    <AlertTriangle className="h-5 w-5 text-yellow-600 mr-3" />
+                    <div>
+                      <div className="font-medium text-yellow-900">Backup System</div>
+                      <div className="text-sm text-yellow-700">Warning</div>
+                    </div>
+                  </div>
+                  <div className="text-yellow-600">95.2%</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Lab Settings Tab */}
+        {activeTab === 'lab' && (
+          <div className="space-y-6">
+            {loading ? (
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8 text-center">
+                <Loader2 className="h-8 w-8 mx-auto animate-spin text-blue-600" />
+                <div className="text-gray-500 mt-2">Loading lab settings...</div>
+              </div>
+            ) : error ? (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                <div className="text-sm text-red-700">{error}</div>
+              </div>
+            ) : labSettings ? (
+              <>
+                {saveSuccess && (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <div className="flex items-center text-sm text-green-700">
+                      <CheckCircle className="h-5 w-5 mr-2" />
+                      Lab settings saved successfully!
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Basic Information */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                      <Building className="h-5 w-5 mr-2 text-blue-600" />
+                      Basic Information
+                    </h3>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Lab Name *</label>
+                        <input
+                          type="text"
+                          value={labSettings.name}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, name: e.target.value } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Lab Code *</label>
+                        <input
+                          type="text"
+                          value={labSettings.code}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, code: e.target.value } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">License Number</label>
+                        <input
+                          type="text"
+                          value={labSettings.license_number}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, license_number: e.target.value } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Lab license number"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Registration Number</label>
+                        <input
+                          type="text"
+                          value={labSettings.registration_number}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, registration_number: e.target.value } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Registration/NABL number"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Contact Information */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                      <Phone className="h-5 w-5 mr-2 text-blue-600" />
+                      Contact Information
+                    </h3>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          <Mail className="h-4 w-4 inline mr-1" />
+                          Email
+                        </label>
+                        <input
+                          type="email"
+                          value={labSettings.email}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, email: e.target.value } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="lab@example.com"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">Used for email forwarding and system notifications</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          <Phone className="h-4 w-4 inline mr-1" />
+                          Phone
+                        </label>
+                        <input
+                          type="tel"
+                          value={labSettings.phone}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, phone: e.target.value } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="+91 1234567890"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Address */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                      <MapPin className="h-5 w-5 mr-2 text-blue-600" />
+                      Address
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Street Address</label>
+                        <input
+                          type="text"
+                          value={labSettings.address}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, address: e.target.value } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Building, Street, Area"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">City</label>
+                        <input
+                          type="text"
+                          value={labSettings.city}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, city: e.target.value } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">State</label>
+                        <input
+                          type="text"
+                          value={labSettings.state}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, state: e.target.value } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Pincode</label>
+                        <input
+                          type="text"
+                          value={labSettings.pincode}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, pincode: e.target.value } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Report Watermark Settings */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                      <FileText className="h-5 w-5 mr-2 text-blue-600" />
+                      Report Watermark Settings
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div className="flex items-center">
+                        <label className="flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.watermark_enabled}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, watermark_enabled: e.target.checked } : prev)}
+                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded mr-2"
+                          />
+                          <span className="text-sm font-medium text-gray-700">Enable Watermark</span>
+                        </label>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Position</label>
+                        <select
+                          value={labSettings.watermark_position}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, watermark_position: e.target.value } : prev)}
+                          disabled={!labSettings.watermark_enabled}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                        >
+                          <option value="center">Center</option>
+                          <option value="top-left">Top Left</option>
+                          <option value="top-right">Top Right</option>
+                          <option value="bottom-left">Bottom Left</option>
+                          <option value="bottom-right">Bottom Right</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Size</label>
+                        <select
+                          value={labSettings.watermark_size}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, watermark_size: e.target.value } : prev)}
+                          disabled={!labSettings.watermark_enabled}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                        >
+                          <option value="small">Small</option>
+                          <option value="medium">Medium</option>
+                          <option value="large">Large</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Opacity ({Math.round(labSettings.watermark_opacity * 100)}%)</label>
+                        <input
+                          type="range"
+                          min="0.05"
+                          max="0.50"
+                          step="0.05"
+                          value={labSettings.watermark_opacity}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, watermark_opacity: parseFloat(e.target.value) } : prev)}
+                          disabled={!labSettings.watermark_enabled}
+                          className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer disabled:opacity-50"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Save Button */}
+                <div className="flex justify-end">
+                  <button
+                    onClick={handleSaveLabSettings}
+                    disabled={savingLab}
+                    className="flex items-center px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
+                  >
+                    {savingLab ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Saving...
+                      </>
+                    ) : (
+                      <>
+                        <Save className="h-4 w-4 mr-2" />
+                        Save Lab Settings
+                      </>
+                    )}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                <div className="flex items-center text-sm text-yellow-700">
+                  <AlertTriangle className="h-5 w-5 mr-2" />
+                  No lab settings found. Please contact support.
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Notifications Tab */}
+        {activeTab === 'notifications' && (
+          <NotificationSettings />
+        )}
+
+      </div>
 
       {/* User Form Modal (for adding new users) */}
       {showUserForm && labId && (
@@ -1150,34 +1247,7 @@ const Settings: React.FC = () => {
           permissions={permissions}
           availableRoles={availableRoles}
           labId={labId}
-          onSave={() => {
-            // Reload users after save
-            setSelectedUser(null);
-            // Trigger reload
-            if (labId) {
-              const reloadUsers = async () => {
-                const { data: labUsers } = await supabase
-                  .from('users')
-                  .select('*')
-                  .eq('lab_id', labId)
-                  .order('name');
-                
-                setUsers((labUsers || []).map((u: any) => ({
-                  id: u.id,
-                  name: u.name,
-                  email: u.email,
-                  role: u.role || 'Technician',
-                  department: u.department || '',
-                  status: u.status === 'Active' ? 'Active' : u.status === 'Inactive' ? 'Inactive' : 'Suspended',
-                  lastLogin: u.last_login || 'Never',
-                  permissions: [],
-                  phone: u.phone || '',
-                  joinDate: u.join_date || new Date().toISOString(),
-                })));
-              };
-              reloadUsers();
-            }
-          }}
+          onSave={reloadUsers}
         />
       )}
 
@@ -1186,32 +1256,7 @@ const Settings: React.FC = () => {
         <EditUserModal
           user={selectedUser}
           onClose={() => { setShowEditUserModal(false); setSelectedUser(null); }}
-          onSuccess={() => {
-            // Reload users after successful edit
-            if (labId) {
-              const reloadUsers = async () => {
-                const { data: labUsers } = await supabase
-                  .from('users')
-                  .select('*')
-                  .eq('lab_id', labId)
-                  .order('name');
-                
-                setUsers((labUsers || []).map((u: any) => ({
-                  id: u.id,
-                  name: u.name,
-                  email: u.email,
-                  role: u.role || 'Technician',
-                  department: u.department || '',
-                  status: u.status === 'Active' ? 'Active' : u.status === 'Inactive' ? 'Inactive' : 'Suspended',
-                  lastLogin: u.last_login || 'Never',
-                  permissions: [],
-                  phone: u.phone || '',
-                  joinDate: u.join_date || new Date().toISOString(),
-                })));
-              };
-              reloadUsers();
-            }
-          }}
+          onSuccess={reloadUsers}
           isAdmin={authUser?.user_metadata?.role === 'Admin'}
         />
       )}
