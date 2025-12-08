@@ -49,6 +49,8 @@ import AIPromptManager from './pages/AIPromptManager';
 import WorkflowExplainerTestPage from './pages/WorkflowExplainerTestPage';
 import OptimizationDemo from './pages/OptimizationDemo';
 import OutsourcedReportsConsole from './pages/OutsourcedReportsConsole';
+import OutsourcedReportsConsoleEnhanced from './pages/OutsourcedReportsConsoleEnhanced';
+import OutsourcedTestsQueue from './pages/OutsourcedTestsQueue';
 import OutsourcedLabsSettings from './pages/OutsourcedLabsSettings';
 
 const AppRoutes: React.FC = () => {
@@ -143,7 +145,9 @@ const AppRoutes: React.FC = () => {
                 <Route path="/whatsapp" element={<WhatsApp />} />
                 <Route path="/whatsapp/sync" element={<WhatsAppUserSyncManager />} />
                 {/* Master Data Routes */}
-                <Route path="/outsourced-reports" element={<OutsourcedReportsConsole />} />
+                <Route path="/outsourced-reports" element={<OutsourcedReportsConsoleEnhanced />} />
+                <Route path="/outsourced-reports-legacy" element={<OutsourcedReportsConsole />} />
+                <Route path="/outsourced-queue" element={<OutsourcedTestsQueue />} />
                 <Route path="/settings/outsourced-labs" element={<OutsourcedLabsSettings />} />
                 <Route path="/masters/doctors" element={<DoctorMaster />} />
                 <Route path="/masters/locations" element={<LocationMaster />} />

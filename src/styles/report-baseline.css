@@ -1,7 +1,10 @@
-@page {
-  size: A4;
-  margin: 15mm 15mm;
-}
+/* 
+ * LIMS Report Baseline Styles
+ * 
+ * NOTE: Page layout (margins, header/footer heights) are controlled by PDF.co API parameters
+ * DO NOT add @page rules or fixed header/footer dimensions here
+ * This CSS is for typography, tables, and content styling only
+ */
 
 :root {
   --report-font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
@@ -13,13 +16,7 @@
   --report-accent-color: #2563eb;
   --report-background-color: #ffffff;
   --report-section-gap: 1.5rem;
-  --report-horizontal-padding: 60px;
-  --report-body-padding-top: 20px;
-  --report-body-padding-bottom: 20px;
-  --report-header-height: 100px;
-  --report-footer-height: 80px;
-  --report-page-height: 1123px; /* 297mm at 96dpi */
-  --report-usable-body-height: 943px; /* 1123 - 100 - 80 */
+  --report-horizontal-padding: 20px;
 }
 
 /* ---------- Base layout ---------- */
@@ -31,8 +28,8 @@
   background-color: var(--report-background-color);
   font-size: 14px;
   line-height: 1.6;
-  margin: 0 auto;
-  max-width: 820px;
+  margin: 0;
+  padding: 0;
   box-sizing: border-box;
   z-index: 0;
 }
@@ -41,49 +38,89 @@
   box-sizing: border-box;
 }
 
+/* Header/Footer classes - display controlled by PDF.co overlay */
 .limsv2-report-header,
 .limsv2-report-footer {
-  padding: 12px var(--report-horizontal-padding);
-  background: var(--report-background-color);
-  position: relative;
-  z-index: 5;
-}
-
-.limsv2-report-header {
-  min-height: var(--report-header-height);
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 0.25rem;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.12);
-  padding: 12px var(--report-horizontal-padding);
+  display: none; /* Hidden in body - PDF.co overlay handles these */
 }
 
 .limsv2-report-body {
-  padding: var(--report-body-padding-top)
-    var(--report-horizontal-padding)
-    var(--report-body-padding-bottom);
+  padding: 15px var(--report-horizontal-padding);
   position: relative;
   z-index: 2;
-}
-
-.limsv2-report-body.limsv2-report-body--pdf {
-  padding: 48px var(--report-horizontal-padding);
-}
-
-.limsv2-report-footer {
-  min-height: var(--report-footer-height);
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 0.25rem;
-  border-top: 1px solid rgba(15, 23, 42, 0.12);
-  padding: 12px var(--report-horizontal-padding);
 }
 
 .report-region {
   position: relative;
   z-index: 2;
+}
+
+/* ---------- Report Extras Section ---------- */
+
+.report-extras-section {
+  margin-top: 30px;
+  padding: 15px;
+}
+
+.report-extras-title {
+  text-align: center;
+  margin-bottom: 20px;
+  color: var(--report-heading-color);
+  border-bottom: 2px solid var(--report-accent-color);
+  padding-bottom: 10px;
+  font-size: 1.25rem;
+}
+
+.clinical-summary-section {
+  padding: 15px;
+  background: #f8fafc;
+  border: 1px solid var(--report-border-color);
+  border-radius: 8px;
+  margin-top: 15px;
+}
+
+.clinical-summary-section--print {
+  background: none;
+  border: 1px solid #ccc;
+}
+
+.clinical-summary-title {
+  font-size: 1rem;
+  color: var(--report-heading-color);
+  border-bottom: 1px solid var(--report-border-color);
+  padding-bottom: 8px;
+  margin-bottom: 12px;
+}
+
+.clinical-summary-content {
+  line-height: 1.6;
+}
+
+.clinical-summary-text {
+  margin: 0;
+}
+
+.clinical-summary-meta {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: var(--report-muted-color);
+  font-style: italic;
+}
+
+.clinical-recommendation {
+  margin-top: 12px;
+  padding: 10px;
+  border-left: 3px solid var(--report-accent-color);
+  background: rgba(37, 99, 235, 0.05);
+  border-radius: 4px;
+}
+
+.clinical-recommendation p {
+  margin: 5px 0 0 0;
+}
+
+.trend-charts-section {
+  margin-top: 15px;
 }
 
 /* ---------- Watermark ---------- */
@@ -426,6 +463,7 @@
 }
 
 /* ---------- Print / PDF rules ---------- */
+/* NOTE: Page margins, header/footer heights are controlled by PDF.co API parameters */
 
 @media print {
   body {
@@ -440,88 +478,46 @@
     padding: 0;
     width: 100%;
     box-sizing: border-box;
-    min-height: 0 !important;
     orphans: 3;
     widows: 3;
   }
 
   .limsv2-report-body {
-    padding-top: calc(var(--report-header-height) + 20px);
-    padding-bottom: calc(var(--report-footer-height) + 20px);
-    padding-left: 0;
-    padding-right: 0;
+    padding: 10px 15px;
     width: 100%;
     box-sizing: border-box;
-    min-height: 0 !important;
-    background-image: none !important;
   }
 
-  .limsv2-report-body.limsv2-report-body--pdf {
-    padding-top: calc(var(--report-header-height) + 20px) !important;
-    padding-bottom: calc(var(--report-footer-height) + 20px) !important;
-    padding-left: 0 !important;
-    padding-right: 0 !important;
+  /* Header/Footer handled by PDF.co overlay - hide in body */
+  .limsv2-report-header,
+  .limsv2-report-footer {
+    display: none;
   }
 
-  /* Collapse empty paragraphs/divs */
+  /* Collapse empty elements */
   .limsv2-report p:empty,
-  .limsv2-report div:empty {
-    display: none !important;
-  }
-
-  /* Hide completely empty headings */
+  .limsv2-report div:empty,
   .limsv2-report h1:empty,
   .limsv2-report h2:empty,
   .limsv2-report h3:empty,
   .limsv2-report h4:empty,
   .limsv2-report h5:empty,
   .limsv2-report h6:empty {
-    display: none !important;
-    margin: 0 !important;
-    height: 0 !important;
+    display: none;
   }
 
-  .limsv2-report-body > *:last-child {
-    margin-bottom: 0 !important;
-    padding-bottom: 0 !important;
-  }
-
-  /* Fixed header/footer for each printed page */
-  .limsv2-report-header {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    width: 100%;
-    height: var(--report-header-height);
-    padding: 16px var(--report-horizontal-padding);
-    box-sizing: border-box;
-  }
-
-  .limsv2-report-footer {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    width: 100%;
-    height: var(--report-footer-height);
-    padding: 16px var(--report-horizontal-padding);
-    box-sizing: border-box;
-  }
-
-  /* Only elements you explicitly mark should try to avoid breaking */
-  .limsv2-report .avoid-break {
-    break-inside: avoid;
-    page-break-inside: avoid;
-  }
-
-  /* Allow tables to break by default – avoids huge white gaps */
+  /* Allow tables to break naturally */
   .limsv2-report table {
     break-inside: auto;
     page-break-inside: auto;
   }
 
-  /* Optional helpers if you ever want manual breaks */
+  /* Optional helpers for manual page breaks */
+  .limsv2-report .avoid-break {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
   .limsv2-report .page-break-before {
     break-before: page;
     page-break-before: always;
@@ -533,7 +529,7 @@
   }
 }
 
-/* Optional: manual page-break marker element (only if you actually insert it) */
+/* Optional: manual page-break marker element */
 .report-page-break-marker {
   position: relative;
   display: block;

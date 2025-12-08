@@ -26,6 +26,7 @@ import {
   ChevronRight,
   Building2,
   FileStack,
+  ListOrdered,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -63,6 +64,7 @@ const navigation = [
 
   // Outsourced Reports
   { name: 'Outsourced Reports', href: '/outsourced-reports', icon: FileStack, category: 'outsourced' },
+  { name: 'Outsourced Queue', href: '/outsourced-queue', icon: ListOrdered, category: 'outsourced' },
 
   // AI Workflow Management
   { name: 'Workflow Management', href: '/workflows', icon: Workflow, category: 'workflows' },

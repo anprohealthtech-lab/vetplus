@@ -73,6 +73,7 @@ interface LabSettings {
   pincode: string;
   phone: string;
   email: string;
+  email_domain?: string;
   license_number: string;
   registration_number: string;
   watermark_enabled: boolean;
@@ -377,6 +378,7 @@ const Settings: React.FC = () => {
             pincode: labData.pincode || '',
             phone: labData.phone || '',
             email: labData.email || '',
+            email_domain: labData.email_domain || '',
             license_number: labData.license_number || '',
             registration_number: labData.registration_number || '',
             watermark_enabled: labData.watermark_enabled || false,
@@ -1086,6 +1088,22 @@ const Settings: React.FC = () => {
                           className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                           placeholder="+91 1234567890"
                         />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          <Mail className="h-4 w-4 inline mr-1" />
+                          Email Domain (for sending)
+                        </label>
+                        <input
+                          type="text"
+                          value={labSettings.email_domain || ''}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, email_domain: e.target.value } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="bestpathologylab.in"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          ⚠️ Must be verified in Resend. Emails will be sent from reports@{labSettings.email_domain || 'yourdomain.com'}
+                        </p>
                       </div>
                     </div>
                   </div>

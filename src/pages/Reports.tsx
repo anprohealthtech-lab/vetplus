@@ -23,7 +23,8 @@ import {
   SortAsc,
   SortDesc,
   Wand2,
-  Printer
+  Printer,
+  Settings
 } from 'lucide-react';
 import {
   format,
@@ -46,6 +47,12 @@ import type { LabTemplateRecord, ReportData, LabBrandingHtmlDefaults } from '../
 import PDFProgressModal from '../components/PDFProgressModal';
 import { usePDFGeneration, isOrderReportReady } from '../hooks/usePDFGeneration';
 import QuickSendReport from '../components/WhatsApp/QuickSendReport';
+import PDFSettingsModal, { 
+  PDFRenderSettings, 
+  settingsToPdfCoOptions,
+  loadSavedPDFSettings,
+  PDF_PRESETS
+} from '../components/PDF/PDFSettingsModal';
 
 // Helper function to safely format dates
 const safeFormatDate = (dateValue: string | null | undefined, formatString: string = 'MMM d, yyyy'): string => {
@@ -132,8 +139,12 @@ const Reports: React.FC = () => {
   const [isTestingTemplate, setIsTestingTemplate] = useState(false);
   const [previewingOrderId, setPreviewingOrderId] = useState<string | null>(null);
 
+  // PDF Settings Modal state
+  const [showPDFSettings, setShowPDFSettings] = useState(false);
+  const [pdfSettingsOrderId, setPdfSettingsOrderId] = useState<string | null>(null);
+
   // PDF generation hook
-  const { isGenerating, stage, progress, generatePDF, resetState } = usePDFGeneration();
+  const { isGenerating, stage, progress, generatePDF, regenerateWithSettings, resetState } = usePDFGeneration();
 
   // Load approved results
   const loadApprovedResults = useCallback(async () => {
@@ -450,6 +461,33 @@ const Reports: React.FC = () => {
       alert('Download failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
     }
   }, [generatePDF, loadApprovedResults]);
+
+  // Open PDF Settings modal for a specific order
+  const handleOpenPDFSettings = useCallback((orderId: string) => {
+    setPdfSettingsOrderId(orderId);
+    setShowPDFSettings(true);
+  }, []);
+
+  // Handle PDF regeneration with custom settings
+  const handleRegenerateWithSettings = useCallback(async (settings: PDFRenderSettings) => {
+    if (!pdfSettingsOrderId) return;
+    
+    try {
+      const pdfCoOptions = settingsToPdfCoOptions(settings);
+      await regenerateWithSettings(pdfSettingsOrderId, pdfCoOptions);
+      
+      // Refresh the list after regeneration
+      setTimeout(async () => {
+        await loadApprovedResults();
+      }, 1000);
+      
+      setShowPDFSettings(false);
+      setPdfSettingsOrderId(null);
+    } catch (error) {
+      console.error('Regeneration failed:', error);
+      alert('PDF regeneration failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  }, [pdfSettingsOrderId, regenerateWithSettings, loadApprovedResults]);
 
   const prepareReportData = async (group: OrderGroup): Promise<PreparedReport> => {
     const { data: context, error } = await database.reports.getTemplateContext(group.order_id);
@@ -1318,6 +1356,13 @@ const Reports: React.FC = () => {
                                     )}
                                     <span>Generate Final</span>
                                   </button>
+                                  <button
+                                    className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
+                                    onClick={() => handleOpenPDFSettings(group.order_id)}
+                                    title="Adjust PDF settings and generate"
+                                  >
+                                    <Settings className="w-4 h-4" />
+                                  </button>
                                 </>
                               ) : (
                                 <>
@@ -1337,6 +1382,14 @@ const Reports: React.FC = () => {
                                   >
                                     <Download className="w-4 h-4" />
                                     <span>Download Final</span>
+                                  </button>
+                                  <button
+                                    className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
+                                    onClick={() => handleOpenPDFSettings(group.order_id)}
+                                    title="Adjust PDF settings and regenerate"
+                                  >
+                                    <Settings className="w-4 h-4" />
+                                    <span>Settings</span>
                                   </button>
                                   <button
                                     className={`flex items-center space-x-1 px-3 py-1.5 text-sm rounded-md transition-colors ${
@@ -1499,6 +1552,13 @@ const Reports: React.FC = () => {
                                     )}
                                     <span>Final</span>
                                   </button>
+                                  <button
+                                    className="flex items-center justify-center px-3 py-2 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
+                                    onClick={() => handleOpenPDFSettings(group.order_id)}
+                                    title="PDF Settings"
+                                  >
+                                    <Settings className="w-4 h-4" />
+                                  </button>
                                 </>
                               ) : (
                                 <>
@@ -1516,6 +1576,13 @@ const Reports: React.FC = () => {
                                   >
                                     <Download className="w-4 h-4" />
                                     <span>Download</span>
+                                  </button>
+                                  <button
+                                    className="flex items-center justify-center px-3 py-2 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
+                                    onClick={() => handleOpenPDFSettings(group.order_id)}
+                                    title="PDF Settings"
+                                  >
+                                    <Settings className="w-4 h-4" />
                                   </button>
                                   <button
                                     className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm rounded-md transition-colors ${
@@ -1636,6 +1703,18 @@ const Reports: React.FC = () => {
         stage={stage}
         progress={progress}
         onClose={resetState}
+      />
+
+      {/* PDF Settings Modal */}
+      <PDFSettingsModal
+        isOpen={showPDFSettings}
+        onClose={() => {
+          setShowPDFSettings(false);
+          setPdfSettingsOrderId(null);
+        }}
+        onRegenerate={handleRegenerateWithSettings}
+        currentSettings={loadSavedPDFSettings() || PDF_PRESETS.standard}
+        isRegenerating={isGenerating}
       />
 
       {/* Mobile FAB - Generate Report */}

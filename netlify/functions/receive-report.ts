@@ -68,14 +68,14 @@ const handler: Handler = async (event, context) => {
     const body = JSON.parse(event.body || '{}');
     
     // Postmark payload structure
-    // OriginalRecipient = the email that was forwarded TO (lab user's email like labA@gmail.com)
+    // ToFull[0].Email = the actual recipient email (lab user's email like labA@gmail.com)
     // From = the sender (outsourced lab email)
-    const { From, Subject, Attachments, MessageID, OriginalRecipient, To } = body;
+    const { From, Subject, Attachments, MessageID, ToFull, To } = body;
     
     // The forwarding email is key - it identifies which lab user/lab this belongs to
-    // OriginalRecipient is the actual email before forwarding (e.g., labuser@gmail.com)
+    // ToFull[0].Email contains the actual recipient before Postmark inbound address
     // If not available, fall back to To field
-    const forwardingEmail = OriginalRecipient || To;
+    const forwardingEmail = ToFull?.[0]?.Email || To;
 
     console.log(`Received email from ${From} to ${forwardingEmail} with subject: ${Subject}`);
 

@@ -691,6 +691,117 @@ const ResultVerificationConsole: React.FC = () => {
     }
   };
 
+  // Send rejected analyte back to result entry as pending (for re-run)
+  const sendForRerun = async (rv_id: string) => {
+    const note = prompt("Add a note for re-run request:", "Please re-run this test") ?? null;
+    if (!note?.trim()) {
+      alert("Note is required to send for re-run");
+      return;
+    }
+    
+    setBusyFor(rv_id, true);
+    const { error } = await supabase
+      .from("result_values")
+      .update({
+        verify_status: "pending",
+        verify_note: `RE-RUN REQUESTED: ${note}`,
+        verified_at: null,
+        verified_by: null,
+      })
+      .eq("id", rv_id);
+    setBusyFor(rv_id, false);
+
+    if (!error) {
+      setRowsByResult((s) => {
+        const next = { ...s };
+        for (const rid in next) {
+          next[rid] = next[rid].map((a) => 
+            a.id === rv_id 
+              ? { ...a, verify_status: "pending", verify_note: `RE-RUN REQUESTED: ${note}`, verified_at: null, verified_by: null } 
+              : a
+          );
+        }
+        return next;
+      });
+      await loadPanels();
+      alert("Analyte sent back for re-run");
+    }
+  };
+
+  // Edit rejected analyte value inline
+  const [editingAnalyteId, setEditingAnalyteId] = useState<string | null>(null);
+  const [editValues, setEditValues] = useState<{
+    value: string;
+    unit: string;
+    reference_range: string;
+    flag: string | null;
+  }>({ value: "", unit: "", reference_range: "", flag: null });
+
+  const startEditAnalyte = (analyte: Analyte) => {
+    setEditingAnalyteId(analyte.id);
+    setEditValues({
+      value: analyte.value || "",
+      unit: analyte.unit,
+      reference_range: analyte.reference_range,
+      flag: analyte.flag,
+    });
+  };
+
+  const cancelEditAnalyte = () => {
+    setEditingAnalyteId(null);
+    setEditValues({ value: "", unit: "", reference_range: "", flag: null });
+  };
+
+  const saveEditedAnalyte = async (rv_id: string) => {
+    if (!editValues.value.trim()) {
+      alert("Value is required");
+      return;
+    }
+
+    setBusyFor(rv_id, true);
+    const { error } = await supabase
+      .from("result_values")
+      .update({
+        value: editValues.value,
+        unit: editValues.unit,
+        reference_range: editValues.reference_range,
+        flag: editValues.flag,
+        verify_status: "pending", // Reset to pending after edit
+        verify_note: "Value edited by verifier",
+        verified_at: null,
+        verified_by: null,
+      })
+      .eq("id", rv_id);
+    setBusyFor(rv_id, false);
+
+    if (!error) {
+      setRowsByResult((s) => {
+        const next = { ...s };
+        for (const rid in next) {
+          next[rid] = next[rid].map((a) => 
+            a.id === rv_id 
+              ? { 
+                  ...a, 
+                  value: editValues.value,
+                  unit: editValues.unit,
+                  reference_range: editValues.reference_range,
+                  flag: editValues.flag,
+                  verify_status: "pending",
+                  verify_note: "Value edited by verifier",
+                  verified_at: null,
+                  verified_by: null
+                } 
+              : a
+          );
+        }
+        return next;
+      });
+      setEditingAnalyteId(null);
+      await loadPanels();
+      alert("Analyte value updated and reset to pending");
+    }
+  };
+
   const approveAllInPanel = async (row: PanelRow) => {
     const list = rowsByResult[row.result_id] || [];
     if (!list.length) return;
@@ -881,6 +992,7 @@ const ResultVerificationConsole: React.FC = () => {
     const cacheKey = `${patientId}-${a.parameter}`;
     const hasTrend = trendData[cacheKey] && trendData[cacheKey].length > 0;
     const [showAISuggestion, setShowAISuggestion] = useState(false);
+    const isEditing = editingAnalyteId === a.id;
 
     const getFlagBadge = (flag: string | null) => {
       if (!flag) return null;
@@ -940,27 +1052,124 @@ const ResultVerificationConsole: React.FC = () => {
             )}
           </td>
           <td className="px-4 py-4">
-            <div className="font-bold text-lg text-gray-900">{a.value ?? "—"}</div>
+            {isEditing ? (
+              <input
+                type="text"
+                value={editValues.value}
+                onChange={(e) => setEditValues(prev => ({ ...prev, value: e.target.value }))}
+                className="w-full px-2 py-1 border border-blue-300 rounded focus:ring-2 focus:ring-blue-500 font-bold text-lg"
+                placeholder="Enter value"
+              />
+            ) : (
+              <div className="font-bold text-lg text-gray-900">{a.value ?? "—"}</div>
+            )}
           </td>
           <td className="px-4 py-4">
-            <span className="font-medium text-gray-700">{a.unit}</span>
+            {isEditing ? (
+              <input
+                type="text"
+                value={editValues.unit}
+                onChange={(e) => setEditValues(prev => ({ ...prev, unit: e.target.value }))}
+                className="w-full px-2 py-1 border border-blue-300 rounded focus:ring-2 focus:ring-blue-500 font-medium"
+                placeholder="Unit"
+              />
+            ) : (
+              <span className="font-medium text-gray-700">{a.unit}</span>
+            )}
           </td>
           <td className="px-4 py-4">
-            <div className="text-sm text-gray-600 max-w-xs">
-              {a.reference_range}
-            </div>
+            {isEditing ? (
+              <input
+                type="text"
+                value={editValues.reference_range}
+                onChange={(e) => setEditValues(prev => ({ ...prev, reference_range: e.target.value }))}
+                className="w-full px-2 py-1 border border-blue-300 rounded focus:ring-2 focus:ring-blue-500 text-sm"
+                placeholder="Reference range"
+              />
+            ) : (
+              <div className="text-sm text-gray-600 max-w-xs">{a.reference_range}</div>
+            )}
           </td>
           <td className="px-4 py-4">
-            {getFlagBadge(a.flag)}
+            {isEditing ? (
+              <select
+                value={editValues.flag || ""}
+                onChange={(e) => setEditValues(prev => ({ ...prev, flag: e.target.value || null }))}
+                className="px-2 py-1 border border-blue-300 rounded focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Normal</option>
+                <option value="H">High</option>
+                <option value="L">Low</option>
+                <option value="C">Critical</option>
+              </select>
+            ) : (
+              getFlagBadge(a.flag)
+            )}
           </td>
           <td className="px-4 py-4">
             <div className="flex items-center space-x-3">
-              {status === "approved" ? (
+              {isEditing ? (
+                // Edit mode buttons
+                <div className="flex items-center space-x-2">
+                  <button
+                    disabled={isBusy}
+                    onClick={() => saveEditedAnalyte(a.id)}
+                    className="inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-blue-500 to-indigo-500 text-white hover:from-blue-600 hover:to-indigo-600 transition-all duration-200 shadow-sm disabled:opacity-50"
+                  >
+                    {isBusy ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4 mr-2" />
+                    )}
+                    Save
+                  </button>
+                  <button
+                    onClick={cancelEditAnalyte}
+                    className="inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold bg-gray-200 text-gray-700 hover:bg-gray-300 transition-all duration-200"
+                  >
+                    <X className="h-4 w-4 mr-2" />
+                    Cancel
+                  </button>
+                </div>
+              ) : status === "approved" ? (
                 <span className="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-green-600 to-emerald-600 text-white shadow-sm">
                   <CheckSquare className="h-4 w-4 mr-2" />
                   Approved
                 </span>
+              ) : status === "rejected" ? (
+                // Rejected state - show Edit and Re-run options
+                <div className="flex flex-col space-y-2">
+                  <div className="flex items-center space-x-2">
+                    <span className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm font-semibold bg-gradient-to-r from-red-600 to-rose-600 text-white">
+                      <XCircle className="h-4 w-4 mr-2" />
+                      Rejected
+                    </span>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      disabled={isBusy}
+                      onClick={() => startEditAnalyte(a)}
+                      className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-blue-100 to-indigo-100 text-blue-700 hover:from-blue-200 hover:to-indigo-200 transition-all duration-200 shadow-sm disabled:opacity-50"
+                      title="Edit value and reset to pending"
+                    >
+                      <svg className="h-3.5 w-3.5 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                      </svg>
+                      Edit Value
+                    </button>
+                    <button
+                      disabled={isBusy}
+                      onClick={() => sendForRerun(a.id)}
+                      className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-orange-100 to-amber-100 text-orange-700 hover:from-orange-200 hover:to-amber-200 transition-all duration-200 shadow-sm disabled:opacity-50"
+                      title="Send back to result entry for re-run"
+                    >
+                      <RefreshCcw className="h-3.5 w-3.5 mr-1.5" />
+                      Send for Re-run
+                    </button>
+                  </div>
+                </div>
               ) : (
+                // Pending state - show Approve and Reject
                 <div className="flex items-center space-x-2">
                   <button
                     disabled={isBusy}
@@ -978,13 +1187,10 @@ const ResultVerificationConsole: React.FC = () => {
                   <button
                     disabled={isBusy}
                     onClick={() => rejectAnalyte(a.id)}
-                    className={`inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold transition-all duration-200 shadow-sm ${status === "rejected"
-                      ? "bg-gradient-to-r from-red-600 to-rose-600 text-white"
-                      : "bg-gradient-to-r from-red-100 to-rose-100 text-red-700 hover:from-red-200 hover:to-rose-200"
-                      }`}
+                    className="inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-red-100 to-rose-100 text-red-700 hover:from-red-200 hover:to-rose-200 transition-all duration-200 shadow-sm disabled:opacity-50"
                   >
                     <XCircle className="h-4 w-4 mr-2" />
-                    {status === "rejected" ? "Rejected" : "Reject"}
+                    Reject
                   </button>
                 </div>
               )}

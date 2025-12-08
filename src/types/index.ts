@@ -671,3 +671,107 @@ export interface TrendDataPoint {
   order_id: string;
   sample_id?: string;
 }
+
+// =============================================
+// Outsourced Reports System
+// =============================================
+export interface OutsourcedReport {
+  id: string;
+  lab_id: string;
+  source: 'email_forward' | 'direct_connect' | 'manual_upload';
+  sender_email?: string;
+  recipient_email?: string;
+  subject?: string;
+  received_at: string;
+  file_url: string;
+  file_name?: string;
+  status: 'pending_processing' | 'processing' | 'processed' | 'failed' | 'verified';
+  ai_extracted_data?: OutsourcedReportAIData;
+  ai_confidence?: number;
+  patient_id?: string;
+  order_id?: string;
+  processing_error?: string;
+  matched_user_id?: string;
+  match_confidence?: number;
+  match_suggestions?: OrderMatchSuggestion[];
+  matched_at?: string;
+  matched_by?: string;
+  merge_status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OutsourcedReportAIData {
+  patient_name?: string;
+  test_name?: string;
+  collection_date?: string;
+  lab_name?: string;
+  results?: Array<{
+    analyte_name: string;
+    value: string;
+    unit: string;
+    reference_range: string;
+    flag?: string;
+  }>;
+}
+
+export interface OrderMatchSuggestion {
+  order_id: string;
+  patient_id: string;
+  patient_name: string;
+  order_number?: number;
+  order_date: string;
+  confidence: number;
+  match_reasons: string[];
+  test_names?: string[];
+}
+
+export interface LabOutsourcingSettings {
+  id: string;
+  lab_id: string;
+  auto_match: boolean;
+  match_confidence_threshold: number;
+  match_date_range_days: number;
+  logistics_providers: LogisticsProvider[];
+  default_tat_days: number;
+  enable_logistics_tracking: boolean;
+  merge_mode: 'print_only' | 'ecopy_only' | 'both';
+  auto_merge_on_match: boolean;
+  preserve_outsourced_branding: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LogisticsProvider {
+  id: string;
+  name: string;
+  contact?: string;
+  tracking_url_template?: string;
+}
+
+export interface OutsourcedTestQueueItem {
+  result_id: string;
+  order_id: string;
+  order_number?: number;
+  patient_id: string;
+  patient_name: string;
+  test_name: string;
+  outsourced_to_lab_id: string;
+  outsourced_lab_name?: string;
+  outsourced_status: 'not_outsourced' | 'pending_send' | 'sent' | 'awaiting_report' | 'received' | 'merged';
+  outsourced_logistics_status?: 'pending_dispatch' | 'awaiting_pickup' | 'in_transit' | 'delivered_to_lab' | 'report_awaited';
+  tracking_barcode?: string;
+  dispatched_at?: string;
+  dispatched_by?: string;
+  outsourced_tat_estimate?: string;
+  logistics_notes?: string;
+  created_at: string;
+}
+
+export interface MergedPDFResult {
+  printPdfUrl?: string;
+  ecopyPdfUrl?: string;
+  mergedAt: string;
+  success: boolean;
+  error?: string;
+}

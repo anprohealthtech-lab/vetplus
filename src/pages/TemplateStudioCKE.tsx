@@ -707,20 +707,10 @@ const buildInstructionFromAudit = (audit: TemplateAuditResult): string => {
     );
   }
 
-  if (audit.headerFooter) {
-    const headerIssues: string[] = [];
-    if (!audit.headerFooter.headerImage) {
-      headerIssues.push('add or restore the header image/logo container at the top with a placeholder img using {{headerImageUrl}}');
-    }
-    if (!audit.headerFooter.footerImage) {
-      headerIssues.push('include a footer image container before the end of the document');
-    }
-    if (!audit.headerFooter.signatureBlock) {
-      headerIssues.push('ensure the footer includes a signature block with {{signatoryImageUrl}} plus text placeholders for name and title');
-    }
-    if (headerIssues.length) {
-      lines.push(headerIssues.join('; '));
-    }
+  // Header/Footer now come from PDF.co overlay (labs table), not from template HTML
+  // Only check for signature block in body content
+  if (audit.headerFooter?.signatureBlock === false) {
+    lines.push('ensure the body includes a signature block with {{signatoryImageUrl}} plus text placeholders for name and title');
   }
 
   if (audit.placeholders?.requiredMissing?.length) {
@@ -2895,14 +2885,9 @@ const TemplateStudioCKE: React.FC = () => {
                       onClick={() => {
                         const printWindow = window.open('', '_blank');
                         if (printWindow) {
-                          // Extract regions from current template
-                          const headerRegion = document.querySelector('[data-report-region="header"]');
+                          // Extract body content only - header/footer come from PDF.co overlay
                           const bodyRegion = document.querySelector('[data-report-region="body"]') || editorContainerRef.current;
-                          const footerRegion = document.querySelector('[data-report-region="footer"]');
-
-                          let headerHtml = headerRegion?.innerHTML || 'Place header content here';
                           let bodyHtml = bodyRegion?.innerHTML || 'Place body content here';
-                          let footerHtml = footerRegion?.innerHTML || 'Place footer content here';
 
                           // Render placeholders with sample data
                           const sampleContext = {
@@ -2930,18 +2915,16 @@ const TemplateStudioCKE: React.FC = () => {
                             return result;
                           };
 
-                          headerHtml = replacePlaceholders(headerHtml);
                           bodyHtml = replacePlaceholders(bodyHtml);
-                          footerHtml = replacePlaceholders(footerHtml);
 
                           printWindow.document.write(`
                             <html>
                               <head>
                                 <title>Print Preview - ${templateMeta?.template_name || 'Untitled'}</title>
                                 <style>
+                                  /* Page layout controlled by PDF.co API parameters - no hardcoded margins */
                                   @page { 
-                                    size: A4; 
-                                    margin: 15mm 15mm; 
+                                    size: A4;
                                   }
                                   
                                   /* Reset and base styles */
@@ -3149,9 +3132,13 @@ const TemplateStudioCKE: React.FC = () => {
                               </head>
                               <body>
                                 <div class="pdf-container">
-                                  <div class="pdf-header">${headerHtml}</div>
+                                  <div class="pdf-header" style="text-align: center; color: #666; font-size: 11px; padding: 8px;">
+                                    <em>Header will be added from lab settings during PDF generation</em>
+                                  </div>
                                   <div class="pdf-body">${bodyHtml}</div>
-                                  <div class="pdf-footer">${footerHtml}</div>
+                                  <div class="pdf-footer" style="text-align: center; color: #666; font-size: 11px; padding: 8px;">
+                                    <em>Footer will be added from lab settings during PDF generation</em>
+                                  </div>
                                 </div>
                               </body>
                             </html>

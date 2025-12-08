@@ -14,6 +14,7 @@ import {
   Sparkles,
   CheckCircle,
   AlertTriangle,
+  AlertCircle,
   Loader,
   Clock as ClockIcon
 } from 'lucide-react';
@@ -123,6 +124,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   
   // Outsourcing config per test: { testId: outsourcedLabId | 'inhouse' | null }
   const [testOutsourcingConfig, setTestOutsourcingConfig] = useState<Record<string, string>>({});
+
+  // Loading and error states
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const [submissionProgress, setSubmissionProgress] = useState<string>('');
 
   // Searches / dropdown visibility
   const [patientSearch, setPatientSearch] = useState<string>('');
@@ -681,9 +687,21 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    // Clear previous errors
+    setValidationErrors([]);
+    const errors: string[] = [];
+
+    // Comprehensive validation
     if (!selectedPatient?.id) {
-      alert('Please select a patient.');
-      return;
+      errors.push('❌ Patient: Please select a patient');
+    }
+
+    if (!selectedDoctor) {
+      errors.push('❌ Referring Doctor: Please select or enter a referring doctor');
+    }
+
+    if (selectedTests.length === 0) {
+      errors.push('❌ Tests: Please select at least one test');
     }
 
     if (
@@ -691,48 +709,75 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       !selectedAccount &&
       !selectedLocation
     ) {
-      alert('For non-self payments, choose a Bill-to Account or a Location.');
-      return;
+      errors.push('❌ Payment: For non-self payments, choose a Bill-to Account or Location');
     }
 
     if (creditInfo && !creditInfo.allowed) {
-      alert(
-        `${creditInfo.kind === 'account' ? 'Account' : 'Location'} credit limit exceeded. Available credit: ₹${creditInfo.availableCredit}`
+      errors.push(
+        `❌ Credit Limit: ${creditInfo.kind === 'account' ? 'Account' : 'Location'} credit limit exceeded. Available: ₹${creditInfo.availableCredit}`
       );
+    }
+
+    // If validation fails, show errors and stop
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      // Scroll to top to show errors
+      document.querySelector('.overflow-y-auto')?.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
 
-    // Build selected tests payload (if any)
-    const selectedTestDetails = testGroups.filter((t) => selectedTests.includes(t.id));
-    const testsPayload =
-      selectedTestDetails.length > 0
-        ? selectedTestDetails.map((t) => ({
-          id: t.id,
-          name: t.name,
-          type: t.type ?? 'test',
-          price: t.price ?? 0,
-          outsourced_lab_id: testOutsourcingConfig[t.id] === 'inhouse' ? null : testOutsourcingConfig[t.id] || null
-        }))
-        : undefined;
+    // Start submission with loading state
+    setIsSubmitting(true);
+    setSubmissionProgress('Preparing order data...');
 
-    // Compose order payload (account layer included)
-    const orderData: any = {
-      patient_id: selectedPatient.id,
-      patient_name: selectedPatient.name,
-      referring_doctor_id: selectedDoctor || null,
-      location_id: selectedLocation || null, // collection/origin
-      account_id: selectedAccount || null, // B2B bill-to
-      payment_type: paymentType,
-      priority,
-      expected_date: expectedDate,
-      doctor: doctors.find((d) => d.id === selectedDoctor)?.name || null,
-      notes: notes || null
-    };
+    try {
+      // Build selected tests payload (if any)
+      setSubmissionProgress('Processing test selections...');
+      const selectedTestDetails = testGroups.filter((t) => selectedTests.includes(t.id));
+      
+      const testsPayload =
+        selectedTestDetails.length > 0
+          ? selectedTestDetails.map((t) => {
+              const outsourcedLabId = testOutsourcingConfig[t.id] === 'inhouse' ? null : testOutsourcingConfig[t.id] || null;
+              return {
+                id: t.id,
+                name: t.name,
+                type: t.type ?? 'test',
+                price: t.price ?? 0,
+                outsourced_lab_id: outsourcedLabId
+              };
+            })
+          : undefined;
 
-    if (testsPayload) orderData.tests = testsPayload;
-    if (testRequestFile) orderData.testRequestFile = testRequestFile;
+      // Compose order payload (account layer included)
+      setSubmissionProgress('Creating order record...');
+      const orderData: any = {
+        patient_id: selectedPatient.id,
+        patient_name: selectedPatient.name,
+        referring_doctor_id: selectedDoctor || null,
+        location_id: selectedLocation || null, // collection/origin
+        account_id: selectedAccount || null, // B2B bill-to
+        payment_type: paymentType,
+        priority,
+        expected_date: expectedDate,
+        doctor: doctors.find((d) => d.id === selectedDoctor)?.name || null,
+        notes: notes || null
+      };
 
-    onSubmit(orderData);
+      if (testsPayload) orderData.tests = testsPayload;
+      if (testRequestFile) orderData.testRequestFile = testRequestFile;
+
+      setSubmissionProgress('Saving to database...');
+      await onSubmit(orderData);
+      
+      setSubmissionProgress('Order created successfully!');
+      // Form will close automatically by parent component
+    } catch (error: any) {
+      console.error('Order submission error:', error);
+      setValidationErrors([`❌ Submission Failed: ${error.message || 'Unknown error occurred'}`]);
+      setIsSubmitting(false);
+      setSubmissionProgress('');
+    }
   };
 
   // Totals (for UI display only)
@@ -751,6 +796,37 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-8">
+          {/* Validation Errors Display */}
+          {validationErrors.length > 0 && (
+            <div className="bg-red-50 border-2 border-red-200 rounded-lg p-4 space-y-2">
+              <div className="flex items-center gap-2 text-red-800 font-semibold">
+                <AlertCircle className="h-5 w-5" />
+                <span>Please fix the following errors:</span>
+              </div>
+              <ul className="space-y-1 ml-7">
+                {validationErrors.map((error, idx) => (
+                  <li key={idx} className="text-sm text-red-700">{error}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Loading Overlay */}
+          {isSubmitting && (
+            <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
+              <div className="flex items-center gap-3">
+                <Loader className="h-5 w-5 text-blue-600 animate-spin" />
+                <div className="flex-1">
+                  <div className="text-sm font-semibold text-blue-900">Creating Order...</div>
+                  <div className="text-xs text-blue-700 mt-1">{submissionProgress}</div>
+                </div>
+              </div>
+              <div className="mt-3 h-2 bg-blue-200 rounded-full overflow-hidden">
+                <div className="h-full bg-blue-600 animate-pulse" style={{ width: '100%' }} />
+              </div>
+            </div>
+          )}
+
           {/* 🚀 TRF Upload Section - AT TOP */}
           <section className="space-y-3 bg-gradient-to-r from-purple-50 to-blue-50 p-4 rounded-lg border-2 border-dashed border-purple-300">
             <div className="flex items-center gap-2 mb-2">
@@ -854,6 +930,37 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               )}
             </div>
           </section>
+
+          {/* Validation Errors Display */}
+          {validationErrors.length > 0 && (
+            <div className="bg-red-50 border-2 border-red-200 rounded-lg p-4 space-y-2">
+              <div className="flex items-center gap-2 text-red-800 font-semibold">
+                <AlertCircle className="h-5 w-5" />
+                <span>Please fix the following errors:</span>
+              </div>
+              <ul className="space-y-1 ml-7">
+                {validationErrors.map((error, idx) => (
+                  <li key={idx} className="text-sm text-red-700">{error}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Loading Overlay */}
+          {isSubmitting && (
+            <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
+              <div className="flex items-center gap-3">
+                <Loader className="h-5 w-5 text-blue-600 animate-spin" />
+                <div className="flex-1">
+                  <div className="text-sm font-semibold text-blue-900">Creating Order...</div>
+                  <div className="text-xs text-blue-700 mt-1">{submissionProgress}</div>
+                </div>
+              </div>
+              <div className="mt-3 h-2 bg-blue-200 rounded-full overflow-hidden">
+                <div className="h-full bg-blue-600 animate-pulse" style={{ width: '100%' }} />
+              </div>
+            </div>
+          )}
 
           {/* Patient Section */}
           <section className="space-y-3 pb-6">
@@ -1170,7 +1277,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               {/* Referring Doctor */}
               <div className="md:col-span-3 relative" style={{ minHeight: showDoctorDropdown && filteredDoctors.length > 0 ? '230px' : 'auto' }}>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Referring Doctor
+                  Referring Doctor <span className="text-red-500 text-lg" title="Required field">*</span>
                 </label>
                 <div className="relative">
                   <input
@@ -1180,10 +1287,18 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     onChange={(e) => {
                       setDoctorSearch(e.target.value);
                       setShowDoctorDropdown(true);
+                      // Clear doctor error when user starts typing
+                      if (validationErrors.some(e => e.includes('Referring Doctor'))) {
+                        setValidationErrors(prev => prev.filter(e => !e.includes('Referring Doctor')));
+                      }
                     }}
                     onFocus={() => setShowDoctorDropdown(true)}
                     onBlur={() => setTimeout(() => setShowDoctorDropdown(false), 200)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 transition-colors ${
+                      validationErrors.some(e => e.includes('Referring Doctor'))
+                        ? 'border-red-400 bg-red-50 focus:ring-red-200 focus:border-red-500'
+                        : 'border-gray-300 focus:ring-blue-500'
+                    }`}
                   />
                   {showDoctorDropdown && filteredDoctors.length > 0 && (
                     <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-2xl max-h-48 overflow-y-auto">
@@ -1378,15 +1493,24 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors"
+                disabled={isSubmitting}
+                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+                disabled={isSubmitting}
+                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
               >
-                Create Order{selectedTests.length > 0 ? ` – ₹${totalAmount}` : ''}
+                {isSubmitting ? (
+                  <>
+                    <Loader className="h-4 w-4 animate-spin" />
+                    <span>Creating Order...</span>
+                  </>
+                ) : (
+                  <span>Create Order{selectedTests.length > 0 ? ` – ₹${totalAmount}` : ''}</span>
+                )}
               </button>
             </div>
           </div>

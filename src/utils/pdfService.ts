@@ -565,7 +565,7 @@ export const buildReportHtml = (options: BuildReportHtmlOptions): string =>
   buildReportHtmlBundle(options).previewHtml;
 
 // === Section: PDF.co API helpers (requests & polling) ===
-interface PdfCoRequestOptions {
+export interface PdfCoRequestOptions {
   displayHeaderFooter?: boolean;
   headerHtml?: string;
   footerHtml?: string;
@@ -575,6 +575,8 @@ interface PdfCoRequestOptions {
   mediaType?: 'print' | 'screen';
   printBackground?: boolean;
   scale?: number;
+  paperSize?: 'A4' | 'Letter';
+  orientation?: 'portrait' | 'landscape';
 }
 
 const pollPdfCoJob = async (jobId: string, maxAttempts = 60, intervalMs = 3000): Promise<string> => {
@@ -614,7 +616,7 @@ const pollPdfCoJob = async (jobId: string, maxAttempts = 60, intervalMs = 3000):
   throw new Error('PDF.co job polling exceeded maximum attempts');
 };
 
-const sendHtmlToPdfCo = async (
+export const sendHtmlToPdfCo = async (
   htmlContent: string,
   filename: string,
   options: PdfCoRequestOptions = {}
@@ -625,44 +627,44 @@ const sendHtmlToPdfCo = async (
     throw new Error('PDF.co API key not configured');
   }
 
-  const margins = options.margins ?? '40px 20px 40px 20px';
+  const margins = options.margins ?? '80px 20px 80px 20px';
   const mediaType = options.mediaType ?? 'print';
   const printBackground = options.printBackground ?? true;
   const scale = options.scale ?? 1.0;
   const displayHeaderFooter = options.displayHeaderFooter ?? true;
+  const paperSize = options.paperSize ?? 'A4';
+  const orientation = options.orientation ?? 'portrait';
 
   // ALWAYS include header/footer fields, even if empty
   const headerHtml = options.headerHtml ?? '';
   const footerHtml = options.footerHtml ?? '';
   
-  // 📊 Log PDF.co request for debugging
-  console.log('📄 PDF.co generation request:');
-  console.log('  Filename:', filename);
-  console.log('  Media type:', mediaType);
-  console.log('  Display header/footer:', displayHeaderFooter);
-  console.log('  Print background:', printBackground);
-  console.log('  Margins:', margins);
-  console.log('  HTML length:', htmlContent.length);
-  console.log('  HTML preview:', htmlContent.substring(0, 500));
-  
-  // Extract test sections from HTML for debugging
-  const testSections = htmlContent.match(/data-test="([^"]+)"/g);
-  if (testSections) {
-    console.log('  Tests in HTML:', testSections.join(', '));
-  } else {
-    console.log('  No data-test attributes found in HTML');
-  }
-  
-  console.log('Raw header HTML (before JSON):', headerHtml);
-  console.log('Raw footer HTML (before JSON):', footerHtml);
+  // 📊 Comprehensive logging for PDF.co request
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('📄 PDF.co API Request:');
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('  📁 Filename:', filename);
+  console.log('  📐 Scale:', scale, '(input was:', options.scale, ')');
+  console.log('  📏 Margins:', margins, '(input was:', options.margins, ')');
+  console.log('  📄 Paper Size:', paperSize);
+  console.log('  🔄 Orientation:', orientation);
+  console.log('  📺 Display Header/Footer:', displayHeaderFooter);
+  console.log('  ⬆️ Header Height:', options.headerHeight || 'not set');
+  console.log('  ⬇️ Footer Height:', options.footerHeight || 'not set');
+  console.log('  🎨 Media Type:', mediaType);
+  console.log('  🖼️ Print Background:', printBackground);
+  console.log('  📝 HTML Length:', htmlContent.length);
+  console.log('  📝 Header HTML Length:', headerHtml.length);
+  console.log('  📝 Footer HTML Length:', footerHtml.length);
+  console.log('═══════════════════════════════════════════════════════════');
   
   const requestBody = {
     name: filename,
     html: htmlContent,
     async: true,
     margins,
-    paperSize: 'A4',
-    orientation: 'portrait',
+    paperSize,
+    orientation,
     printBackground,
     scale,
     mediaType,
@@ -678,6 +680,15 @@ const sendHtmlToPdfCo = async (
   if (options.footerHeight) {
     (requestBody as Record<string, any>).footerHeight = options.footerHeight;
   }
+  
+  // Log the actual request body being sent
+  console.log('📤 Request body being sent to PDF.co:');
+  console.log(JSON.stringify({
+    ...requestBody,
+    html: `[${htmlContent.length} chars]`,
+    header: `[${headerHtml.length} chars]`,
+    footer: `[${footerHtml.length} chars]`,
+  }, null, 2));
 
   const response = await fetch(PDFCO_API_URL, {
     method: 'POST',
@@ -700,6 +711,31 @@ const sendHtmlToPdfCo = async (
 
   if (result.url) {
     console.log('PDF generated synchronously:', result.url);
+    
+    // PDF.co sometimes returns URL before file is fully propagated to S3
+    // Wait and verify the file is accessible before returning
+    const maxRetries = 5;
+    const retryDelay = 2000; // 2 seconds between retries
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const headCheck = await fetch(result.url, { method: 'HEAD' });
+        if (headCheck.ok) {
+          console.log(`✅ PDF URL verified accessible on attempt ${attempt}`);
+          return result.url;
+        }
+        console.warn(`⏳ PDF URL not ready (attempt ${attempt}/${maxRetries}), status: ${headCheck.status}`);
+      } catch (fetchError) {
+        console.warn(`⏳ PDF URL check failed (attempt ${attempt}/${maxRetries}):`, fetchError);
+      }
+      
+      if (attempt < maxRetries) {
+        await delay(retryDelay);
+      }
+    }
+    
+    // Return URL anyway after retries - it might work by the time user clicks
+    console.warn('⚠️ PDF URL not verified after retries, returning anyway:', result.url);
     return result.url;
   }
 
@@ -911,6 +947,7 @@ export const generateTemplatePreviewPDF = async (
       footerHtml,
       headerHeight: '90px',
       footerHeight: '80px',
+      margins: '180px 20px 150px 20px', // 180px top, 150px bottom for header/footer overlay
       mediaType: 'print',
       printBackground: true,
     });
@@ -943,6 +980,7 @@ export const generateTemplatePreviewPDF = async (
     footerHtml,
     headerHeight: '90px',
     footerHeight: '80px',
+    margins: '180px 20px 150px 20px', // 180px top, 150px bottom for header/footer overlay
     mediaType: 'print',
     printBackground: true,
   });
@@ -2038,7 +2076,9 @@ const prepareReportHtml = async (
       brandingDefaults,
     });
 
-    finalHtml = bundle.previewHtml;
+    // For PDF generation, use body-only HTML (header/footer come from PDF.co overlay)
+    // For preview, we would use bundle.previewHtml (but that's handled elsewhere)
+    finalHtml = bundle.bodyHtml;
   }
 
   // Fallback to universal template
@@ -2092,14 +2132,15 @@ export const generatePDFWithAPI = async (
   const ready = prepared ? (prepared instanceof Promise ? await prepared : prepared) : await prepareReportHtml(reportData, isDraft);
   const filename = `${ready.filenameBase}.pdf`;
   
-  // Get lab defaults directly from database
+  // Get lab defaults directly from database (header/footer + PDF settings)
   let headerHtml = '';
   let footerHtml = '';
+  let pdfSettings: any = null;
   
   if (reportData.templateContext?.labId) {
     const { data: labDefaults } = await supabase
       .from('labs')
-      .select('default_report_header_html, default_report_footer_html')
+      .select('default_report_header_html, default_report_footer_html, pdf_layout_settings')
       .eq('id', reportData.templateContext.labId)
       .maybeSingle();
     
@@ -2109,17 +2150,37 @@ export const generatePDFWithAPI = async (
     // Convert images to base64
     headerHtml = await convertHtmlImagestoBase64(rawHeaderHtml);
     footerHtml = await convertHtmlImagestoBase64(rawFooterHtml);
+    
+    // Load PDF layout settings from database if available
+    pdfSettings = labDefaults?.pdf_layout_settings;
+    if (pdfSettings) {
+      console.log('📄 Using PDF settings from database (lab-level):', pdfSettings);
+    }
   }
+
+  // Use lab settings or fallback to defaults
+  const margins = pdfSettings?.margins 
+    ? `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`
+    : '180px 20px 150px 20px'; // Default: 180px top, 150px bottom
+  
+  const headerHeight = pdfSettings?.headerHeight ? `${pdfSettings.headerHeight}px` : '90px';
+  const footerHeight = pdfSettings?.footerHeight ? `${pdfSettings.footerHeight}px` : '80px';
+  const scale = pdfSettings?.scale ?? 1.0;
+  const displayHeaderFooter = pdfSettings?.displayHeaderFooter ?? true;
+  const mediaType = pdfSettings?.mediaType ?? 'screen';
+  const printBackground = pdfSettings?.printBackground ?? true;
 
   try {
     return await sendHtmlToPdfCo(ready.html, filename, {
-      displayHeaderFooter: true,
+      displayHeaderFooter,
       headerHtml,
       footerHtml,
-      headerHeight: '90px',
-      footerHeight: '80px',
-      mediaType: 'screen',
-      printBackground: true,
+      headerHeight,
+      footerHeight,
+      margins,
+      scale,
+      mediaType,
+      printBackground,
     });
   } catch (error) {
     console.error('PDF.co generation failed:', error);
@@ -2149,7 +2210,7 @@ const generatePrintPDFWithAPI = async (
     mediaType: 'print',
     printBackground: false,  // No backgrounds - using physical letterhead
     displayHeaderFooter: false,  // No Chrome header/footer reservation
-    margins: '40px 20px 40px 20px',  // Safe print margins
+    margins: '180px 20px 150px 20px',  // Print margins: 180px top, 150px bottom
   });
 
   return {
@@ -2410,6 +2471,33 @@ export async function generateAndSavePDFReportWithProgress(
     let pdfUrl: string | null = null;
     let pdfBlob: Blob | null = null;
 
+    // Fetch header/footer HTML from database for PDF overlay
+    // This is used by both Puppeteer and PDF.co
+    let headerHtml = '';
+    let footerHtml = '';
+    
+    if (reportData.templateContext?.labId) {
+      const { data: labDefaults } = await supabase
+        .from('labs')
+        .select('default_report_header_html, default_report_footer_html')
+        .eq('id', reportData.templateContext.labId)
+        .maybeSingle();
+      
+      const rawHeaderHtml = labDefaults?.default_report_header_html || '';
+      const rawFooterHtml = labDefaults?.default_report_footer_html || '';
+      
+      // Convert images to base64 for PDF rendering
+      headerHtml = await convertHtmlImagestoBase64(rawHeaderHtml);
+      footerHtml = await convertHtmlImagestoBase64(rawFooterHtml);
+      
+      console.log('📋 Fetched header/footer from database for PDF overlay:', {
+        hasHeader: !!headerHtml,
+        headerLength: headerHtml.length,
+        hasFooter: !!footerHtml,
+        footerLength: footerHtml.length,
+      });
+    }
+
     // Analyze PDF complexity to determine generation method
     const complexity = analyzePDFComplexity(preparedHtml.html);
     const usePuppeteer = shouldUsePuppeteer() && complexity.recommendation === 'puppeteer';
@@ -2434,12 +2522,24 @@ export async function generateAndSavePDFReportWithProgress(
         console.log('🎭 Using Puppeteer for PDF generation (5s timeout)');
         
         // ⏱️ 5-second timeout wrapper for Puppeteer
+        // Pass header/footer HTML and display settings (like PDF.co)
         const puppeteerUrl = await Promise.race([
           generatePDFWithPuppeteer({
             orderId,
             html: preparedHtml.html,
             variant: reportType,
-            cacheKey: `${orderId}_${reportType}`
+            cacheKey: `${orderId}_${reportType}`,
+            // Header/footer overlay from database (same as PDF.co)
+            headerHtml,
+            footerHtml,
+            displayHeaderFooter: !!(headerHtml || footerHtml),
+            // PDF layout settings - E-copy: 180px top, 150px bottom
+            headerHeight: '90px',
+            footerHeight: '80px',
+            margins: '180px 20px 150px 20px',
+            scale: 1.0,
+            paperSize: 'A4',
+            printBackground: true,
           }),
           new Promise<string>((_, reject) => 
             setTimeout(() => reject(new Error('Puppeteer timeout: 5s exceeded')), 5000)
@@ -2470,12 +2570,19 @@ export async function generateAndSavePDFReportWithProgress(
               const printPreparedHtml = await prepareReportHtml(reportData, isDraft, allTemplates, true);
               
               // ⏱️ 5-second timeout for print PDF too
+              // Print version: No header/footer overlay (uses physical letterhead)
               const printUrl = await Promise.race([
                 generatePDFWithPuppeteer({
                   orderId,
                   html: printPreparedHtml.html,
                   variant: 'print',
-                  cacheKey: `${orderId}_print`
+                  cacheKey: `${orderId}_print`,
+                  // Print version: No header/footer (for physical letterhead paper)
+                  displayHeaderFooter: false,
+                  margins: '180px 20px 150px 20px', // Print margins: 180px top, 150px bottom
+                  scale: 1.0,
+                  paperSize: 'A4',
+                  printBackground: false,
                 }),
                 new Promise<string>((_, reject) => 
                   setTimeout(() => reject(new Error('Print PDF timeout: 5s exceeded')), 5000)
@@ -3493,6 +3600,191 @@ export const debugPDFPipeline = async (): Promise<void> => {
   }
 };
 
+// === Section: PDF regeneration with custom settings ===
+
+export interface PreparedPDFBundle {
+  html: string;
+  headerHtml: string;
+  footerHtml: string;
+  filename: string;
+  orderId: string;
+}
+
+// Cache for prepared HTML bundles (keyed by orderId)
+const preparedBundleCache = new Map<string, PreparedPDFBundle>();
+
+/**
+ * Prepare and cache the HTML bundle for an order (without generating PDF)
+ */
+export const preparePDFBundle = async (
+  orderId: string,
+  reportData: ReportData,
+  isDraft = false,
+  allTemplates?: LabTemplateRecord[]
+): Promise<PreparedPDFBundle> => {
+  const prepared = await prepareReportHtml(reportData, isDraft, allTemplates);
+  
+  // Get header/footer HTML from database (same as generatePDFWithAPI)
+  let headerHtml = '';
+  let footerHtml = '';
+  
+  if (reportData.templateContext?.labId) {
+    const { data: labDefaults } = await supabase
+      .from('labs')
+      .select('default_report_header_html, default_report_footer_html')
+      .eq('id', reportData.templateContext.labId)
+      .maybeSingle();
+    
+    const rawHeaderHtml = labDefaults?.default_report_header_html || '';
+    const rawFooterHtml = labDefaults?.default_report_footer_html || '';
+    
+    // Convert images to base64 for PDF.co
+    headerHtml = await convertHtmlImagestoBase64(rawHeaderHtml);
+    footerHtml = await convertHtmlImagestoBase64(rawFooterHtml);
+    
+    console.log('📋 Prepared header/footer from database:', {
+      hasHeader: !!headerHtml,
+      headerLength: headerHtml.length,
+      hasFooter: !!footerHtml,
+      footerLength: footerHtml.length,
+    });
+  }
+  
+  const bundle: PreparedPDFBundle = {
+    html: prepared.html,
+    headerHtml,
+    footerHtml,
+    filename: `${prepared.filenameBase}.pdf`,
+    orderId,
+  };
+  
+  // Cache the bundle
+  preparedBundleCache.set(orderId, bundle);
+  
+  return bundle;
+};
+
+/**
+ * Get cached PDF bundle or null if not cached
+ */
+export const getCachedPDFBundle = (orderId: string): PreparedPDFBundle | null => {
+  return preparedBundleCache.get(orderId) || null;
+};
+
+/**
+ * Clear cached PDF bundle for an order
+ */
+export const clearPDFBundleCache = (orderId?: string): void => {
+  if (orderId) {
+    preparedBundleCache.delete(orderId);
+  } else {
+    preparedBundleCache.clear();
+  }
+};
+
+/**
+ * Add CSS constraints to header/footer HTML to ensure images fit within specified height
+ * Uses simple inline styles that work with PDF.co's Chromium header/footer rendering
+ */
+const constrainHeaderFooterImages = (
+  html: string,
+  _maxHeight: string
+): string => {
+  if (!html || html.trim().length === 0) {
+    return '';
+  }
+  
+  // Don't constrain images - let PDF.co handle sizing based on headerHeight/footerHeight
+  // Adding max-height was causing images to be cut off
+  // The header/footer area is already constrained by headerHeight/footerHeight parameters
+  return html;
+};
+
+/**
+ * Regenerate PDF with custom settings using cached or provided HTML bundle
+ * All page layout is controlled by PDF.co API parameters - no CSS injection needed
+ */
+export const regeneratePDFWithSettings = async (
+  bundle: PreparedPDFBundle,
+  options: PdfCoRequestOptions
+): Promise<string> => {
+  console.log('🔄 Regenerating PDF with custom settings:');
+  console.log('  📐 Scale:', options.scale);
+  console.log('  📏 Margins:', options.margins);
+  console.log('  📄 Paper Size:', options.paperSize);
+  console.log('  🔄 Orientation:', options.orientation);
+  console.log('  📺 Display Header/Footer:', options.displayHeaderFooter);
+  console.log('  ⬆️ Header Height:', options.headerHeight);
+  console.log('  ⬇️ Footer Height:', options.footerHeight);
+  console.log('  🎨 Media Type:', options.mediaType);
+  console.log('  🖼️ Print Background:', options.printBackground);
+  
+  // Determine if headers should be shown
+  const showHeaders = options.displayHeaderFooter !== false;
+  
+  // Use the HTML as-is - no CSS injection needed
+  // PDF.co controls layout via API parameters (margins, scale, headerHeight, footerHeight)
+  const htmlToUse = bundle.html;
+  
+  console.log('📝 HTML length:', htmlToUse.length, 'chars');
+  
+  // Build final options - explicitly set header/footer based on displayHeaderFooter
+  // Apply height constraints to images to ensure they fit within specified dimensions
+  let finalHeaderHtml = '';
+  let finalFooterHtml = '';
+  
+  if (showHeaders) {
+    const rawHeader = options.headerHtml || bundle.headerHtml;
+    const rawFooter = options.footerHtml || bundle.footerHtml;
+    
+    // Constrain images if height is specified
+    if (rawHeader && options.headerHeight) {
+      finalHeaderHtml = constrainHeaderFooterImages(rawHeader, options.headerHeight);
+    } else {
+      finalHeaderHtml = rawHeader;
+    }
+    
+    if (rawFooter && options.footerHeight) {
+      finalFooterHtml = constrainHeaderFooterImages(rawFooter, options.footerHeight);
+    } else {
+      finalFooterHtml = rawFooter;
+    }
+  }
+  
+  // IMPORTANT: Merge ALL options from input, then override header/footer specifics
+  const finalOptions: PdfCoRequestOptions = {
+    // First spread all input options to preserve scale, margins, etc.
+    margins: options.margins,
+    scale: options.scale,
+    paperSize: options.paperSize,
+    orientation: options.orientation,
+    mediaType: options.mediaType,
+    printBackground: options.printBackground,
+    headerHeight: options.headerHeight,
+    footerHeight: options.footerHeight,
+    // Then set header/footer display and HTML based on our logic
+    displayHeaderFooter: showHeaders,
+    headerHtml: finalHeaderHtml,
+    footerHtml: finalFooterHtml,
+  };
+  
+  console.log('📋 Final PDF options being sent to PDF.co:');
+  console.log('  📐 Scale:', finalOptions.scale);
+  console.log('  📏 Margins:', finalOptions.margins);
+  console.log('  📄 Paper Size:', finalOptions.paperSize);
+  console.log('  🔄 Orientation:', finalOptions.orientation);
+  console.log('  📺 Display Header/Footer:', finalOptions.displayHeaderFooter);
+  console.log('  ⬆️ Header Height:', finalOptions.headerHeight);
+  console.log('  ⬇️ Footer Height:', finalOptions.footerHeight);
+  console.log('  📝 Header HTML length:', finalOptions.headerHtml?.length || 0);
+  console.log('  📝 Footer HTML length:', finalOptions.footerHtml?.length || 0);
+  
+  const pdfUrl = await sendHtmlToPdfCo(htmlToUse, bundle.filename, finalOptions);
+  
+  console.log('✅ PDF regenerated with custom settings:', pdfUrl);
+  return pdfUrl;
+};
+
 // Export all functions and interfaces
 export default {
   generateAndSavePDFReport,
@@ -3506,5 +3798,9 @@ export default {
   defaultLabTemplate,
   testPDFGeneration,
   testStorageUpload,
-  debugPDFPipeline
+  debugPDFPipeline,
+  preparePDFBundle,
+  getCachedPDFBundle,
+  clearPDFBundleCache,
+  regeneratePDFWithSettings,
 };

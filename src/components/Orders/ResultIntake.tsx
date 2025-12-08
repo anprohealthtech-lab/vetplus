@@ -179,6 +179,14 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
         const tgMeta = order.test_groups.find(t => t.test_group_id === tgId)
         const testGroupName = tgMeta?.test_group_name || 'Unknown Test'
 
+        // Check if this test is outsourced by querying order_tests
+        const { data: orderTest } = await supabase
+          .from('order_tests')
+          .select('outsourced_lab_id')
+          .eq('order_id', order.id)
+          .eq('test_group_id', tgId)
+          .maybeSingle()
+
         // Prepare results row
         const resultRow = {
           order_id: order.id,
@@ -193,6 +201,12 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
           // keep links to originating order_test_group/order_test when present
           ...(tgMeta?.order_test_group_id && { order_test_group_id: tgMeta.order_test_group_id }),
           ...(tgMeta?.order_test_id && { order_test_id: tgMeta.order_test_id }),
+          // Set outsourced flags if test is sent to external lab
+          ...(orderTest?.outsourced_lab_id && {
+            outsourced_to_lab_id: orderTest.outsourced_lab_id,
+            outsourced_status: 'pending_send',
+            outsourced_logistics_status: 'pending_dispatch'
+          }),
         }
 
         const { data: savedResult, error: insertErr } = await supabase

@@ -285,6 +285,7 @@ export const toggleOrderSummaryInReport = async (
 
 /**
  * Generate clinical summary HTML section
+ * Uses CSS classes - no inline styles for layout control
  */
 export const generateClinicalSummaryHtml = (summary: ClinicalSummaryData): string => {
   if (!summary?.text) {
@@ -295,22 +296,22 @@ export const generateClinicalSummaryHtml = (summary: ClinicalSummaryData): strin
   const formattedText = formatClinicalSummaryText(summary.text, true);
 
   const recommendationHtml = summary.recommendation ? `
-    <div style="margin-top: 12px; padding: 10px; background: #fef3c7; border-left: 3px solid #f59e0b; border-radius: 4px;">
-      <strong style="color: #92400e;">Recommendation:</strong>
-      <p style="margin: 5px 0 0 0; color: #78350f;">${summary.recommendation}</p>
+    <div class="clinical-recommendation">
+      <strong>Recommendation:</strong>
+      <p>${summary.recommendation}</p>
     </div>
   ` : '';
 
   return `
-    <div style="margin-top: 20px; page-break-inside: avoid;">
-      <h3 style="font-size: 16px; color: #1e40af; border-bottom: 2px solid #3b82f6; padding-bottom: 8px; margin-bottom: 15px;">
+    <div class="clinical-summary-section">
+      <h3 class="clinical-summary-title">
         🩺 Clinical Summary for Referring Physician
       </h3>
-      <div style="padding: 15px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px;">
-        <div style="margin: 0; line-height: 1.6; color: #0c4a6e;">${formattedText}</div>
+      <div class="clinical-summary-content">
+        <div class="clinical-summary-text">${formattedText}</div>
         ${recommendationHtml}
       </div>
-      <p style="margin-top: 8px; font-size: 10px; color: #6b7280; font-style: italic;">
+      <p class="clinical-summary-meta">
         Generated: ${new Date(summary.generated_at).toLocaleString('en-IN')}
         ${summary.generated_by === 'ai' ? ' (AI-Assisted)' : ''}
       </p>
@@ -330,19 +331,19 @@ export const generateClinicalSummaryHtmlPrint = (summary: ClinicalSummaryData): 
   const formattedText = formatClinicalSummaryText(summary.text, true);
 
   const recommendationHtml = summary.recommendation ? `
-    <div style="margin-top: 12px; padding: 10px; border-left: 3px solid #333;">
+    <div class="clinical-recommendation">
       <strong>Recommendation:</strong>
-      <p style="margin: 5px 0 0 0;">${summary.recommendation}</p>
+      <p>${summary.recommendation}</p>
     </div>
   ` : '';
 
   return `
-    <div style="margin-top: 20px; page-break-inside: avoid;">
-      <h3 style="font-size: 14px; color: #000; border-bottom: 1px solid #333; padding-bottom: 6px; margin-bottom: 12px;">
+    <div class="clinical-summary-section clinical-summary-section--print">
+      <h3 class="clinical-summary-title">
         Clinical Summary for Referring Physician
       </h3>
-      <div style="padding: 12px; border: 1px solid #ccc;">
-        <div style="margin: 0; line-height: 1.6;">${formattedText}</div>
+      <div class="clinical-summary-content">
+        <div class="clinical-summary-text">${formattedText}</div>
         ${recommendationHtml}
       </div>
     </div>
@@ -362,23 +363,39 @@ export const generateReportExtrasHtml = (
   }
 
   const parts: string[] = [];
+  
+  // Track what content we have for intelligent page break decisions
+  const hasTrendCharts = extras.include_trends_in_report && extras.trend_charts && extras.trend_charts.length > 0;
+  const hasClinicalSummary = extras.include_summary_in_report && extras.clinical_summary?.text;
+  const trendChartCount = extras.trend_charts?.length || 0;
+  
+  // Estimate if content will fit on one page (rough heuristic)
+  // Each trend chart ~200px, clinical summary ~300-400px, page height ~900px usable
+  const estimatedTrendHeight = trendChartCount * 220;
+  const estimatedSummaryHeight = hasClinicalSummary ? Math.min(400, (extras.clinical_summary?.text?.length || 0) / 3) : 0;
+  const totalEstimatedHeight = estimatedTrendHeight + estimatedSummaryHeight;
+  const needsPageBreakBetween = totalEstimatedHeight > 600; // Leave room for header + title
 
   // Add trend charts FIRST (before clinical summary)
-  if (extras.include_trends_in_report && extras.trend_charts && extras.trend_charts.length > 0) {
-    parts.push(generateTrendSectionHtml(extras.trend_charts, forPrint));
+  if (hasTrendCharts) {
+    parts.push(generateTrendSectionHtml(extras.trend_charts!, forPrint));
   }
 
-  // Add clinical summary LAST (on its own section/page)
-  if (extras.include_summary_in_report && extras.clinical_summary?.text) {
-    // Add page break before clinical summary if there are trend charts
+  // Add clinical summary
+  if (hasClinicalSummary) {
     const summaryHtml = forPrint 
-      ? generateClinicalSummaryHtmlPrint(extras.clinical_summary)
-      : generateClinicalSummaryHtml(extras.clinical_summary);
+      ? generateClinicalSummaryHtmlPrint(extras.clinical_summary!)
+      : generateClinicalSummaryHtml(extras.clinical_summary!);
     
-    if (parts.length > 0) {
-      // If there are trend charts, put summary on new page with padding for fixed header
-      parts.push(`<div style="page-break-before: always; padding-top: 120px;">${summaryHtml}</div>`);
+    // Only force page break if BOTH trend charts AND summary exist AND content is large
+    if (hasTrendCharts && needsPageBreakBetween) {
+      // Large content - put summary on new page with minimal padding
+      parts.push(`<div style="page-break-before: always; padding-top: 15px;">${summaryHtml}</div>`);
+    } else if (hasTrendCharts) {
+      // Small content - keep on same page with some spacing, allow natural page break if needed
+      parts.push(`<div style="page-break-inside: avoid; margin-top: 30px;">${summaryHtml}</div>`);
     } else {
+      // No trend charts - just add summary directly
       parts.push(summaryHtml);
     }
   }
@@ -387,13 +404,13 @@ export const generateReportExtrasHtml = (
     return '';
   }
 
-  // Wrap in page break section for appendix placement
-  // Need padding-top to account for fixed header (100px + some margin)
-  // Print version: black & white styling, no colors
+  // Wrap in section for extras content
+  // Use CSS classes instead of inline styles - let PDF.co control layout
+  
   if (forPrint) {
     return `
-      <div class="report-extras-section" style="page-break-before: always; padding: 15px; padding-top: 120px;">
-        <h2 style="text-align: center; margin-bottom: 20px; color: #000; border-bottom: 1px solid #333; padding-bottom: 8px; font-size: 16px;">
+      <div class="report-extras-section">
+        <h2 class="report-extras-title">
           Additional Analysis & Summary
         </h2>
         ${parts.join('\n')}
@@ -402,8 +419,8 @@ export const generateReportExtrasHtml = (
   }
 
   return `
-    <div class="report-extras-section" style="page-break-before: always; padding: 20px; padding-top: 120px;">
-      <h2 style="text-align: center; margin-bottom: 25px; color: #1e3a8a; border-bottom: 2px solid #3b82f6; padding-bottom: 10px;">
+    <div class="report-extras-section">
+      <h2 class="report-extras-title">
         Additional Analysis & Summary
       </h2>
       ${parts.join('\n')}

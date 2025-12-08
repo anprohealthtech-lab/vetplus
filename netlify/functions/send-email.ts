@@ -44,10 +44,10 @@ const handler: Handler = async (event, context) => {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing required fields' }) };
     }
 
-    // 2a. Fetch Lab Details for "On Behalf Of" sending
+    // 2a. Fetch Lab Details for sender configuration
     const { data: lab, error: labError } = await supabase
       .from('labs')
-      .select('name, email')
+      .select('name, email, email_domain')
       .eq('id', labId)
       .single();
 
@@ -56,7 +56,8 @@ const handler: Handler = async (event, context) => {
     }
 
     const labName = lab?.name || 'LIMS Reports';
-    const labEmail = lab?.email; // This will be the Reply-To
+    const labEmail = lab?.email; // Reply-To address
+    const labDomain = lab?.email_domain; // Lab's verified domain (if they have one)
 
     // 2b. Render Template
     let emailHtml = '';
@@ -68,10 +69,35 @@ const handler: Handler = async (event, context) => {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Invalid template ID' }) };
     }
 
+    // 2c. Determine sender address based on email type
+    const getLabSenderEmail = (domain: string, type: 'reports' | 'billing' | 'support' | 'notifications') => {
+      const senderMap = {
+        reports: `reports@${domain}`,
+        billing: `billing@${domain}`,
+        support: `support@${domain}`,
+        notifications: `noreply@${domain}`,
+      };
+      return senderMap[type];
+    };
+
+    // Determine email type from template
+    const emailType = templateId === 'patient_report' ? 'reports' : 
+                      templateId === 'b2b_invoice' ? 'billing' : 'notifications';
+
     // 3. Send Email via Resend
-    // We send FROM the platform's verified domain, but set the name to the Lab's name.
-    // We set Reply-To to the Lab's actual email so patients reply to them.
-    const fromAddress = `${labName} <reports@resend.dev>`; // Replace reports@resend.dev with your verified domain
+    // If lab has verified domain, use their domain. Otherwise, use platform default.
+    let fromAddress: string;
+    if (labDomain) {
+      // Lab has their own verified domain - use lab-specific sender
+      const senderEmail = getLabSenderEmail(labDomain, emailType);
+      fromAddress = `${labName} <${senderEmail}>`;
+    } else {
+      // Fallback to platform domain with lab name
+      // Replace 'resend.dev' with your verified domain (e.g., 'bestpathologylab.in')
+      const platformDomain = process.env.DEFAULT_EMAIL_DOMAIN || 'resend.dev';
+      const senderEmail = getLabSenderEmail(platformDomain, emailType);
+      fromAddress = `${labName} <${senderEmail}>`;
+    }
     
     const { data: emailData, error: emailError } = await resend.emails.send({
       from: fromAddress,

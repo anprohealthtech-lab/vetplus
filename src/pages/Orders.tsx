@@ -99,6 +99,7 @@ type CardOrder = {
 
   patient?: { name?: string | null; age?: string | null; gender?: string | null } | null;
   tests: string[];
+  order_tests?: any[]; // Full order_tests array with outsourcing details
 
   // derived
   panels: Panel[];
@@ -428,6 +429,7 @@ const Orders: React.FC = () => {
 
         patient: o.patients,
         tests: (o.order_tests || []).map((t) => t.test_name),
+        order_tests: o.order_tests || [], // ✅ Include full order_tests with outsourcing data
 
         panels,
         expectedTotal,
@@ -590,12 +592,24 @@ const Orders: React.FC = () => {
       console.log('Tests array:', orderData.tests, 'Length:', orderData.tests?.length);
       console.log('Test objects structure:', orderData.tests?.[0]);
 
+      // Validate required fields before API call
+      if (!orderData.patient_id) {
+        alert('❌ Error: Patient is required');
+        throw new Error('Patient is required');
+      }
+      
+      if (!orderData.referring_doctor_id && !orderData.doctor) {
+        alert('❌ Error: Referring doctor is required');
+        throw new Error('Referring doctor is required');
+      }
+
       // Create the order in the database
       const { data: order, error: orderError } = await database.orders.create(orderData);
       if (orderError) {
         console.error('Error creating order:', orderError);
-        alert('Failed to create order. Please try again.');
-        return;
+        const errorMessage = orderError.message || 'Failed to create order';
+        alert(`❌ Order Creation Failed: ${errorMessage}`);
+        throw orderError;
       }
 
       console.log('Order created successfully:', order);
@@ -623,10 +637,11 @@ const Orders: React.FC = () => {
       setShowOrderForm(false);
 
       // Show success message
-      alert('Order created successfully!');
-    } catch (error) {
+      alert('✅ Order created successfully!');
+    } catch (error: any) {
       console.error('Error creating order:', error);
-      alert('Failed to create order. Please try again.');
+      // Don't close form on error so user can fix issues
+      // Error message already shown above
     }
   };
 

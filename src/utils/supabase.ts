@@ -603,6 +603,7 @@ export const database = {
       pincode?: string;
       phone?: string;
       email?: string;
+      email_domain?: string;
       license_number?: string;
       registration_number?: string;
       watermark_enabled?: boolean;
@@ -1829,6 +1830,40 @@ export const database = {
           }
           
           console.log(`✅ Created ${orderTestsData.length} order test records with proper test_group_ids`);
+
+          // ✅ Auto-create placeholder results for outsourced tests
+          const outsourcedTests = orderTestsData.filter(test => test.outsourced_lab_id);
+          if (outsourcedTests.length > 0) {
+            console.log(`Creating ${outsourcedTests.length} placeholder results for outsourced tests`);
+            
+            const outsourcedResults = outsourcedTests.map(test => ({
+              order_id: updatedOrder.id,
+              patient_id: orderData.patient_id,
+              patient_name: orderData.patient_name,
+              test_name: test.test_name,
+              test_group_id: test.test_group_id,
+              lab_id: test.lab_id,
+              outsourced_to_lab_id: test.outsourced_lab_id,
+              outsourced_status: 'pending_send',
+              outsourced_logistics_status: 'pending_dispatch',
+              status: 'Entered', // Use valid result_status enum value
+              verification_status: 'pending_verification',
+              entered_by: orderData.created_by || 'System',
+              entered_date: new Date().toISOString().split('T')[0],
+              created_at: new Date().toISOString()
+            }));
+
+            const { error: resultsError } = await supabase
+              .from('results')
+              .insert(outsourcedResults);
+
+            if (resultsError) {
+              console.error('Error creating outsourced results:', resultsError);
+              // Don't fail the order creation, just log the error
+            } else {
+              console.log(`✅ Created ${outsourcedResults.length} placeholder results for outsourced tests`);
+            }
+          }
         }
       }
 
@@ -6556,6 +6591,380 @@ const brandingSignatureAPI = {
         .eq('id', signatureId);
 
       return { error };
+    }
+  },
+
+  // =============================================
+  // Outsourced Reports Management API
+  // =============================================
+  outsourcedReports: {
+    getAll: async (filters?: {
+      status?: string;
+      matched?: 'matched' | 'unmatched';
+      dateRange?: { start: string; end: string };
+      labId?: string;
+    }) => {
+      const labId = filters?.labId || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      let query = supabase
+        .from('outsourced_reports')
+        .select('*')
+        .eq('lab_id', labId);
+
+      if (filters?.status) {
+        query = query.eq('status', filters.status);
+      }
+
+      if (filters?.matched === 'matched') {
+        query = query.not('order_id', 'is', null);
+      } else if (filters?.matched === 'unmatched') {
+        query = query.is('order_id', null);
+      }
+
+      if (filters?.dateRange) {
+        query = query
+          .gte('received_at', filters.dateRange.start)
+          .lte('received_at', filters.dateRange.end);
+      }
+
+      query = query.order('received_at', { ascending: false });
+
+      const { data, error } = await query;
+      return { data, error };
+    },
+
+    getById: async (reportId: string) => {
+      const { data, error } = await supabase
+        .from('outsourced_reports')
+        .select('*')
+        .eq('id', reportId)
+        .single();
+
+      return { data, error };
+    },
+
+    linkToOrder: async (
+      reportId: string,
+      orderId: string,
+      patientId: string,
+      confidence?: number
+    ) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = user?.id;
+
+      const { data, error } = await supabase
+        .from('outsourced_reports')
+        .update({
+          order_id: orderId,
+          patient_id: patientId,
+          match_confidence: confidence || null,
+          matched_at: new Date().toISOString(),
+          matched_by: userId || null,
+          status: 'verified'
+        })
+        .eq('id', reportId)
+        .select()
+        .single();
+
+      if (!error && orderId) {
+        // Update related result's outsourced_status to 'received'
+        await supabase
+          .from('results')
+          .update({ outsourced_status: 'received' })
+          .eq('order_id', orderId)
+          .in('outsourced_status', ['sent', 'awaiting_report']);
+      }
+
+      return { data, error };
+    },
+
+    suggestMatches: async (reportId: string, maxResults: number = 5) => {
+      const { data: report, error: reportError } = await supabase
+        .from('outsourced_reports')
+        .select('ai_extracted_data, received_at, lab_id')
+        .eq('id', reportId)
+        .single();
+
+      if (reportError || !report) {
+        return { data: null, error: reportError || new Error('Report not found') };
+      }
+
+      const extractedData = report.ai_extracted_data as any;
+      const patientName = extractedData?.patient_name;
+      const testName = extractedData?.test_name;
+
+      if (!patientName) {
+        return { data: [], error: null };
+      }
+
+      // Get lab settings for date range
+      const { data: settings } = await supabase
+        .from('lab_outsourcing_settings')
+        .select('match_date_range_days')
+        .eq('lab_id', report.lab_id)
+        .single();
+
+      const dateRangeDays = settings?.match_date_range_days || 7;
+      const startDate = new Date(report.received_at);
+      startDate.setDate(startDate.getDate() - dateRangeDays);
+      const endDate = new Date(report.received_at);
+      endDate.setDate(endDate.getDate() + dateRangeDays);
+
+      // Fuzzy match orders by patient name and date range
+      const { data: orders, error: ordersError } = await supabase
+        .from('orders')
+        .select(`
+          id,
+          order_number,
+          patient_id,
+          patient_name,
+          order_date,
+          order_tests!inner(test_name, outsourced_lab_id)
+        `)
+        .eq('lab_id', report.lab_id)
+        .gte('order_date', startDate.toISOString())
+        .lte('order_date', endDate.toISOString())
+        .not('order_tests.outsourced_lab_id', 'is', null);
+
+      if (ordersError || !orders) {
+        return { data: [], error: ordersError };
+      }
+
+      // Calculate match confidence for each order
+      const suggestions = orders
+        .map((order: any) => {
+          const matchReasons: string[] = [];
+          let confidence = 0;
+
+          // Name similarity (simplified - basic comparison)
+          const nameLower = patientName.toLowerCase();
+          const orderNameLower = order.patient_name.toLowerCase();
+          
+          if (orderNameLower === nameLower) {
+            confidence += 0.5;
+            matchReasons.push('Exact name match');
+          } else if (orderNameLower.includes(nameLower) || nameLower.includes(orderNameLower)) {
+            confidence += 0.3;
+            matchReasons.push('Partial name match');
+          }
+
+          // Test name matching
+          const orderTestNames = (order.order_tests || []).map((ot: any) => ot.test_name.toLowerCase());
+          if (testName && orderTestNames.some((tn: string) => tn.includes(testName.toLowerCase()))) {
+            confidence += 0.3;
+            matchReasons.push('Test name match');
+          }
+
+          // Date proximity
+          const daysDiff = Math.abs(
+            (new Date(order.order_date).getTime() - new Date(report.received_at).getTime()) / (1000 * 60 * 60 * 24)
+          );
+          if (daysDiff <= 1) {
+            confidence += 0.2;
+            matchReasons.push('Same day order');
+          } else if (daysDiff <= 3) {
+            confidence += 0.1;
+            matchReasons.push('Recent order');
+          }
+
+          return {
+            order_id: order.id,
+            patient_id: order.patient_id,
+            patient_name: order.patient_name,
+            order_number: order.order_number,
+            order_date: order.order_date,
+            confidence: Math.min(confidence, 1.0),
+            match_reasons: matchReasons,
+            test_names: orderTestNames
+          };
+        })
+        .filter((s: any) => s.confidence > 0.2)
+        .sort((a: any, b: any) => b.confidence - a.confidence)
+        .slice(0, maxResults);
+
+      // Store suggestions in the report
+      await supabase
+        .from('outsourced_reports')
+        .update({ match_suggestions: suggestions })
+        .eq('id', reportId);
+
+      return { data: suggestions, error: null };
+    },
+
+    updateLogisticsStatus: async (
+      resultId: string,
+      logisticsStatus: string,
+      notes?: string,
+      outsourcedStatus?: string // ✅ Add parameter to update outsourced_status
+    ) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = user?.id;
+
+      const updateData: any = {
+        outsourced_logistics_status: logisticsStatus,
+        logistics_notes: notes || null
+      };
+
+      // ✅ Update outsourced_status if provided
+      if (outsourcedStatus) {
+        updateData.outsourced_status = outsourcedStatus;
+      }
+
+      if (logisticsStatus === 'in_transit') {
+        updateData.dispatched_at = new Date().toISOString();
+        updateData.dispatched_by = userId;
+      }
+
+      const { data, error } = await supabase
+        .from('results')
+        .update(updateData)
+        .eq('id', resultId)
+        .select()
+        .single();
+
+      return { data, error };
+    },
+
+    getPendingTests: async (filters?: { 
+      outsourcedLabId?: string; 
+      status?: string;
+      fromDate?: string;
+      toDate?: string;
+    }) => {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      let query = supabase
+        .from('results')
+        .select(`
+          id,
+          order_id,
+          test_name,
+          outsourced_to_lab_id,
+          outsourced_status,
+          outsourced_logistics_status,
+          tracking_barcode,
+          dispatched_at,
+          dispatched_by,
+          outsourced_tat_estimate,
+          logistics_notes,
+          created_at,
+          orders!inner(
+            order_number,
+            patient_id,
+            patient_name,
+            order_date
+          ),
+          outsourced_labs(name)
+        `)
+        .eq('lab_id', labId)
+        .not('outsourced_to_lab_id', 'is', null);
+
+      if (filters?.outsourcedLabId) {
+        query = query.eq('outsourced_to_lab_id', filters.outsourcedLabId);
+      }
+
+      // ✅ Updated logic: awaiting_report includes sent tests (unless cancelled)
+      if (filters?.status === 'awaiting_report') {
+        // Show both 'awaiting_report' AND 'sent' tests (dispatched ones)
+        // Exclude only if explicitly cancelled (logistics_status = 'pending_dispatch' with status = 'pending_send')
+        query = query.in('outsourced_status', ['awaiting_report', 'sent']);
+      } else if (filters?.status) {
+        query = query.eq('outsourced_status', filters.status);
+      } else {
+        query = query.in('outsourced_status', ['pending_send', 'sent', 'awaiting_report']);
+      }
+
+      // ✅ Add date filters
+      if (filters?.fromDate) {
+        query = query.gte('created_at', filters.fromDate);
+      }
+
+      if (filters?.toDate) {
+        // Add one day to include the entire end date
+        const endDate = new Date(filters.toDate);
+        endDate.setDate(endDate.getDate() + 1);
+        query = query.lt('created_at', endDate.toISOString());
+      }
+
+      query = query.order('created_at', { ascending: false });
+
+      const { data, error } = await query;
+
+      // Transform to flat structure
+      const transformedData = data?.map((item: any) => ({
+        result_id: item.id,
+        order_id: item.order_id,
+        order_number: item.orders?.order_number,
+        patient_id: item.orders?.patient_id,
+        patient_name: item.orders?.patient_name,
+        test_name: item.test_name,
+        outsourced_to_lab_id: item.outsourced_to_lab_id,
+        outsourced_lab_name: item.outsourced_labs?.name,
+        outsourced_status: item.outsourced_status,
+        outsourced_logistics_status: item.outsourced_logistics_status,
+        tracking_barcode: item.tracking_barcode,
+        dispatched_at: item.dispatched_at,
+        dispatched_by: item.dispatched_by,
+        outsourced_tat_estimate: item.outsourced_tat_estimate,
+        logistics_notes: item.logistics_notes,
+        created_at: item.created_at
+      }));
+
+      return { data: transformedData, error };
+    },
+
+    getLabSettings: async (labId?: string) => {
+      const targetLabId = labId || await database.getCurrentUserLabId();
+      if (!targetLabId) {
+        return { data: null, error: new Error('No lab_id found') };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_outsourcing_settings')
+        .select('*')
+        .eq('lab_id', targetLabId)
+        .single();
+
+      return { data, error };
+    },
+
+    updateLabSettings: async (settings: Partial<any>) => {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_outsourcing_settings')
+        .upsert({
+          lab_id: labId,
+          ...settings,
+          updated_at: new Date().toISOString()
+        })
+        .eq('lab_id', labId)
+        .select()
+        .single();
+
+      return { data, error };
+    },
+
+    generateTrackingBarcode: async (resultId: string) => {
+      const barcode = `OUT-${Date.now()}-${resultId.slice(0, 8)}`;
+      
+      const { data, error } = await supabase
+        .from('results')
+        .update({ tracking_barcode: barcode })
+        .eq('id', resultId)
+        .select()
+        .single();
+
+      return { data: { barcode, ...data }, error };
     }
   }
 };

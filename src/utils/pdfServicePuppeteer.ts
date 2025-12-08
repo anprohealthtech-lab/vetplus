@@ -17,6 +17,14 @@ interface PuppeteerPDFOptions {
   headerHtml?: string;
   footerHtml?: string;
   displayHeaderFooter?: boolean;
+  // PDF layout settings (like PDF.co API parameters)
+  scale?: number;
+  margins?: string; // Format: "top right bottom left" in px, e.g., "120px 20px 80px 20px"
+  headerHeight?: string; // e.g., "90px"
+  footerHeight?: string; // e.g., "80px"
+  paperSize?: 'A4' | 'Letter';
+  orientation?: 'portrait' | 'landscape';
+  printBackground?: boolean;
 }
 
 // No longer used - keeping for backwards compatibility
@@ -42,7 +50,22 @@ const CACHE_TTL = 60 * 1000; // 1 minute
 export async function generatePDFWithPuppeteer(
   options: PuppeteerPDFOptions
 ): Promise<string> {
-  const { orderId, html, variant = 'final', cacheKey, headerHtml, footerHtml, displayHeaderFooter } = options;
+  const { 
+    orderId, 
+    html, 
+    variant = 'final', 
+    cacheKey, 
+    headerHtml, 
+    footerHtml, 
+    displayHeaderFooter,
+    scale,
+    margins,
+    headerHeight,
+    footerHeight,
+    paperSize,
+    orientation,
+    printBackground
+  } = options;
 
   // Check cache first
   if (cacheKey) {
@@ -70,17 +93,48 @@ export async function generatePDFWithPuppeteer(
       filename: `${orderId}_${Date.now()}_${variant}.pdf`,
     };
 
+    // Add PDF layout settings if provided (like PDF.co API parameters)
+    if (scale !== undefined) {
+      requestBody.scale = scale;
+      console.log('📐 Scale:', scale);
+    }
+    if (margins !== undefined) {
+      requestBody.margins = margins;
+      console.log('📏 Margins:', margins);
+    }
+    if (paperSize !== undefined) {
+      requestBody.paperSize = paperSize;
+      console.log('📄 Paper Size:', paperSize);
+    }
+    if (orientation !== undefined) {
+      requestBody.orientation = orientation;
+      console.log('🔄 Orientation:', orientation);
+    }
+    if (printBackground !== undefined) {
+      requestBody.printBackground = printBackground;
+      console.log('🖼️ Print Background:', printBackground);
+    }
+
     // Add header/footer if provided (like PDF.co API)
     if (displayHeaderFooter !== undefined) {
       requestBody.displayHeaderFooter = displayHeaderFooter;
+      console.log('📺 Display Header/Footer:', displayHeaderFooter);
     }
     if (headerHtml !== undefined) {
       requestBody.headerTemplate = headerHtml;
-      console.log('📄 Including header template in Puppeteer request');
+      console.log('📄 Including header template in Puppeteer request, length:', headerHtml.length);
     }
     if (footerHtml !== undefined) {
       requestBody.footerTemplate = footerHtml;
-      console.log('📄 Including footer template in Puppeteer request');
+      console.log('📄 Including footer template in Puppeteer request, length:', footerHtml.length);
+    }
+    if (headerHeight !== undefined) {
+      requestBody.headerHeight = headerHeight;
+      console.log('⬆️ Header Height:', headerHeight);
+    }
+    if (footerHeight !== undefined) {
+      requestBody.footerHeight = footerHeight;
+      console.log('⬇️ Footer Height:', footerHeight);
     }
 
     // Call DigitalOcean Puppeteer Service (NOT Supabase Edge Function)
@@ -290,13 +344,13 @@ async function optimizeHtmlForPuppeteer(html: string): Promise<string> {
   }
 
   // 3. Add print-specific optimizations if not present
-  if (!optimized.includes('@page')) {
+  // NOTE: Do NOT inject @page rules with hardcoded margins here!
+  // All page layout (margins, scale, header/footer heights) must be controlled
+  // by the Puppeteer API parameters or PDF.co API parameters.
+  // Injecting @page CSS rules would override the API parameters.
+  if (!optimized.includes('-webkit-print-color-adjust')) {
     const pageStyle = `
       <style>
-        @page {
-          size: A4;
-          margin: 10mm;
-        }
         @media print {
           body {
             -webkit-print-color-adjust: exact;

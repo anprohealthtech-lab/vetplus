@@ -4,18 +4,12 @@ export interface ReportTemplateRegions {
   footerHtml: string;
 }
 
-const HEADER_PLACEHOLDER = '<div class="report-region-placeholder">Place header content here</div>';
-const FOOTER_PLACEHOLDER = '<div class="report-region-placeholder">Place footer content here</div>';
+// Header/Footer are now handled by PDF.co overlay from database (labs table)
+// Templates should only contain body content
 
 const createDefaultStructure = (bodyHtml: string) => `
-<section data-report-region="header" class="report-region report-region--header">
-  ${HEADER_PLACEHOLDER}
-</section>
 <section data-report-region="body" class="report-region report-region--body">
   ${bodyHtml || '<p></p>'}
-</section>
-<section data-report-region="footer" class="report-region report-region--footer">
-  ${FOOTER_PLACEHOLDER}
 </section>
 `;
 
@@ -24,15 +18,21 @@ const ensureRegion = (html: string, region: 'header' | 'body' | 'footer'): strin
     return html;
   }
 
-  if (region === 'header') {
-    return `<section data-report-region="header" class="report-region report-region--header">${HEADER_PLACEHOLDER}</section>${html}`;
-  }
-
-  if (region === 'footer') {
-    return `${html}<section data-report-region="footer" class="report-region report-region--footer">${FOOTER_PLACEHOLDER}</section>`;
+  // Only wrap body region - header/footer come from PDF.co overlay
+  if (region === 'body') {
+    return `<section data-report-region="body" class="report-region report-region--body">${html}</section>`;
   }
 
   return html;
+};
+
+// Strip any existing header/footer regions from HTML (migration helper)
+const stripHeaderFooterRegions = (html: string): string => {
+  // Remove header region
+  let result = html.replace(/<section[^>]*data-report-region=["']header["'][^>]*>[\s\S]*?<\/section>/gi, '');
+  // Remove footer region
+  result = result.replace(/<section[^>]*data-report-region=["']footer["'][^>]*>[\s\S]*?<\/section>/gi, '');
+  return result.trim();
 };
 
 export const ensureReportRegions = (html: string): string => {
@@ -42,15 +42,16 @@ export const ensureReportRegions = (html: string): string => {
     return createDefaultStructure('<p></p>');
   }
 
-  if (!trimmed.includes('data-report-region=')) {
-    return createDefaultStructure(trimmed);
+  // Strip any existing header/footer regions - they're now handled by PDF.co overlay
+  let working = stripHeaderFooterRegions(trimmed);
+
+  // Check if body region already exists
+  if (working.includes('data-report-region="body"')) {
+    return working;
   }
 
-  let working = trimmed;
-  working = ensureRegion(working, 'header');
-  working = ensureRegion(working, 'body');
-  working = ensureRegion(working, 'footer');
-  return working;
+  // Wrap in body region if not already wrapped
+  return createDefaultStructure(working);
 };
 
 const parseWithDom = (html: string) => {
@@ -68,34 +69,28 @@ const parseWithDom = (html: string) => {
   }
 };
 
+// Extract body content from template (header/footer come from PDF.co overlay now)
 export const extractReportRegions = (html: string): ReportTemplateRegions => {
   const cleaned = ensureReportRegions(html);
   const doc = parseWithDom(cleaned);
 
   if (doc) {
-    const headerEl = doc.querySelector('[data-report-region="header"]');
     const bodyEl = doc.querySelector('[data-report-region="body"]');
-    const footerEl = doc.querySelector('[data-report-region="footer"]');
 
     return {
-      headerHtml: headerEl ? headerEl.innerHTML.trim() : '',
-      bodyHtml: bodyEl ? bodyEl.innerHTML.trim() : '',
-      footerHtml: footerEl ? footerEl.innerHTML.trim() : '',
+      headerHtml: '', // Header comes from PDF.co overlay (labs table)
+      bodyHtml: bodyEl ? bodyEl.innerHTML.trim() : cleaned,
+      footerHtml: '', // Footer comes from PDF.co overlay (labs table)
     };
   }
 
   // Regex fallback for non-browser contexts
-  const regionRegex = (region: 'header' | 'body' | 'footer') =>
-    new RegExp(`<([a-z0-9]+)([^>]*data-report-region=["']${region}["'][^>]*)>([\\s\\S]*?)</\\1>`, 'i');
-
-  const matchRegion = (region: 'header' | 'body' | 'footer') => {
-    const match = cleaned.match(regionRegex(region));
-    return match ? match[3].trim() : '';
-  };
+  const bodyRegex = /<([a-z0-9]+)([^>]*data-report-region=["']body["'][^>]*)>([\s\S]*?)<\/\1>/i;
+  const match = cleaned.match(bodyRegex);
 
   return {
-    headerHtml: matchRegion('header'),
-    bodyHtml: matchRegion('body'),
-    footerHtml: matchRegion('footer'),
+    headerHtml: '', // Header comes from PDF.co overlay (labs table)
+    bodyHtml: match ? match[3].trim() : cleaned,
+    footerHtml: '', // Footer comes from PDF.co overlay (labs table)
   };
 };
