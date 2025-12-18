@@ -29,6 +29,7 @@ import {
 import QRCodeLib from "qrcode";
 import { database, supabase } from "../../utils/supabase";
 import { generateAndDownloadReport, getLabTemplate, type ReportData } from "../../utils/pdfGenerator";
+import { generateInvoicePDF } from "../../utils/invoicePdfService";
 import { useAuth } from "../../contexts/AuthContext";
 import { useOrderStatusCentral } from "../../hooks/useOrderStatusCentral";
 import QuickStatusButtons from "../Orders/QuickStatusButtons";
@@ -36,6 +37,7 @@ import PhlebotomistSelector from "../Users/PhlebotomistSelector";
 import { OrderStatusDisplay } from "../Orders/OrderStatusDisplay";
 import CreateInvoiceModal from "../Billing/CreateInvoiceModal";
 import PaymentCapture from "../Billing/PaymentCapture";
+import InvoiceDeliveryTracker from "../Billing/InvoiceDeliveryTracker";
 import {
   processTRFImage,
   trfToOrderFormData,
@@ -112,6 +114,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   // Billing Modals
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [invoiceRefreshTrigger, setInvoiceRefreshTrigger] = useState(0);
 
   // Outsource Modal
   const [showOutsourceModal, setShowOutsourceModal] = useState(false);
@@ -196,6 +199,15 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     init();
   }, []);
 
+  // Reload invoice delivery status and notify parent dashboard when invoice delivery is tracked
+  useEffect(() => {
+    if (invoiceRefreshTrigger > 0 && order.invoice_id) {
+      // Notify parent to refresh dashboard
+      onUpdateStatus(order.id, order.status);
+      console.log('[DashboardOrderModal] Invoice delivery tracked, refreshing dashboard');
+    }
+  }, [invoiceRefreshTrigger]);
+
   // Pre-select doctor when editing starts
   useEffect(() => {
     if (isEditingDoctor && doctors.length > 0) {
@@ -269,79 +281,51 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     setViewInvoiceLoading(true);
 
     try {
-      const labId = await database.getCurrentUserLabId();
+      // 1. Get invoice data with PDF URL
       const { data: invoice, error } = await supabase
         .from('invoices')
-        .select(`
-          id,
-          lab_id,
-          patient_id,
-          patient_name,
-          status,
-          invoice_date,
-          payment_method,
-          total,
-          amount_paid,
-          total_refunded_amount,
-          invoice_items (test_name, price, quantity, total)
-        `)
+        .select('id, pdf_url, template_id, invoice_number')
         .eq('id', order.invoice_id)
-        .maybeSingle();
+        .single();
 
       if (error || !invoice) {
         throw error || new Error('Invoice not found');
       }
 
-      if (labId && invoice.lab_id && invoice.lab_id !== labId) {
-        throw new Error('Invoice not in current lab context');
+      // 2. Generate PDF if not already generated
+      let pdfUrl = invoice.pdf_url;
+      
+      if (!pdfUrl) {
+        console.log('PDF not found, generating invoice PDF...');
+        
+        // Get default template if not specified
+        let templateId = invoice.template_id;
+        
+        if (!templateId) {
+          const { data: templates } = await database.invoiceTemplates.getAll();
+          const defaultTemplate = templates?.find((t: any) => t.is_default) || templates?.[0];
+          
+          if (!defaultTemplate) {
+            throw new Error('No invoice template found. Please configure templates in Settings.');
+          }
+          
+          templateId = defaultTemplate.id;
+        }
+        
+        // Generate PDF using the proper invoice PDF service
+        pdfUrl = await generateInvoicePDF(invoice.id, templateId);
+        
+        if (!pdfUrl) {
+          throw new Error('Failed to generate invoice PDF');
+        }
       }
 
-      const items = (invoice as any).invoice_items || [];
-      const testResults = items.length > 0
-        ? items.map((item: any) => ({
-            parameter: item.test_name,
-            result: `₹${Number(item.total ?? item.price ?? 0).toLocaleString()}`,
-            unit: 'INR',
-            referenceRange: 'Invoice item',
-          }))
-        : (order.tests || []).map((t) => ({
-            parameter: t.test_name,
-            result: 'Included',
-            unit: '',
-            referenceRange: '',
-          }));
-
-      const patientAge = Number(order.patient?.age ?? 0) || 0;
-      const patientGender = order.patient?.gender || 'N/A';
-
-      const paid = Number((invoice as any).amount_paid ?? 0);
-      const total = Number(invoice.total ?? 0);
-      const refunded = Number((invoice as any).total_refunded_amount ?? 0);
-      const due = Math.max(total - paid - refunded, 0);
-
-      const reportData: ReportData = {
-        patient: {
-          name: invoice.patient_name || order.patient_name,
-          id: invoice.patient_id || order.patient_id,
-          age: patientAge,
-          gender: patientGender,
-          referredBy: order.doctor || 'Self',
-        },
-        report: {
-          reportId: invoice.id,
-          collectionDate: invoice.invoice_date || order.order_date,
-          reportDate: invoice.invoice_date || order.order_date,
-          reportType: 'Invoice',
-        },
-        testResults,
-        interpretation: `Invoice total: ₹${total.toLocaleString()} | Paid: ₹${paid.toLocaleString()} | Refunded: ₹${refunded.toLocaleString()} | Due: ₹${due.toLocaleString()} | Status: ${invoice.status || 'N/A'}`,
-        template: getLabTemplate('medilab-default'),
-      };
-
-      await generateAndDownloadReport(reportData);
+      // 3. Open PDF in new tab
+      window.open(pdfUrl, '_blank');
+      
     } catch (err) {
       console.error('Failed to view invoice', err);
-      alert('Failed to download invoice. Please try again.');
+      alert(`Failed to view invoice: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setViewInvoiceLoading(false);
     }
@@ -920,14 +904,31 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                   )}
 
                   {order.billing_status === 'billed' && (
-                    <button
-                      onClick={handleViewInvoice}
-                      disabled={viewInvoiceLoading}
-                      className="w-full flex items-center justify-center gap-2 bg-white border border-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      <FileText className="h-4 w-4" />
-                      {viewInvoiceLoading ? 'Downloading…' : 'View Invoice'}
-                    </button>
+                    <>
+                      <button
+                        onClick={handleViewInvoice}
+                        disabled={viewInvoiceLoading}
+                        className="w-full flex items-center justify-center gap-2 bg-white border border-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        <FileText className="h-4 w-4" />
+                        {viewInvoiceLoading ? 'Downloading…' : 'View Invoice'}
+                      </button>
+                      
+                      {/* Invoice Delivery Tracker */}
+                      {order.invoice_id && (
+                        <div className="w-full flex justify-center">
+                          <InvoiceDeliveryTracker
+                            invoiceId={order.invoice_id}
+                            invoiceNumber={`INV-${order.id.slice(-6).toUpperCase()}`}
+                            customerPhone={order.patient_phone || undefined}
+                            customerEmail={order.patient?.email || undefined}
+                            onDeliveryTracked={() => {
+                              setInvoiceRefreshTrigger(prev => prev + 1);
+                            }}
+                          />
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>

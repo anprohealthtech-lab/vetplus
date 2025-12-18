@@ -116,6 +116,7 @@ export async function generateInvoicePDF(
     const htmlBundle = buildInvoiceHtmlBundle(invoice, template);
 
     // 6. Call Edge Function to generate and upload PDF
+    // Pass invoice number without .pdf extension (edge function will add it)
     const pdfUrl = await callEdgeFunctionPdfGeneration(
       htmlBundle,
       invoice.invoice_number,
@@ -367,7 +368,7 @@ async function callEdgeFunctionPdfGeneration(
     },
     body: JSON.stringify({
       html,
-      filename: `${filename}.pdf`,
+      filename, // Just the invoice number (e.g., INV-20251218-O001-ABC123), edge function adds .pdf
       invoiceId,
       labId,
     }),
@@ -425,7 +426,7 @@ async function updateInvoiceWithPdf(
  */
 async function generateInvoiceNumber(invoice: Invoice): Promise<string> {
   const year = new Date(invoice.invoice_date).getFullYear();
-
+  
   // If partial invoice, get parent invoice number and add suffix
   if (invoice.is_partial && invoice.parent_invoice_id) {
     const { data: parentInvoice } = await supabase
@@ -447,24 +448,89 @@ async function generateInvoiceNumber(invoice: Invoice): Promise<string> {
     }
   }
 
-  // Regular invoice: get last invoice number for this lab/year
-  const { data: lastInvoice } = await supabase
+  // B2B/Account Invoice (multiple orders) - use account-based numbering
+  if (invoice.invoice_type === 'account' && invoice.account_id) {
+    // Get account code for unique identifier
+    const { data: account } = await supabase
+      .from('accounts')
+      .select('code, name')
+      .eq('id', invoice.account_id)
+      .single();
+    
+    const accountCode = account?.code || account?.name?.substring(0, 6).toUpperCase() || invoice.account_id.substring(0, 6).toUpperCase();
+    
+    // Get last invoice number for this account/year combination
+    const { data: lastInvoice } = await supabase
+      .from('invoices')
+      .select('invoice_number')
+      .eq('account_id', invoice.account_id)
+      .eq('invoice_type', 'account')
+      .like('invoice_number', `INV-ACC${accountCode}-${year}-%`)
+      .not('invoice_number', 'ilike', '%-P%') // Exclude partial invoices
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    let nextSequence = 1;
+    if (lastInvoice?.invoice_number) {
+      const parts = lastInvoice.invoice_number.split('-');
+      const lastSequence = parseInt(parts[parts.length - 1]) || 0;
+      nextSequence = lastSequence + 1;
+    }
+
+    return `INV-ACC${accountCode}-${year}-${String(nextSequence).padStart(4, '0')}`;
+  }
+
+  // Patient/Self Invoice (single order) - use order-based numbering with date and unique ID
+  const orderId = invoice.order_id;
+  if (!orderId) {
+    throw new Error('Cannot generate invoice number: Patient invoice must be linked to an order');
+  }
+
+  // Format: INV-YYYYMMDD-O{order_display}-{order_id_short}
+  // Example: INV-20251218-O001-a1b2c3d4
+  // Note: Order numbers (001, 002) reset daily and can be same across labs
+  // So we include: date + order display + unique order ID suffix for global uniqueness
+  
+  // Get order display number and order date
+  const { data: order } = await supabase
+    .from('orders')
+    .select('order_display, order_number, order_date')
+    .eq('id', orderId)
+    .single();
+  
+  const orderDisplay = order?.order_display || order?.order_number?.toString().padStart(3, '0') || '000';
+  
+  // Format date as YYYYMMDD
+  const invoiceDate = new Date(invoice.invoice_date);
+  const dateStr = `${invoiceDate.getFullYear()}${String(invoiceDate.getMonth() + 1).padStart(2, '0')}${String(invoiceDate.getDate()).padStart(2, '0')}`;
+  
+  // Use last 8 characters of order ID for uniqueness (globally unique across all labs)
+  const orderIdShort = orderId.substring(orderId.length - 8).toUpperCase();
+  
+  // Check if invoice already exists for this order
+  const { data: existingInvoice } = await supabase
     .from('invoices')
     .select('invoice_number')
-    .eq('lab_id', invoice.lab_id)
-    .like('invoice_number', `INV-${year}-%`)
+    .eq('order_id', orderId)
+    .not('invoice_number', 'is', null)
     .not('invoice_number', 'ilike', '%-P%') // Exclude partial invoices
     .order('created_at', { ascending: false })
     .limit(1);
 
-  let nextSequence = 1;
-  if (lastInvoice?.invoice_number) {
-    const parts = lastInvoice.invoice_number.split('-');
-    const lastSequence = parseInt(parts[parts.length - 1]) || 0;
-    nextSequence = lastSequence + 1;
+  // If invoice already exists for this order, add a sequence suffix
+  if (existingInvoice?.invoice_number) {
+    // Count existing invoices for this order
+    const { data: orderInvoices } = await supabase
+      .from('invoices')
+      .select('invoice_number')
+      .eq('order_id', orderId)
+      .not('invoice_number', 'ilike', '%-P%');
+    
+    const invoiceCount = (orderInvoices?.length || 0) + 1;
+    return `INV-${dateStr}-O${orderDisplay}-${orderIdShort}-${invoiceCount}`;
   }
 
-  return `INV-${year}-${String(nextSequence).padStart(4, '0')}`;
+  return `INV-${dateStr}-O${orderDisplay}-${orderIdShort}`;
 }
 
 /**

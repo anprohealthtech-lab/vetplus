@@ -137,10 +137,21 @@ type CardOrder = {
   report_url?: string | null;
   report_status?: string | null;
   
-  // Delivery tracking
+  // Delivery tracking (Reports)
   whatsapp_sent_at?: string | null;
+  whatsapp_sent_via?: string | null;
   email_sent_at?: string | null;
+  email_sent_via?: string | null;
   doctor_informed_at?: string | null;
+  doctor_sent_via?: string | null;
+
+  // Delivery tracking (Invoices)
+  invoice_whatsapp_sent_at?: string | null;
+  invoice_whatsapp_sent_via?: string | null;
+  invoice_email_sent_at?: string | null;
+  invoice_email_sent_via?: string | null;
+  invoice_payment_reminder_count?: number;
+  invoice_last_reminder_at?: string | null;
 
   // Location and transit fields
   location_id?: string | null;
@@ -260,12 +271,15 @@ const Dashboard: React.FC = () => {
     // 3) Fetch invoices and payments for each order
     const invoicePromises = orderIds.map(async (orderId) => {
       const { data: invoice } = await database.invoices.getByOrderId(orderId);
-      if (!invoice) return { orderId, invoice: null, payments: [], paidAmount: 0 };
+      if (!invoice) return { orderId, invoice: null, payments: [], paidAmount: 0, deliveryStatus: {} };
       
       const { data: payments } = await database.payments.getByInvoiceId(invoice.id);
       const paidAmount = (payments || []).reduce((sum, p) => sum + (p.amount || 0), 0);
       
-      return { orderId, invoice, payments: payments || [], paidAmount };
+      // Fetch delivery status for this invoice
+      const { data: deliveryStatus } = await database.invoices.getDeliveryStatus(invoice.id);
+      
+      return { orderId, invoice, payments: payments || [], paidAmount, deliveryStatus: deliveryStatus || {} };
     });
     
     const invoiceData = await Promise.all(invoicePromises);
@@ -276,13 +290,16 @@ const Dashboard: React.FC = () => {
       pdf_url: string | null; 
       status: string | null;
       whatsapp_sent_at: string | null;
+      whatsapp_sent_via: string | null;
       email_sent_at: string | null;
+      email_sent_via: string | null;
       doctor_informed_at: string | null;
+      doctor_sent_via: string | null;
     }>();
     if (orderIds.length > 0) {
       const { data: reportsData } = await supabase
         .from('reports')
-        .select('order_id, pdf_url, status, report_type, whatsapp_sent_at, email_sent_at, doctor_informed_at')
+        .select('order_id, pdf_url, status, report_type, whatsapp_sent_at, whatsapp_sent_via, email_sent_at, email_sent_via, doctor_informed_at, doctor_sent_via')
         .in('order_id', orderIds)
         .eq('report_type', 'final'); // Only care about final reports for sending
       
@@ -292,8 +309,11 @@ const Dashboard: React.FC = () => {
             pdf_url: r.pdf_url, 
             status: r.status,
             whatsapp_sent_at: r.whatsapp_sent_at,
+            whatsapp_sent_via: r.whatsapp_sent_via,
             email_sent_at: r.email_sent_at,
+            email_sent_via: r.email_sent_via,
             doctor_informed_at: r.doctor_informed_at,
+            doctor_sent_via: r.doctor_sent_via,
           });
         });
       }
@@ -399,8 +419,19 @@ const Dashboard: React.FC = () => {
         report_url: reportInfo?.pdf_url,
         report_status: reportInfo?.status,
         whatsapp_sent_at: reportInfo?.whatsapp_sent_at,
+        whatsapp_sent_via: reportInfo?.whatsapp_sent_via,
         email_sent_at: reportInfo?.email_sent_at,
+        email_sent_via: reportInfo?.email_sent_via,
         doctor_informed_at: reportInfo?.doctor_informed_at,
+        doctor_sent_via: reportInfo?.doctor_sent_via,
+
+        // Invoice delivery tracking
+        invoice_whatsapp_sent_at: invoiceInfo?.deliveryStatus?.whatsapp_sent_at,
+        invoice_whatsapp_sent_via: invoiceInfo?.deliveryStatus?.whatsapp_sent_via,
+        invoice_email_sent_at: invoiceInfo?.deliveryStatus?.email_sent_at,
+        invoice_email_sent_via: invoiceInfo?.deliveryStatus?.email_sent_via,
+        invoice_payment_reminder_count: invoiceInfo?.deliveryStatus?.payment_reminder_count,
+        invoice_last_reminder_at: invoiceInfo?.deliveryStatus?.last_reminder_at,
 
         // Location and transit fields
         location_id: (o as any).location_id || null,
@@ -1043,6 +1074,19 @@ const Dashboard: React.FC = () => {
         const result = await WhatsAppAPI.sendMessage(phone, message);
         
         if (result.success) {
+          // Record the API WhatsApp send in the database
+          try {
+            await database.invoices.recordWhatsAppSend(invoice.id, {
+              to: phone,
+              caption: message,
+              sentBy: user?.id || '',
+              sentVia: 'api'
+            });
+            console.log('Invoice WhatsApp delivery status recorded (API)');
+          } catch (recordError) {
+            console.error('Failed to record invoice WhatsApp send:', recordError);
+          }
+          
           alert('Invoice sent via WhatsApp successfully!');
           fetchOrders();
           setIsSendingInvoice(null);
@@ -1056,6 +1100,19 @@ const Dashboard: React.FC = () => {
       const { success: manualSuccess } = await openWhatsAppManually(phone, message);
 
       if (manualSuccess) {
+        // Record the manual WhatsApp send in the database
+        try {
+          await database.invoices.recordWhatsAppSend(invoice.id, {
+            to: phone,
+            caption: message,
+            sentBy: user?.id || '',
+            sentVia: 'manual_link'
+          });
+          console.log('Invoice WhatsApp delivery status recorded');
+        } catch (recordError) {
+          console.error('Failed to record invoice WhatsApp send:', recordError);
+        }
+        
         alert('WhatsApp opened. Please send the message manually.');
         fetchOrders();
       }
@@ -1514,6 +1571,34 @@ const Dashboard: React.FC = () => {
                                   {o.whatsapp_sent_at ? '📱' : '📧'}
                                 </span>
                               )}
+                              
+                              {/* Invoice Delivery Status */}
+                              {o.invoice_whatsapp_sent_at && (
+                                <span 
+                                  className="px-1.5 py-0.5 text-xs font-medium rounded bg-teal-100 text-teal-700 border border-teal-200" 
+                                  title={`Invoice sent via WhatsApp: ${new Date(o.invoice_whatsapp_sent_at).toLocaleString()}`}
+                                >
+                                  💬
+                                </span>
+                              )}
+                              
+                              {o.invoice_email_sent_at && (
+                                <span 
+                                  className="px-1.5 py-0.5 text-xs font-medium rounded bg-indigo-100 text-indigo-700 border border-indigo-200" 
+                                  title={`Invoice sent via Email: ${new Date(o.invoice_email_sent_at).toLocaleString()}`}
+                                >
+                                  ✉️
+                                </span>
+                              )}
+                              
+                              {o.invoice_payment_reminder_count && o.invoice_payment_reminder_count > 0 && (
+                                <span 
+                                  className="px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-700 border border-amber-200" 
+                                  title={`${o.invoice_payment_reminder_count} payment reminder(s) sent`}
+                                >
+                                  🔔{o.invoice_payment_reminder_count}
+                                </span>
+                              )}
                             </div>
                             
                             {/* Combined Billing & Payment Status Badge */}
@@ -1612,6 +1697,34 @@ const Dashboard: React.FC = () => {
                                   title={`Sent: ${new Date(o.whatsapp_sent_at || o.email_sent_at!).toLocaleString()}`}
                                 >
                                   {o.whatsapp_sent_at ? '📱 Sent' : '📧 Emailed'}
+                                </span>
+                              )}
+                              
+                              {/* Invoice Delivery Badges */}
+                              {o.invoice_whatsapp_sent_at && (
+                                <span 
+                                  className="px-2 py-1 text-xs font-semibold rounded-lg bg-teal-100 text-teal-700 border border-teal-300" 
+                                  title={`Invoice sent via WhatsApp: ${new Date(o.invoice_whatsapp_sent_at).toLocaleString()}`}
+                                >
+                                  💬 Invoice Sent
+                                </span>
+                              )}
+                              
+                              {o.invoice_email_sent_at && (
+                                <span 
+                                  className="px-2 py-1 text-xs font-semibold rounded-lg bg-indigo-100 text-indigo-700 border border-indigo-300" 
+                                  title={`Invoice sent via Email: ${new Date(o.invoice_email_sent_at).toLocaleString()}`}
+                                >
+                                  ✉️ Invoice Emailed
+                                </span>
+                              )}
+                              
+                              {o.invoice_payment_reminder_count && o.invoice_payment_reminder_count > 0 && (
+                                <span 
+                                  className="px-2 py-1 text-xs font-semibold rounded-lg bg-amber-100 text-amber-700 border border-amber-300" 
+                                  title={`${o.invoice_payment_reminder_count} payment reminder(s) sent - Last: ${o.invoice_last_reminder_at ? new Date(o.invoice_last_reminder_at).toLocaleString() : 'N/A'}`}
+                                >
+                                  🔔 {o.invoice_payment_reminder_count} Reminder{o.invoice_payment_reminder_count > 1 ? 's' : ''}
                                 </span>
                               )}
                             </div>

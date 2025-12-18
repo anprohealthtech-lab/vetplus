@@ -90,8 +90,9 @@ serve(async (req) => {
       
       const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-      const sanitizedFilename = filename.replace(/[^a-zA-Z0-9-]/g, '_');
-      const filePath = `${labId}/invoices/${sanitizedFilename}_${invoiceId}.pdf`;
+      // Path: {labId}/{invoice_number}_{invoiceId}.pdf
+      // Example: 2f8d0329.../INV-20251218-O001-ABC123_bedc6934-ebff-4cae-aa91-968344925a03.pdf
+      const filePath = `${labId}/${filename}_${invoiceId}.pdf`;
 
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from('invoices')

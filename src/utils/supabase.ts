@@ -1396,12 +1396,15 @@ export const database = {
           whatsapp_sent_to,
           whatsapp_sent_by,
           whatsapp_caption,
+          whatsapp_sent_via,
           email_sent_at,
           email_sent_to,
           email_sent_by,
+          email_sent_via,
           doctor_informed_at,
           doctor_informed_via,
           doctor_informed_by,
+          doctor_sent_via,
           clinical_summary_included
         `)
         .eq('id', reportId)
@@ -3366,6 +3369,102 @@ export const database = {
         .maybeSingle();
       
       return { data, error };
+    },
+
+    // Delivery tracking methods for invoices
+    recordWhatsAppSend: async (invoiceId: string, params: {
+      to: string;
+      caption: string;
+      sentBy: string;
+      sentVia?: 'api' | 'manual_link';
+    }) => {
+      const { data, error } = await supabase
+        .from('invoices')
+        .update({
+          whatsapp_sent_at: new Date().toISOString(),
+          whatsapp_sent_to: params.to,
+          whatsapp_sent_by: params.sentBy,
+          whatsapp_caption: params.caption,
+          whatsapp_sent_via: params.sentVia || 'api',
+        })
+        .eq('id', invoiceId)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    recordEmailSend: async (invoiceId: string, params: {
+      to: string;
+      sentBy: string;
+      sentVia?: 'api' | 'manual_link';
+    }) => {
+      const { data, error } = await supabase
+        .from('invoices')
+        .update({
+          email_sent_at: new Date().toISOString(),
+          email_sent_to: params.to,
+          email_sent_by: params.sentBy,
+          email_sent_via: params.sentVia || 'api',
+        })
+        .eq('id', invoiceId)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    recordPaymentReminder: async (invoiceId: string, params: {
+      sentBy: string;
+      sentVia?: 'api' | 'manual_link';
+    }) => {
+      const { data, error } = await supabase
+        .from('invoices')
+        .update({
+          last_reminder_at: new Date().toISOString(),
+          reminder_sent_by: params.sentBy,
+        })
+        .eq('id', invoiceId)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    getDeliveryStatus: async (invoiceId: string) => {
+      const { data, error } = await supabase
+        .from('invoices')
+        .select(`
+          whatsapp_sent_at,
+          whatsapp_sent_to,
+          whatsapp_sent_by,
+          whatsapp_caption,
+          whatsapp_sent_via,
+          email_sent_at,
+          email_sent_to,
+          email_sent_by,
+          email_sent_via,
+          payment_reminder_count,
+          last_reminder_at,
+          reminder_sent_by
+        `)
+        .eq('id', invoiceId)
+        .single();
+      return { data, error };
+    },
+
+    wasAlreadySent: async (invoiceId: string, type: 'whatsapp' | 'email') => {
+      const { data, error } = await supabase
+        .from('invoices')
+        .select(`
+          whatsapp_sent_at,
+          email_sent_at
+        `)
+        .eq('id', invoiceId)
+        .single();
+      
+      if (error || !data) return false;
+      
+      if (type === 'whatsapp') return !!data.whatsapp_sent_at;
+      if (type === 'email') return !!data.email_sent_at;
+      return false;
     }
   },
 
