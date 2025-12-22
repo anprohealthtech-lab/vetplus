@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { TestTube, Mail, Lock, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { Mail, Lock, Eye, EyeOff, AlertCircle } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 const Login: React.FC = () => {
@@ -9,7 +9,7 @@ const Login: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  
+
   const { signIn } = useAuth();
   const navigate = useNavigate();
 
@@ -19,13 +19,13 @@ const Login: React.FC = () => {
     setError('');
 
     const { error } = await signIn(email, password);
-    
+
     if (error) {
       setError(error.message);
     } else {
       navigate('/');
     }
-    
+
     setLoading(false);
   };
 
@@ -35,12 +35,14 @@ const Login: React.FC = () => {
         {/* Header */}
         <div className="text-center">
           <div className="flex items-center justify-center mb-6">
-            <div className="bg-blue-600 p-3 rounded-full">
-              <TestTube className="h-8 w-8 text-white" />
-            </div>
+            <img
+              src="https://ik.imagekit.io/18tsendxqy/website/Screenshot%202025-12-15%20133819.png?updatedAt=1765786115578"
+              alt="AnPro LIMS"
+              className="h-16 w-auto object-contain"
+            />
           </div>
           <h2 className="text-3xl font-bold text-gray-900">Welcome back</h2>
-          <p className="mt-2 text-gray-600">Sign in to your LIMS account</p>
+          <p className="mt-2 text-gray-600">Sign in to your AnPro LIMS account</p>
         </div>
 
         {/* Login Form */}
@@ -135,13 +137,19 @@ const Login: React.FC = () => {
           </div>
         </div>
 
-        {/* Demo Credentials */}
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-          <h3 className="text-sm font-medium text-yellow-800 mb-2">Demo Credentials</h3>
-          <div className="text-xs text-yellow-700 space-y-1">
-            <div>Email: demo@medilab.com</div>
-            <div>Password: demo123</div>
-          </div>
+        {/* Support Info */}
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
+          <p className="text-sm text-blue-700">
+            For more information and support, visit{' '}
+            <a
+              href="https://limsapp.in/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-blue-600 hover:text-blue-800 underline"
+            >
+              limsapp.in
+            </a>
+          </p>
         </div>
       </div>
     </div>

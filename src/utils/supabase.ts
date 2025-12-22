@@ -208,6 +208,13 @@ const pickAssetPrimaryUrl = (asset?: BrandingAssetSnippet | null): string | null
 
 const composeHeaderHtml = (lab: LabContactRecord, asset?: BrandingAssetSnippet | null): string => {
   const logoUrl = pickAssetPrimaryUrl(asset);
+  
+  // If asset is explicitly a 'header' type, usually it's a full-width banner
+  // Return simple full-width image container
+  if (asset?.asset_type === 'header' && logoUrl) {
+    return `<div class="lab-header-branding" style="width:100%;"><img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(asset.asset_name)}" style="max-width:100%;height:auto;object-fit:contain;"></div>`;
+  }
+
   const displayName = escapeHtml(lab.name ?? asset?.asset_name ?? 'Laboratory');
   const addressLine = joinDisplayParts(
     [lab.address, lab.city, lab.state, lab.pincode],
@@ -246,6 +253,13 @@ const composeHeaderHtml = (lab: LabContactRecord, asset?: BrandingAssetSnippet |
 };
 
 const composeFooterHtml = (lab: LabContactRecord, asset?: BrandingAssetSnippet | null): string => {
+  const logoUrl = pickAssetPrimaryUrl(asset);
+
+  // If asset is explicitly a 'footer' type, treat as full-width banner
+  if (asset?.asset_type === 'footer' && logoUrl) {
+    return `<div class="lab-footer-branding" style="width:100%;"><img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(asset.asset_name)}" style="max-width:100%;height:auto;object-fit:contain;"></div>`;
+  }
+
   const accentName = escapeHtml(lab.name ?? asset?.asset_name ?? 'Laboratory');
   const addressLine = joinDisplayParts(
     [lab.address, lab.city, lab.state, lab.pincode],
@@ -254,7 +268,6 @@ const composeFooterHtml = (lab: LabContactRecord, asset?: BrandingAssetSnippet |
   const contactLine = joinDisplayParts([lab.phone, lab.email], ' • ');
   const licenseLine = lab.license_number ? `License: ${escapeHtml(lab.license_number)}` : '';
   const descriptionLine = asset?.description ? escapeHtml(asset.description) : '';
-  const logoUrl = pickAssetPrimaryUrl(asset);
 
   const addressHtml = addressLine
     ? `<div style="margin-top:6px;">${escapeHtml(addressLine)}</div>`

@@ -688,13 +688,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             <div><strong>Order Date:</strong> ${new Date(order.order_date).toLocaleDateString()}</div>
             <div><strong>Tests:</strong> ${order.tests.join(", ")}</div>
             ${(() => {
-              const orderTests = (order as any).order_tests || [];
-              const outsourcedTests = orderTests.filter((ot: any) => ot.outsourced_lab_id);
-              if (outsourcedTests.length > 0) {
-                return `<div style="color: #ea580c; font-weight: bold; margin-top: 5px;">⚠️ ${outsourcedTests.length} test(s) outsourced</div>`;
-              }
-              return '';
-            })()}
+        const orderTests = (order as any).order_tests || [];
+        const outsourcedTests = orderTests.filter((ot: any) => ot.outsourced_lab_id);
+        if (outsourcedTests.length > 0) {
+          return `<div style="color: #ea580c; font-weight: bold; margin-top: 5px;">⚠️ ${outsourcedTests.length} test(s) outsourced</div>`;
+        }
+        return '';
+      })()}
           </div>
         </div>
         <script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();}</script>
@@ -1179,7 +1179,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         } else if (error.message?.includes('No camera') || error.message?.includes('not available')) {
           alert('No camera available on this device');
         } else if (error.message?.includes('permission')) {
-          alert('Camera permission denied. Please enable camera access in Settings > Apps > LIMS Builder > Permissions.');
+          alert('Camera permission denied. Please enable camera access in Settings > Apps > AnPro LIMS > Permissions.');
         } else {
           alert(`Failed to capture photo: ${error.message || 'Unknown error'}. Please try again.`);
         }
@@ -1755,12 +1755,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       }
 
       setSaveMessage("Draft saved successfully!");
-      
+
       // Call the callback if provided
       if (onAfterSaveDraft) {
         await onAfterSaveDraft();
       }
-      
+
       setTimeout(() => setSaveMessage(null), 3000);
     } catch (err) {
       console.error("Error saving draft:", err);
@@ -2817,7 +2817,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     const orderTest = (order as any).order_tests?.find((ot: any) => ot.test_name === test);
                     const isOutsourced = orderTest?.outsourced_lab_id;
                     const outsourcedLabName = orderTest?.outsourced_labs?.name;
-                    
+
                     return (
                       <div key={index} className="bg-gray-50 rounded-lg p-4">
                         <div className="flex items-center justify-between">

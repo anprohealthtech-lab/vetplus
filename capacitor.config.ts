@@ -1,8 +1,8 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.lims.builder',
-  appName: 'LIMS Builder',
+  appId: 'com.anpro.lims',
+  appName: 'AnPro LIMS',
   webDir: 'dist',
   server: {
     androidScheme: 'https',
@@ -38,8 +38,8 @@ const config: CapacitorConfig = {
     webContentsDebuggingEnabled: true,
     backgroundColor: '#ffffff',
     // Enable safe area insets
-    overrideUserAgent: null,
-    appendUserAgent: 'LIMS-Android',
+    overrideUserAgent: undefined,
+    appendUserAgent: 'AnPro-LIMS-Android',
   },
 };
 

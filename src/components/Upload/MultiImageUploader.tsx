@@ -75,7 +75,7 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
   // Create preview for file
   const createPreview = async (file: File): Promise<string | undefined> => {
     if (!file.type.startsWith('image/')) return undefined;
-    
+
     return new Promise((resolve) => {
       const reader = new FileReader();
       reader.onloadend = () => resolve(reader.result as string);
@@ -86,21 +86,21 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
   // Get image dimensions
   const getImageDimensions = (file: File): Promise<{ width: number; height: number } | undefined> => {
     if (!file.type.startsWith('image/')) return Promise.resolve(undefined);
-    
+
     return new Promise((resolve) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
-      
+
       img.onload = () => {
         resolve({ width: img.naturalWidth, height: img.naturalHeight });
         URL.revokeObjectURL(url);
       };
-      
+
       img.onerror = () => {
         resolve(undefined);
         URL.revokeObjectURL(url);
       };
-      
+
       img.src = url;
     });
   };
@@ -188,7 +188,7 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
         // First check and request permissions
         const { Camera } = await import('@capacitor/camera');
         const permissions = await Camera.checkPermissions();
-        
+
         if (permissions.camera !== 'granted') {
           const requested = await Camera.requestPermissions();
           if (requested.camera !== 'granted') {
@@ -217,7 +217,7 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
         const blob = await response.blob();
         const fileName = `camera_capture_${Date.now()}.${photo.format || 'jpg'}`;
         const file = new File([blob], fileName, { type: `image/${photo.format || 'jpeg'}` });
-        
+
         addFiles([file]);
         console.log('Photo captured successfully');
       } catch (error: any) {
@@ -228,7 +228,7 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
         } else if (error.message?.includes('No camera') || error.message?.includes('not available')) {
           alert('No camera available on this device');
         } else if (error.message?.includes('permission')) {
-          alert('Camera permission denied. Please enable camera access in Settings > Apps > LIMS Builder > Permissions.');
+          alert('Camera permission denied. Please enable camera access in Settings > Apps > AnPro LIMS > Permissions.');
         } else {
           alert(`Failed to capture photo: ${error.message || 'Unknown error'}. Please try again.`);
         }
@@ -266,7 +266,7 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
   //     const updated = [...prev];
   //     const [removed] = updated.splice(fromIndex, 1);
   //     updated.splice(toIndex, 0, removed);
-      
+
   //     // Update sequence numbers and labels
   //     return updated.map((file, index) => ({
   //       ...file,
@@ -281,13 +281,13 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
     if (files.length === 0) return;
 
     setUploading(true);
-    
+
     try {
       const currentLabId = await database.getCurrentUserLabId();
       if (!currentLabId) throw new Error('Unable to determine lab context');
 
       const batchId = files[0].batchId;
-      
+
       // Create batch record
       const batchData = {
         id: batchId,
@@ -308,7 +308,7 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
       const { error: batchError } = await supabase
         .from('attachment_batches')
         .insert(batchData);
-      
+
       if (batchError) throw batchError;
 
       // Upload files sequentially with progress updates
@@ -317,7 +317,7 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        
+
         // Skip files that already have errors
         if (file.uploadStatus === 'error') {
           completed++;
@@ -325,19 +325,18 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
         }
 
         // Update file status to uploading
-        setFiles(prev => prev.map(f => 
+        setFiles(prev => prev.map(f =>
           f.id === file.id ? { ...f, uploadStatus: 'uploading' } : f
         ));
 
         try {
           // Generate file path with batch info
-          const filePath = `${currentLabId}/${new Date().getFullYear()}/${
-            new Date().getMonth() + 1
-          }/${batchId}/${file.sequence}_${file.file.name}`;
+          const filePath = `${currentLabId}/${new Date().getFullYear()}/${new Date().getMonth() + 1
+            }/${batchId}/${file.sequence}_${file.file.name}`;
 
           // Upload to storage
           const uploadResult = await uploadFile(file.file, filePath);
-          
+
           if (!uploadResult?.publicUrl) {
             throw new Error('Upload failed - no URL returned');
           }
@@ -376,32 +375,32 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
           if (attachmentError) throw attachmentError;
 
           // Update file status to completed
-          setFiles(prev => prev.map(f => 
-            f.id === file.id ? { 
-              ...f, 
+          setFiles(prev => prev.map(f =>
+            f.id === file.id ? {
+              ...f,
               uploadStatus: 'completed',
-              fileUrl: uploadResult.publicUrl 
+              fileUrl: uploadResult.publicUrl
             } : f
           ));
 
           uploadedAttachments.push(attachment);
           completed++;
-          
+
           // Progress callback
           onUploadProgress?.({ completed, total: files.length });
 
         } catch (error: any) {
           console.error(`Error uploading file ${file.fileName}:`, error);
-          
+
           // Update file status to error
-          setFiles(prev => prev.map(f => 
-            f.id === file.id ? { 
-              ...f, 
+          setFiles(prev => prev.map(f =>
+            f.id === file.id ? {
+              ...f,
               uploadStatus: 'error',
               error: error.message || 'Upload failed'
             } : f
           ));
-          
+
           completed++;
         }
       }
@@ -458,17 +457,16 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
           onDrop={handleDrop}
           onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
           onDragLeave={() => setDragActive(false)}
-          className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
-            dragActive 
-              ? 'border-blue-400 bg-blue-50' 
+          className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${dragActive
+              ? 'border-blue-400 bg-blue-50'
               : 'border-gray-300 hover:border-gray-400'
-          }`}
+            }`}
         >
           <div className="space-y-4">
             <div className="flex justify-center">
               <Upload className="h-12 w-12 text-gray-400" />
             </div>
-            
+
             <div>
               <h3 className="text-lg font-medium text-gray-900">Upload Multiple Images</h3>
               <p className="text-sm text-gray-500 mt-1">
@@ -487,7 +485,7 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
                 <Upload className="h-4 w-4" />
                 Choose Files
               </button>
-              
+
               <button
                 onClick={handleCameraCapture}
                 className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center gap-2 min-h-touch"
@@ -506,7 +504,7 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
             onChange={handleFileInput}
             className="hidden"
           />
-          
+
           <input
             ref={cameraInputRef}
             type="file"
@@ -531,14 +529,13 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
                     <div className="text-sm font-medium text-blue-600">
                       {file.label}
                     </div>
-                    <div className={`w-2 h-2 rounded-full ${
-                      file.uploadStatus === 'completed' ? 'bg-green-500' :
-                      file.uploadStatus === 'error' ? 'bg-red-500' :
-                      file.uploadStatus === 'uploading' ? 'bg-blue-500 animate-pulse' :
-                      'bg-gray-300'
-                    }`} />
+                    <div className={`w-2 h-2 rounded-full ${file.uploadStatus === 'completed' ? 'bg-green-500' :
+                        file.uploadStatus === 'error' ? 'bg-red-500' :
+                          file.uploadStatus === 'uploading' ? 'bg-blue-500 animate-pulse' :
+                            'bg-gray-300'
+                      }`} />
                   </div>
-                  
+
                   {!uploading && (
                     <button
                       onClick={() => removeFile(file.id)}
@@ -584,14 +581,14 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
                     <span className="text-xs">{file.error}</span>
                   </div>
                 )}
-                
+
                 {file.uploadStatus === 'uploading' && (
                   <div className="mt-2 flex items-center gap-1 text-blue-600">
                     <Loader className="h-3 w-3 animate-spin" />
                     <span className="text-xs">Uploading...</span>
                   </div>
                 )}
-                
+
                 {file.uploadStatus === 'completed' && (
                   <div className="mt-2 flex items-center gap-1 text-green-600">
                     <Check className="h-3 w-3" />
@@ -643,7 +640,7 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
                 >
                   Clear All
                 </button>
-                
+
                 <button
                   onClick={uploadAllFiles}
                   disabled={uploading || files.length === 0 || files.every(f => f.uploadStatus === 'completed')}

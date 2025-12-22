@@ -139,14 +139,36 @@ const BASELINE_CSS = `
   background-color: #f8fafc;
 }
 
-/* Abnormal values highlighting */
-.result-abnormal, .abnormal {
-  color: #d32f2f;
+/* Abnormal values highlighting & Flags */
+.result-abnormal, .abnormal, .flag-abnormal {
+  color: #dc2626; /* Red-600 */
   font-weight: bold;
 }
 
-.result-normal, .normal {
-  color: #2e7d32;
+.result-high, .flag-high, .result-critical_high {
+  color: #dc2626 !important; /* Red */
+  font-weight: bold;
+}
+
+.result-low, .flag-low, .result-critical_low {
+  color: #ea580c !important; /* Orange-600 */
+  font-weight: bold;
+}
+
+.result-normal, .normal, .flag-normal {
+  color: #16a34a !important; /* Green-600 */
+}
+
+/* Report Header & Titles */
+/* Ensures headers on dark backgrounds are white */
+.report-header-title,
+.report-title,
+.header-dark h1,
+.header-dark h2,
+.header-dark h3,
+[style*="background-color: #"] h1,
+[style*="background-color: rgb"] h1 {
+  color: #ffffff !important;
 }
 
 /* Info grid for patient/order details */
@@ -573,6 +595,42 @@ function getNestedValue(obj: Record<string, any>, path: string): any {
 // ============================================================
 // SECTION: HTML Document Builders
 // ============================================================
+
+/**
+ * Generate dynamic CSS based on lab settings (colors, fonts, etc.)
+ */
+function generateDynamicCss(settings: any): string {
+  if (!settings || (!settings.resultColors && !settings.headerTextColor)) return ''
+  
+  let css = '/* Dynamic PDF Settings */\n'
+  
+  // Header Text Color
+  if (settings.headerTextColor && settings.headerTextColor !== 'inherit') {
+    const color = settings.headerTextColor === 'white' ? '#ffffff' : settings.headerTextColor
+    css += `
+      .report-header-title, .report-title, h1, h2, h3, .header-content { color: ${color} !important; }
+      /* Also force white text on dark backgrounds if header is white */
+      ${color === '#ffffff' ? '.header-dark h1, .header-dark h2, .header-dark h3 { color: #ffffff !important; }' : ''}
+    `
+  }
+  
+  // Result Colors
+  if (settings.resultColors && settings.resultColors.enabled) {
+    const { high, low, normal } = settings.resultColors
+    if (high) {
+      css += `.result-high, .flag-high, .result-critical_high, .result-critical-high, .result-H, .result-HH { color: ${high} !important; }\n`
+      css += `.result-abnormal, .flag-abnormal, .result-A { color: ${high} !important; }\n`
+    }
+    if (low) {
+      css += `.result-low, .flag-low, .result-critical_low, .result-critical-low, .result-L, .result-LL { color: ${low} !important; }\n`
+    }
+    if (normal) {
+      css += `.result-normal, .flag-normal, .result-N { color: ${normal} !important; }\n`
+    }
+  }
+  
+  return css
+}
 
 /**
  * Build PDF body HTML document (main content)
@@ -1462,7 +1520,7 @@ serve(async (req) => {
         }
         
         // Determine flag using comprehensive system
-        const { displayFlag } = determineFlag(
+        const { displayFlag, flag } = determineFlag(
           analyte.value,
           analyte.reference_range,
           analyte.low_critical,
@@ -1475,7 +1533,8 @@ serve(async (req) => {
         
         return {
           ...analyte,
-          flag: displayFlag
+          flag: displayFlag,
+          flag_code: flag // Expose raw flag code (high, low, etc.) for CSS class generation
         }
       })
       
@@ -1721,8 +1780,9 @@ serve(async (req) => {
       
       console.log('✅ Using single template:', template.template_name)
       fullContext = prepareFullContext(context)
+      const dynamicCss = generateDynamicCss(pdfSettings)
       const renderedHtml = renderTemplate(template.gjs_html, fullContext)
-      bodyHtml = buildPdfBodyDocument(renderedHtml, template.gjs_css || '')
+      bodyHtml = buildPdfBodyDocument(renderedHtml, (template.gjs_css || '') + '\n' + dynamicCss)
       rawHtmlForPrint = bodyHtml // Save for print version
     } else {
       // Multi Group Logic
@@ -1825,7 +1885,8 @@ serve(async (req) => {
       }
       
       console.log('✅ Merged multiple templates using base:', template.template_name)
-      bodyHtml = buildPdfBodyDocument(renderedSections.join('\n'), template.gjs_css || '')
+      const dynamicCss = generateDynamicCss(pdfSettings)
+      bodyHtml = buildPdfBodyDocument(renderedSections.join('\n'), (template.gjs_css || '') + '\n' + dynamicCss)
       rawHtmlForPrint = bodyHtml // Save for print version
     }
 

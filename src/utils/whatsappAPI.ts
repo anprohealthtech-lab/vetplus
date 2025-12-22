@@ -64,6 +64,7 @@ export interface WhatsAppConnectionStatus {
   message?: string;
   qrCode?: string;
   lastActivity?: string;
+  error?: string;
 }
 
 export interface MessageResult {

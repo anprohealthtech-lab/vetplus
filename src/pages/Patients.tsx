@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import {
-  Plus, Search, Filter, Edit, Eye, Phone, Mail, QrCode,
-  Trash2, Users, Copy, MoreVertical, ChevronDown, ChevronUp
+  Plus, Search, Edit, Eye, Phone, Mail,
+  Trash2, Users, Copy
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { generateQRCodeData } from '../utils/colorAssignment';
@@ -362,7 +362,7 @@ const Patients: React.FC = () => {
                   <td className="px-6 py-3">
                     <div className="flex flex-col gap-1.5 items-start">
                       <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
-                        {patient.test_count || 0} Tests
+                        {patient.test_count || patient.total_tests || 0} Tests
                       </span>
                       {patient.duplicate_count && patient.duplicate_count > 0 ? (
                         <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-100">
@@ -370,7 +370,9 @@ const Patients: React.FC = () => {
                           {patient.duplicate_count} Duplicates
                         </span>
                       ) : (
-                        <span className="text-[10px] text-gray-400">Last: {new Date(patient.last_visit).toLocaleDateString()}</span>
+                        <span className="text-[10px] text-gray-400">
+                          Last: {patient.last_visit && !isNaN(Date.parse(patient.last_visit)) ? new Date(patient.last_visit).toLocaleDateString() : 'N/A'}
+                        </span>
                       )}
                     </div>
                   </td>

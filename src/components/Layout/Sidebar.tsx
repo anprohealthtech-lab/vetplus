@@ -115,10 +115,14 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
       `}>
         <div className={`flex-none flex items-center justify-between h-16 bg-blue-600 ${isCollapsed ? 'px-2 justify-center' : 'px-6'}`}>
           {!isCollapsed && (
-            <>
-              <TestTube className="h-8 w-8 text-white" />
-              <span className="ml-2 text-xl font-bold text-white">LIMS Builder</span>
-            </>
+            <div className="flex items-center">
+              <img
+                src="https://ik.imagekit.io/18tsendxqy/website/Screenshot%202025-12-15%20133819.png?updatedAt=1765786115578"
+                alt="AnPro LIMS"
+                className="h-8 w-8 object-contain rounded"
+              />
+              <span className="ml-2 text-xl font-bold text-white">AnPro LIMS</span>
+            </div>
           )}
           <div className="flex items-center gap-2">
             <button

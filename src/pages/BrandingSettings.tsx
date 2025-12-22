@@ -68,16 +68,16 @@ interface SignatureVariant {
 const isPlaceholderId = (value: string) => value.startsWith('temp-');
 
 export const BrandingSettings: React.FC = () => {
-  const [currentTab, setCurrentTab] = useState<'assets' | 'signatures' | 'watermark' | 'preview'>('assets');
+  const [currentTab, setCurrentTab] = useState<'assets' | 'signatures' | 'watermark' | 'preview' | 'pdf-settings'>('assets');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
+
   // Data state
   const [brandingAssets, setBrandingAssets] = useState<BrandingAsset[]>([]);
   const [userSignatures, setUserSignatures] = useState<UserSignature[]>([]);
   const [labId, setLabId] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  
+
   // Watermark settings state
   const [watermarkEnabled, setWatermarkEnabled] = useState(false);
   const [watermarkImageUrl, setWatermarkImageUrl] = useState<string>('');
@@ -86,12 +86,16 @@ export const BrandingSettings: React.FC = () => {
   const [watermarkSize, setWatermarkSize] = useState<'small' | 'medium' | 'large' | 'full'>('medium');
   const [watermarkRotation, setWatermarkRotation] = useState(0);
   const [savingWatermark, setSavingWatermark] = useState(false);
-  
+
+  // PDF Layout state
+  const [pdfSettings, setPdfSettings] = useState<any>({});
+  const [savingPdfSettings, setSavingPdfSettings] = useState(false);
+
   // Upload states
   const [showAssetUploader, setShowAssetUploader] = useState(false);
   const [showSignatureUploader, setShowSignatureUploader] = useState(false);
   const [selectedAssetType, setSelectedAssetType] = useState<'header' | 'footer' | 'watermark' | 'logo' | 'letterhead'>('logo');
-  
+
   // Processing status polling
   const { processingItems, isPolling } = useBrandingProcessingStatus(labId);
 
@@ -103,7 +107,7 @@ export const BrandingSettings: React.FC = () => {
   const loadBrandingData = async () => {
     setLoading(true);
     setError(null);
-    
+
     try {
       // Get current lab ID
       const currentLabId = await database.getCurrentUserLabId();
@@ -119,13 +123,13 @@ export const BrandingSettings: React.FC = () => {
       }
       setCurrentUserId(user.id);
 
-      // Load lab watermark settings
+      // Load lab watermark & PDF settings
       const { data: labData, error: labError } = await supabase
         .from('labs')
-        .select('watermark_enabled, watermark_image_url, watermark_opacity, watermark_position, watermark_size, watermark_rotation')
+        .select('watermark_enabled, watermark_image_url, watermark_opacity, watermark_position, watermark_size, watermark_rotation, pdf_layout_settings')
         .eq('id', currentLabId)
         .single();
-      
+
       if (!labError && labData) {
         setWatermarkEnabled(labData.watermark_enabled || false);
         setWatermarkImageUrl(labData.watermark_image_url || '');
@@ -133,6 +137,20 @@ export const BrandingSettings: React.FC = () => {
         setWatermarkPosition(labData.watermark_position || 'center');
         setWatermarkSize(labData.watermark_size || 'medium');
         setWatermarkRotation(labData.watermark_rotation || 0);
+
+        // Load PDF Settings
+        if (labData.pdf_layout_settings) {
+          setPdfSettings(labData.pdf_layout_settings);
+        } else {
+          // Initialize defaults
+          setPdfSettings({
+            resultColors: { enabled: true, high: '#dc2626', low: '#ea580c', normal: '#16a34a' },
+            headerTextColor: 'white',
+            headerHeight: '90px',
+            footerHeight: '80px',
+            margins: { top: '180px', bottom: '150px', left: '20px', right: '20px' }
+          });
+        }
       }
 
       // Load branding assets
@@ -184,7 +202,7 @@ export const BrandingSettings: React.FC = () => {
       if (error) {
         throw new Error(error.message);
       }
-      
+
       // Refresh data to show updated defaults
       await loadBrandingData();
     } catch (err) {
@@ -203,7 +221,7 @@ export const BrandingSettings: React.FC = () => {
       if (error) {
         throw new Error(error.message);
       }
-      
+
       // Refresh data to show updated defaults
       await loadBrandingData();
     } catch (err) {
@@ -228,7 +246,7 @@ export const BrandingSettings: React.FC = () => {
       if (error) {
         throw new Error(error.message);
       }
-      
+
       setBrandingAssets(prev => prev.filter(asset => asset.id !== assetId));
     } catch (err) {
       console.error('Error deleting asset:', err);
@@ -251,7 +269,7 @@ export const BrandingSettings: React.FC = () => {
       if (error) {
         throw new Error(error.message);
       }
-      
+
       setUserSignatures(prev => prev.filter(signature => signature.id !== signatureId));
     } catch (err) {
       console.error('Error deleting signature:', err);
@@ -261,7 +279,7 @@ export const BrandingSettings: React.FC = () => {
 
   const handleSaveWatermarkSettings = async () => {
     if (!labId) return;
-    
+
     setSavingWatermark(true);
     try {
       const { error } = await supabase
@@ -275,15 +293,38 @@ export const BrandingSettings: React.FC = () => {
           watermark_rotation: watermarkRotation
         })
         .eq('id', labId);
-      
+
       if (error) throw error;
-      
+
       alert('✅ Watermark settings saved successfully!\n\nAll new reports will automatically include the watermark.');
     } catch (err) {
       console.error('Error saving watermark settings:', err);
       alert('Failed to save watermark settings. Please try again.');
     } finally {
       setSavingWatermark(false);
+    }
+  };
+
+  const handleSavePdfSettings = async () => {
+    if (!labId) return;
+
+    setSavingPdfSettings(true);
+    try {
+      const { error } = await supabase
+        .from('labs')
+        .update({
+          pdf_layout_settings: pdfSettings
+        })
+        .eq('id', labId);
+
+      if (error) throw error;
+
+      alert('✅ PDF settings saved successfully!');
+    } catch (err) {
+      console.error('Error saving PDF settings:', err);
+      alert('Failed to save PDF settings. Please try again.');
+    } finally {
+      setSavingPdfSettings(false);
     }
   };
 
@@ -345,7 +386,7 @@ export const BrandingSettings: React.FC = () => {
           <h3 className="font-semibold text-red-800">Error Loading Branding Settings</h3>
         </div>
         <p className="text-red-700">{error}</p>
-        <button 
+        <button
           onClick={loadBrandingData}
           className="mt-3 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
         >
@@ -383,6 +424,7 @@ export const BrandingSettings: React.FC = () => {
           {[
             { id: 'assets', label: 'Branding Assets', icon: Image },
             { id: 'watermark', label: 'Watermark Settings', icon: Eye },
+            { id: 'pdf-settings', label: 'PDF Layout', icon: FileText },
             { id: 'signatures', label: 'Digital Signatures', icon: FileText },
             { id: 'preview', label: 'Preview & Export', icon: Eye }
           ].map((tab) => {
@@ -391,11 +433,10 @@ export const BrandingSettings: React.FC = () => {
               <button
                 key={tab.id}
                 onClick={() => setCurrentTab(tab.id as any)}
-                className={`flex items-center px-1 py-4 border-b-2 font-medium text-sm ${
-                  currentTab === tab.id
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
+                className={`flex items-center px-1 py-4 border-b-2 font-medium text-sm ${currentTab === tab.id
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
               >
                 <Icon className="w-4 h-4 mr-2" />
                 {tab.label}
@@ -442,7 +483,7 @@ export const BrandingSettings: React.FC = () => {
                 <h3 className="ml-2 text-lg font-medium text-gray-900 capitalize">{type}s</h3>
                 <span className="ml-2 text-sm text-gray-500">({assets.length})</span>
               </div>
-              
+
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {assets.map((asset) => (
                   <BrandingAssetCard
@@ -450,7 +491,7 @@ export const BrandingSettings: React.FC = () => {
                     asset={asset}
                     onSetDefault={() => handleSetAssetDefault(asset.id)}
                     onDelete={() => handleDeleteAsset(asset.id)}
-                    processingStatus={processingItems.find(item => 
+                    processingStatus={processingItems.find(item =>
                       item.asset_id === asset.id && item.asset_type === 'branding_asset'
                     )?.status}
                   />
@@ -517,9 +558,9 @@ export const BrandingSettings: React.FC = () => {
                     </div>
                     {watermarkImageUrl && (
                       <div className="mt-2 p-3 bg-gray-50 rounded border border-gray-200">
-                        <img 
-                          src={watermarkImageUrl} 
-                          alt="Watermark Preview" 
+                        <img
+                          src={watermarkImageUrl}
+                          alt="Watermark Preview"
                           className="max-h-24 mx-auto"
                           style={{ opacity: watermarkOpacity }}
                         />
@@ -537,9 +578,8 @@ export const BrandingSettings: React.FC = () => {
                           <button
                             key={asset.id}
                             onClick={() => setWatermarkImageUrl(asset.file_url)}
-                            className={`p-2 border-2 rounded-lg hover:border-blue-500 transition ${
-                              watermarkImageUrl === asset.file_url ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
-                            }`}
+                            className={`p-2 border-2 rounded-lg hover:border-blue-500 transition ${watermarkImageUrl === asset.file_url ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
+                              }`}
                           >
                             <img src={asset.file_url} alt={asset.asset_name} className="w-full h-16 object-contain" />
                             <p className="text-xs text-gray-600 mt-1 truncate">{asset.asset_name}</p>
@@ -582,11 +622,10 @@ export const BrandingSettings: React.FC = () => {
                         <button
                           key={pos.value}
                           onClick={() => setWatermarkPosition(pos.value as any)}
-                          className={`px-3 py-2 text-sm border rounded-md transition ${
-                            watermarkPosition === pos.value
-                              ? 'border-blue-500 bg-blue-50 text-blue-700 font-medium'
-                              : 'border-gray-300 text-gray-700 hover:border-blue-300'
-                          }`}
+                          className={`px-3 py-2 text-sm border rounded-md transition ${watermarkPosition === pos.value
+                            ? 'border-blue-500 bg-blue-50 text-blue-700 font-medium'
+                            : 'border-gray-300 text-gray-700 hover:border-blue-300'
+                            }`}
                         >
                           {pos.label}
                         </button>
@@ -607,11 +646,10 @@ export const BrandingSettings: React.FC = () => {
                         <button
                           key={size.value}
                           onClick={() => setWatermarkSize(size.value as any)}
-                          className={`px-3 py-2 text-sm border rounded-md transition ${
-                            watermarkSize === size.value
-                              ? 'border-blue-500 bg-blue-50 text-blue-700 font-medium'
-                              : 'border-gray-300 text-gray-700 hover:border-blue-300'
-                          }`}
+                          className={`px-3 py-2 text-sm border rounded-md transition ${watermarkSize === size.value
+                            ? 'border-blue-500 bg-blue-50 text-blue-700 font-medium'
+                            : 'border-gray-300 text-gray-700 hover:border-blue-300'
+                            }`}
                         >
                           {size.label}
                         </button>
@@ -717,7 +755,7 @@ export const BrandingSettings: React.FC = () => {
                   signature={signature}
                   onSetDefault={() => handleSetSignatureDefault(signature.id)}
                   onDelete={() => handleDeleteSignature(signature.id)}
-                  processingStatus={processingItems.find(item => 
+                  processingStatus={processingItems.find(item =>
                     item.asset_id === signature.id && item.asset_type === 'user_signature'
                   )?.status}
                 />
@@ -736,10 +774,195 @@ export const BrandingSettings: React.FC = () => {
       )}
 
       {currentTab === 'preview' && (
-        <BrandingPreview 
+        <BrandingPreview
           brandingAssets={brandingAssets}
           userSignatures={userSignatures}
         />
+      )}
+
+      {currentTab === 'pdf-settings' && (
+        <div className="space-y-6">
+          <div className="bg-white border border-gray-200 rounded-lg p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">PDF Layout & Colors</h3>
+            <p className="text-sm text-gray-600 mb-6">
+              Configure global settings for your PDF reports, including result flag colors and layout dimensions.
+            </p>
+
+            {/* Result Colors */}
+            <div className="border-b border-gray-200 pb-6 mb-6">
+              <h4 className="text-md font-medium text-gray-900 mb-3">Result Flag Colors</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded">
+                  <label className="text-sm font-medium text-gray-700">Enable Colored Results</label>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={pdfSettings?.resultColors?.enabled ?? true}
+                      onChange={(e) => setPdfSettings({
+                        ...pdfSettings,
+                        resultColors: { ...pdfSettings?.resultColors, enabled: e.target.checked }
+                      })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">High / Critical</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={pdfSettings?.resultColors?.high || '#dc2626'}
+                        onChange={(e) => setPdfSettings({
+                          ...pdfSettings,
+                          resultColors: { ...pdfSettings?.resultColors, high: e.target.value }
+                        })}
+                        className="h-8 w-12 p-0 border-0 rounded"
+                      />
+                      <span className="text-xs text-gray-600">{pdfSettings?.resultColors?.high || '#dc2626'}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Low</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={pdfSettings?.resultColors?.low || '#ea580c'}
+                        onChange={(e) => setPdfSettings({
+                          ...pdfSettings,
+                          resultColors: { ...pdfSettings?.resultColors, low: e.target.value }
+                        })}
+                        className="h-8 w-12 p-0 border-0 rounded"
+                      />
+                      <span className="text-xs text-gray-600">{pdfSettings?.resultColors?.low || '#ea580c'}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Normal</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={pdfSettings?.resultColors?.normal || '#16a34a'}
+                        onChange={(e) => setPdfSettings({
+                          ...pdfSettings,
+                          resultColors: { ...pdfSettings?.resultColors, normal: e.target.value }
+                        })}
+                        className="h-8 w-12 p-0 border-0 rounded"
+                      />
+                      <span className="text-xs text-gray-600">{pdfSettings?.resultColors?.normal || '#16a34a'}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Header Settings */}
+            <div className="border-b border-gray-200 pb-6 mb-6">
+              <h4 className="text-md font-medium text-gray-900 mb-3">Header & Footer</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Header Text Color</label>
+                  <select
+                    value={pdfSettings?.headerTextColor || 'white'}
+                    onChange={(e) => setPdfSettings({ ...pdfSettings, headerTextColor: e.target.value })}
+                    className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
+                  >
+                    <option value="white">White (Recommended for dark headers)</option>
+                    <option value="black">Black</option>
+                    <option value="inherit">Default / Inherit</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Header Height (px)</label>
+                  <input
+                    type="number"
+                    value={Math.round(parseInt(String(pdfSettings?.headerHeight || '90')))}
+                    onChange={(e) => setPdfSettings({ ...pdfSettings, headerHeight: e.target.value + 'px' })}
+                    className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Layout Settings */}
+            <div>
+              <h4 className="text-md font-medium text-gray-900 mb-3">Margins & Dimensions</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Top Margin</label>
+                  <input
+                    type="text"
+                    value={pdfSettings?.margins?.top || '180px'}
+                    onChange={(e) => setPdfSettings({
+                      ...pdfSettings,
+                      margins: { ...pdfSettings?.margins, top: e.target.value }
+                    })}
+                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Bottom Margin</label>
+                  <input
+                    type="text"
+                    value={pdfSettings?.margins?.bottom || '150px'}
+                    onChange={(e) => setPdfSettings({
+                      ...pdfSettings,
+                      margins: { ...pdfSettings?.margins, bottom: e.target.value }
+                    })}
+                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Left Margin</label>
+                  <input
+                    type="text"
+                    value={pdfSettings?.margins?.left || '20px'}
+                    onChange={(e) => setPdfSettings({
+                      ...pdfSettings,
+                      margins: { ...pdfSettings?.margins, left: e.target.value }
+                    })}
+                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Right Margin</label>
+                  <input
+                    type="text"
+                    value={pdfSettings?.margins?.right || '20px'}
+                    onChange={(e) => setPdfSettings({
+                      ...pdfSettings,
+                      margins: { ...pdfSettings?.margins, right: e.target.value }
+                    })}
+                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-6 mt-6 border-t border-gray-200">
+              <button
+                onClick={handleSavePdfSettings}
+                disabled={savingPdfSettings}
+                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {savingPdfSettings ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle className="w-4 h-4" />
+                    Save PDF Settings
+                  </>
+                )}
+              </button>
+            </div>
+
+          </div>
+        </div>
       )}
 
       {/* Upload Modals */}

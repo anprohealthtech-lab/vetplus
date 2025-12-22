@@ -1,8 +1,9 @@
 import React from 'react';
 import { useState, useEffect } from 'react';
-import { X, User, Phone, Mail, MapPin, Calendar, Droplet, AlertTriangle, FileText, QrCode, Palette, Printer, Edit, Plus, RefreshCw } from 'lucide-react';
+import { X, User, Phone, Mail, MapPin, Calendar, Droplet, AlertTriangle, FileText, QrCode, Palette, Printer, Edit, Plus, RefreshCw, Upload } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { database } from '../../utils/supabase';
+import ExternalReportUploadModal from './ExternalReportUploadModal';
 
 interface Patient {
   id: string;
@@ -42,11 +43,11 @@ interface PatientDetailsProps {
   isGeneratingCodes?: boolean;
 }
 
-const PatientDetails: React.FC<PatientDetailsProps> = ({ 
-  patient, 
-  onClose, 
-  onEditPatient, 
-  onCreateOrder, 
+const PatientDetails: React.FC<PatientDetailsProps> = ({
+  patient,
+  onClose,
+  onEditPatient,
+  onCreateOrder,
   onViewAllTests,
   onGenerateQrAndColor,
   isGeneratingCodes = false
@@ -59,10 +60,10 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
     const fetchRecentTests = async () => {
       setLoadingTests(true);
       setTestsError(null);
-      
+
       try {
         const { data, error } = await database.results.getByPatientId(patient.id);
-        
+
         if (error) {
           setTestsError(error.message);
           console.error('Error loading patient tests:', error);
@@ -70,13 +71,34 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
           // Transform the data to match the expected format and take only the 3 most recent
           const formattedTests = (data || [])
             .slice(0, 3)
-            .map((result: any) => ({
-              name: result.test_name,
-              date: result.entered_date,
-              status: result.status === 'Reported' ? 'Completed' : result.status,
-              result: result.status === 'Reported' ? 'Completed' : 'Pending'
-            }));
-          
+            .map((result: any) => {
+              // Extract logic to determine display value
+              let displayResult = 'Pending';
+
+              if (result.result_values && result.result_values.length > 0) {
+                // Determine if we should show the value based on status
+                // Usually show values if Entered, verified/Approved, or Reported
+                if (['Entered', 'Approved', 'Reported', 'Reviewed'].includes(result.status)) {
+                  const val = result.result_values[0];
+                  displayResult = `${val.value} ${val.unit || ''}`.trim();
+
+                  // If multiple values, maybe indicate that? For now just showing first or "View Report" might be safer for panels
+                  if (result.result_values.length > 1) {
+                    displayResult = 'View Details';
+                  }
+                }
+              } else if (result.status === 'Reported') {
+                displayResult = 'Completed';
+              }
+
+              return {
+                name: result.test_name,
+                date: result.entered_date,
+                status: result.status === 'Reported' ? 'Completed' : (result.status === 'Approved' ? 'Reviewed' : result.status),
+                result: displayResult
+              };
+            });
+
           setRecentTests(formattedTests);
         }
       } catch (err) {
@@ -104,6 +126,8 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
     onViewAllTests(patient);
     onClose();
   };
+  const [showUploadModal, setShowUploadModal] = useState(false);
+
   return (
     <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto">
@@ -119,9 +143,8 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
 
         <div className="p-6 space-y-6">
           {/* Patient Summary */}
-          <div className={`bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg p-6 ${
-            patient.color_code ? `border-l-4 border-[${patient.color_code}]` : ''
-          }`}>
+          <div className={`bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg p-6 ${patient.color_code ? `border-l-4 border-[${patient.color_code}]` : ''
+            }`}>
             <div className="flex items-start justify-between">
               <div className="flex items-center space-x-4">
                 <div className="h-16 w-16 bg-blue-500 rounded-full flex items-center justify-center">
@@ -143,8 +166,8 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
                       <>
                         <span>•</span>
                         <span className="flex items-center">
-                          <div 
-                            className="w-3 h-3 rounded-full mr-1" 
+                          <div
+                            className="w-3 h-3 rounded-full mr-1"
                             style={{ backgroundColor: patient.color_code }}
                           ></div>
                           {patient.color_name}
@@ -173,8 +196,8 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
               </h4>
               {patient.qr_code_data ? (
                 <div className="flex flex-col items-center">
-                  <QRCodeCanvas 
-                    value={patient.qr_code_data} 
+                  <QRCodeCanvas
+                    value={patient.qr_code_data}
                     size={150}
                     level="H"
                     includeMargin={true}
@@ -183,7 +206,7 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
                   <div className="text-sm text-gray-600 mb-4">
                     Scan to identify patient and access records
                   </div>
-                  <button 
+                  <button
                     onClick={() => {
                       const canvas = document.querySelector("canvas");
                       if (canvas) {
@@ -210,7 +233,7 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
                     No QR code has been generated for this patient
                   </div>
                   {onGenerateQrAndColor && (
-                    <button 
+                    <button
                       onClick={() => onGenerateQrAndColor(patient.id)}
                       disabled={isGeneratingCodes}
                       className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:bg-blue-400 disabled:cursor-not-allowed"
@@ -237,8 +260,8 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
               </h4>
               {patient.color_code ? (
                 <div className="flex flex-col items-center">
-                  <div 
-                    className="w-32 h-32 rounded-lg mb-4 flex items-center justify-center text-white text-lg font-bold shadow-md" 
+                  <div
+                    className="w-32 h-32 rounded-lg mb-4 flex items-center justify-center text-white text-lg font-bold shadow-md"
                     style={{ backgroundColor: patient.color_code }}
                   >
                     {patient.color_name}
@@ -249,7 +272,7 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
                   <div className="text-sm text-gray-600 mb-4">
                     <span className="font-medium">HEX Code:</span> {patient.color_code}
                   </div>
-                  <button 
+                  <button
                     onClick={() => {
                       const printWindow = window.open('', '_blank');
                       if (printWindow) {
@@ -418,7 +441,7 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
           </div>
 
           {/* Action Buttons */}
-          <div className="flex items-center justify-end space-x-4 pt-6 border-t border-gray-200">
+          <div className="flex items-center justify-end space-x-4 pt-6 border-t border-gray-200 flex-wrap gap-y-2">
             {onGenerateQrAndColor && !patient.qr_code_data && (
               <button
                 onClick={() => onGenerateQrAndColor(patient.id)}
@@ -438,6 +461,15 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
                 )}
               </button>
             )}
+
+            <button
+              onClick={() => setShowUploadModal(true)}
+              className="px-4 py-2 border border-blue-300 text-blue-700 hover:bg-blue-50 rounded-md transition-colors flex items-center"
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              Upload Past Report
+            </button>
+
             <button
               onClick={handleEditPatient}
               className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors flex items-center"
@@ -532,6 +564,14 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
           </div>
         </div>
       </div>
+
+      {showUploadModal && (
+        <ExternalReportUploadModal
+          patientId={patient.id}
+          onClose={() => setShowUploadModal(false)}
+          onSuccess={() => {/* Maybe refresh recent tests */ }}
+        />
+      )}
     </div>
   );
 };

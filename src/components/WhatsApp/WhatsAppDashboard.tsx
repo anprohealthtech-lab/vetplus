@@ -1,11 +1,11 @@
 // src/components/WhatsApp/WhatsAppDashboard.tsx
 import React, { useState, useEffect } from 'react';
-import { 
-  Smartphone, 
-  CheckCircle, 
-  XCircle, 
-  Loader, 
-  RefreshCw, 
+import {
+  Smartphone,
+  CheckCircle,
+  XCircle,
+  Loader,
+  RefreshCw,
   AlertCircle,
   QrCode,
   Power,
@@ -30,7 +30,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [connectAttempts, setConnectAttempts] = useState<number>(0);
-  
+
   // Refs for managing component state and preventing race conditions
   const pollingIntervalRef = React.useRef<number | null>(null);
   const pollingTimeoutRef = React.useRef<number | null>(null);
@@ -48,7 +48,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
 
   useEffect(() => {
     checkConnectionStatus();
-    
+
     // Set up WebSocket for real-time updates
     const ws = WhatsAppAPI.createWebSocketConnection(handleWebSocketMessage);
     if (!ws) {
@@ -56,7 +56,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
       // If VITE_WHATSAPP_WS_ENABLED=false, it will be disabled in the API class and logged there too
       console.info('[WA-WS] No WebSocket instance returned (WS disabled or all candidates failed). Using HTTP polling only.');
     }
-    
+
     const onVisChange = () => {
       // When tab is hidden, stretch polling to reduce load
       if (document.hidden) {
@@ -68,7 +68,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
     return () => {
       isMountedRef.current = false;
       stoppedRef.current = true;
-      
+
       if (ws) {
         ws.close();
       }
@@ -173,11 +173,11 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
   const handleConnect = async () => {
     // Prevent multiple simultaneous connect attempts
     if (isConnecting || isOperationInProgressRef.current || !isMountedRef.current) return;
-    
+
     isOperationInProgressRef.current = true;
     setIsConnecting(true);
     setQrCode(null);
-    
+
     try {
       // Check if already connected or has active QR
       const existing = await WhatsAppAPI.getConnectionStatus();
@@ -203,7 +203,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
         }
       }
       setConnectAttempts(nextAttemptCount);
-      
+
       // If existing QR found, use it and start polling
       if ((existing as any)?.qrCode || (existing as any)?.rawQR) {
         setConnectionStatus(existing);
@@ -213,17 +213,26 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
         startPollingForStatus();
         return;
       }
-      
+
       // Initiate new connection
       console.log('Initiating new WhatsApp connection...');
       const result = await WhatsAppAPI.connectWhatsApp();
+
+      // Handle specific backend errors
+      if (!result.success && result.error === 'User not found') {
+        result.message = 'User is not eligible for WhatsApp integration (User not found in backend).';
+      } else if (!result.success && result.error && !result.message) {
+        // Ensure error is displayed as message if message is missing
+        result.message = result.error;
+      }
+
       setConnectionStatus(result);
-      
+
       // Parse QR code from result
       // The backend might return qrCode as raw string or as image URL
       const rawQR = (result as any)?.rawQR as string | undefined;
       const qrCodeFromResult = (result as any)?.qrCode as string | undefined;
-      
+
       // If qrCode is a data URL or http URL, use it directly
       // Otherwise, treat it as raw QR data and convert it
       let qr: string | null = null;
@@ -237,10 +246,10 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
       } else if (rawQR) {
         qr = buildQrFromRaw(rawQR);
       }
-      
+
       console.log('Connect result:', result, 'Parsed QR:', qr);
       if (qr) setQrCode(qr);
-      
+
       if (result.success && qr) {
         setConnectAttempts(0);
         startPollingForStatus();
@@ -264,7 +273,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
 
   const handleDisconnect = async () => {
     setIsDisconnecting(true);
-    
+
     try {
       const result = await WhatsAppAPI.disconnectWhatsApp();
       setConnectionStatus(result);
@@ -283,20 +292,20 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
 
   const startPollingForStatus = () => {
     if (pollingTimeoutRef.current || stoppedRef.current === false) return; // already polling
-    
+
     console.log('Starting WhatsApp status polling...');
     stoppedRef.current = false;
     pollingStartedAtRef.current = Date.now();
     currentDelayRef.current = 5000; // Start with 5s interval
-    
+
     const tick = async () => {
       if (stoppedRef.current || !isMountedRef.current) return;
-      
+
       try {
         const status = await WhatsAppAPI.getConnectionStatus();
         if (!isMountedRef.current) return; // Check again after async call
         setConnectionStatus(status);
-        
+
         // Update QR if needed
         let qr: string | null = status.qrCode || null;
         if (!qr && !status.isConnected) {
@@ -306,9 +315,9 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
         }
         if (qr) setQrCode(qr);
         setLastUpdated(new Date());
-        
+
         const elapsed = Date.now() - pollingStartedAtRef.current;
-        
+
         // Stop polling if connected or timed out (3 minutes)
         if (status.isConnected || elapsed > 3 * 60 * 1000) {
           stopPollingForStatus();
@@ -316,7 +325,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
           isOperationInProgressRef.current = false;
           return;
         }
-        
+
         // Adaptive backoff: increase delay over time
         if (elapsed > 30 * 1000 && currentDelayRef.current < 8000) {
           currentDelayRef.current = 8000; // After 30s, poll every 8s
@@ -324,7 +333,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
         if (elapsed > 60 * 1000 && currentDelayRef.current < 12000) {
           currentDelayRef.current = 12000; // After 1min, poll every 12s
         }
-        
+
         // If tab hidden, use longer delays
         const delay = document.hidden ? Math.max(currentDelayRef.current, 15000) : currentDelayRef.current;
         pollingTimeoutRef.current = window.setTimeout(tick, delay);
@@ -333,7 +342,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
         pollingTimeoutRef.current = window.setTimeout(tick, 10000); // Retry in 10s on error
       }
     };
-    
+
     // Start polling immediately
     tick();
   };
@@ -358,11 +367,11 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
     if (isConnecting || isDisconnecting) {
       return <Loader className="h-5 w-5 animate-spin" />;
     }
-    
+
     if (connectionStatus.isConnected) {
       return <CheckCircle className="h-5 w-5 text-green-600" />;
     }
-    
+
     return <XCircle className="h-5 w-5 text-red-600" />;
   };
 
@@ -370,11 +379,11 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
     if (connectionStatus.isConnected) {
       return 'border-green-200 bg-green-50';
     }
-    
+
     if (isConnecting) {
       return 'border-blue-200 bg-blue-50';
     }
-    
+
     return 'border-red-200 bg-red-50';
   };
 
@@ -416,7 +425,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
               )}
             </div>
           </div>
-          
+
           <div className="flex items-center space-x-2">
             {!connectionStatus.isConnected && (
               <button
@@ -432,7 +441,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
                 {isConnecting ? 'Connecting...' : 'Connect'}
               </button>
             )}
-            
+
             {connectionStatus.isConnected && (
               <button
                 onClick={handleDisconnect}
@@ -449,14 +458,14 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
             )}
           </div>
         </div>
-        
+
         {/* Status Message */}
         {connectionStatus.message && (
           <div className="mt-3 text-sm text-gray-700">
             {connectionStatus.message}
           </div>
         )}
-        
+
         {/* Last Updated */}
         <div className="mt-2 text-xs text-gray-500">
           Last updated: {lastUpdated.toLocaleString()}
@@ -470,16 +479,16 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
             <QrCode className="h-5 w-5 text-blue-600" />
             <h3 className="font-medium text-blue-900">Scan QR Code with WhatsApp</h3>
           </div>
-          
+
           <div className="flex flex-col items-center space-y-4">
             <div className="bg-white p-4 rounded-lg border-2 border-blue-200">
-              <img 
-                src={qrCode} 
-                alt="WhatsApp QR Code" 
+              <img
+                src={qrCode}
+                alt="WhatsApp QR Code"
                 className="w-64 h-64 object-contain"
               />
             </div>
-            
+
             <div className="text-center">
               <div className="text-sm text-blue-800 font-medium mb-1">
                 Steps to connect:
@@ -504,7 +513,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
                 WhatsApp Not Connected
               </div>
               <div className="text-sm text-yellow-800">
-                Click "Connect" to generate a QR code and link your WhatsApp account. 
+                Click "Connect" to generate a QR code and link your WhatsApp account.
                 This will enable you to send PDF reports and messages directly to patients.
               </div>
             </div>

@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Bell, BellOff, Check } from 'lucide-react';
-import { 
-  getFirebaseToken, 
-  subscribeToTopic, 
-  unsubscribeFromTopic 
+import {
+  getFirebaseToken,
+  subscribeToTopic,
+  unsubscribeFromTopic
 } from '../../utils/firebaseMessaging';
 import { isNative } from '../../utils/platformHelper';
 
@@ -30,11 +30,11 @@ export const NotificationSettings: React.FC = () => {
     const checkPlatform = async () => {
       const isNativeCheck = isNative();
       setIsNativeApp(isNativeCheck);
-      
+
       if (isNativeCheck) {
         const token = await getFirebaseToken();
         setFcmToken(token);
-        
+
         // Load preferences from localStorage
         const savedPrefs = localStorage.getItem('notificationPreferences');
         if (savedPrefs) {
@@ -42,36 +42,36 @@ export const NotificationSettings: React.FC = () => {
         }
       }
     };
-    
+
     checkPlatform();
   }, []);
 
   const handleToggle = async (key: keyof NotificationPreferences) => {
     setLoading(true);
     const newValue = !preferences[key];
-    
+
     const topicMap = {
       orderUpdates: 'order-updates',
       resultReady: 'result-ready',
       paymentReminders: 'payment-reminders',
       systemAlerts: 'system-alerts',
     };
-    
+
     const topic = topicMap[key];
-    
+
     try {
       if (newValue) {
         await subscribeToTopic(topic);
       } else {
         await unsubscribeFromTopic(topic);
       }
-      
+
       const newPreferences = { ...preferences, [key]: newValue };
       setPreferences(newPreferences);
-      
+
       // Save to localStorage
       localStorage.setItem('notificationPreferences', JSON.stringify(newPreferences));
-      
+
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (error) {
@@ -133,7 +133,7 @@ export const NotificationSettings: React.FC = () => {
             loading={loading}
             onToggle={() => handleToggle('orderUpdates')}
           />
-          
+
           <NotificationToggle
             icon={<Bell className="h-5 w-5" />}
             title="Results Ready"
@@ -142,7 +142,7 @@ export const NotificationSettings: React.FC = () => {
             loading={loading}
             onToggle={() => handleToggle('resultReady')}
           />
-          
+
           <NotificationToggle
             icon={<Bell className="h-5 w-5" />}
             title="Payment Reminders"
@@ -151,7 +151,7 @@ export const NotificationSettings: React.FC = () => {
             loading={loading}
             onToggle={() => handleToggle('paymentReminders')}
           />
-          
+
           <NotificationToggle
             icon={<Bell className="h-5 w-5" />}
             title="System Alerts"
@@ -171,7 +171,7 @@ export const NotificationSettings: React.FC = () => {
               Notification Permissions
             </h3>
             <p className="text-sm text-yellow-700 mt-1">
-              If you're not receiving notifications, check your device settings to ensure notifications are enabled for LIMS Builder.
+              If you're not receiving notifications, check your device settings to ensure notifications are enabled for AnPro LIMS.
             </p>
           </div>
         </div>

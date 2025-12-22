@@ -466,6 +466,81 @@ CREATE TABLE public.email_logs (
   CONSTRAINT email_logs_pkey PRIMARY KEY (id),
   CONSTRAINT email_logs_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
+CREATE TABLE public.external_reports (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  patient_id uuid NOT NULL,
+  lab_name text,
+  report_date date,
+  file_url text NOT NULL,
+  status text DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'processing'::text, 'review_required'::text, 'completed'::text, 'failed'::text])),
+  uploaded_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  ai_metadata jsonb DEFAULT '{}'::jsonb,
+  CONSTRAINT external_reports_pkey PRIMARY KEY (id),
+  CONSTRAINT fk_external_reports_patient FOREIGN KEY (patient_id) REFERENCES public.patients(id),
+  CONSTRAINT fk_external_reports_uploaded_by FOREIGN KEY (uploaded_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.external_result_values (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  external_report_id uuid NOT NULL,
+  mapped_analyte_id uuid,
+  mapped_test_group_id uuid,
+  original_analyte_name text,
+  value character varying,
+  unit character varying,
+  reference_range text,
+  ai_confidence numeric,
+  is_verified boolean DEFAULT false,
+  varified_by uuid,
+  verified_at timestamp with time zone,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT external_result_values_pkey PRIMARY KEY (id),
+  CONSTRAINT fk_erv_analyte FOREIGN KEY (mapped_analyte_id) REFERENCES public.analytes(id),
+  CONSTRAINT fk_erv_test_group FOREIGN KEY (mapped_test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT fk_erv_report FOREIGN KEY (external_report_id) REFERENCES public.external_reports(id)
+);
+CREATE TABLE public.global_package_catalog (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  description text,
+  test_group_codes ARRAY DEFAULT ARRAY[]::text[],
+  base_price numeric DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  source_lab_id uuid,
+  CONSTRAINT global_package_catalog_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.global_template_catalog (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  type text NOT NULL CHECK (type = ANY (ARRAY['header'::text, 'footer'::text, 'report_body'::text, 'invoice'::text])),
+  html_content text,
+  css_content text,
+  is_default boolean DEFAULT false,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT global_template_catalog_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.global_test_catalog (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  code text NOT NULL UNIQUE,
+  category text,
+  description text,
+  analytes jsonb DEFAULT '[]'::jsonb,
+  default_price numeric DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  source_lab_id uuid,
+  default_template_id uuid,
+  specimen_type_default text CHECK (specimen_type_default IS NULL OR (specimen_type_default = ANY (ARRAY['Serum'::text, 'Plasma'::text, 'Whole Blood'::text, 'EDTA Blood'::text, 'Citrated Blood'::text, 'Urine'::text, 'Urine (Random)'::text, 'Urine (24hr)'::text, 'Stool'::text, 'CSF'::text, 'Sputum'::text, 'Swab'::text, 'Aspirate'::text, 'Biopsy'::text, 'Other'::text]))),
+  department_default text CHECK (department_default IS NULL OR (department_default = ANY (ARRAY['Biochemistry'::text, 'Hematology'::text, 'Immunology'::text, 'Microbiology'::text, 'Clinical Pathology'::text, 'Serology'::text, 'Histopathology'::text, 'Cytology'::text, 'Molecular Biology'::text, 'Toxicology'::text, 'Endocrinology'::text, 'Other'::text]))),
+  default_ai_processing_type text CHECK (default_ai_processing_type IS NULL OR (default_ai_processing_type = ANY (ARRAY['INSTRUMENT_SCREEN_OCR'::text, 'THERMAL_SLIP_OCR'::text, 'RAPID_CARD_LFA'::text, 'COLOR_STRIP_MULTIPARAM'::text, 'SINGLE_WELL_COLORIMETRIC'::text, 'AGGLUTINATION_CARD'::text, 'MICROSCOPY_MORPHOLOGY'::text, 'ZONE_OF_INHIBITION'::text, 'MENISCUS_SCALE_READING'::text, 'SAMPLE_QUALITY_TUBE_CHECK'::text, 'MANUAL_ENTRY_NO_VISION'::text, 'UNKNOWN_NEEDS_REVIEW'::text]))),
+  group_level_prompt text,
+  ai_config jsonb DEFAULT '{}'::jsonb,
+  CONSTRAINT global_test_catalog_pkey PRIMARY KEY (id),
+  CONSTRAINT global_test_catalog_default_template_id_fkey FOREIGN KEY (default_template_id) REFERENCES public.global_template_catalog(id)
+);
 CREATE TABLE public.invoice_items (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   invoice_id uuid NOT NULL,
@@ -1294,7 +1369,7 @@ CREATE TABLE public.result_values (
   flag_source text DEFAULT 'auto_numeric'::text CHECK (flag_source = ANY (ARRAY['auto_numeric'::text, 'auto_text'::text, 'auto_rule'::text, 'ai'::text, 'manual'::text, 'inherited'::text])),
   flag_confidence numeric,
   ai_interpretation text,
-  ai_audit_status text DEFAULT 'none'::text CHECK (ai_audit_status = ANY (ARRAY['none'::text, 'pending'::text, 'confirmed'::text, 'overridden'::text, 'needs_review'::text])),
+  ai_audit_status text DEFAULT 'none'::text CHECK (ai_audit_status = ANY (ARRAY['none'::text, 'pending'::text, 'confirmed'::text, 'overridden'::text, 'needs_review'::text, 'approved'::text, 'rejected'::text])),
   ai_audit_notes text,
   flag_determined_at timestamp with time zone,
   CONSTRAINT result_values_pkey PRIMARY KEY (id),
@@ -1573,6 +1648,7 @@ CREATE TABLE public.test_groups (
   start_from_next_page boolean DEFAULT false,
   is_outsourced boolean DEFAULT false,
   default_outsourced_lab_id uuid,
+  ai_config jsonb DEFAULT '{}'::jsonb,
   CONSTRAINT test_groups_pkey PRIMARY KEY (id),
   CONSTRAINT test_groups_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT test_groups_default_outsourced_lab_id_fkey FOREIGN KEY (default_outsourced_lab_id) REFERENCES public.outsourced_labs(id)
