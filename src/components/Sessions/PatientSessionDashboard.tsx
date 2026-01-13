@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
-import { 
-  User, 
-  Calendar, 
-  Clock, 
-  Phone, 
-  Mail, 
+import {
+  User,
+  Calendar,
+  Clock,
+  Phone,
+  Mail,
   Stethoscope,
   Plus,
   FileText,
@@ -80,7 +80,7 @@ export default function PatientSessionDashboard({ sessionId, patientId, onSessio
   const fetchSession = async (id: string) => {
     try {
       setLoading(true);
-      
+
       // Fetch session data with related orders and patient info
       const { data: orders, error: ordersError } = await supabase
         .from('orders')
@@ -167,7 +167,7 @@ export default function PatientSessionDashboard({ sessionId, patientId, onSessio
   const fetchActiveSession = async (patientId: string) => {
     try {
       setLoading(true);
-      
+
       // Look for active session today
       const today = new Date().toISOString().split('T')[0];
       const { data: orders, error } = await supabase
@@ -327,7 +327,7 @@ export default function PatientSessionDashboard({ sessionId, patientId, onSessio
               <div className="text-right">
                 <div className="flex items-center text-sm text-gray-600 mb-1">
                   <Stethoscope className="h-4 w-4 mr-1" />
-                  Dr. {session.orders[0]?.doctor}
+                  {session.orders[0]?.doctor}
                 </div>
               </div>
             </div>

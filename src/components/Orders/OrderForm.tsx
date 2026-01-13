@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom';
 import {
   X,
@@ -16,9 +16,12 @@ import {
   AlertTriangle,
   AlertCircle,
   Loader,
-  Clock as ClockIcon
+  Clock as ClockIcon,
+  DollarSign
 } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
+import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
+import { getLabCurrency } from '../../utils/currency';
 import {
   processTRFImage,
   trfToOrderFormData,
@@ -55,6 +58,7 @@ interface Account {
   credit_limit?: number | null;
   payment_terms?: number | null;
   is_active?: boolean | null;
+  billing_mode?: 'standard' | 'monthly' | null;
 }
 
 interface Patient {
@@ -67,11 +71,15 @@ interface Patient {
   default_doctor_id?: string | null;
   default_location_id?: string | null;
   default_payment_type?: PaymentType | null;
+  age_unit?: string | null;
+  dob?: string | null;
+  date_of_birth?: string | null;
 }
 
 interface TestGroup {
   id: string;
   name: string;
+  code?: string;
   price: number;
   category?: string | null;
   clinicalPurpose?: string | null;
@@ -83,6 +91,17 @@ interface TestGroup {
   default_outsourced_lab_id?: string;
   description?: string | null;
   testGroupIds?: string[];
+  sample_color?: string | null;
+  sample_type?: string | null;
+  required_patient_inputs?: string[];
+  ref_range_ai_config?: any;
+}
+
+
+
+interface AccountPrice {
+  test_group_id: string;
+  price: number;
 }
 
 interface OrderFormProps {
@@ -94,6 +113,7 @@ interface OrderFormProps {
 const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPatientId }) => {
   // Masters
   const [doctors, setDoctors] = useState<Doctor[]>([]);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [locations, setLocations] = useState<Location[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -123,9 +143,31 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
   const [testSearch, setTestSearch] = useState<string>('');
   const [showTestList, setShowTestList] = useState<boolean>(false);
-  
+
   // Outsourcing config per test: { testId: outsourcedLabId | 'inhouse' | null }
   const [testOutsourcingConfig, setTestOutsourcingConfig] = useState<Record<string, string>>({});
+
+  // Account specific prices: { testGroupId: price }
+  const [accountPrices, setAccountPrices] = useState<Record<string, number>>({});
+
+  // AI Reference Range Inputs
+  const [additionalInputs, setAdditionalInputs] = useState<Record<string, string>>({});
+
+  // Compute required patient inputs from selected tests
+  const requiredInfos = React.useMemo(() => {
+    const required = new Set<string>();
+    testGroups
+      .filter(tg => selectedTests.includes(tg.id))
+      .forEach(tg => tg.required_patient_inputs?.forEach(input => required.add(input)));
+
+    // Filter out inputs that don't apply (e.g., pregnancy for Male)
+    if (selectedPatient?.gender === 'Male') {
+      required.delete('pregnancy_status');
+      required.delete('lmp');
+    }
+
+    return Array.from(required);
+  }, [selectedTests, testGroups, selectedPatient]);
 
   // Loading and error states
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -137,6 +179,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [doctorSearch, setDoctorSearch] = useState<string>('');
   const [locationSearch, setLocationSearch] = useState<string>('');
   const [accountSearch, setAccountSearch] = useState<string>('');
+
+  // Admin features
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
+  const [customOrderDate, setCustomOrderDate] = useState<string>('');
   const [showPatientDropdown, setShowPatientDropdown] = useState<boolean>(false);
   const [showDoctorDropdown, setShowDoctorDropdown] = useState<boolean>(false);
   const [showLocationDropdown, setShowLocationDropdown] = useState<boolean>(false);
@@ -153,9 +199,22 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [trfUnmatchedTests, setTrfUnmatchedTests] = useState<string[]>([]);
   const [enableTRFOptimization, setEnableTRFOptimization] = useState<boolean>(true); // Image optimization
 
+
+  // Currency
+  const [currencySymbol, setCurrencySymbol] = useState<string>('₹');
+
+  // Discount & Payment
+  const [discountType, setDiscountType] = useState<'percentage' | 'fixed'>('percentage');
+  const [discountValue, setDiscountValue] = useState<number>(0);
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'upi' | 'online'>('cash');
+  const [amountPaid, setAmountPaid] = useState<number>(0);
+
+
   // Handle TRF modal close and apply edited values
   const handleTRFReviewClose = async () => {
     setShowTRFReview(false);
+
+    console.log('🚀🚀🚀 NEW CODE LOADED - handleTRFReviewClose called 🚀🚀🚀');
 
     // If we have trfExtraction data, apply it (edited or original)
     if (trfExtraction && trfExtraction.success) {
@@ -296,8 +355,25 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           .map(test => test.testGroupId!);
 
         if (selectedTestIds.length > 0) {
+          console.log(`✓ Applying ${selectedTestIds.length} test selections from TRF`);
+          console.log(`  Test Group IDs from TRF:`, selectedTestIds);
+          console.log(`  Available test groups in state:`, testGroups.length);
+          console.log(`  First TRF test ID:`, selectedTestIds[0]);
+          console.log(`  First testGroup in state:`, testGroups[0]);
+          console.log(`  Sample of testGroup IDs in state:`, testGroups.slice(0, 10).map(tg => tg.id));
+
+          // Check how many match
+          const matchedGroups = testGroups.filter(tg => selectedTestIds.includes(tg.id));
+          console.log(`  ✓ Matched ${matchedGroups.length}/${selectedTestIds.length} tests`);
+          if (matchedGroups.length > 0) {
+            console.log(`  Matched tests:`, matchedGroups.map(tg => ({ name: tg.name, price: tg.price })));
+          } else {
+            console.log(`  ❌ NO MATCHES! Checking if IDs exist anywhere...`);
+            const firstTrfId = selectedTestIds[0];
+            const foundInState = testGroups.find(tg => tg.id === firstTrfId);
+            console.log(`  Looking for "${firstTrfId}" in testGroups:`, foundInState ? 'FOUND' : 'NOT FOUND');
+          }
           setSelectedTests(selectedTestIds);
-          console.log(`✓ Applied ${selectedTestIds.length} edited test selections`);
         }
 
         // Track unmatched tests
@@ -373,13 +449,13 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         setLocations(locationsRes?.data ?? []);
         setAccounts(accountsRes?.data ?? []);
         setPatients(patientsRes?.data ?? []);
-        
+
         // Combine test groups and packages into a single list
         const testGroupsList = (testsRes?.data ?? []).map((tg: any) => ({
           ...tg,
           type: 'test' as const
         }));
-        
+
         const packagesList = (packagesRes?.data ?? []).map((pkg: any) => ({
           id: pkg.id,
           name: pkg.name,
@@ -395,7 +471,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           is_outsourced: false,
           default_outsourced_lab_id: undefined
         }));
-        
+
         // Set combined list - packages first, then test groups
         setTestGroups([...packagesList, ...testGroupsList]);
         setOutsourcedLabs(outsourcedLabsRes?.data ?? []);
@@ -493,6 +569,85 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
     check();
   }, [selectedAccount, selectedLocation, paymentType, accounts, locations]);
+
+  // Fetch account prices when bill-to account changes
+  useEffect(() => {
+    const fetchAccountPrices = async () => {
+      if (!selectedAccount) {
+        setAccountPrices({});
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('account_prices')
+          .select('test_group_id, price')
+          .eq('account_id', selectedAccount);
+
+        if (error) throw error;
+
+        const priceMap: Record<string, number> = {};
+        if (data) {
+          data.forEach((item: any) => {
+            priceMap[item.test_group_id] = item.price;
+          });
+        }
+        setAccountPrices(priceMap);
+      } catch (err) {
+        console.error('Error fetching account prices:', err);
+      }
+    };
+
+    fetchAccountPrices();
+  }, [selectedAccount]);
+
+  // Check for Admin Role
+  useEffect(() => {
+    const checkRole = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        console.log('OrderForm: Current User Check', user?.email, user?.user_metadata);
+
+        let role = user?.user_metadata?.role;
+
+        // Fallback: Check public users table if metadata missing
+        if (!role && user?.email) {
+          const { data: dbUser } = await supabase
+            .from('users')
+            .select('role')
+            .eq('email', user.email)
+            .eq('status', 'Active')
+            .single();
+
+          console.log('OrderForm: DB User Role Check', dbUser);
+          if (dbUser?.role) role = dbUser.role;
+        }
+
+        console.log('OrderForm: Resolved Role', role);
+
+        // Allow Admin, Lab Manager, Super Admin, Owner
+        if (role) {
+          const lowerRole = String(role).toLowerCase();
+          const authorizedRoles = ['admin', 'administrator', 'super admin', 'lab_manager', 'owner', 'manager'];
+
+          if (authorizedRoles.some(r => lowerRole.includes(r))) {
+            console.log('OrderForm: Access GRANTED for role:', role);
+            setIsAdmin(true);
+          } else {
+            console.log('OrderForm: Access DENIED for role:', role);
+          }
+        }
+      } catch (err) {
+        console.error('OrderForm: Role check failed', err);
+      }
+    };
+    checkRole();
+  }, []);
+
+  // Debug: Monitor isAdmin state
+  useEffect(() => {
+    console.log('OrderForm: isAdmin state changed to:', isAdmin);
+  }, [isAdmin]);
 
   // Filtering helpers
   const filteredPatients = patients.filter((p) => {
@@ -692,9 +847,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     setSelectedTests((prev) => {
       const test = testGroups.find(t => t.id === id);
       const isSelecting = !prev.includes(id);
-      
+
       let newTests = isSelecting ? [...prev, id] : prev.filter((x) => x !== id);
-      
+
       // Package selection logic
       if (test?.type === 'package' && isSelecting) {
         // When selecting a package, remove any individual tests that are part of this package
@@ -718,7 +873,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           return prev; // No change
         }
       }
-      
+
       // When adding a test, check if it has default outsourced lab
       if (isSelecting && test) {
         if (test.is_outsourced && test.default_outsourced_lab_id) {
@@ -741,9 +896,17 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           return newConfig;
         });
       }
-      
+
       return newTests;
     });
+
+    // UX Improvement: Clear search & Refocus
+    if (testSearch) {
+      setTestSearch('');
+    }
+    setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 0);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -780,6 +943,17 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       );
     }
 
+    if (!selectedPatient) {
+      errors.push('❌ Patient is required');
+    }
+
+    // Validate Required Inputs
+    requiredInfos.forEach(info => {
+      if (!additionalInputs[info]) {
+        errors.push(`❌ Missing required information: ${info.replace(/_/g, ' ')}`);
+      }
+    });
+
     // If validation fails, show errors and stop
     if (errors.length > 0) {
       setValidationErrors(errors);
@@ -796,50 +970,206 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       // Build selected tests payload (if any)
       setSubmissionProgress('Processing test selections...');
       const selectedTestDetails = testGroups.filter((t) => selectedTests.includes(t.id));
-      
+
       const testsPayload =
         selectedTestDetails.length > 0
           ? selectedTestDetails.map((t) => {
-              const outsourcedLabId = testOutsourcingConfig[t.id] === 'inhouse' ? null : testOutsourcingConfig[t.id] || null;
-              return {
-                id: t.id,
-                name: t.name,
-                type: t.type ?? 'test',
-                price: t.price ?? 0,
-                outsourced_lab_id: outsourcedLabId
-              };
-            })
+            const outsourcedLabId = testOutsourcingConfig[t.id] === 'inhouse' ? null : testOutsourcingConfig[t.id] || null;
+            const finalPrice = accountPrices[t.id] ?? t.price ?? 0;
+            return {
+              id: t.id,
+              name: t.name,
+              type: t.type ?? 'test',
+              price: finalPrice,
+              outsourced_lab_id: outsourcedLabId
+            };
+          })
           : undefined;
 
       // Compose order payload (account layer included)
       setSubmissionProgress('Creating order record...');
-      
-      // Calculate total from selected tests (respects package prices)
-      const calculatedTotal = selectedTestDetails.reduce((sum, t) => sum + (t.price ?? 0), 0);
-      
+
+      // Calculate total from selected tests (respects package prices and account prices)
+      const calculatedTotal = selectedTestDetails.reduce((sum, t) => {
+        const price = accountPrices[t.id] ?? t.price ?? 0;
+        return sum + price;
+      }, 0);
+
+      // Calculate default expected date (24 hours from now/order date)
+      const orderDateObj = customOrderDate ? new Date(customOrderDate) : new Date();
+      const expectedDateObj = new Date(orderDateObj.getTime() + 24 * 60 * 60 * 1000);
+      const computedExpectedDate = expectedDateObj.toISOString();
+
       const orderData: any = {
-        patient_id: selectedPatient.id,
-        patient_name: selectedPatient.name,
+        patient_id: selectedPatient!.id,
+        patient_name: selectedPatient!.name,
         referring_doctor_id: selectedDoctor || null,
         location_id: selectedLocation || null, // collection/origin
         collected_at_location_id: selectedLocation || null, // for intra-lab transit tracking
         account_id: selectedAccount || null, // B2B bill-to
         payment_type: paymentType,
         priority,
-        expected_date: expectedDate,
+        expected_date: computedExpectedDate,
         doctor: doctors.find((d) => d.id === selectedDoctor)?.name || null,
         notes: notes || null,
-        total_amount: calculatedTotal // Include package prices correctly
+        total_amount: calculatedTotal, // Subtotal before discount
+        final_amount: finalAmount, // Total after discount
+        ...(isAdmin && customOrderDate ? {
+          created_at: new Date(customOrderDate).toISOString(),
+          order_date: new Date(customOrderDate).toISOString().split('T')[0]
+        } : {}),
+        // AI Patient Context
+        patient_context: {
+          age: selectedPatient!.age,
+          age_unit: selectedPatient!.age_unit || 'years',
+          gender: selectedPatient!.gender,
+          weight: additionalInputs.weight,
+          height: additionalInputs.height,
+          pregnancy_status: additionalInputs.pregnancy_status,
+          lmp: additionalInputs.lmp,
+          date_of_birth: selectedPatient!.dob || selectedPatient!.date_of_birth || null,
+          additional_inputs: additionalInputs // Catch-all
+        }
       };
 
       if (testsPayload) orderData.tests = testsPayload;
       if (testRequestFile) orderData.testRequestFile = testRequestFile;
 
-      setSubmissionProgress('Saving to database...');
-      await onSubmit(orderData);
-      
-      setSubmissionProgress('Order created successfully!');
-      // Form will close automatically by parent component
+      setSubmissionProgress('Saving order...');
+      const result = await onSubmit(orderData);
+      // Auto-create invoice and payment if discount or payment is provided
+      if (discountValue > 0 || amountPaid > 0) {
+        try {
+          setSubmissionProgress('Creating invoice and payment...');
+
+          // Get order ID from result - it's the full order object with {id, ...}
+          const orderId = result?.id || result;
+
+          if (!orderId) {
+            console.error('No order ID returned from order creation. Result:', result);
+            throw new Error('Order created but ID not available');
+          }
+
+          console.log('📝 Creating invoice for order:', orderId);
+          // Create invoice
+          const invoiceData = {
+            order_id: orderId,
+            patient_id: selectedPatient!.id,
+            patient_name: selectedPatient!.name,
+            lab_id: await database.getCurrentUserLabId(),
+            subtotal: calculatedTotal,
+            total_before_discount: calculatedTotal,
+            discount: discountValue > 0 ? discountValue : 0,
+            total_discount: discountAmount,
+            total_after_discount: finalAmount,
+            total: finalAmount,
+            amount_paid: amountPaid,
+            tax: 0,
+            due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+            status: amountPaid >= finalAmount ? 'Paid' : (amountPaid > 0 ? 'Partial' : 'Draft'),
+            // Use Order Number if available, else generate one
+            invoice_number: (result as any)?.order_number ? `INV-${(result as any).order_number}` : `INV-${Date.now().toString().slice(-6)}`,
+          };
+
+          const { data: invoice, error: invoiceError } = await supabase
+            .from('invoices')
+            .insert(invoiceData)
+            .select()
+            .single();
+
+          if (invoiceError) {
+            console.error('Invoice creation failed:', invoiceError);
+            throw invoiceError;
+          }
+
+          console.log('✅ Invoice created:', invoice.id);
+
+          // Update order billing status
+          const { error: updateOrderError } = await supabase
+            .from('orders')
+            .update({
+              billing_status: 'billed',
+              is_billed: true
+            })
+            .eq('id', orderId);
+
+          if (updateOrderError) console.error('Failed to update order billing status:', updateOrderError);
+
+          // Create invoice items
+          const invoiceItemsData = selectedTestDetails.map(t => {
+            const price = accountPrices[t.id] ?? t.price ?? 0;
+            return {
+              invoice_id: invoice.id,
+              test_name: t.name,
+              price: price,
+              quantity: 1,
+              total: price,
+              lab_id: invoice.lab_id,
+              order_id: orderId
+            };
+          });
+
+          if (invoiceItemsData.length > 0) {
+            const { error: itemsError } = await supabase
+              .from('invoice_items')
+              .insert(invoiceItemsData);
+
+            if (itemsError) {
+              console.error('Error creating invoice items:', itemsError);
+            } else {
+              console.log(`✅ Added ${invoiceItemsData.length} invoice items`);
+            }
+          } else {
+            console.warn('⚠️ No invoice items to add');
+          }
+
+          // Create payment record if amount was paid
+          if (amountPaid > 0 && invoice) {
+            const { data: authUser } = await supabase.auth.getUser();
+
+            const paymentData = {
+              invoice_id: invoice.id,
+              amount: amountPaid,
+              payment_method: paymentMethod,
+              received_by: authUser.user?.id,
+              lab_id: await database.getCurrentUserLabId(),
+              location_id: selectedLocation || null,
+              payment_reference: `PAY-${Date.now()}`,
+            };
+
+            const { data: payment, error: paymentError } = await supabase
+              .from('payments')
+              .insert(paymentData)
+              .select()
+              .single();
+
+            if (paymentError) {
+              console.error('Payment creation failed:', paymentError);
+              throw paymentError;
+            }
+
+            console.log('✅ Payment created:', payment.id);
+          }
+
+          setSubmissionProgress('Order, invoice, and payment created successfully!');
+
+          // Close after short delay
+          setTimeout(() => {
+            onClose();
+          }, 1000);
+        } catch (err: any) {
+          console.error('Post-order creation error:', err);
+          alert(`Order created but failed to create invoice/payment: ${err.message}`);
+          onClose();
+        }
+      } else {
+        setSubmissionProgress('Order created successfully!');
+        setTimeout(() => {
+          onClose();
+        }, 1000);
+      }
+
+      // OrderForm will be unmounted by onClose
     } catch (error: any) {
       console.error('Order submission error:', error);
       setValidationErrors([`❌ Submission Failed: ${error.message || 'Unknown error occurred'}`]);
@@ -850,7 +1180,18 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
   // Totals (for UI display only)
   const selectedTestRows = testGroups.filter((t) => selectedTests.includes(t.id));
-  const totalAmount = selectedTestRows.reduce((sum, t) => sum + (t.price ?? 0), 0);
+  const totalAmount = selectedTestRows.reduce((sum, t) => {
+    const price = accountPrices[t.id] ?? t.price ?? 0;
+    return sum + price;
+  }, 0);
+
+  // Calculate discount
+  const discountAmount = discountValue > 0
+    ? (discountType === 'percentage' ? (totalAmount * discountValue) / 100 : Math.min(discountValue, totalAmount))
+    : 0;
+  const finalAmount = totalAmount - discountAmount;
+  const balanceDue = finalAmount - amountPaid;
+
 
   return ReactDOM.createPortal(
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -1126,14 +1467,28 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 <div className="relative">
                   <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3 pointer-events-none" />
                   <input
+                    ref={searchInputRef}
                     type="text"
                     value={testSearch}
+                    placeholder="Search tests or packages... (Press Enter to select)"
                     onChange={(e) => {
                       setTestSearch(e.target.value);
                       setShowTestList(true);
                     }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && testSearch) {
+                        e.preventDefault(); // Prevent form submission
+                        const search = testSearch.toLowerCase();
+                        const match = testGroups.find(t =>
+                          t.name.toLowerCase().includes(search) ||
+                          (t.category && t.category.toLowerCase().includes(search)) ||
+                          (t.code && t.code.toLowerCase().includes(search)) ||
+                          (t.type === 'package' && 'package'.includes(search))
+                        );
+                        if (match) handleToggleTest(match.id);
+                      }
+                    }}
                     onFocus={() => setShowTestList(true)}
-                    placeholder="Search tests or packages..."
                     className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
@@ -1151,6 +1506,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                           return (
                             t.name.toLowerCase().includes(search) ||
                             (t.category && t.category.toLowerCase().includes(search)) ||
+                            (t.code && t.code.toLowerCase().includes(search)) ||
                             (t.type === 'package' && 'package'.includes(search))
                           );
                         })
@@ -1164,7 +1520,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                                 type="checkbox"
                                 checked={selectedTests.includes(t.id)}
                                 onChange={() => handleToggleTest(t.id)}
-                                className="w-4 h-4 text-blue-600"
+                                className="w-4 h-4 text-blue-600 flex-shrink-0"
+                              />
+                              <SampleTypeIndicator
+                                sampleType={t.sample_type || 'Blood'}
+                                sampleColor={t.sample_color || undefined}
+                                size="sm"
                               />
                               <div>
                                 <div className="text-sm font-medium text-gray-900 flex items-center gap-2">
@@ -1176,7 +1537,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                                   )}
                                 </div>
                                 <div className="text-xs text-gray-500">
-                                  {t.type === 'package' 
+                                  {t.type === 'package'
                                     ? `${t.testGroupIds?.length || 0} tests included`
                                     : (t.category ?? 'General') + (t.requiresFasting ? ' • Fasting' : '')}
                                 </div>
@@ -1221,11 +1582,16 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                       const isOutsourced = outsourcingStatus !== 'inhouse';
                       const outsourcedLab = isOutsourced ? outsourcedLabs.find(lab => lab.id === outsourcingStatus) : null;
                       const isPackage = t.type === 'package';
-                      
+
                       return (
                         <div key={t.id} className={`flex items-center justify-between gap-2 p-2 bg-white rounded border ${isPackage ? 'border-purple-200' : 'border-green-100'}`}>
                           <div className="flex-1">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-3">
+                              <SampleTypeIndicator
+                                sampleType={t.sample_type || 'Blood'}
+                                sampleColor={t.sample_color || undefined}
+                                size="sm"
+                              />
                               <span className={`${isPackage ? 'text-purple-800' : 'text-green-800'} font-medium`}>{t.name}</span>
                               {isPackage && (
                                 <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">
@@ -1270,7 +1636,29 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                               </div>
                             )}
                           </div>
-                          <span className={`font-medium ${isPackage ? 'text-purple-900' : 'text-green-900'} whitespace-nowrap`}>₹{t.price ?? 0}</span>
+                          <div className="flex items-center gap-3">
+                            <div className="flex flex-col items-end">
+                              <span className={`font-medium ${isPackage ? 'text-purple-900' : 'text-green-900'} whitespace-nowrap`}>
+                                {currencySymbol}{accountPrices[t.id] ?? t.price ?? 0}
+                              </span>
+                              {accountPrices[t.id] !== undefined && (
+                                <span className="text-[10px] text-indigo-600 font-medium bg-indigo-50 px-1 rounded border border-indigo-100">
+                                  Account Price
+                                </span>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedTests(prev => prev.filter(id => id !== t.id));
+                              }}
+                              className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
+                              title="Remove"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
                       );
                     })}
@@ -1279,12 +1667,76 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   <span>Total Amount:</span>
                   <span>₹{totalAmount}</span>
                 </div>
+                {/* Monthly Billing Indicator */}
+                {selectedAccount && accounts.find(a => a.id === selectedAccount)?.billing_mode === 'monthly' && (
+                  <div className="mt-2 bg-purple-50 border border-purple-200 p-3 rounded-lg">
+                    <div className="flex items-center gap-2 text-purple-900">
+                      <Briefcase className="h-4 w-4" />
+                      <span className="font-semibold">Monthly Billing Account</span>
+                    </div>
+                    <p className="text-xs text-purple-700 mt-1">
+                      This order will be included in consolidated monthly billing for {accounts.find(a => a.id === selectedAccount)?.name}. No individual invoice will be generated.
+                    </p>
+                  </div>
+                )}
                 <div className="mt-2 text-xs text-green-700 bg-green-100 p-2 rounded">
                   💡 Tip: Select "In-house" for tests performed in your lab, or choose an outsourced lab if test is sent externally
                 </div>
               </div>
             )}
           </section>
+
+          {/* Required Patient Inputs (AI Context) */}
+          {requiredInfos.length > 0 && (
+            <section className="space-y-4 bg-purple-50 p-4 rounded-lg border border-purple-200">
+              <h3 className="text-lg font-medium text-purple-900 flex items-center gap-2">
+                <Sparkles className="h-5 w-5" />
+                Additional Patient Information
+              </h3>
+              <p className="text-sm text-purple-700 -mt-2">
+                Required for accurate reference range calculation for selected tests.
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {requiredInfos.map(info => (
+                  <div key={info}>
+                    <label className="block text-sm font-medium text-purple-900 mb-1 capitalize">
+                      {info.replace(/_/g, ' ')} <span className="text-red-500">*</span>
+                    </label>
+
+                    {info === 'pregnancy_status' ? (
+                      <select
+                        value={additionalInputs[info] || ''}
+                        onChange={e => setAdditionalInputs(prev => ({ ...prev, [info]: e.target.value }))}
+                        className="w-full px-3 py-2 border border-purple-300 rounded-md focus:ring-2 focus:ring-purple-500 bg-white"
+                      >
+                        <option value="">Select Status</option>
+                        <option value="Not Pregnant">Not Pregnant</option>
+                        <option value="Trimester 1">First Trimester (1-12 weeks)</option>
+                        <option value="Trimester 2">Second Trimester (13-26 weeks)</option>
+                        <option value="Trimester 3">Third Trimester (27+ weeks)</option>
+                      </select>
+                    ) : info === 'lmp' ? (
+                      <input
+                        type="date"
+                        value={additionalInputs[info] || ''}
+                        onChange={e => setAdditionalInputs(prev => ({ ...prev, [info]: e.target.value }))}
+                        className="w-full px-3 py-2 border border-purple-300 rounded-md focus:ring-2 focus:ring-purple-500"
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        value={additionalInputs[info] || ''}
+                        onChange={e => setAdditionalInputs(prev => ({ ...prev, [info]: e.target.value }))}
+                        className="w-full px-3 py-2 border border-purple-300 rounded-md focus:ring-2 focus:ring-purple-500"
+                        placeholder={`Enter ${info.replace(/_/g, ' ')}...`}
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Order Details */}
           <section className="space-y-4">
@@ -1309,6 +1761,27 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   ))}
                 </select>
               </div>
+
+              {/* Expected Date */}
+
+
+              {/* Admin: Backdated Order */}
+              {isAdmin && (
+                <div>
+                  <label className="block text-sm font-medium text-purple-700 mb-1 flex items-center gap-1">
+                    <ClockIcon className="w-3.5 h-3.5" />
+                    Order Date (Admin)
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={customOrderDate}
+                    onChange={(e) => setCustomOrderDate(e.target.value)}
+                    max={new Date().toISOString().slice(0, 16)}
+                    className="w-full px-3 py-2 border border-purple-300 bg-purple-50 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+                  />
+                  <p className="text-[10px] text-purple-600 mt-0.5">Leave empty for today (now)</p>
+                </div>
+              )}
 
               {/* Expected Date */}
               <div className="md:col-span-2">
@@ -1385,11 +1858,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     }}
                     onFocus={() => setShowDoctorDropdown(true)}
                     onBlur={() => setTimeout(() => setShowDoctorDropdown(false), 200)}
-                    className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 transition-colors ${
-                      validationErrors.some(e => e.includes('Referring Doctor'))
-                        ? 'border-red-400 bg-red-50 focus:ring-red-200 focus:border-red-500'
-                        : 'border-gray-300 focus:ring-blue-500'
-                    }`}
+                    className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 transition-colors ${validationErrors.some(e => e.includes('Referring Doctor'))
+                      ? 'border-red-400 bg-red-50 focus:ring-red-200 focus:border-red-500'
+                      : 'border-gray-300 focus:ring-blue-500'
+                      }`}
                   />
                   {showDoctorDropdown && filteredDoctors.length > 0 && (
                     <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-2xl max-h-48 overflow-y-auto">
@@ -1571,11 +2043,119 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             />
           </section>
 
+          {/* Discount & Payment Section */}
+          {selectedTests.length > 0 && (
+            <section className="space-y-4 border-t pt-4">
+              <h3 className="text-lg font-medium text-gray-900 flex items-center gap-2">
+                <DollarSign className="h-5 w-5" />
+                Billing & Payment
+              </h3>
+
+              {/* Amount Breakdown */}
+              <div className="bg-gray-50 p-4 rounded-lg space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Subtotal ({selectedTests.length} tests)</span>
+                  <span className="font-medium">{currencySymbol}{totalAmount.toLocaleString()}</span>
+                </div>
+
+                {/* Discount Input */}
+                <div className="flex items-center gap-3 border-t pt-2">
+                  <label className="text-sm font-medium text-gray-700 min-w-[80px]">Discount</label>
+                  <div className="flex gap-2 flex-1">
+                    <button
+                      type="button"
+                      onClick={() => setDiscountType(discountType === 'percentage' ? 'fixed' : 'percentage')}
+                      className="px-3 py-1.5 text-xs border border-gray-300 rounded-md hover:bg-gray-100 bg-white"
+                    >
+                      {discountType === 'percentage' ? '%' : currencySymbol}
+                    </button>
+                    <input
+                      type="number"
+                      min="0"
+                      max={discountType === 'percentage' ? 100 : totalAmount}
+                      value={discountValue}
+                      onChange={(e) => setDiscountValue(Number(e.target.value))}
+                      placeholder={`Enter discount${discountType === 'percentage' ? ' %' : ''}`}
+                      className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+
+                {discountAmount > 0 && (
+                  <div className="flex justify-between text-sm text-green-600">
+                    <span>Discount ({discountType === 'percentage' ? `${discountValue}%` : `${currencySymbol}${discountValue}`})</span>
+                    <span>-{currencySymbol}{discountAmount.toLocaleString()}</span>
+                  </div>
+                )}
+
+                <div className="flex justify-between text-base font-semibold border-t pt-2">
+                  <span>Final Amount</span>
+                  <span className="text-blue-600">{currencySymbol}{finalAmount.toLocaleString()}</span>
+                </div>
+              </div>
+
+              {/* Payment Collection */}
+              <div className="border-t pt-3">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Collect Payment (Optional)</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <select
+                      value={paymentMethod}
+                      onChange={(e) => setPaymentMethod(e.target.value as any)}
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="cash">Cash</option>
+                      <option value="card">Card</option>
+                      <option value="upi">UPI</option>
+                      <option value="online">Online</option>
+                    </select>
+                  </div>
+                  <div>
+                    <input
+                      type="number"
+                      min="0"
+                      max={finalAmount}
+                      value={amountPaid}
+                      onChange={(e) => setAmountPaid(Number(e.target.value))}
+                      placeholder="Amount received"
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+
+                {amountPaid > 0 && (
+                  <div className="mt-2 p-2 bg-blue-50 rounded text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Paid:</span>
+                      <span className="font-medium text-green-600">{currencySymbol}{amountPaid.toLocaleString()}</span>
+                    </div>
+                    {balanceDue > 0 && (
+                      <div className="flex justify-between mt-1">
+                        <span className="text-gray-600">Balance Due:</span>
+                        <span className="font-medium text-red-600">{currencySymbol}{balanceDue.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {balanceDue < 0 && (
+                      <div className="flex justify-between mt-1">
+                        <span className="text-gray-600">Change:</span>
+                        <span className="font-medium text-orange-600">{currencySymbol}{Math.abs(balanceDue).toLocaleString()}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <p className="text-xs text-gray-500 mt-2">
+                  💡 Leave empty to collect payment later via invoice
+                </p>
+              </div>
+            </section>
+          )}
+
           {/* Actions */}
           <div className="flex items-center justify-between border-t pt-6">
             <div className="text-sm text-gray-600">
               {selectedTests.length > 0 ? (
-                <span className="font-medium">Total: ₹{totalAmount}</span>
+                <span className="font-medium">Total: {currencySymbol}{totalAmount}</span>
               ) : (
                 <span>Select tests now or continue—tests can be added later.</span>
               )}
@@ -1600,7 +2180,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     <span>Creating Order...</span>
                   </>
                 ) : (
-                  <span>Create Order{selectedTests.length > 0 ? ` – ₹${totalAmount}` : ''}</span>
+                  <span>Create Order{selectedTests.length > 0 ? ` – ${currencySymbol}${totalAmount}` : ''}</span>
                 )}
               </button>
             </div>
@@ -1678,7 +2258,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     required
                     value={newPatient.name}
                     onChange={(e) => setNewPatient((p) => ({ ...p, name: e.target.value }))}
-                    className="w-full rounded-md border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                   />
                 </div>
                 <div>
@@ -1689,7 +2269,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     required
                     value={newPatient.age}
                     onChange={(e) => setNewPatient((p) => ({ ...p, age: e.target.value }))}
-                    className="w-full rounded-md border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                   />
                 </div>
                 <div>
@@ -1711,7 +2291,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     required
                     value={newPatient.phone}
                     onChange={(e) => setNewPatient((p) => ({ ...p, phone: e.target.value }))}
-                    className="w-full rounded-md border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                   />
                 </div>
                 <div className="md:col-span-2">
@@ -1720,7 +2300,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     type="email"
                     value={newPatient.email}
                     onChange={(e) => setNewPatient((p) => ({ ...p, email: e.target.value }))}
-                    className="w-full rounded-md border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                   />
                 </div>
               </div>

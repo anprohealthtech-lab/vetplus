@@ -289,19 +289,19 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
     try {
       setStep('ocr', 'running');
       pushLog('Invoking vision-ocr…');
-      
+
       // Determine test group ID for intelligent processing type selection
-      const effectiveTestGroupId = uploadScope === 'test' && selectedTestGroupId 
-        ? selectedTestGroupId 
+      const effectiveTestGroupId = uploadScope === 'test' && selectedTestGroupId
+        ? selectedTestGroupId
         : testGroup?.id;
-      
+
       // Pass order and test context to vision-ocr for intelligent AI prompt selection
-      const vision = await supabase.functions.invoke('vision-ocr', { 
-        body: { 
+      const vision = await supabase.functions.invoke('vision-ocr', {
+        body: {
           attachmentId,
           orderId: order.id,
           testGroupId: effectiveTestGroupId,
-        } 
+        }
       });
       if (vision.error) throw new Error(vision.error.message);
       setStep('ocr', 'ok', { sample: (vision.data?.fullText || '').slice(0, 64) + '…' });
@@ -414,11 +414,11 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
     try {
       // Group extracted values by test group
       const valuesByTestGroup = await groupValuesByTestGroup(extracted);
-      
+
       for (const [testGroupId, values] of Object.entries(valuesByTestGroup)) {
         // Find or create result row for this test group
         const resultId = await findOrCreateResultRow(testGroupId);
-        
+
         // Prepare result_values
         const resultValues = await Promise.all(values.map(async (item: any) => {
           // Find analyte ID by name
@@ -447,7 +447,7 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
         const analyteIds = resultValues
           .map(v => v.analyte_id)
           .filter(Boolean);
-          
+
         if (analyteIds.length > 0) {
           await supabase
             .from('result_values')
@@ -461,7 +461,7 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
           .from('result_values')
           .insert(resultValues);
 
-  if (error) throw error;
+        if (error) throw error;
 
         // Update result metadata
         await supabase
@@ -473,8 +473,16 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
           .eq('id', resultId);
       }
 
+      // Run AI flag analysis ONCE after ALL test groups are saved (optimization)
+      try {
+        const { runAIFlagAnalysis } = await import('../../../utils/aiFlagAnalysis');
+        await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true });
+      } catch (flagErr) {
+        console.warn('AI flag analysis failed (non-blocking):', flagErr);
+      }
+
       alert('Results saved successfully');
-      
+
       if (onUploadComplete) {
         onUploadComplete(extracted);
       }
@@ -482,7 +490,7 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
       // Reset state
       setExtracted([]);
       setAttachmentId(null);
-      
+
     } catch (error) {
       console.error('Error saving results:', error);
       alert('Failed to save results');
@@ -545,7 +553,7 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
   // Group extracted values by test group
   const groupValuesByTestGroup = async (values: any[]) => {
     const grouped: Record<string, any[]> = {};
-    
+
     for (const value of values) {
       // Find which test group this analyte belongs to
       const { data } = await supabase
@@ -565,12 +573,12 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
         grouped[testGroupId].push(value);
       }
     }
-    
+
     // If test-specific upload, use selected test group
     if (uploadScope === 'test' && selectedTestGroupId) {
       return { [selectedTestGroupId]: values };
     }
-    
+
     return grouped;
   };
 
@@ -601,7 +609,7 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
           />
           <span>Test Specific</span>
         </label>
-        
+
         {uploadScope === 'test' && (
           <select
             value={selectedTestGroupId}
@@ -638,13 +646,12 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
 
         {/* Dropzone */}
         <div
-          className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
-            dragActive
+          className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${dragActive
               ? 'border-purple-400 bg-purple-50'
               : uploading
-              ? 'border-gray-300 bg-gray-50'
-              : 'border-purple-300 hover:border-purple-400 hover:bg-purple-50'
-          }`}
+                ? 'border-gray-300 bg-gray-50'
+                : 'border-purple-300 hover:border-purple-400 hover:bg-purple-50'
+            }`}
           onDrop={handleDrop}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -660,7 +667,7 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
               <Upload className="h-12 w-12 text-purple-400 mx-auto mb-4" />
               <p className="text-gray-700 mb-2">Drop your lab result document here</p>
               <p className="text-sm text-gray-500 mb-4">Supports JPG, PNG (max 10MB)</p>
-              
+
               <input
                 type="file"
                 id="file-upload"
@@ -775,10 +782,9 @@ const ProcessingStatusCard: React.FC<{ status: ProcessingStatus }> = ({ status }
       {/* Progress Bar */}
       <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
         <div
-          className={`h-2 rounded-full transition-all duration-300 ${
-            status.status === 'completed' ? 'bg-green-500' :
-            status.status === 'failed' ? 'bg-red-500' : 'bg-blue-500'
-          }`}
+          className={`h-2 rounded-full transition-all duration-300 ${status.status === 'completed' ? 'bg-green-500' :
+              status.status === 'failed' ? 'bg-red-500' : 'bg-blue-500'
+            }`}
           style={{ width: `${status.progress}%` }}
         />
       </div>

@@ -1,8 +1,8 @@
 import React from 'react';
 import { useState, useEffect } from 'react';
-import { X, User, Phone, Mail, MapPin, Calendar, Droplet, AlertTriangle, FileText, QrCode, Palette, Printer, Edit, Plus, RefreshCw, Upload } from 'lucide-react';
+import { X, User, Phone, Mail, MapPin, Droplet, FileText, QrCode, Palette, Printer, Edit, Plus, Upload, ExternalLink, Calendar } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
-import { database } from '../../utils/supabase';
+import { database, supabase } from '../../utils/supabase';
 import ExternalReportUploadModal from './ExternalReportUploadModal';
 
 interface Patient {
@@ -55,6 +55,8 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
   const [recentTests, setRecentTests] = useState<any[]>([]);
   const [loadingTests, setLoadingTests] = useState(true);
   const [testsError, setTestsError] = useState<string | null>(null);
+  const [externalReports, setExternalReports] = useState<any[]>([]);
+  const [loadingExternalReports, setLoadingExternalReports] = useState(true);
 
   useEffect(() => {
     const fetchRecentTests = async () => {
@@ -109,8 +111,69 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
       }
     };
 
+    const fetchExternalReports = async () => {
+      setLoadingExternalReports(true);
+      try {
+        const { data, error } = await supabase
+          .from('external_reports')
+          .select(`
+            *,
+            external_result_values (
+              id,
+              original_analyte_name,
+              value,
+              unit,
+              reference_range,
+              ai_confidence,
+              is_verified
+            )
+          `)
+          .eq('patient_id', patient.id)
+          .order('report_date', { ascending: false });
+
+        if (!error && data) {
+          setExternalReports(data);
+        }
+      } catch (err) {
+        console.error('Error loading external reports:', err);
+      } finally {
+        setLoadingExternalReports(false);
+      }
+    };
+
     fetchRecentTests();
+    fetchExternalReports();
   }, [patient.id]);
+
+  const refreshExternalReports = async () => {
+    setLoadingExternalReports(true);
+    try {
+      const { data, error } = await supabase
+        .from('external_reports')
+        .select(`
+          *,
+          external_result_values (
+            id,
+            original_analyte_name,
+            value,
+            unit,
+            reference_range,
+            ai_confidence,
+            is_verified
+          )
+        `)
+        .eq('patient_id', patient.id)
+        .order('report_date', { ascending: false });
+
+      if (!error && data) {
+        setExternalReports(data);
+      }
+    } catch (err) {
+      console.error('Error loading external reports:', err);
+    } finally {
+      setLoadingExternalReports(false);
+    }
+  };
 
   const handleEditPatient = () => {
     onEditPatient(patient);
@@ -229,25 +292,9 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
                   <div className="bg-gray-100 rounded-lg w-150 h-150 flex items-center justify-center mb-4" style={{ width: "150px", height: "150px" }}>
                     <QrCode className="h-12 w-12 text-gray-400" />
                   </div>
-                  <div className="text-sm text-gray-600 mb-4">
-                    No QR code has been generated for this patient
+                  <div className="text-sm text-gray-600 text-center">
+                    QR codes are generated at order level for sample tracking
                   </div>
-                  {onGenerateQrAndColor && (
-                    <button
-                      onClick={() => onGenerateQrAndColor(patient.id)}
-                      disabled={isGeneratingCodes}
-                      className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:bg-blue-400 disabled:cursor-not-allowed"
-                    >
-                      {isGeneratingCodes ? (
-                        <>
-                          <RefreshCw className="h-4 w-4 mr-2 inline animate-spin" />
-                          Generating...
-                        </>
-                      ) : (
-                        <>Generate QR Code</>
-                      )}
-                    </button>
-                  )}
                 </div>
               )}
             </div>
@@ -440,27 +487,108 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
             )}
           </div>
 
+          {/* External Reports */}
+          {externalReports.length > 0 && (
+            <div className="bg-white border border-gray-200 rounded-lg p-6">
+              <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                <ExternalLink className="h-5 w-5 mr-2 text-purple-500" />
+                External Lab Reports
+              </h4>
+              {loadingExternalReports ? (
+                <div className="flex items-center justify-center py-4">
+                  <div className="animate-spin rounded-full h-6 w-6 border-4 border-purple-600 border-t-transparent"></div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {externalReports.map((report) => (
+                    <div key={report.id} className="bg-purple-50 rounded-lg border border-purple-100 overflow-hidden">
+                      {/* Report Header */}
+                      <div className="flex items-center justify-between p-3">
+                        <div className="flex items-center space-x-3">
+                          <div className="p-2 bg-purple-100 rounded-lg">
+                            <FileText className="h-5 w-5 text-purple-600" />
+                          </div>
+                          <div className="flex-1">
+                            <div className="font-medium text-gray-900">
+                              {report.lab_name || 'External Lab Report'}
+                            </div>
+                            <div className="text-sm text-gray-500 flex items-center flex-wrap gap-1">
+                              <span className="flex items-center">
+                                <Calendar className="h-3.5 w-3.5 mr-1" />
+                                {report.report_date
+                                  ? new Date(report.report_date).toLocaleDateString()
+                                  : 'Date not specified'}
+                              </span>
+                              <span className={`px-2 py-0.5 rounded text-xs ${report.status === 'completed'
+                                  ? 'bg-green-100 text-green-700'
+                                  : report.status === 'review_required'
+                                    ? 'bg-amber-100 text-amber-700'
+                                    : 'bg-gray-100 text-gray-600'
+                                }`}>
+                                {report.status === 'completed' ? 'Processed' :
+                                  report.status === 'review_required' ? 'Review Required' :
+                                    report.status}
+                              </span>
+                              {report.external_result_values?.length > 0 && (
+                                <span className="px-2 py-0.5 rounded text-xs bg-purple-100 text-purple-700">
+                                  {report.external_result_values.length} tests
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <a
+                          href={report.file_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1.5 text-purple-600 hover:bg-purple-100 rounded-md transition-colors text-sm shrink-0"
+                        >
+                          View File
+                        </a>
+                      </div>
+
+                      {/* Extracted Result Values Table */}
+                      {report.external_result_values?.length > 0 && (
+                        <div className="border-t border-purple-100 bg-white">
+                          <table className="min-w-full divide-y divide-gray-200 text-sm">
+                            <thead className="bg-gray-50">
+                              <tr>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Test</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Value</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Unit</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Ref. Range</th>
+                              </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-gray-100">
+                              {report.external_result_values.map((result: any) => (
+                                <tr key={result.id} className="hover:bg-gray-50">
+                                  <td className="px-3 py-2 text-gray-900 font-medium">
+                                    {result.original_analyte_name}
+                                  </td>
+                                  <td className="px-3 py-2 text-gray-900">
+                                    {result.value || '-'}
+                                  </td>
+                                  <td className="px-3 py-2 text-gray-600">
+                                    {result.unit || '-'}
+                                  </td>
+                                  <td className="px-3 py-2 text-gray-600">
+                                    {result.reference_range || '-'}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Action Buttons */}
           <div className="flex items-center justify-end space-x-4 pt-6 border-t border-gray-200 flex-wrap gap-y-2">
-            {onGenerateQrAndColor && !patient.qr_code_data && (
-              <button
-                onClick={() => onGenerateQrAndColor(patient.id)}
-                disabled={isGeneratingCodes}
-                className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors disabled:bg-purple-400 disabled:cursor-not-allowed flex items-center"
-              >
-                {isGeneratingCodes ? (
-                  <>
-                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                    Generating QR...
-                  </>
-                ) : (
-                  <>
-                    <QrCode className="h-4 w-4 mr-2" />
-                    Generate QR Code
-                  </>
-                )}
-              </button>
-            )}
 
             <button
               onClick={() => setShowUploadModal(true)}
@@ -565,14 +693,16 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
         </div>
       </div>
 
-      {showUploadModal && (
-        <ExternalReportUploadModal
-          patientId={patient.id}
-          onClose={() => setShowUploadModal(false)}
-          onSuccess={() => {/* Maybe refresh recent tests */ }}
-        />
-      )}
-    </div>
+      {
+        showUploadModal && (
+          <ExternalReportUploadModal
+            patientId={patient.id}
+            onClose={() => setShowUploadModal(false)}
+            onSuccess={refreshExternalReports}
+          />
+        )
+      }
+    </div >
   );
 };
 

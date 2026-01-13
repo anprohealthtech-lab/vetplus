@@ -30,18 +30,18 @@ interface DiscountInfo {
 
 const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClose, onSuccess }) => {
   const [loading, setLoading] = useState(true);
-  const [order, setOrder]     = useState<any>(null);
-  const [tests, setTests]     = useState<OrderTest[]>([]);
+  const [order, setOrder] = useState<any>(null);
+  const [tests, setTests] = useState<OrderTest[]>([]);
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
   const [discounts, setDiscounts] = useState<Record<string, DiscountInfo>>({});
   const [globalDiscount] = useState<DiscountInfo | null>(null);
-  const [notes, setNotes]   = useState('');
+  const [notes, setNotes] = useState('');
   const [creating, setCreating] = useState(false);
-  
+
   // NEW: Dual invoice system state
   const [invoiceType, setInvoiceType] = useState<'patient' | 'account'>('patient');
   const [billingPeriod, setBillingPeriod] = useState('');
-  
+
   // Package display state - track which packages are expanded
   const [expandedPackages, setExpandedPackages] = useState<Set<string>>(new Set());
 
@@ -77,14 +77,14 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
       setOrder(orderData);
 
       // Unbilled tests
-      const { data: orderTests, error: testsError } = await (database as any).orderTests?.getUnbilledByOrder?.(orderId) || 
+      const { data: orderTests, error: testsError } = await (database as any).orderTests?.getUnbilledByOrder?.(orderId) ||
         // Fallback to direct query if method doesn't exist
         supabase
           .from('order_tests')
           .select('id, test_group_id, test_name, price, is_billed, invoice_id, package_id')
           .eq('order_id', orderId)
           .eq('is_billed', false);
-      
+
       if (testsError) throw testsError;
 
       // Normalize tests and handle package pricing
@@ -93,7 +93,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
       const normalizedTests: OrderTest[] = (orderTests || []).map((t: any) => {
         const isPackageEntry = t.test_name?.startsWith('📦') || (t.package_id && !t.test_group_id);
         const isTestInPackage = t.package_id && t.test_group_id;
-        
+
         return {
           ...t,
           // For tests inside a package, force price to 0 (included in package)
@@ -103,11 +103,11 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
           isTestInPackage,
         };
       });
-      
+
       // Only show billable items (packages and standalone tests, NOT tests inside packages)
       // Tests inside packages are shown under their parent package
       const billableTests = normalizedTests.filter(t => !t.isTestInPackage);
-      
+
       setTests(normalizedTests); // Keep all for reference
       setSelectedTests(billableTests.map(t => t.id)); // Only select billable items
 
@@ -144,8 +144,38 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
       if (account?.default_discount_percent) accountPct = account.default_discount_percent;
     }
 
-    // Choose best default per test: account > location > doctor
+    // Account Fixed Prices (B2B)
+    const accountPricesMap = new Map<string, number>();
+    if (ord.account_id) {
+      const { data: prices } = await supabase
+        .from('account_prices')
+        .select('test_group_id, price')
+        .eq('account_id', ord.account_id);
+
+      if (prices) {
+        prices.forEach((ap: any) => accountPricesMap.set(ap.test_group_id, parseFloat(ap.price)));
+      }
+    }
+
+    // Choose best default per test: account price > account % > location > doctor
     tList.forEach(test => {
+      // Check for fixed price override first
+      if (test.test_group_id && accountPricesMap.has(test.test_group_id)) {
+        const fixedPrice = accountPricesMap.get(test.test_group_id)!;
+        const originalPrice = toNum(test.price);
+        const discountAmount = Math.max(0, originalPrice - fixedPrice);
+
+        if (discountAmount >= 0) {
+          newDiscounts[test.id] = {
+            type: 'flat',
+            value: discountAmount,
+            reason: `Account Fixed Price (₹${fixedPrice})`,
+            source: 'account_fixed'
+          };
+          return; // Stop processing other discounts
+        }
+      }
+
       if (accountPct) {
         newDiscounts[test.id] = { type: 'percent', value: accountPct!, reason: 'Account default discount', source: 'account' };
       } else if (locationPct) {
@@ -195,7 +225,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
       alert('Please select at least one test');
       return;
     }
-    
+
     // Validation for account invoices
     if (invoiceType === 'account') {
       if (!order.account_id) {
@@ -207,7 +237,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
         return;
       }
     }
-    
+
     setCreating(true);
     try {
       const totals = calcTotals();
@@ -234,12 +264,12 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
         location_id: order.location_id || null,
         referring_doctor_id: order.referring_doctor_id || null,
         account_id: order.account_id || null,
-        
+
         // NEW: Dual invoice system fields
         invoice_type: invoiceType,
         billing_period: invoiceType === 'account' ? billingPeriod : null,
         consolidated_invoice_id: null, // Will be set later during monthly consolidation
-        
+
         notes,
         is_partial: rows.length < tests.length,
       };
@@ -278,7 +308,8 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
       }
 
       // Order billing flags
-      const remainingUnbilled = tests.length - rows.length;
+      const billableTests = tests.filter(t => !t.isTestInPackage);
+      const remainingUnbilled = billableTests.length - rows.length;
       const billingStatus = remainingUnbilled === 0 ? 'billed' : 'partial';
       await database.orders.update(orderId, { billing_status: billingStatus, is_billed: billingStatus === 'billed' });
 
@@ -359,7 +390,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                 <span className="font-medium">Patient Invoice</span>
                 <span className="text-sm text-gray-600">(Direct bill to patient)</span>
               </label>
-              
+
               <label className="flex items-center gap-2">
                 <input
                   type="radio"
@@ -375,7 +406,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                 <span className="text-sm text-gray-600">(Post to account ledger)</span>
               </label>
             </div>
-            
+
             {invoiceType === 'account' && (
               <div className="mt-3 p-3 bg-white rounded border">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -392,7 +423,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                 </p>
               </div>
             )}
-            
+
             {!order?.account_id && invoiceType === 'account' && (
               <div className="text-sm text-amber-700 bg-amber-100 p-2 rounded">
                 <Info className="w-4 h-4 inline mr-1" />
@@ -428,21 +459,21 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
               </div>
             </div>
           </div>
-          
+
           <div className="max-h-64 overflow-y-auto">
             {/* Only show billable items (packages and standalone tests) */}
             {tests.filter(t => !t.isTestInPackage).map((test) => {
               const isSelected = selectedTests.includes(test.id);
               const isPackage = test.isPackageEntry;
-              
+
               // Get tests included in this package
-              const includedTests = isPackage 
+              const includedTests = isPackage
                 ? tests.filter(t => t.package_id === test.package_id && t.isTestInPackage)
                 : [];
               const isExpanded = expandedPackages.has(test.id);
               const discount = discounts[test.id];
               const lineTotal = calcLineTotal(test);
-              
+
               return (
                 <div key={test.id} className="border-b">
                   <div className={`p-4 ${isSelected ? 'bg-blue-50' : 'bg-white'} hover:bg-gray-50`}>
@@ -470,7 +501,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                           <div className="text-sm text-gray-500">Test ID: {test.id.slice(0, 8)}</div>
                         </div>
                       </div>
-                      
+
                       <div className="flex items-center gap-4">
                         {/* Show included tests toggle for packages */}
                         {isPackage && includedTests.length > 0 && (
@@ -493,7 +524,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                             {includedTests.length} tests included
                           </button>
                         )}
-                        
+
                         <div className="text-right">
                           <div className="font-bold text-lg">₹{money(lineTotal)}</div>
                           {discount && (
@@ -505,7 +536,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                         </div>
                       </div>
                     </div>
-                    
+
                     {/* Expanded: Show included tests */}
                     {isPackage && isExpanded && includedTests.length > 0 && (
                       <div className="mt-3 ml-8 p-3 bg-purple-50 rounded-lg border border-purple-100">
@@ -520,7 +551,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                         </div>
                       </div>
                     )}
-                    
+
                     {/* Discount Controls */}
                     {isSelected && (
                       <div className="mt-3 pt-3 border-t bg-gray-50 rounded p-3">
@@ -554,23 +585,23 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                               className="w-full px-2 py-1 text-sm border rounded"
                             />
                           </div>
-                        <div className="col-span-2">
-                          <label className="block text-xs text-gray-600 mb-1">Reason</label>
-                          <input
-                            type="text"
-                            value={discount?.reason || 'Manual discount'}
-                            onChange={(e) => {
-                              handleDiscountChange(test.id, discount?.type || 'percent', discount?.value || 0, e.target.value);
-                            }}
-                            className="w-full px-2 py-1 text-sm border rounded"
-                            placeholder="Discount reason"
-                          />
+                          <div className="col-span-2">
+                            <label className="block text-xs text-gray-600 mb-1">Reason</label>
+                            <input
+                              type="text"
+                              value={discount?.reason || 'Manual discount'}
+                              onChange={(e) => {
+                                handleDiscountChange(test.id, discount?.type || 'percent', discount?.value || 0, e.target.value);
+                              }}
+                              className="w-full px-2 py-1 text-sm border rounded"
+                              placeholder="Discount reason"
+                            />
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
-              </div>
               );
             })}
           </div>
@@ -597,27 +628,27 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
         {/* Notes */}
         <div className="mt-6">
           <label className="block text-sm font-medium text-gray-700 mb-1">Notes (Optional)</label>
-          <textarea 
-            value={notes} 
-            onChange={(e) => setNotes(e.target.value)} 
-            rows={3} 
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" 
-            placeholder="Add any notes for this invoice..." 
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={3}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="Add any notes for this invoice..."
           />
         </div>
 
         {/* Actions */}
         <div className="flex justify-end gap-3 mt-6 pt-4 border-t">
-          <button 
-            onClick={onClose} 
-            className="px-4 py-2 text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200" 
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200"
             disabled={creating}
           >
             Cancel
           </button>
-          <button 
-            onClick={handleCreate} 
-            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50" 
+          <button
+            onClick={handleCreate}
+            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
             disabled={creating || selectedTests.length === 0}
           >
             {creating ? 'Creating...' : `Create ${invoiceType === 'account' ? 'B2B Credit' : 'Patient'} Invoice`}

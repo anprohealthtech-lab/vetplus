@@ -217,6 +217,46 @@ Validate this workflow for production deployment and return publication assessme
       }
     }
 
+    // Update workflow version with test_group_id if provided
+    if (test_group_id) {
+      const { error: updateError } = await supabaseClient
+        .from('workflow_versions')
+        .update({ test_group_id: test_group_id })
+        .eq('id', workflow_version_id)
+      
+      if (updateError) {
+        console.warn('Failed to update workflow_versions with test_group_id:', updateError)
+      } else {
+        console.log(`Successfully linked workflow_version ${workflow_version_id} to test_group ${test_group_id}`)
+
+        // Also update test_workflow_map to make this the active/default workflow for the test group
+        // First, unset any existing default for this test group
+        await supabaseClient
+          .from('test_workflow_map')
+          .update({ is_default: false })
+          .eq('test_group_id', test_group_id)
+          .eq('lab_id', lab_id);
+
+        // Then insert/update the mapping for this new version
+        const { error: mapError } = await supabaseClient
+          .from('test_workflow_map')
+          .insert({
+            lab_id: lab_id,
+            test_group_id: test_group_id,
+            test_code: finalTestCode,
+            workflow_version_id: workflow_version_id,
+            is_default: true
+          });
+
+        if (mapError) {
+           console.error('Failed to update test_workflow_map:', mapError);
+           // Not throwing error to allow partial success, but logging it
+        } else {
+           console.log(`Successfully mapped workflow to test group ${test_group_id} in test_workflow_map`);
+        }
+      }
+    }
+
     // Log publication activity
     await supabaseClient
       .from('ai_usage_logs')

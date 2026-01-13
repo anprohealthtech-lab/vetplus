@@ -7,6 +7,8 @@ export interface OrderFilters {
   priority?: "All" | "Normal" | "Urgent" | "STAT";
   from?: string; // Date from
   to?: string; // Date to
+  doctor?: string; // Filter by doctor
+  locationId?: string; // Filter by location
 }
 
 type Props = {
@@ -17,9 +19,10 @@ type Props = {
     byStatus: Record<string, number>;
     byPriority: Record<string, number>;
   };
+  locations?: { id: string; name: string }[];
 };
 
-const OrderFiltersBar: React.FC<Props> = ({ value, onChange, orderCounts }) => {
+const OrderFiltersBar: React.FC<Props> = ({ value, onChange, orderCounts, locations }) => {
   const [showDatePicker, setShowDatePicker] = useState(false);
 
   const today = new Date().toISOString().slice(0, 10);
@@ -27,11 +30,11 @@ const OrderFiltersBar: React.FC<Props> = ({ value, onChange, orderCounts }) => {
 
   const statusOptions = [
     "All",
-    "Order Created", 
-    "Sample Collection", 
-    "In Progress", 
-    "Pending Approval", 
-    "Completed", 
+    "Order Created",
+    "Sample Collection",
+    "In Progress",
+    "Pending Approval",
+    "Completed",
     "Delivered"
   ];
 
@@ -49,7 +52,23 @@ const OrderFiltersBar: React.FC<Props> = ({ value, onChange, orderCounts }) => {
         />
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-wrap sm:flex-nowrap">
+        {/* Location Filter */}
+        {locations && locations.length > 0 && (
+          <select
+            value={value.locationId || ""}
+            onChange={(e) => onChange({ ...value, locationId: e.target.value || undefined })}
+            className="px-3 py-2 border border-gray-300 rounded-md max-w-[150px]"
+          >
+            <option value="">All Locations</option>
+            {locations.map(loc => (
+              <option key={loc.id} value={loc.id}>
+                {loc.name}
+              </option>
+            ))}
+          </select>
+        )}
+
         <select
           value={value.status || "All"}
           onChange={(e) => onChange({ ...value, status: e.target.value as any })}
@@ -75,14 +94,14 @@ const OrderFiltersBar: React.FC<Props> = ({ value, onChange, orderCounts }) => {
         </select>
 
         <div className="relative">
-          <button 
+          <button
             onClick={() => setShowDatePicker(!showDatePicker)}
             className="px-3 py-2 border border-gray-300 rounded-md inline-flex items-center"
           >
-            <Calendar className="h-4 w-4 mr-2" /> 
+            <Calendar className="h-4 w-4 mr-2" />
             {value.from ? `${value.from} to ${value.to || today}` : 'Today'}
           </button>
-          
+
           {showDatePicker && (
             <div className="absolute top-full mt-1 right-0 bg-white border border-gray-300 rounded-lg shadow-lg p-4 z-10 min-w-[300px]">
               <div className="flex items-center justify-between mb-3">

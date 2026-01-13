@@ -82,9 +82,19 @@ const Patients: React.FC = () => {
   const loadPatients = async () => {
     try {
       setLoading(true);
+
+      // Get current lab_id for filtering
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        setError('Unable to determine lab. Please log in again.');
+        setLoading(false);
+        return;
+      }
+
       const { data, error } = await supabase
         .from('v_patients_with_duplicates')
         .select('*')
+        .eq('lab_id', labId)
         .order('registration_date', { ascending: false });
 
       if (error) throw error;

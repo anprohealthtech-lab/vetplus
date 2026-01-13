@@ -92,6 +92,7 @@ export interface Location {
   id: string;
   lab_id: string;
   name: string;
+  code?: string;
   type: 'hospital' | 'clinic' | 'diagnostic_center' | 'home_collection' | 'walk_in';
   contact_person?: string;
   phone?: string;
@@ -103,8 +104,11 @@ export interface Location {
   supports_cash_collection: boolean;
   default_discount_percent?: number;
   credit_limit: number;
+  collection_percentage?: number;
   payment_terms: number;
   is_active: boolean;
+  is_cash_collection_center?: boolean;
+  notes?: string;
   created_at: string;
   updated_at: string;
 }

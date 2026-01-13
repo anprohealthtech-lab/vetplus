@@ -15,10 +15,21 @@ let _authCache: { userId: string | null; token: string | null; fetchedAt: number
 const WHATSAPP_API_MODE: 'rest' | 'supabase-functions' | 'netlify-functions' =
   ((import.meta as any).env?.VITE_WHATSAPP_API_MODE as any) || 'rest';
 
-// REST base URL (used when WHATSAPP_API_MODE === 'rest')
+// Dynamically determine base URL to support multiple subdomains
+const getDefaultWhatsAppBaseUrl = () => {
+  // In production, use current hostname
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost') {
+    const protocol = window.location.protocol;
+    const hostname = window.location.hostname;
+    return `${protocol}//${hostname}/whatsapp`;
+  }
+  // Fallback for development/SSR
+  return 'https://app.limsapp.in/whatsapp';
+};
+
 const WHATSAPP_API_BASE_URL =
   (import.meta as any).env?.VITE_WHATSAPP_API_BASE_URL ||
-  'https://lionfish-app-nmodi.ondigitalocean.app';
+  getDefaultWhatsAppBaseUrl();
 
 // Prefix used by the backend for WhatsApp routes
 const WHATSAPP_API_PREFIX = '/api/whatsapp';

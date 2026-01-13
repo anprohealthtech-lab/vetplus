@@ -25,6 +25,7 @@ interface SimpleAnalyteEditorProps {
     group_ai_mode?: string;
     is_global?: boolean;
     to_be_copied?: boolean;
+    ref_range_knowledge?: any;
   };
   onSave: (analyte: any) => void;
   onCancel: () => void;
@@ -74,11 +75,12 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           lab_specific_interpretation_low: formData.interpretation_low,
           lab_specific_interpretation_normal: formData.interpretation_normal,
           lab_specific_interpretation_high: formData.interpretation_high,
+          ref_range_knowledge: formData.ref_range_knowledge,
         }
       );
 
       if (updateError) throw updateError;
-      
+
       onSave(formData);
     } catch (error) {
       console.error('Failed to update analyte:', error);
@@ -109,7 +111,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           {/* Basic Information Section */}
           <div className="bg-gray-50 p-4 rounded-lg">
             <h4 className="text-lg font-medium text-gray-900 mb-4">Basic Information</h4>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-gray-700 mb-1">Analyte Name *</label>
@@ -165,7 +167,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           {/* Reference Values Section */}
           <div className="bg-blue-50 p-4 rounded-lg">
             <h4 className="text-lg font-medium text-gray-900 mb-4">Reference Values</h4>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Reference Range (Text)</label>
@@ -190,9 +192,9 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                       type="number"
                       step="0.001"
                       value={formData.normal_range_min || ''}
-                      onChange={(e) => setFormData(prev => ({ 
-                        ...prev, 
-                        normal_range_min: e.target.value ? parseFloat(e.target.value) : undefined 
+                      onChange={(e) => setFormData(prev => ({
+                        ...prev,
+                        normal_range_min: e.target.value ? parseFloat(e.target.value) : undefined
                       }))}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       placeholder="e.g., 12.0"
@@ -204,9 +206,9 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                       type="number"
                       step="0.001"
                       value={formData.normal_range_max || ''}
-                      onChange={(e) => setFormData(prev => ({ 
-                        ...prev, 
-                        normal_range_max: e.target.value ? parseFloat(e.target.value) : undefined 
+                      onChange={(e) => setFormData(prev => ({
+                        ...prev,
+                        normal_range_max: e.target.value ? parseFloat(e.target.value) : undefined
                       }))}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       placeholder="e.g., 16.0"
@@ -227,9 +229,9 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                       type="number"
                       step="0.001"
                       value={formData.low_critical || ''}
-                      onChange={(e) => setFormData(prev => ({ 
-                        ...prev, 
-                        low_critical: e.target.value ? parseFloat(e.target.value) : null 
+                      onChange={(e) => setFormData(prev => ({
+                        ...prev,
+                        low_critical: e.target.value ? parseFloat(e.target.value) : null
                       }))}
                       className="w-full px-3 py-2 border border-red-300 rounded-md focus:ring-2 focus:ring-red-500 focus:border-transparent"
                       placeholder="e.g., 5.0"
@@ -241,9 +243,9 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                       type="number"
                       step="0.001"
                       value={formData.high_critical || ''}
-                      onChange={(e) => setFormData(prev => ({ 
-                        ...prev, 
-                        high_critical: e.target.value ? parseFloat(e.target.value) : null 
+                      onChange={(e) => setFormData(prev => ({
+                        ...prev,
+                        high_critical: e.target.value ? parseFloat(e.target.value) : null
                       }))}
                       className="w-full px-3 py-2 border border-red-300 rounded-md focus:ring-2 focus:ring-red-500 focus:border-transparent"
                       placeholder="e.g., 200.0"
@@ -258,7 +260,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           {/* Result Interpretation Section */}
           <div className="bg-purple-50 p-4 rounded-lg">
             <h4 className="text-lg font-medium text-gray-900 mb-4">Result Interpretation</h4>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Low Value Interpretation</label>
@@ -298,7 +300,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           {/* Testing Method & Quality Section */}
           <div className="bg-green-50 p-4 rounded-lg">
             <h4 className="text-lg font-medium text-gray-900 mb-4">Testing Method & Quality</h4>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Testing Method</label>
@@ -368,7 +370,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           {/* AI Processing & Configuration Section */}
           <div className="bg-indigo-50 p-4 rounded-lg">
             <h4 className="text-lg font-medium text-gray-900 mb-4">AI Processing & Configuration</h4>
-            
+
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -411,6 +413,21 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                   placeholder="Custom AI processing instructions for this analyte..."
                 />
                 <p className="text-xs text-gray-500 mt-1">Override default AI processing prompts with custom instructions</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reference Range Rules (AI Context)</label>
+                <textarea
+                  value={formData.ref_range_knowledge?.text_rules || ''}
+                  onChange={(e) => setFormData(prev => ({
+                    ...prev,
+                    ref_range_knowledge: { text_rules: e.target.value }
+                  }))}
+                  rows={4}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Describe specific rules for this analyte (e.g., 'Adult Males: 13-17, Females: 12-16. Pregnancy T1: 11-14...'). The AI will use this knowledge to resolve ranges dynamically."
+                />
+                <p className="text-xs text-gray-500 mt-1">Provide specific context, conditions, or rules that the AI should follow when determining reference ranges</p>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -456,7 +473,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           {/* Additional Information Section */}
           <div className="bg-yellow-50 p-4 rounded-lg">
             <h4 className="text-lg font-medium text-gray-900 mb-4">Additional Information</h4>
-            
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Description & Notes</label>
               <textarea

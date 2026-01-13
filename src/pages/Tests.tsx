@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, Edit, Link2, Calculator, RefreshCw } from 'lucide-react';
+import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, Edit, Link2, Calculator, RefreshCw, Brain } from 'lucide-react';
 import { database, supabase } from '../utils/supabase';
 import TestGroupForm from '../components/Tests/TestGroupForm';
 import TestForm from '../components/Tests/TestForm';
@@ -11,6 +11,8 @@ import TestGroupDetailModal from '../components/Tests/TestGroupDetailModal';
 import PackageDetailModal from '../components/Tests/PackageDetailModal';
 import { SimpleAnalyteEditor } from '../components/TestGroups/SimpleAnalyteEditor';
 import AnalyteDependencyManager from '../components/Tests/AnalyteDependencyManager';
+import { AITestConfigurator } from '../components/AITools/AITestConfigurator';
+import { TestConfigurationResponse } from '../utils/geminiAI';
 
 interface Test {
   id: string;
@@ -45,6 +47,16 @@ interface Analyte {
   formula?: string;
   formulaVariables?: string[];
   formulaDescription?: string;
+  // Extended fields for editor
+  normalRangeMin?: number;
+  normalRangeMax?: number;
+  interpretationLow?: string;
+  interpretationNormal?: string;
+  interpretationHigh?: string;
+  method?: string;
+  description?: string;
+  isCritical?: boolean;
+  ref_range_knowledge?: any;
 }
 
 interface TestGroup {
@@ -75,6 +87,10 @@ interface TestGroup {
   onlyBilling?: boolean;
   startFromNextPage?: boolean;
   analytes?: string[];
+  ref_range_ai_config?: any;
+  required_patient_inputs?: string[];
+  is_outsourced?: boolean;
+  default_outsourced_lab_id?: string;
 }
 
 interface PackageType {
@@ -123,7 +139,149 @@ const Tests: React.FC = () => {
   const [syncMode, setSyncMode] = useState<'sync' | 'reset' | null>(null);
   const [syncStatus, setSyncStatus] = useState<string>('');
 
+  // State for AI Configurator
+  const [showAIConfigurator, setShowAIConfigurator] = useState(false);
+
   console.log('✅ Tests component state initialized');
+
+  const handleAIConfigurationGenerated = async (config: TestConfigurationResponse) => {
+    try {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        alert('Error: Could not determine your lab context. Please try again.');
+        return;
+      }
+
+      console.log('Generating AI Configuration for Lab:', labId, config);
+
+      // Check for existing test group
+      const { data: existingGroups } = await supabase
+        .from('test_groups')
+        .select('id, name, code')
+        // Check for conflicts in this lab (or global if we want strict uniqueness)
+        .eq('lab_id', labId)
+        .or(`name.eq.${config.test_group.name},code.eq.${config.test_group.code}`)
+        .limit(1);
+
+      if (existingGroups && existingGroups.length > 0) {
+        alert(`Test group "${config.test_group.name}" or code "${config.test_group.code}" already exists in your lab.`);
+        return;
+      }
+
+      // 1. Create Test Group
+      const testGroupData = {
+        name: config.test_group.name,
+        code: config.test_group.code,
+        category: config.test_group.category,
+        clinical_purpose: config.test_group.clinical_purpose,
+        price: parseFloat(config.test_group.price),
+        turnaround_time: config.test_group.turnaround_time,
+        sample_type: config.test_group.sample_type,
+        requires_fasting: config.test_group.requires_fasting,
+        is_active: true,
+        default_ai_processing_type: config.test_group.default_ai_processing_type || 'gemini',
+        group_level_prompt: config.test_group.group_level_prompt,
+        lab_id: labId,
+        to_be_copied: false,
+        // Default new fields
+        test_type: 'Default',
+        gender: 'Both',
+        sample_color: 'Red'
+      };
+
+      const { data: newTestGroup, error: tgError } = await supabase
+        .from('test_groups')
+        .insert(testGroupData)
+        .select()
+        .single();
+
+      if (tgError) throw new Error('Failed to create test group: ' + tgError.message);
+
+      console.log('✅ Test Group Created:', newTestGroup);
+
+      // 2. Create or Reuse Analytes
+      const finalAnalyteIds = [];
+      const createdAnalytesInfo = [];
+
+      // We process analytes sequentially
+      for (const analyteData of config.analytes) {
+        let analyteId = null;
+
+        // A. Check if analyte already exists (exact name match)
+        const { data: existingAnalyte } = await supabase
+          .from('analytes')
+          .select('id, name')
+          .ilike('name', analyteData.name.trim())
+          .limit(1)
+          .single();
+
+        if (existingAnalyte) {
+          console.log(`♻️ Reusing existing analyte: ${existingAnalyte.name} (${existingAnalyte.id})`);
+          analyteId = existingAnalyte.id;
+        } else {
+          // B. Create new analyte if not found
+          const analytePayload = {
+            name: analyteData.name.trim(),
+            unit: analyteData.unit,
+            reference_range: analyteData.reference_range,
+            low_critical: analyteData.low_critical ? parseFloat(analyteData.low_critical) : null,
+            high_critical: analyteData.high_critical ? parseFloat(analyteData.high_critical) : null,
+            interpretation_low: analyteData.interpretation_low,
+            interpretation_normal: analyteData.interpretation_normal,
+            interpretation_high: analyteData.interpretation_high,
+            category: analyteData.category,
+            is_active: true,
+            is_global: false, // Lab specific
+            ai_processing_type: 'gemini',
+            group_ai_mode: analyteData.group_ai_mode || 'individual'
+          };
+
+          const { data: newAnalyte, error: analyteError } = await supabase
+            .from('analytes')
+            .insert(analytePayload)
+            .select()
+            .single();
+
+          if (analyteError) {
+            console.error('Error creating analyte:', analyteData.name, analyteError);
+          } else if (newAnalyte) {
+            console.log(`✨ Created new analyte: ${newAnalyte.name}`);
+            analyteId = newAnalyte.id;
+            createdAnalytesInfo.push(newAnalyte.name);
+          }
+        }
+
+        if (analyteId) {
+          finalAnalyteIds.push({ id: analyteId });
+        }
+      }
+
+      console.log(`✅ Processed ${finalAnalyteIds.length} analytes (Created: ${createdAnalytesInfo.length}, Reused: ${finalAnalyteIds.length - createdAnalytesInfo.length})`);
+
+      // 3. Link Analytes to Test Group
+      if (newTestGroup && finalAnalyteIds.length > 0) {
+        const relationships = finalAnalyteIds.map((a, index) => ({
+          test_group_id: newTestGroup.id,
+          analyte_id: a.id,
+          is_visible: true,
+          display_order: index + 1
+        }));
+
+        const { error: relError } = await supabase.from('test_group_analytes').insert(relationships);
+        if (relError) console.error('Error linking analytes:', relError);
+      }
+
+      alert(`✅ Successfully created "${config.test_group.name}"!\n\nDetails:\n• Test Group Created\n• ${createdAnalytesInfo.length} New Analytes Created\n• ${finalAnalyteIds.length - createdAnalytesInfo.length} Existing Analytes Reused\n• All generated and linked.`);
+      setShowAIConfigurator(false);
+
+      // Trigger data reload
+      window.location.reload();
+
+    } catch (e: any) {
+      console.error('AI Config Error:', e);
+      alert('Error creating AI configuration: ' + (e.message || e));
+    }
+  };
 
   // Load data on component mount
   React.useEffect(() => {
@@ -153,7 +311,8 @@ const Tests: React.FC = () => {
             isCalculated: analyte.is_calculated || false,
             formula: analyte.formula || '',
             formulaVariables: analyte.formula_variables || [],
-            formulaDescription: analyte.formula_description || ''
+            formulaDescription: analyte.formula_description || '',
+            ref_range_knowledge: analyte.ref_range_knowledge
           }));
           setAnalytes(transformedAnalytes);
         }
@@ -548,8 +707,67 @@ const Tests: React.FC = () => {
         return;
       }
 
+      // 🔧 FIX: Update test_group_analytes links
+      // Delete existing analyte links
+      await supabase
+        .from('test_group_analytes')
+        .delete()
+        .eq('test_group_id', editingTestGroup.id);
+
+      // Insert new analyte links if any are selected
+      if (formData.analytes && formData.analytes.length > 0) {
+        const analyteLinks = formData.analytes.map((analyteId: string) => ({
+          test_group_id: editingTestGroup.id,
+          analyte_id: analyteId,
+          is_visible: true
+        }));
+
+        const { error: linkError } = await supabase
+          .from('test_group_analytes')
+          .insert(analyteLinks);
+
+        if (linkError) {
+          console.error('Error linking analytes:', linkError);
+          alert('Test group updated but failed to link analytes. Please try again.');
+          return;
+        }
+      }
+
       if (updatedTestGroup) {
-        setTestGroups(prev => prev.map(tg => tg.id === editingTestGroup.id ? updatedTestGroup : tg));
+        const transformedGroup: TestGroup = {
+          id: updatedTestGroup.id,
+          name: updatedTestGroup.name,
+          code: updatedTestGroup.code,
+          category: updatedTestGroup.category,
+          clinicalPurpose: updatedTestGroup.clinical_purpose,
+          price: updatedTestGroup.price,
+          turnaroundTime: updatedTestGroup.turnaround_time,
+          sampleType: updatedTestGroup.sample_type,
+          requiresFasting: updatedTestGroup.requires_fasting,
+          isActive: updatedTestGroup.is_active,
+          createdDate: updatedTestGroup.created_at,
+          default_ai_processing_type: updatedTestGroup.default_ai_processing_type,
+          group_level_prompt: updatedTestGroup.group_level_prompt,
+          testType: updatedTestGroup.test_type || 'Default',
+          gender: updatedTestGroup.gender || 'Both',
+          sampleColor: updatedTestGroup.sample_color || 'Red',
+          barcodeSuffix: updatedTestGroup.barcode_suffix,
+          lmpRequired: updatedTestGroup.lmp_required || false,
+          idRequired: updatedTestGroup.id_required || false,
+          consentForm: updatedTestGroup.consent_form || false,
+          preCollectionGuidelines: updatedTestGroup.pre_collection_guidelines,
+          flabsId: updatedTestGroup.flabs_id,
+          onlyFemale: updatedTestGroup.only_female || false,
+          onlyMale: updatedTestGroup.only_male || false,
+          onlyBilling: updatedTestGroup.only_billing || false,
+          startFromNextPage: updatedTestGroup.start_from_next_page || false,
+          analytes: formData.analytes || [],
+          ref_range_ai_config: updatedTestGroup.ref_range_ai_config,
+          required_patient_inputs: updatedTestGroup.required_patient_inputs,
+          is_outsourced: updatedTestGroup.is_outsourced,
+          default_outsourced_lab_id: updatedTestGroup.default_outsourced_lab_id
+        };
+        setTestGroups(prev => prev.map(tg => tg.id === editingTestGroup.id ? transformedGroup : tg));
         setShowTestGroupForm(false);
         setEditingTestGroup(null);
         alert('Test group updated successfully!');
@@ -595,6 +813,7 @@ const Tests: React.FC = () => {
           lab_specific_interpretation_low: formData.interpretation?.low,
           lab_specific_interpretation_normal: formData.interpretation?.normal,
           lab_specific_interpretation_high: formData.interpretation?.high,
+          ref_range_knowledge: formData.ref_range_knowledge,
         }
       );
 
@@ -615,7 +834,9 @@ const Tests: React.FC = () => {
           interpretation: updatedAnalyte.interpretation_low || '',
           category: updatedAnalyte.category,
           isActive: updatedAnalyte.is_active,
-          createdDate: updatedAnalyte.created_at || editingAnalyte.createdDate
+          isActive: updatedAnalyte.is_active,
+          createdDate: updatedAnalyte.created_at || editingAnalyte.createdDate,
+          ref_range_knowledge: updatedAnalyte.ref_range_knowledge
         };
 
         setAnalytes(prev => prev.map(a => a.id === editingAnalyte.id ? transformedAnalyte : a));
@@ -779,7 +1000,16 @@ const Tests: React.FC = () => {
           isCalculated: analyte.is_calculated || false,
           formula: analyte.formula || '',
           formulaVariables: analyte.formula_variables || [],
-          formulaDescription: analyte.formula_description || ''
+          formulaDescription: analyte.formula_description || '',
+          // Extended mapping
+          normalRangeMin: analyte.normal_range_min,
+          normalRangeMax: analyte.normal_range_max,
+          interpretationLow: analyte.interpretation_low,
+          interpretationNormal: analyte.interpretation_normal,
+          interpretationHigh: analyte.interpretation_high,
+          method: analyte.method,
+          description: analyte.description,
+          isCritical: analyte.is_critical
         }));
         setAnalytes(transformedAnalytes);
       }
@@ -986,6 +1216,13 @@ const Tests: React.FC = () => {
             >
               <Beaker className="h-4 w-4 mr-1" />
               Add Analyte
+            </button>
+            <button
+              onClick={() => setShowAIConfigurator(true)}
+              className="flex items-center px-3 py-1.5 text-sm bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg hover:from-purple-700 hover:to-indigo-700 transition-all shadow-md transform hover:-translate-y-0.5"
+            >
+              <Brain className="h-4 w-4 mr-1" />
+              AI Test Creator
             </button>
             <button
               onClick={() => setShowPackageForm(true)}
@@ -1493,7 +1730,25 @@ const Tests: React.FC = () => {
         {
           showEditAnalyteModal && editingAnalyte && (
             <SimpleAnalyteEditor
-              analyte={editingAnalyte}
+              analyte={{
+                id: editingAnalyte.id,
+                name: editingAnalyte.name,
+                unit: editingAnalyte.unit,
+                category: editingAnalyte.category,
+                reference_range: editingAnalyte.referenceRange || '',
+                low_critical: editingAnalyte.lowCritical,
+                high_critical: editingAnalyte.highCritical,
+                normal_range_min: editingAnalyte.normalRangeMin,
+                normal_range_max: editingAnalyte.normalRangeMax,
+                interpretation_low: editingAnalyte.interpretationLow,
+                interpretation_normal: editingAnalyte.interpretationNormal,
+                interpretation_high: editingAnalyte.interpretationHigh,
+                is_critical: editingAnalyte.isCritical,
+                method: editingAnalyte.method,
+                description: editingAnalyte.description,
+                is_active: editingAnalyte.isActive,
+                ref_range_knowledge: editingAnalyte.ref_range_knowledge
+              }}
               onSave={handleUpdateAnalyte}
               onCancel={handleCloseAnalyteModal}
             />
@@ -1521,6 +1776,31 @@ const Tests: React.FC = () => {
             />
           )
         }
+
+        {/* AI Configurator Modal */}
+        {showAIConfigurator && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
+              <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+                <h2 className="text-lg font-semibold text-gray-800 flex items-center">
+                  <Brain className="h-5 w-5 mr-2 text-purple-600" />
+                  AI Test Group Creator
+                </h2>
+                <button
+                  onClick={() => setShowAIConfigurator(false)}
+                  className="text-gray-400 hover:text-gray-600 p-1 hover:bg-gray-100 rounded-full transition-colors"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-0 bg-white">
+                <AITestConfigurator
+                  onConfigurationGenerated={handleAIConfigurationGenerated}
+                />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

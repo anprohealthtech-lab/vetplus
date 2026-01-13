@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { 
+import {
   FileText,
   Brain,
   TestTube,
@@ -160,7 +160,7 @@ const Results: React.FC = () => {
     fetchTestGroups();
     setupRealTimeSubscriptions();
     database.getCurrentUserLabId().then(id => setCurrentLabId(id || ''));
-    
+
     // Cleanup subscriptions on unmount
     return () => {
       cleanupSubscriptions();
@@ -248,23 +248,23 @@ const Results: React.FC = () => {
       new: any;
       old: any;
     };
-    
+
     // Show notification
     const notificationMessage = {
       INSERT: 'New result added',
       UPDATE: 'Result updated',
       DELETE: 'Result deleted'
     }[eventType] || 'Result changed';
-    
+
     setRealTimeNotification({
       message: notificationMessage,
       type: eventType === 'DELETE' ? 'warning' : 'info',
       timestamp: new Date()
     });
-    
+
     // Clear notification after 3 seconds
     setTimeout(() => setRealTimeNotification(null), 3000);
-    
+
     setResults(prevResults => {
       switch (eventType) {
         case 'INSERT':
@@ -275,19 +275,19 @@ const Results: React.FC = () => {
             return [...prevResults, newResult];
           }
           return prevResults;
-          
+
         case 'UPDATE':
           // Update existing result
-          return prevResults.map(result => 
-            result.id === newRecord.id 
+          return prevResults.map(result =>
+            result.id === newRecord.id
               ? { ...result, ...mapResultFromDatabase(newRecord) }
               : result
           );
-          
+
         case 'DELETE':
           // Remove deleted result
           return prevResults.filter(result => result.id !== oldRecord.id);
-          
+
         default:
           return prevResults;
       }
@@ -301,10 +301,10 @@ const Results: React.FC = () => {
       type: 'success',
       timestamp: new Date()
     });
-    
+
     // Clear notification after 3 seconds
     setTimeout(() => setRealTimeNotification(null), 3000);
-    
+
     // Refresh the entire results list when result values change
     // This ensures we get the latest values with proper joins
     fetchResults();
@@ -312,17 +312,17 @@ const Results: React.FC = () => {
 
   const handleOrderStatusRealTimeUpdate = (payload: any) => {
     const { new: newRecord } = payload;
-    
+
     // Show notification for order status changes
     setRealTimeNotification({
       message: `Order status updated to ${newRecord.status}`,
       type: 'info',
       timestamp: new Date()
     });
-    
+
     // Clear notification after 3 seconds
     setTimeout(() => setRealTimeNotification(null), 3000);
-    
+
     // Update any orders in our current view
     setSelectedOrder(prevOrder => {
       if (prevOrder && prevOrder.id === newRecord.id) {
@@ -333,7 +333,7 @@ const Results: React.FC = () => {
       }
       return prevOrder;
     });
-    
+
     // Also refresh the results to get updated order status
     fetchResults();
   };
@@ -402,11 +402,11 @@ const Results: React.FC = () => {
     const pendingReview = results.filter(r => r.status === 'Under Review').length;
     const approved = results.filter(r => r.status === 'Approved').length;
     const reported = results.filter(r => r.status === 'Reported').length;
-    const abnormal = results.filter(r => hasAbnormalFlags(r.values.map(v => ({ 
-      ...v, 
-      reference_range: v.reference 
+    const abnormal = results.filter(r => hasAbnormalFlags(r.values.map(v => ({
+      ...v,
+      reference_range: v.reference
     })))).length;
-    const avgTurnaround = results.length > 0 ? 
+    const avgTurnaround = results.length > 0 ?
       Math.round(results.reduce((sum, r) => {
         const entryDate = new Date(r.enteredDate);
         const reviewDate = r.reviewedDate ? new Date(r.reviewedDate) : new Date();
@@ -414,11 +414,11 @@ const Results: React.FC = () => {
         return sum + diffHours;
       }, 0) / results.length) : 0;
 
-    return { 
-      pendingReview, 
-      approved, 
-      reported, 
-      abnormal, 
+    return {
+      pendingReview,
+      approved,
+      reported,
+      abnormal,
       avgTurnaround,
       total: results.length,
       critical: results.filter(r => r.values.some(v => v.flag === 'C')).length
@@ -429,7 +429,7 @@ const Results: React.FC = () => {
     try {
       setLoading(!append);
       if (append) setLoadingMore(true);
-      
+
       // Get user's lab ID
       const userLabId = await database.getCurrentUserLabId();
       if (!userLabId) {
@@ -438,10 +438,10 @@ const Results: React.FC = () => {
         setLoadingMore(false);
         return;
       }
-      
+
       // Calculate offset for pagination
       const offset = (page - 1) * pagination.pageSize;
-      
+
       // Entry mode: fetch worklist from v_order_test_progress_enhanced (not results)
       if (viewMode === 'entry') {
         // Fetch orders from the enhanced view that shows test progress
@@ -450,6 +450,12 @@ const Results: React.FC = () => {
           .select(`*, order_test_id`, { count: 'exact' })
           .eq('lab_id', userLabId)
           .order('order_date', { ascending: false });
+
+        // Apply location filtering
+        const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
+        if (shouldFilter && locationIds.length > 0) {
+          query = query.in('location_id', locationIds);
+        }
 
         // Apply date range filters
         const now = new Date();
@@ -490,8 +496,8 @@ const Results: React.FC = () => {
         if (filters.priority && filters.priority !== 'all') {
           const mapPriority = (p: string) => (
             p === 'URGENT' ? 'Urgent' :
-            p === 'HIGH' ? 'High' :
-            p === 'NORMAL' ? 'Normal' : p
+              p === 'HIGH' ? 'High' :
+                p === 'NORMAL' ? 'Normal' : p
           );
           query = query.eq('priority', mapPriority(filters.priority));
         }
@@ -518,7 +524,7 @@ const Results: React.FC = () => {
         if (data) {
           // Group by order and create a consolidated view
           const orderMap = new Map<string, any>();
-          
+
           data.forEach(row => {
             if (!orderMap.has(row.order_id)) {
               orderMap.set(row.order_id, {
@@ -542,7 +548,7 @@ const Results: React.FC = () => {
                 testGroups: []
               });
             }
-            
+
             // Add test group info
             const order = orderMap.get(row.order_id);
             order.testGroups.push({
@@ -592,13 +598,13 @@ const Results: React.FC = () => {
           }
 
           const ordersAsResults = Array.from(orderMap.values());
-          
+
           if (append) {
             setResults(prev => [...prev, ...ordersAsResults]);
           } else {
             setResults(ordersAsResults);
           }
-          
+
           setPagination(prev => ({
             ...prev,
             total: count || 0,
@@ -622,7 +628,7 @@ const Results: React.FC = () => {
   // Filter and view mode handlers
   const handleFiltersChange = (newFilters: Partial<typeof filters>, refreshNow: boolean = false) => {
     setFilters(prev => ({ ...prev, ...newFilters }));
-    
+
     // Update related state variables for backward compatibility
     if (newFilters.searchTerm !== undefined) setSearchTerm(newFilters.searchTerm);
     if (newFilters.department !== undefined) setSelectedDepartment(newFilters.department);
@@ -696,7 +702,7 @@ const Results: React.FC = () => {
   const handleBatchOperation = async (operationId: string, selectedIds: string[]) => {
     try {
       console.log(`Executing batch operation ${operationId} on ${selectedIds.length} items`);
-      
+
       switch (operationId) {
         case 'approve':
           // Implement batch approval
@@ -704,42 +710,42 @@ const Results: React.FC = () => {
             await database.results.update(id, { status: 'Approved' });
           }
           break;
-          
+
         case 'reject':
           // Implement batch rejection - not a standard status, using Under Review instead
           for (const id of selectedIds) {
             await database.results.update(id, { status: 'Under Review' });
           }
           break;
-          
+
         case 'mark-reviewed':
           // Implement batch review marking
           for (const id of selectedIds) {
             await database.results.update(id, { status: 'Under Review' });
           }
           break;
-          
+
         case 'export-csv':
           // Implement CSV export
           const selectedResults = results.filter(r => selectedIds.includes(r.id));
           downloadCSV(selectedResults);
           break;
-          
+
         case 'print-reports':
           // Implement batch printing
           const reportData = results.filter(r => selectedIds.includes(r.id));
           generatePrintReports(reportData);
           break;
-          
+
         default:
           console.warn(`Unknown batch operation: ${operationId}`);
       }
-      
+
       // Refresh data and clear selection
       await fetchResults();
       setSelectedForBatch(new Set());
       setShowBatchOperations(false);
-      
+
     } catch (error) {
       console.error('Batch operation failed:', error);
       throw error;
@@ -766,11 +772,11 @@ const Results: React.FC = () => {
   const convertToCSV = (objArray: any[]) => {
     const array = typeof objArray !== 'object' ? JSON.parse(objArray) : objArray;
     let str = '';
-    
+
     if (array.length > 0) {
       const headers = Object.keys(array[0]);
       str += headers.join(',') + '\r\n';
-      
+
       array.forEach((item: any) => {
         let line = '';
         headers.forEach((header, index) => {
@@ -780,7 +786,7 @@ const Results: React.FC = () => {
         str += line + '\r\n';
       });
     }
-    
+
     return str;
   };
 
@@ -873,14 +879,14 @@ const Results: React.FC = () => {
                       )}
                     </div>
                   </button>
-              ))}
+                ))}
               {results.length === 0 && (
                 <div className="col-span-full text-sm text-gray-500 p-6 text-center border rounded-md bg-white">
                   No orders for {filters.dateRange === 'today' ? 'Today' :
-                  filters.dateRange === '7d' ? 'Last 7 days' :
-                  filters.dateRange === '30d' ? 'Last 30 days' :
-                  filters.dateRange === '90d' ? 'Last 90 days' :
-                  filters.dateRange === 'all' ? 'All Dates' : 'selected range'}
+                    filters.dateRange === '7d' ? 'Last 7 days' :
+                      filters.dateRange === '30d' ? 'Last 30 days' :
+                        filters.dateRange === '90d' ? 'Last 90 days' :
+                          filters.dateRange === 'all' ? 'All Dates' : 'selected range'}
                   {filters.status === 'pending' ? ' (Pending)' : ''}
                 </div>
               )}
@@ -900,183 +906,176 @@ const Results: React.FC = () => {
             <div />
           </div>
           <div className="space-y-6">
-                {/* Order Header */}
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                  <div className="flex justify-between items-start mb-4">
-                    <div>
-                      <h2 className="text-xl font-semibold text-gray-900">
-                        Result Entry - Order #{selectedOrder.id.slice(0, 8)}
-                      </h2>
-                      <div className="mt-1 text-sm text-gray-600">
-                        Patient: {selectedOrder.patient_name}
-                      </div>
-                      {selectedOrder.sample_id && (
-                        <div className="text-sm text-gray-500">
-                          Sample ID: {selectedOrder.sample_id}
-                        </div>
-                      )}
-                    </div>
-                    <span className={`px-3 py-1 rounded-full text-sm ${
-                      selectedOrder.priority === 'STAT' 
-                        ? 'bg-red-100 text-red-700' 
-                        : selectedOrder.priority === 'Urgent'
-                        ? 'bg-orange-100 text-orange-700'
-                        : 'bg-gray-100 text-gray-700'
-                    }`}>
-                      {selectedOrder.priority}
-                    </span>
+            {/* Order Header */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex justify-between items-start mb-4">
+                <div>
+                  <h2 className="text-xl font-semibold text-gray-900">
+                    Result Entry - Order #{selectedOrder.id.slice(0, 8)}
+                  </h2>
+                  <div className="mt-1 text-sm text-gray-600">
+                    Patient: {selectedOrder.patient_name}
                   </div>
-
-                  {/* Progress Overview */}
-                  <div className="mb-4">
-                    <div className="flex justify-between text-sm text-gray-600 mb-1">
-                      <span>Overall Progress</span>
-                      <span>{selectedOrder.percentComplete}%</span>
+                  {selectedOrder.sample_id && (
+                    <div className="text-sm text-gray-500">
+                      Sample ID: {selectedOrder.sample_id}
                     </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div
-                        className={`h-2 rounded-full transition-all ${
-                          selectedOrder.percentComplete === 100 ? 'bg-green-500' : 'bg-blue-500'
-                        }`}
-                        style={{ width: `${selectedOrder.percentComplete}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Test Groups */}
-                  <div className="space-y-2">
-                    <h4 className="font-medium text-gray-900">Test Groups</h4>
-                    <div className="grid gap-2">
-                      {selectedOrder.testGroups.map((testGroup) => (
-                        <div
-                          key={testGroup.test_group_id}
-                          className={`p-3 border rounded-lg ${
-                            testGroup.panel_status === 'completed'
-                              ? 'bg-green-50 border-green-200'
-                              : testGroup.panel_status === 'in_progress'
-                              ? 'bg-blue-50 border-blue-200'
-                              : 'bg-gray-50 border-gray-200'
-                          }`}
-                        >
-                          <div className="flex justify-between items-center">
-                            <div>
-                              <div className="font-medium text-gray-900">
-                                {testGroup.test_group_name}
-                              </div>
-                              <div className="text-sm text-gray-600">
-                                {testGroup.department} • {testGroup.completed_analytes}/{testGroup.total_analytes} completed
-                              </div>
-                            </div>
-                            <div className="flex items-center space-x-2">
-                              {testGroup.workflow_eligible && (
-                                <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded">
-                                  Workflow Ready
-                                </span>
-                              )}
-                              <span className={`text-xs px-2 py-1 rounded ${
-                                testGroup.panel_status === 'completed'
-                                  ? 'bg-green-100 text-green-700'
-                                  : testGroup.panel_status === 'in_progress'
-                                  ? 'bg-blue-100 text-blue-700'
-                                  : 'bg-gray-100 text-gray-700'
-                              }`}>
-                                {testGroup.panel_status.replace('_', ' ')}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  )}
                 </div>
+                <span className={`px-3 py-1 rounded-full text-sm ${selectedOrder.priority === 'STAT'
+                    ? 'bg-red-100 text-red-700'
+                    : selectedOrder.priority === 'Urgent'
+                      ? 'bg-orange-100 text-orange-700'
+                      : 'bg-gray-100 text-gray-700'
+                  }`}>
+                  {selectedOrder.priority}
+                </span>
+              </div>
 
-                {/* Entry Method Tabs */}
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                  <div className="flex space-x-1 mb-6 bg-gray-100 rounded-lg p-1">
-                    <button
-                      onClick={() => setEntryMethod('ai-upload')}
-                      className={`flex-1 px-4 py-2 rounded-md transition-colors ${
-                        entryMethod === 'ai-upload'
-                          ? 'bg-white shadow-sm text-gray-900'
-                          : 'text-gray-600 hover:text-gray-900'
+              {/* Progress Overview */}
+              <div className="mb-4">
+                <div className="flex justify-between text-sm text-gray-600 mb-1">
+                  <span>Overall Progress</span>
+                  <span>{selectedOrder.percentComplete}%</span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                  <div
+                    className={`h-2 rounded-full transition-all ${selectedOrder.percentComplete === 100 ? 'bg-green-500' : 'bg-blue-500'
                       }`}
-                    >
-                      <Brain className="h-4 w-4 inline mr-2" />
-                      AI Upload
-                    </button>
-                    <button
-                      onClick={() => setEntryMethod('manual')}
-                      className={`flex-1 px-4 py-2 rounded-md transition-colors ${
-                        entryMethod === 'manual'
-                          ? 'bg-white shadow-sm text-gray-900'
-                          : 'text-gray-600 hover:text-gray-900'
-                      }`}
-                    >
-                      <TestTube className="h-4 w-4 inline mr-2" />
-                      Manual Entry
-                    </button>
-                    <button
-                      onClick={() => setEntryMethod('workflow')}
-                      className={`flex-1 px-4 py-2 rounded-md transition-colors ${
-                        entryMethod === 'workflow'
-                          ? 'bg-white shadow-sm text-gray-900'
-                          : 'text-gray-600 hover:text-gray-900'
-                      }`}
-                    >
-                      <Activity className="h-4 w-4 inline mr-2" />
-                      Workflow
-                    </button>
-                  </div>
-
-                  {/* Entry Method Content */}
-                  {entryMethod === 'ai-upload' && (
-                    <AIUploadPanel
-                      order={{
-                        id: selectedOrder.id,
-                        patient_name: selectedOrder.patient_name,
-                        patient_id: selectedOrder.patient_id || '', // Ensure patient_id is passed
-                        lab_id: selectedOrder.lab_id || currentLabId
-                      }}
-                      onUploadComplete={handleUploadComplete}
-                      onProgressUpdate={setProcessingStatus}
-                    />
-                  )}
-
-                  {entryMethod === 'manual' && selectedOrder.testGroups.length > 0 && (
-                    <ManualEntryForm
-                      order={{
-                        id: selectedOrder.id,
-                        patient_id: selectedOrder.patient_id || '',
-                        patient_name: selectedOrder.patient_name,
-                        lab_id: selectedOrder.lab_id || currentLabId
-                      }}
-                      testGroup={{
-                        id: selectedOrder.testGroups[0].test_group_id,
-                        name: selectedOrder.testGroups[0].test_group_name,
-                        department: selectedOrder.testGroups[0].department
-                      }}
-                      onSubmit={handleManualEntrySubmit}
-                    />
-                  )}
-
-                  {entryMethod === 'workflow' && selectedOrder.testGroups.length > 0 && (
-                    <WorkflowPanel
-                      order={{
-                        id: selectedOrder.id,
-                        patient_id: selectedOrder.patient_id || '',
-                        patient_name: selectedOrder.patient_name,
-                        lab_id: selectedOrder.lab_id || currentLabId
-                      }}
-                      testGroup={{
-                        id: selectedOrder.testGroups[0].test_group_id,
-                        name: selectedOrder.testGroups[0].test_group_name,
-                        department: selectedOrder.testGroups[0].department
-                      }}
-                      onComplete={handleWorkflowComplete}
-                    />
-                  )}
+                    style={{ width: `${selectedOrder.percentComplete}%` }}
+                  />
                 </div>
               </div>
+
+              {/* Test Groups */}
+              <div className="space-y-2">
+                <h4 className="font-medium text-gray-900">Test Groups</h4>
+                <div className="grid gap-2">
+                  {selectedOrder.testGroups.map((testGroup) => (
+                    <div
+                      key={testGroup.test_group_id}
+                      className={`p-3 border rounded-lg ${testGroup.panel_status === 'completed'
+                          ? 'bg-green-50 border-green-200'
+                          : testGroup.panel_status === 'in_progress'
+                            ? 'bg-blue-50 border-blue-200'
+                            : 'bg-gray-50 border-gray-200'
+                        }`}
+                    >
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <div className="font-medium text-gray-900">
+                            {testGroup.test_group_name}
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            {testGroup.department} • {testGroup.completed_analytes}/{testGroup.total_analytes} completed
+                          </div>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          {testGroup.workflow_eligible && (
+                            <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded">
+                              Workflow Ready
+                            </span>
+                          )}
+                          <span className={`text-xs px-2 py-1 rounded ${testGroup.panel_status === 'completed'
+                              ? 'bg-green-100 text-green-700'
+                              : testGroup.panel_status === 'in_progress'
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-gray-100 text-gray-700'
+                            }`}>
+                            {testGroup.panel_status.replace('_', ' ')}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Entry Method Tabs */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex space-x-1 mb-6 bg-gray-100 rounded-lg p-1">
+                <button
+                  onClick={() => setEntryMethod('ai-upload')}
+                  className={`flex-1 px-4 py-2 rounded-md transition-colors ${entryMethod === 'ai-upload'
+                      ? 'bg-white shadow-sm text-gray-900'
+                      : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                >
+                  <Brain className="h-4 w-4 inline mr-2" />
+                  AI Upload
+                </button>
+                <button
+                  onClick={() => setEntryMethod('manual')}
+                  className={`flex-1 px-4 py-2 rounded-md transition-colors ${entryMethod === 'manual'
+                      ? 'bg-white shadow-sm text-gray-900'
+                      : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                >
+                  <TestTube className="h-4 w-4 inline mr-2" />
+                  Manual Entry
+                </button>
+                <button
+                  onClick={() => setEntryMethod('workflow')}
+                  className={`flex-1 px-4 py-2 rounded-md transition-colors ${entryMethod === 'workflow'
+                      ? 'bg-white shadow-sm text-gray-900'
+                      : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                >
+                  <Activity className="h-4 w-4 inline mr-2" />
+                  Workflow
+                </button>
+              </div>
+
+              {/* Entry Method Content */}
+              {entryMethod === 'ai-upload' && (
+                <AIUploadPanel
+                  order={{
+                    id: selectedOrder.id,
+                    patient_name: selectedOrder.patient_name,
+                    patient_id: selectedOrder.patient_id || '', // Ensure patient_id is passed
+                    lab_id: selectedOrder.lab_id || currentLabId
+                  }}
+                  onUploadComplete={handleUploadComplete}
+                  onProgressUpdate={setProcessingStatus}
+                />
+              )}
+
+              {entryMethod === 'manual' && selectedOrder.testGroups.length > 0 && (
+                <ManualEntryForm
+                  order={{
+                    id: selectedOrder.id,
+                    patient_id: selectedOrder.patient_id || '',
+                    patient_name: selectedOrder.patient_name,
+                    lab_id: selectedOrder.lab_id || currentLabId
+                  }}
+                  testGroup={{
+                    id: selectedOrder.testGroups[0].test_group_id,
+                    name: selectedOrder.testGroups[0].test_group_name,
+                    department: selectedOrder.testGroups[0].department
+                  }}
+                  onSubmit={handleManualEntrySubmit}
+                />
+              )}
+
+              {entryMethod === 'workflow' && selectedOrder.testGroups.length > 0 && (
+                <WorkflowPanel
+                  order={{
+                    id: selectedOrder.id,
+                    patient_id: selectedOrder.patient_id || '',
+                    patient_name: selectedOrder.patient_name,
+                    lab_id: selectedOrder.lab_id || currentLabId
+                  }}
+                  testGroup={{
+                    id: selectedOrder.testGroups[0].test_group_id,
+                    name: selectedOrder.testGroups[0].test_group_name,
+                    department: selectedOrder.testGroups[0].department
+                  }}
+                  onComplete={handleWorkflowComplete}
+                />
+              )}
+            </div>
+          </div>
         </div>
       );
     }
@@ -1102,7 +1101,7 @@ const Results: React.FC = () => {
                 <button
                   key={tg.id}
                   onClick={() => setSelectedTestGroupId(tg.id)}
-                  className={`px-3 py-1.5 text-sm rounded-full border ${selectedTestGroupId===tg.id? 'bg-blue-600 text-white border-blue-600':'bg-white text-gray-700 hover:bg-gray-50'}`}
+                  className={`px-3 py-1.5 text-sm rounded-full border ${selectedTestGroupId === tg.id ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
                 >
                   {tg.name} <span className="text-xs text-gray-400 ml-1">{tg.department}</span>
                 </button>
@@ -1143,7 +1142,7 @@ const Results: React.FC = () => {
                     </div>
                   </button>
                 ))}
-              {results.length===0 && (
+              {results.length === 0 && (
                 <div className="col-span-full text-sm text-gray-500 p-6 text-center border rounded-md bg-white">No orders loaded. Use Refresh above.</div>
               )}
             </div>
@@ -1190,31 +1189,31 @@ const Results: React.FC = () => {
         </div>
         <div className="flex items-center gap-1 ml-2">
           <button
-            className={`text-xs px-2 py-1 rounded border ${filters.dateRange==='today' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'}`}
+            className={`text-xs px-2 py-1 rounded border ${filters.dateRange === 'today' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'}`}
             onClick={() => handleFiltersChange({ dateRange: 'today', dateFrom: '', dateTo: '' }, true)}
           >
             Today
           </button>
           <button
-            className={`text-xs px-2 py-1 rounded border ${filters.dateRange==='7d' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'}`}
+            className={`text-xs px-2 py-1 rounded border ${filters.dateRange === '7d' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'}`}
             onClick={() => handleFiltersChange({ dateRange: '7d', dateFrom: '', dateTo: '' }, true)}
           >
             7 days
           </button>
           <button
-            className={`text-xs px-2 py-1 rounded border ${filters.dateRange==='30d' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'}`}
+            className={`text-xs px-2 py-1 rounded border ${filters.dateRange === '30d' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'}`}
             onClick={() => handleFiltersChange({ dateRange: '30d', dateFrom: '', dateTo: '' }, true)}
           >
             30 days
           </button>
           <button
-            className={`text-xs px-2 py-1 rounded border ${filters.dateRange==='90d' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'}`}
+            className={`text-xs px-2 py-1 rounded border ${filters.dateRange === '90d' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'}`}
             onClick={() => handleFiltersChange({ dateRange: '90d', dateFrom: '', dateTo: '' }, true)}
           >
             90 days
           </button>
           <button
-            className={`text-xs px-2 py-1 rounded border ${filters.dateRange==='all' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'}`}
+            className={`text-xs px-2 py-1 rounded border ${filters.dateRange === 'all' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'}`}
             onClick={() => handleFiltersChange({ dateRange: 'all', dateFrom: '', dateTo: '' }, true)}
           >
             All Dates
@@ -1223,13 +1222,13 @@ const Results: React.FC = () => {
         <div className="w-px h-4 bg-gray-200 mx-2" />
         <div className="flex items-center gap-1">
           <button
-            className={`text-xs px-2 py-1 rounded border ${filters.status==='pending' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-700'}`}
+            className={`text-xs px-2 py-1 rounded border ${filters.status === 'pending' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-700'}`}
             onClick={() => handleFiltersChange({ status: 'pending' }, true)}
           >
             Pending
           </button>
           <button
-            className={`text-xs px-2 py-1 rounded border ${filters.status==='all' ? 'bg-gray-800 text-white border-gray-800' : 'bg-white text-gray-700'}`}
+            className={`text-xs px-2 py-1 rounded border ${filters.status === 'all' ? 'bg-gray-800 text-white border-gray-800' : 'bg-white text-gray-700'}`}
             onClick={() => handleFiltersChange({ status: 'all' }, true)}
           >
             All
@@ -1242,7 +1241,7 @@ const Results: React.FC = () => {
             placeholder="Search patient…"
             className="text-xs px-2 py-1 border rounded"
           />
-          <button 
+          <button
             onClick={() => fetchResults()}
             disabled={loading}
             className="flex items-center px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
@@ -1254,11 +1253,10 @@ const Results: React.FC = () => {
       </div>
       {/* Real-time Notification */}
       {realTimeNotification && (
-        <div className={`fixed top-4 right-4 z-50 px-4 py-2 rounded-lg shadow-lg animate-in slide-in-from-top-2 ${
-          realTimeNotification.type === 'success' ? 'bg-green-100 text-green-800 border border-green-200' :
-          realTimeNotification.type === 'warning' ? 'bg-yellow-100 text-yellow-800 border border-yellow-200' :
-          'bg-blue-100 text-blue-800 border border-blue-200'
-        }`}>
+        <div className={`fixed top-4 right-4 z-50 px-4 py-2 rounded-lg shadow-lg animate-in slide-in-from-top-2 ${realTimeNotification.type === 'success' ? 'bg-green-100 text-green-800 border border-green-200' :
+            realTimeNotification.type === 'warning' ? 'bg-yellow-100 text-yellow-800 border border-yellow-200' :
+              'bg-blue-100 text-blue-800 border border-blue-200'
+          }`}>
           <div className="flex items-center space-x-2">
             <div className="w-2 h-2 bg-current rounded-full animate-pulse"></div>
             <span className="text-sm font-medium">{realTimeNotification.message}</span>

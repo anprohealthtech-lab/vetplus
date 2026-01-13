@@ -7,7 +7,7 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
 };
 
-const WHATSAPP_API_BASE_URL = 'https://lionfish-app-nmodi.ondigitalocean.app';
+const WHATSAPP_API_BASE_URL = 'https://app.limsapp.in/whatsapp';
 // Prefer env var; fallback to constant for local testing
 const API_KEY = process.env.WA_BACKEND_KEY || process.env.WHATSAPP_API_KEY || 'whatsapp-lims-secure-api-key-2024';
 

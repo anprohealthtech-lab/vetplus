@@ -8,7 +8,7 @@ const corsHeaders = {
 
 interface ManualBuilderRequest {
   protocol_id: string;
-  manual_uri: string;
+  manual_uri: string | null;
   org_id: string;
   test_meta: {
     testCode: string;
@@ -63,8 +63,8 @@ serve(async (req) => {
     // Parse request body
     const { protocol_id, manual_uri, org_id, test_meta }: ManualBuilderRequest = await req.json()
 
-    if (!protocol_id || !manual_uri) {
-      throw new Error('Protocol ID and manual URI are required')
+    if (!protocol_id) {
+      throw new Error('Protocol ID is required')
     }
 
     // Verify protocol exists and user has access
@@ -85,9 +85,12 @@ serve(async (req) => {
     }
 
     // Build the system prompt for manual processing
-    const systemPrompt = getManualProcessingPrompt()
-
-    const fullPrompt = `${systemPrompt}
+    // Build the prompt based on whether a manual is provided
+    let fullPrompt = '';
+    
+    if (manual_uri) {
+      const systemPrompt = getManualProcessingPrompt();
+      fullPrompt = `${systemPrompt}
 
 MANUAL URI TO PROCESS: ${manual_uri}
 TEST METADATA:
@@ -103,7 +106,32 @@ INSTRUCTIONS:
 3. Identify any sections that need human review or clarification
 4. Return structured JSON as specified
 
-Return ONLY valid JSON with no additional text.`
+Return ONLY valid JSON with no additional text.`;
+    } else {
+      // No manual provided - generate based on NABL standards
+      const systemPrompt = getManualProcessingPrompt(); // Reuse structure definition
+      fullPrompt = `${systemPrompt}
+
+NO MANUAL PROVIDED - GENERATE FROM STANDARDS
+TASK: Generate a compliant laboratory workflow based on NABL ISO 15189:2022 standards.
+
+TEST METADATA:
+- Test Code: ${test_meta.testCode}
+- Vendor: ${test_meta.vendor}
+- Model: ${test_meta.model}
+- Sample Type: ${test_meta.sampleType}
+- Lab ID: ${org_id}
+
+SPECIFIC INSTRUCTIONS:
+1. Create a workflow that strictly follows the Pre-analytical, Analytical, and Post-analytical phases.
+2. PRE-ANALYTICAL: Include steps for patient preparation, sample collection, labeling, and transportation/storage conditions appropriate for ${test_meta.sampleType}.
+3. ANALYTICAL: Define the testing procedure steps for ${test_meta.vendor} ${test_meta.model}, including calibration and quality control (IQC) checks.
+4. POST-ANALYTICAL: Include result verification, critical value reporting, and waste disposal.
+5. Generate the SurveyJS structure and AI specs as defined in the system prompt.
+6. Ensure all safety warnings and PPE requirements are included.
+
+Return ONLY valid JSON with no additional text.`;
+    }
 
     // Call Gemini API to process the manual
     const geminiResponse = await fetch(

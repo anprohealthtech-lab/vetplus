@@ -35,12 +35,16 @@ import {
   useAIResultIntelligence,
   type ClinicalSummaryResponse,
   type GeneratedInterpretation,
-  type VerifierSummaryResponse
+  type VerifierSummaryResponse,
+  type PatientSummaryResponse,
+  type SupportedLanguage,
+  LANGUAGE_DISPLAY_NAMES
 } from "../hooks/useAIResultIntelligence";
 import { supabase, database, aiAnalysis } from "../utils/supabase";
 import { runAIFlagAnalysis, analyzeAndSaveFlag } from "../utils/aiFlagAnalysis";
 import { generateAndSaveTrendCharts, saveClinicalSummary, toggleOrderSummaryInReport } from "../utils/reportExtrasService";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
+import PatientSummaryModal from "../components/Results/PatientSummaryModal";
 
 interface PanelRow {
   order_id: string;
@@ -59,6 +63,7 @@ interface PanelRow {
 interface Analyte {
   id: string;
   result_id: string;
+  analyte_id?: string; // FK to analytes table for historical data lookup
   parameter: string;
   value: string | null;
   unit: string;
@@ -149,6 +154,12 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const [sendSummaryToDoctor, setSendSummaryToDoctor] = useState<Record<string, boolean>>({});
   // Loading state for clinical summary generation per order
   const [generatingClinicalSummary, setGeneratingClinicalSummary] = useState<Record<string, boolean>>({});
+  // Patient Summary state
+  const [aiPatientSummary, setAiPatientSummary] = useState<Record<string, PatientSummaryResponse>>({});
+  const [generatingPatientSummary, setGeneratingPatientSummary] = useState<Record<string, boolean>>({});
+  const [showPatientSummaryModal, setShowPatientSummaryModal] = useState(false);
+  const [patientSummaryTarget, setPatientSummaryTarget] = useState<{ orderId: string; patientName?: string; referringDoctor?: string } | null>(null);
+  const [labPreferredLanguage, setLabPreferredLanguage] = useState<SupportedLanguage>('english');
 
   const aiIntelligence = useAIResultIntelligence();
 
@@ -257,7 +268,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     const { data, error } = await supabase
       .from("result_values")
       .select(
-        "id,result_id,parameter,value,unit,reference_range,flag,flag_source,flag_confidence,ai_interpretation,ai_audit_status,verify_status,verify_note,verified_by,verified_at"
+        "id,result_id,analyte_id,parameter,value,unit,reference_range,flag,flag_source,flag_confidence,ai_interpretation,ai_audit_status,verify_status,verify_note,verified_by,verified_at"
       )
       .eq("result_id", resultId)
       .order("parameter", { ascending: true });
@@ -271,7 +282,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     if (error && `${error.message}`.includes("verify_status")) {
       const fallback = await supabase
         .from("result_values")
-        .select("id,result_id,parameter,value,unit,reference_range,flag,flag_source,flag_confidence,ai_interpretation")
+        .select("id,result_id,analyte_id,parameter,value,unit,reference_range,flag,flag_source,flag_confidence,ai_interpretation")
         .eq("result_id", resultId)
         .order("parameter", { ascending: true });
 
@@ -279,6 +290,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         const mapped = (fallback.data || []).map((row: any) => ({
           id: row.id,
           result_id: row.result_id,
+          analyte_id: row.analyte_id,
           parameter: row.parameter,
           value: row.value,
           unit: row.unit,
@@ -337,28 +349,75 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
     setLoadingTrend(true);
     try {
-      const { data, error } = await supabase
-        .from("v_report_template_context")
-        .select("order_date, analytes")
-        .eq("patient_id", patientId)
-        .order("order_date", { ascending: false })
-        .limit(10);
+      // 1. Get analyte_id for the parameter name if we don't have it
+      // In this view, we generally have access to rowsByResult which has analytes with analyte_id
+      let targetedAnalyteId: string | undefined;
+      Object.values(rowsByResult).forEach(analytes => {
+        const found = analytes.find(a => a.parameter === parameter);
+        if (found?.analyte_id) targetedAnalyteId = found.analyte_id;
+      });
 
+      // 2. Query view_patient_history which includes both internal and external data
+      let query = supabase
+        .from("view_patient_history")
+        .select("result_date, value, unit, reference_range, source")
+        .eq("patient_id", patientId)
+        .order("result_date", { ascending: false })
+        .limit(15);
+
+      if (targetedAnalyteId) {
+        query = query.eq("analyte_id", targetedAnalyteId);
+      } else {
+        // Fallback: If no ID, we might have to rely on internal results only 
+        // or join with analytes table. But for now, let's try to find it.
+        const { data: analyteInfo } = await supabase
+          .from("analytes")
+          .select("id")
+          .eq("name", parameter)
+          .maybeSingle();
+        if (analyteInfo) {
+          query = query.eq("analyte_id", analyteInfo.id);
+        } else {
+          // If still no ID, use legacy view for internal data only as fallback
+          const { data: legacyData } = await supabase
+            .from("v_report_template_context")
+            .select("order_date, analytes")
+            .eq("patient_id", patientId)
+            .order("order_date", { ascending: false })
+            .limit(10);
+
+          const extracted = (legacyData || []).flatMap((row: any) => {
+            const analytes = row.analytes || [];
+            return analytes
+              .filter((a: any) => a.parameter === parameter)
+              .map((a: any) => ({
+                order_date: row.order_date,
+                test_name: a.parameter,
+                value: a.value,
+                unit: a.unit,
+                reference_range: a.reference_range,
+                flag: a.flag
+              }));
+          });
+          setTrendData(prev => ({ ...prev, [cacheKey]: extracted }));
+          setSelectedAnalyteTrend({ patientId, parameter });
+          setShowTrendModal(true);
+          return;
+        }
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
 
-      const extracted = (data || []).flatMap((row: any) => {
-        const analytes = row.analytes || [];
-        return analytes
-          .filter((a: any) => a.parameter === parameter)
-          .map((a: any) => ({
-            order_date: row.order_date,
-            test_name: a.parameter,
-            value: a.value,
-            unit: a.unit,
-            reference_range: a.reference_range,
-            flag: a.flag
-          }));
-      });
+      const extracted = (data || []).map((row: any) => ({
+        order_date: row.result_date,
+        test_name: parameter,
+        value: row.value,
+        unit: row.unit,
+        reference_range: row.reference_range,
+        flag: null, // Basic view doesn't have flags yet
+        source: row.source
+      }));
 
       setTrendData(prev => ({ ...prev, [cacheKey]: extracted }));
       setSelectedAnalyteTrend({ patientId, parameter });
@@ -547,6 +606,75 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     setBulkProcessing(false);
   };
 
+  /**
+   * Fetch historical data for a patient from view_patient_history
+   * This includes both internal orders and external reports
+   */
+  const fetchHistoricalData = async (
+    patientId: string,
+    analyteIds: string[],
+    excludeOrderId?: string
+  ): Promise<Record<string, Array<{
+    date: string;
+    value: string;
+    flag?: string | null;
+    source: 'internal' | 'external';
+    lab_name?: string;
+  }>>> => {
+    if (!patientId || analyteIds.length === 0) return {};
+
+    try {
+      // Note: view_patient_history doesn't have order_id directly. 
+      // For internal results, source_id is the result_value_id.
+      const { data, error } = await database.supabase
+        .from('view_patient_history')
+        .select('analyte_id, value, unit, result_date, source, reference_range, source_id')
+        .eq('patient_id', patientId)
+        .in('analyte_id', analyteIds)
+        .order('result_date', { ascending: false })
+        .limit(100);
+
+      if (error) {
+        console.error('Failed to fetch historical data:', error);
+        return {};
+      }
+
+      // Group by analyte_id
+      const historyByAnalyte: Record<string, Array<{
+        date: string;
+        value: string;
+        flag?: string | null;
+        source: 'internal' | 'external';
+        lab_name?: string;
+      }>> = {};
+
+      for (const row of data || []) {
+        if (!row.analyte_id) continue;
+
+        // Basic attempt to exclude current order if we had a way to map source_id to order_id
+        // For now, we'll just include all since it's "history" and usually we want to see trends including current
+
+        if (!historyByAnalyte[row.analyte_id]) {
+          historyByAnalyte[row.analyte_id] = [];
+        }
+
+        historyByAnalyte[row.analyte_id].push({
+          date: row.result_date ? new Date(row.result_date).toLocaleDateString() : 'Unknown',
+          value: row.value || '',
+          flag: null,
+          source: row.source as 'internal' | 'external',
+          lab_name: row.source === 'external' ? 'External Lab' : undefined
+        });
+      }
+
+      console.log(`Fetched historical data for ${Object.keys(historyByAnalyte).length} analytes`);
+      return historyByAnalyte;
+    } catch (err) {
+      console.error('Error fetching historical data:', err);
+      return {};
+    }
+  };
+
   const handleGenerateClinicalSummary = async (order: OrderGroup, forceRegenerate: boolean = false) => {
     // Set loading state
     setGeneratingClinicalSummary(prev => ({ ...prev, [order.orderId]: true }));
@@ -609,27 +737,45 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       }
 
       // No existing summary or force regenerate - generate new
-      const testGroups = await Promise.all(
-        order.panels.map(async panel => {
-          // Get analytes directly from the returned data, not from state
-          const analytes = await ensureAnalytesLoaded(panel.result_id);
-          console.log(`Panel ${panel.test_group_name}: ${analytes.length} analytes loaded`, analytes.map(a => ({ name: a.parameter, value: a.value })));
-          return {
-            name: panel.test_group_name || "Unnamed Panel",
-            category: "panel",
-            result_values: analytes.map(a => ({
-              analyte_name: a.parameter,
-              value: a.value || "",
-              unit: a.unit,
-              reference_range: a.reference_range,
-              flag: (a.flag as "H" | "L" | "C" | null) || null,
-              interpretation: a.verify_note
-            }))
-          };
-        })
-      );
+      // First, collect all analyte IDs to fetch historical data
+      const allAnalyteIds: string[] = [];
+      const panelAnalytesMap: Map<string, Analyte[]> = new Map();
 
-      console.log('Sending to AI:', JSON.stringify(testGroups, null, 2));
+      // Load analytes for all panels first
+      for (const panel of order.panels) {
+        const analytes = await ensureAnalytesLoaded(panel.result_id);
+        panelAnalytesMap.set(panel.result_id, analytes);
+        analytes.forEach(a => {
+          if (a.analyte_id) allAnalyteIds.push(a.analyte_id);
+        });
+      }
+
+      // Fetch historical data for all analytes
+      const historicalData = await fetchHistoricalData(order.patientId || '', allAnalyteIds, order.orderId);
+      console.log(`Fetched historical data for ${Object.keys(historicalData).length} analytes`);
+
+      // Build test groups with historical data
+      const testGroups = order.panels.map(panel => {
+        const analytes = panelAnalytesMap.get(panel.result_id) || [];
+        console.log(`Panel ${panel.test_group_name}: ${analytes.length} analytes loaded`, analytes.map(a => ({ name: a.parameter, value: a.value })));
+        return {
+          name: panel.test_group_name || "Unnamed Panel",
+          category: "panel",
+          result_values: analytes.map(a => ({
+            analyte_id: a.analyte_id,
+            analyte_name: a.parameter,
+            value: a.value || "",
+            unit: a.unit,
+            reference_range: a.reference_range,
+            flag: (a.flag as "H" | "L" | "C" | null) || null,
+            interpretation: a.verify_note,
+            // Include historical values if available
+            historical_values: a.analyte_id ? historicalData[a.analyte_id] : undefined
+          }))
+        };
+      });
+
+      console.log('Sending to AI with historical data:', JSON.stringify(testGroups, null, 2));
 
       const summary = await aiIntelligence.getClinicalSummary(testGroups, {
         age: undefined,
@@ -655,6 +801,130 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     } finally {
       // Clear loading state
       setGeneratingClinicalSummary(prev => ({ ...prev, [order.orderId]: false }));
+    }
+  };
+
+  /**
+   * Generate patient-friendly summary in selected language
+   */
+  const handleGeneratePatientSummary = async (
+    order: OrderGroup,
+    language: SupportedLanguage = labPreferredLanguage,
+    forceRegenerate: boolean = false
+  ) => {
+    // Set loading state
+    setGeneratingPatientSummary(prev => ({ ...prev, [order.orderId]: true }));
+    setPatientSummaryTarget({
+      orderId: order.orderId,
+      patientName: order.patientName,
+      referringDoctor: undefined // TODO: Get from order if available
+    });
+    setShowPatientSummaryModal(true);
+
+    try {
+      // Check if existing summary exists (unless force regenerate)
+      if (!forceRegenerate) {
+        const { data: existingOrder, error: orderError } = await database.supabase
+          .from('orders')
+          .select('ai_patient_summary, ai_patient_summary_generated_at, patient_summary_language')
+          .eq('id', order.orderId)
+          .single();
+
+        if (!orderError && existingOrder?.ai_patient_summary) {
+          try {
+            const savedSummary = JSON.parse(existingOrder.ai_patient_summary) as PatientSummaryResponse;
+            savedSummary._savedFromDb = true;
+            savedSummary._generatedAt = existingOrder.ai_patient_summary_generated_at;
+            setAiPatientSummary(prev => ({ ...prev, [order.orderId]: savedSummary }));
+            setGeneratingPatientSummary(prev => ({ ...prev, [order.orderId]: false }));
+            return;
+          } catch (parseError) {
+            console.log('Failed to parse saved patient summary, regenerating...');
+          }
+        }
+      }
+
+      // Build test groups data with historical data
+      // First, collect all analyte IDs
+      const allAnalyteIds: string[] = [];
+      const panelAnalytesMap: Map<string, Analyte[]> = new Map();
+
+      // Load analytes for all panels first
+      for (const panel of order.panels) {
+        const analytes = await ensureAnalytesLoaded(panel.result_id);
+        panelAnalytesMap.set(panel.result_id, analytes);
+        analytes.forEach(a => {
+          if (a.analyte_id) allAnalyteIds.push(a.analyte_id);
+        });
+      }
+
+      // Fetch historical data for all analytes
+      const historicalData = await fetchHistoricalData(order.patientId || '', allAnalyteIds, order.orderId);
+      console.log(`Patient summary: Fetched historical data for ${Object.keys(historicalData).length} analytes`);
+
+      // Build test groups with historical data
+      const testGroups = order.panels.map(panel => {
+        const analytes = panelAnalytesMap.get(panel.result_id) || [];
+        return {
+          name: panel.test_group_name || "Unnamed Panel",
+          category: "panel",
+          result_values: analytes.map(a => ({
+            analyte_id: a.analyte_id,
+            analyte_name: a.parameter,
+            value: a.value || "",
+            unit: a.unit,
+            reference_range: a.reference_range,
+            flag: (a.flag as "H" | "L" | "C" | null) || null,
+            interpretation: a.verify_note,
+            // Include historical values if available
+            historical_values: a.analyte_id ? historicalData[a.analyte_id] : undefined
+          }))
+        };
+      });
+
+      // Get referring doctor name (if available)
+      const { data: orderData } = await database.supabase
+        .from('orders')
+        .select('doctor')
+        .eq('id', order.orderId)
+        .single();
+      const referringDoctor = orderData?.doctor || undefined;
+
+      // Generate patient summary
+      const summary = await aiIntelligence.getPatientSummary(
+        testGroups,
+        language,
+        referringDoctor,
+        { age: undefined, gender: undefined, clinical_notes: undefined }
+      );
+
+      // Auto-save to database
+      try {
+        await database.supabase
+          .from('orders')
+          .update({
+            ai_patient_summary: JSON.stringify(summary),
+            ai_patient_summary_generated_at: new Date().toISOString(),
+            patient_summary_language: language
+          })
+          .eq('id', order.orderId);
+        console.log('Patient summary auto-saved to database');
+      } catch (saveError) {
+        console.error('Failed to auto-save patient summary:', saveError);
+      }
+
+      setAiPatientSummary(prev => ({ ...prev, [order.orderId]: summary }));
+      setPatientSummaryTarget({
+        orderId: order.orderId,
+        patientName: order.patientName,
+        referringDoctor
+      });
+    } catch (err) {
+      console.error("Failed to generate patient summary", err);
+      alert("Failed to generate patient summary");
+      setShowPatientSummaryModal(false);
+    } finally {
+      setGeneratingPatientSummary(prev => ({ ...prev, [order.orderId]: false }));
     }
   };
 
@@ -1156,6 +1426,19 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                             {generatingClinicalSummary[order.orderId] ? 'Generating...' : 'Clinical Summary'}
                           </button>
                           <button
+                            onClick={() => handleGeneratePatientSummary(order)}
+                            disabled={generatingPatientSummary[order.orderId]}
+                            className={`inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-pink-600 to-rose-600 text-white transition-all duration-200 ${generatingPatientSummary[order.orderId] ? 'opacity-75 cursor-wait' : 'hover:from-pink-700 hover:to-rose-700 active:scale-95'}`}
+                            title="Generate patient-friendly summary"
+                          >
+                            {generatingPatientSummary[order.orderId] ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <User className="h-4 w-4 mr-2" />
+                            )}
+                            {generatingPatientSummary[order.orderId] ? 'Generating...' : 'Patient Summary'}
+                          </button>
+                          <button
                             onClick={() => runOrderAIFlagAnalysis(order.orderId)}
                             disabled={busy[`ai-flag-${order.orderId}`]}
                             className={`inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white transition-all duration-200 ${busy[`ai-flag-${order.orderId}`] ? 'opacity-75 cursor-wait' : 'hover:from-violet-700 hover:to-purple-700 active:scale-95'}`}
@@ -1448,6 +1731,107 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
           onClose={() => {
             setShowInterpretationsModal(false);
             setInterpretationsTargetResultId(null);
+          }}
+        />
+      )}
+
+      {showPatientSummaryModal && patientSummaryTarget && (
+        <PatientSummaryModal
+          orderId={patientSummaryTarget.orderId}
+          patientName={patientSummaryTarget.patientName}
+          referringDoctor={patientSummaryTarget.referringDoctor}
+          summary={aiPatientSummary[patientSummaryTarget.orderId] || null}
+          isGenerating={generatingPatientSummary[patientSummaryTarget.orderId] || false}
+          onClose={() => {
+            setShowPatientSummaryModal(false);
+            setPatientSummaryTarget(null);
+          }}
+          onRegenerate={(language) => {
+            const order = groupByOrder.find(o => o.orderId === patientSummaryTarget.orderId);
+            if (order) {
+              handleGeneratePatientSummary(order, language, true);
+            }
+          }}
+          onSave={async (orderId, summary) => {
+            await database.supabase
+              .from('orders')
+              .update({
+                ai_patient_summary: JSON.stringify(summary),
+                ai_patient_summary_generated_at: new Date().toISOString()
+              })
+              .eq('id', orderId);
+            setAiPatientSummary(prev => ({ ...prev, [orderId]: summary }));
+          }}
+          onIncludeInPdf={async (orderId, include) => {
+            await database.supabase
+              .from('orders')
+              .update({ include_patient_summary_in_report: include })
+              .eq('id', orderId);
+          }}
+          onSendWhatsApp={async (orderId, summary) => {
+            try {
+              // Get patient phone from order
+              const { data: orderData } = await database.supabase
+                .from('orders')
+                .select('patient_id, patients(phone, name)')
+                .eq('id', orderId)
+                .single();
+
+              const patientPhone = (orderData?.patients as any)?.phone;
+
+              if (!patientPhone) {
+                alert('Patient phone number not found. Cannot send WhatsApp.');
+                return;
+              }
+
+              // Format summary for WhatsApp
+              let text = `🏥 *Your Health Report Summary*\n\n`;
+              text += `📋 *Health Status:*\n${summary.health_status}\n\n`;
+
+              if (summary.normal_findings_summary) {
+                text += `✅ *Normal Findings:*\n${summary.normal_findings_summary}\n\n`;
+              }
+
+              if (summary.abnormal_findings && summary.abnormal_findings.length > 0) {
+                text += `⚠️ *Findings Requiring Attention:*\n`;
+                summary.abnormal_findings.forEach((f: any) => {
+                  const statusEmoji = f.status === 'high' ? '📈' : f.status === 'low' ? '📉' : '⚠️';
+                  text += `${statusEmoji} *${f.test_name}:* ${f.value}\n   ${f.explanation}\n`;
+                });
+                text += '\n';
+              }
+
+              if (summary.needs_consultation && summary.consultation_message) {
+                text += `👨‍⚕️ *Recommendation:*\n${summary.consultation_message}\n\n`;
+              }
+
+              if (summary.health_tips && summary.health_tips.length > 0) {
+                text += `💡 *Health Tips:*\n`;
+                summary.health_tips.forEach((tip: string, i: number) => {
+                  text += `${i + 1}. ${tip}\n`;
+                });
+              }
+
+              text += `\n_This summary is for your understanding only. Please consult your doctor for medical advice._`;
+
+              // Format phone number
+              let phone = patientPhone.replace(/\D/g, '');
+              if (phone.length === 10) {
+                phone = '91' + phone;
+              }
+
+              // Open WhatsApp
+              const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+              const encodedText = encodeURIComponent(text);
+              const whatsappUrl = isMobile
+                ? `whatsapp://send?phone=${phone}&text=${encodedText}`
+                : `https://web.whatsapp.com/send?phone=${phone}&text=${encodedText}`;
+
+              window.open(whatsappUrl, '_blank');
+            } catch (error) {
+              console.error('Failed to send WhatsApp:', error);
+              alert('Failed to open WhatsApp. Please try again.');
+            }
           }}
         />
       )}

@@ -2,11 +2,12 @@
 // ───────────────────────────────────────────────────────────────────────────────
 // BLOCK 0: Imports
 // Keep paths as-is for your repo structure.
-import React, { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../utils/supabase'
 import { useAuth } from '../../contexts/AuthContext'
 import { calculateFlagsForResults } from '../../utils/flagCalculation'
-import { CheckCircle, AlertTriangle } from 'lucide-react'
+import { CheckCircle, AlertTriangle, Sparkles } from 'lucide-react'
+import { resolveReferenceRanges } from '../../utils/referenceRangeService'
 
 // ───────────────────────────────────────────────────────────────────────────────
 // BLOCK 1: Types
@@ -150,6 +151,69 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
+  // BLOCK 3C-2: AI Handler
+
+  const [aiLoadingGroup, setAiLoadingGroup] = useState<string | null>(null)
+
+  const handleAIResolve = async (tgId: string) => {
+    // 1. Gather analytes for this group
+    // We need name, value, unit. Can use entries (for typed values) or order definition (for names)
+    const groupData = groups.find(g => g.tg.test_group_id === tgId);
+    if (!groupData) return;
+
+    const payload = groupData.tg.analytes.map(a => {
+      // Use current entered value if exists, else empty
+      const entry = entries[a.id];
+      return {
+        id: a.id,
+        name: a.name,
+        value: entry?.value || a.existing_result?.value || '', // Use entered or existing
+        unit: entry?.unit || a.units || a.unit || ''
+      };
+    });
+
+    // Filter out those with no value? No, AI might suggest range based on Analyte Name even without value (context only), but better with value.
+    // Actually prompt says "TEST RESULTS TO EVALUATE". If value is missing, AI usually returns default range.
+
+    setAiLoadingGroup(tgId);
+    setToast('Asking AI for reference ranges...');
+
+    try {
+      const resolved = await resolveReferenceRanges(order.id, tgId, payload);
+
+      // Update entries
+      setEntries(prev => {
+        const next = { ...prev };
+        resolved.forEach(r => {
+          // If we have an entry for this (it's pending), update it
+          // Logic: Only update if it's currently editable (in 'entries')
+          if (next[r.id]) {
+            next[r.id] = {
+              ...next[r.id],
+              reference: r.ref_low && r.ref_high ? `${r.ref_low} - ${r.ref_high}` : next[r.id].reference,
+              flag: (r.flag || '') as FlagCode
+            };
+          } else if (!isCompleted(groupData.tg.analytes.find(a => a.id === r.id)!)) {
+            // Create entry if it didn't exist (user hasn't typed yet) but IS pending
+            // Need to construct full Entry object (requires looking up metadata again)
+            // Simpler: Just rely on existance in 'entries' which initiates on mount.
+            // But 'entries' only has items if they are NOT completed.
+            // If user hasn't typed in 'entries' yet for a pending item, 'entries[id]' might be valid?
+            // Ah, useEffect block 3A initializes ALL pending items into 'entries'.
+            // So next[r.id] SHOULD exist for all pending items.
+          }
+        });
+        return next;
+      });
+      setToast('AI Ranges Applied!');
+    } catch (err) {
+      setToast('AI Request Failed.');
+    } finally {
+      setAiLoadingGroup(null);
+    }
+  };
+
+  // ───────────────────────────────────────────────────────────────────────────
   // BLOCK 3D: Persist (Save Draft / Submit)
 
   const persist = async (mode: 'draft' | 'submit') => {
@@ -246,14 +310,14 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
 
         const { error: valuesErr } = await supabase.from('result_values').insert(values)
         if (valuesErr) throw valuesErr
+      }
 
-        // Run AI flag analysis automatically after inserting result values
-        try {
-          const { runAIFlagAnalysis } = await import('../../utils/aiFlagAnalysis');
-          await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true });
-        } catch (flagErr) {
-          console.warn('AI flag analysis failed (non-blocking):', flagErr);
-        }
+      // Run AI flag analysis ONCE after ALL test groups are saved (optimization)
+      try {
+        const { runAIFlagAnalysis } = await import('../../utils/aiFlagAnalysis');
+        await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true });
+      } catch (flagErr) {
+        console.warn('AI flag analysis failed (non-blocking):', flagErr);
       }
 
       setToast(mode === 'draft' ? 'Draft saved successfully.' : 'Results submitted successfully.')
@@ -315,12 +379,29 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
                   {progress.completed}/{progress.total} completed
                 </p>
               </div>
-              <div className="w-32 bg-gray-200 rounded-full h-2 overflow-hidden">
+              <div className="w-32 bg-gray-200 rounded-full h-2 overflow-hidden mx-4">
                 <div
                   className="bg-blue-600 h-2"
                   style={{ width: `${progress.percent}%` }}
                 />
               </div>
+
+              {/* AI Button */}
+              <button
+                onClick={() => handleAIResolve(tg.test_group_id)}
+                disabled={aiLoadingGroup === tg.test_group_id}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded transition-colors disabled:opacity-50"
+                title="Auto-detect Reference Ranges & Flags using AI"
+              >
+                {aiLoadingGroup === tg.test_group_id ? (
+                  <span className="animate-pulse">Thinking...</span>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    AI Auto-Range
+                  </>
+                )}
+              </button>
             </div>
 
             {/* Table (mobile-friendly) */}
@@ -451,11 +532,10 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
       {/* Toast */}
       {toast && (
         <div
-          className={`p-3 rounded text-sm flex items-start ${
-            toast?.toLowerCase().includes('wrong') || toast?.toLowerCase().includes('please')
-              ? 'bg-red-50 border border-red-200 text-red-700'
-              : 'bg-green-50 border border-green-200 text-green-700'
-          }`}
+          className={`p-3 rounded text-sm flex items-start ${toast?.toLowerCase().includes('wrong') || toast?.toLowerCase().includes('please')
+            ? 'bg-red-50 border border-red-200 text-red-700'
+            : 'bg-green-50 border border-green-200 text-green-700'
+            }`}
         >
           {toast?.toLowerCase().includes('wrong') || toast?.toLowerCase().includes('please') ? (
             <AlertTriangle className="h-4 w-4 mt-0.5 mr-2" />

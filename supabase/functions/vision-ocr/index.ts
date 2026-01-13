@@ -291,6 +291,18 @@ interface BatchImageReference {
   description?: string | null;
 }
 
+/**
+ * Safely convert Uint8Array to base64 without hitting call stack limits
+ */
+function uint8ArrayToBase64(array: Uint8Array): string {
+  let binary = '';
+  const len = array.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(array[i]);
+  }
+  return btoa(binary);
+}
+
 async function getTestContext(orderId?: string, testGroupId?: string, analyteIds?: string[]): Promise<TestContext> {
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
   const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -806,7 +818,7 @@ async function getImageFromStorage(attachmentId: string): Promise<string> {
         continue;
       }
 
-      const processedBase64 = btoa(String.fromCharCode(...new Uint8Array(processedBuffer)));
+      const processedBase64 = uint8ArrayToBase64(new Uint8Array(processedBuffer));
       return processedBase64;
     } catch (error) {
       console.warn(`Failed to fetch processed attachment from ${candidate}`, error);
@@ -829,7 +841,7 @@ async function getImageFromStorage(attachmentId: string): Promise<string> {
 
   const fileBlob = await fileResponse.blob();
   const arrayBuffer = await fileBlob.arrayBuffer();
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+  const base64 = uint8ArrayToBase64(new Uint8Array(arrayBuffer));
   
   return base64;
 }
@@ -937,13 +949,7 @@ Deno.serve(async (req) => {
           }
           const imageBuffer = await imageResponse.arrayBuffer();
           
-          // Convert ArrayBuffer to base64 using Deno-compatible method
-          const uint8Array = new Uint8Array(imageBuffer);
-          let binaryString = '';
-          for (let i = 0; i < uint8Array.length; i++) {
-            binaryString += String.fromCharCode(uint8Array[i]);
-          }
-          imageData = btoa(binaryString);
+          imageData = uint8ArrayToBase64(new Uint8Array(imageBuffer));
           
           console.log('  ✅ Successfully fetched and converted reference image to base64');
         } catch (error) {

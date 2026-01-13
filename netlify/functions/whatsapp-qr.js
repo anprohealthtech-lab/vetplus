@@ -14,7 +14,7 @@ exports.handler = async (event) => {
   }
 
   try {
-  const base = process.env.WHATSAPP_API_BASE_URL || process.env.VITE_WHATSAPP_API_BASE_URL || 'https://lionfish-app-nmodi.ondigitalocean.app';
+  const base = process.env.WHATSAPP_API_BASE_URL || process.env.VITE_WHATSAPP_API_BASE_URL || 'https://app.limsapp.in/whatsapp';
     const q = event.queryStringParameters || {};
     const userId = q.userId;
     const labId = q.labId;

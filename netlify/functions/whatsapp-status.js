@@ -11,7 +11,7 @@ exports.handler = async (event) => {
   }
 
   try {
-  const base = process.env.WHATSAPP_API_BASE_URL || process.env.VITE_WHATSAPP_API_BASE_URL || 'https://lionfish-app-nmodi.ondigitalocean.app';
+    const base = process.env.WHATSAPP_API_BASE_URL || process.env.VITE_WHATSAPP_API_BASE_URL || 'https://app.limsapp.in/whatsapp';
     const query = new URLSearchParams(event.queryStringParameters || {});
     const userId = query.get('userId');
     const labId = query.get('labId');
@@ -29,10 +29,10 @@ exports.handler = async (event) => {
     });
 
     const data = await upstream.json();
-    
+
     // Log the response for debugging
     console.log('Backend status response:', JSON.stringify(data, null, 2));
-    
+
     return {
       statusCode: upstream.status,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

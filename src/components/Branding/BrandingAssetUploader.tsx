@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 
 interface BrandingAssetUploaderProps {
-  assetType: 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead';
+  assetType: 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead' | 'front_page' | 'last_page';
   labId: string;
   apiBaseUrl?: string;
   onSuccess: () => void;

@@ -46,7 +46,7 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
         existingTests: existingTests,
         insert: false // Don't insert during preview
       });
-      
+
       setGeneratedConfig(config);
       setConfidence(config.confidence || 0.95);
       setEditMode(false);
@@ -75,9 +75,9 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
         existingTests: existingTests,
         insert: true // Insert directly via Edge Function
       });
-      
+
       setSuccessMessage(`✅ Successfully created "${result.test_group.name}" with ${result.analytes.length} analytes!`);
-      
+
       // Reset form
       setTestName('');
       setDescription('');
@@ -85,7 +85,7 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
       setRequiresFasting('');
       setGeneratedConfig(null);
       setConfidence(0);
-      
+
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create test configuration');
     } finally {
@@ -95,16 +95,203 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
 
   // Handler for manual configuration creation from preview
   const handleCreateConfiguration = async () => {
-    if (generatedConfig && onConfigurationGenerated) {
-      onConfigurationGenerated(generatedConfig);
+    if (!generatedConfig) return;
+
+    setIsCreating(true);
+    setError(null);
+
+    try {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        throw new Error('No lab ID found for current user');
+      }
+
+      // 1. Create Test Group
+      const { data: testGroupData, error: testGroupError } = await database.supabase
+        .from('test_groups')
+        .insert({
+          name: generatedConfig.test_group.name,
+          code: generatedConfig.test_group.code,
+          category: generatedConfig.test_group.category,
+          clinical_purpose: generatedConfig.test_group.clinical_purpose,
+          price: parseFloat(generatedConfig.test_group.price),
+          turnaround_time: generatedConfig.test_group.turnaround_time,
+          sample_type: generatedConfig.test_group.sample_type,
+          requires_fasting: generatedConfig.test_group.requires_fasting,
+          is_active: true,
+          lab_id: labId,
+          default_ai_processing_type: 'gemini',
+          to_be_copied: false
+        })
+        .select()
+        .single();
+
+      if (testGroupError) throw testGroupError;
+
+      // 2. Create Analytes (global table, no lab_id)
+      const analytesToInsert = generatedConfig.analytes.map(analyte => ({
+        name: analyte.name,
+        code: analyte.name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase(),
+        unit: analyte.unit,
+        reference_range: analyte.reference_range,
+        low_critical: analyte.low_critical,
+        high_critical: analyte.high_critical,
+        interpretation_low: analyte.interpretation_low,
+        interpretation_normal: analyte.interpretation_normal,
+        interpretation_high: analyte.interpretation_high,
+        category: analyte.category,
+        is_active: true,
+        ai_processing_type: 'gemini',
+        group_ai_mode: 'individual',
+        is_global: false,
+        to_be_copied: false
+      }));
+
+      const { data: analytesData, error: analytesError } = await database.supabase
+        .from('analytes')
+        .insert(analytesToInsert)
+        .select();
+
+      if (analytesError) throw analytesError;
+
+      // 3. Link Test Group to Analytes (using UUIDs)
+      const testGroupAnalytesLinks = analytesData.map((analyte: any) => ({
+        test_group_id: testGroupData.id,
+        analyte_id: analyte.id,
+        display_order: analytesData.indexOf(analyte),
+        is_visible: true
+      }));
+
+      const { error: linksError } = await database.supabase
+        .from('test_group_analytes')
+        .insert(testGroupAnalytesLinks);
+
+      if (linksError) throw linksError;
+
+      // 4. Generate Report Template with Placeholders
+      const templateHtml = generateReportTemplate(generatedConfig);
+
+      const { data: templateData, error: templateError } = await database.supabase
+        .from('lab_templates')
+        .insert({
+          template_name: `${generatedConfig.test_group.name} - Default Template`,
+          test_group_id: testGroupData.id,
+          lab_id: labId,
+          gjs_html: templateHtml,
+          category: 'general',
+          is_active: true,
+          is_default: true,
+          created_by: user?.id
+        })
+        .select()
+        .single();
+
+      if (templateError) throw templateError;
+
+      setSuccessMessage(
+        `✅ Successfully created "${generatedConfig.test_group.name}" with ${generatedConfig.analytes.length} analytes and report template!`
+      );
+
+      // Call the callback if provided
+      if (onConfigurationGenerated) {
+        onConfigurationGenerated(generatedConfig);
+      }
+
       // Reset form after successful creation
-      setGeneratedConfig(null);
-      setTestName('');
-      setDescription('');
-      setSampleType('');
-      setRequiresFasting('');
+      setTimeout(() => {
+        setGeneratedConfig(null);
+        setTestName('');
+        setDescription('');
+        setSampleType('');
+        setRequiresFasting('');
+        setSuccessMessage(null);
+      }, 3000);
+
+    } catch (err) {
+      console.error('Error creating test configuration:', err);
+      setError(err instanceof Error ? err.message : 'Failed to create test configuration');
+    } finally {
+      setIsCreating(false);
     }
   };
+
+  // Helper function to generate report template HTML with placeholders
+  const generateReportTemplate = (config: TestConfigurationResponse): string => {
+    const placeholders = config.analytes.map(analyte => {
+      const analyteName = analyte.name.replace(/[^a-zA-Z0-9]/g, '_');
+      return `
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #eee;">${analyte.name}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee; font-weight: bold;">{{${analyteName}_value}}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee;">{{${analyteName}_unit}}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee;">{{${analyteName}_refRange}}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee;">{{${analyteName}_flag}}</td>
+        </tr>`;
+    }).join('\n');
+
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .header { text-align: center; margin-bottom: 30px; }
+    .header h1 { color: #2563eb; margin: 0; }
+    .patient-info { margin: 20px 0; }
+    .patient-info table { width: 100%; border-collapse: collapse; }
+    .patient-info td { padding: 8px; border-bottom: 1px solid #ddd; }
+    .results-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    .results-table th { background: #2563eb; color: white; padding: 10px; text-align: left; }
+    .results-table td { padding: 8px; border-bottom: 1px solid #eee; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>${config.test_group.name}</h1>
+    <p>${config.test_group.clinical_purpose}</p>
+  </div>
+
+  <div class="patient-info">
+    <table>
+      <tr>
+        <td><strong>Patient Name:</strong> {{patientName}}</td>
+        <td><strong>Patient ID:</strong> {{patientId}}</td>
+      </tr>
+      <tr>
+        <td><strong>Age / Gender:</strong> {{patientAge}} / {{patientGender}}</td>
+        <td><strong>Sample ID:</strong> {{sampleId}}</td>
+      </tr>
+      <tr>
+        <td><strong>Ref. Doctor:</strong> {{referringDoctor}}</td>
+        <td><strong>Date:</strong> {{reportDate}}</td>
+      </tr>
+    </table>
+  </div>
+
+  <table class="results-table">
+    <thead>
+      <tr>
+        <th>Test Parameter</th>
+        <th>Result</th>
+        <th>Unit</th>
+        <th>Ref. Range</th>
+        <th>Flag</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${placeholders}
+    </tbody>
+  </table>
+
+  <div style="margin-top: 60px; text-align: right;">
+    <p><strong>{{labName}}</strong></p>
+    <p>{{labAddress}}</p>
+  </div>
+</body>
+</html>`;
+  };
+
 
   const handleEdit = () => {
     setGeneratedConfig(null);
@@ -136,7 +323,7 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
           Enter a test name and let AI suggest the complete test group configuration with analytes
         </p>
       </div>
-      
+
       {/* Content */}
       <div className="p-6 space-y-4">
         {!generatedConfig && !editMode && (
@@ -228,6 +415,7 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
                 )}
               </button>
 
+              {/* Direct create button disabled until backend supports it
               <button
                 onClick={handleCreateWithInsert}
                 disabled={isCreating || !testName.trim()}
@@ -245,6 +433,7 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
                   </>
                 )}
               </button>
+              */}
             </div>
           </div>
         )}
@@ -295,11 +484,10 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
             <div className="flex items-center justify-between">
               <h3 className="text-xl font-semibold text-gray-900">Generated Configuration</h3>
               <div className="flex items-center space-x-3">
-                <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                  confidence >= 0.9 ? 'bg-green-100 text-green-800' :
+                <span className={`px-2 py-1 rounded-full text-xs font-medium ${confidence >= 0.9 ? 'bg-green-100 text-green-800' :
                   confidence >= 0.7 ? 'bg-yellow-100 text-yellow-800' :
-                  'bg-red-100 text-red-800'
-                }`}>
+                    'bg-red-100 text-red-800'
+                  }`}>
                   {Math.round(confidence * 100)}% Confidence
                 </span>
                 <button
@@ -371,7 +559,7 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
 
             {/* Action Button */}
             <div className="flex gap-2">
-              <button 
+              <button
                 onClick={handleCreateConfiguration}
                 disabled={isCreating}
                 className="flex-1 flex items-center justify-center px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"

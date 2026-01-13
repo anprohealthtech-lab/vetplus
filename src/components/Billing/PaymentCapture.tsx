@@ -248,9 +248,8 @@ const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, onClose, onS
                     key={m}
                     type="button"
                     onClick={() => setPaymentMethod(m as any)}
-                    className={`px-3 py-2 rounded-md text-sm font-medium border ${
-                      paymentMethod === m ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                    }`}
+                    className={`px-3 py-2 rounded-md text-sm font-medium border ${paymentMethod === m ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
                   >
                     {m.replace('_', ' ').toUpperCase()}
                   </button>

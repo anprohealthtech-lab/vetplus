@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Edit, Trash2, Save, X, MapPin, Building, Phone, Mail, CreditCard, DollarSign, TrendingUp, Calendar, User } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, Save, X, MapPin, Building, Phone, Mail, CreditCard, DollarSign, TrendingUp, User } from 'lucide-react';
 import { database } from '../../utils/supabase';
 import { Location, CreditTransaction } from '../../types';
+import HeaderFooterUpload from '../Settings/HeaderFooterUpload';
 
 interface LocationFormData {
   name: string;
   code: string;
+  type: 'hospital' | 'clinic' | 'diagnostic_center' | 'home_collection' | 'walk_in';
   address: string;
   phone: string;
   email: string;
@@ -19,6 +21,7 @@ interface LocationFormData {
 const initialFormData: LocationFormData = {
   name: '',
   code: '',
+  type: 'diagnostic_center',
   address: '',
   phone: '',
   email: '',
@@ -60,7 +63,7 @@ const LocationMaster: React.FC = () => {
     try {
       const { data, error } = await database.locations.getAll();
       if (error) throw error;
-      
+
       // Load credit balances for each location
       const locationsWithBalances = await Promise.all(
         (data || []).map(async (location) => {
@@ -79,7 +82,7 @@ const LocationMaster: React.FC = () => {
           }
         })
       );
-      
+
       setLocations(locationsWithBalances);
     } catch (err: any) {
       console.error('Error loading locations:', err);
@@ -101,6 +104,7 @@ const LocationMaster: React.FC = () => {
     setFormData({
       name: location.name,
       code: location.code || '',
+      type: location.type as any || 'diagnostic_center',
       address: location.address || '',
       phone: location.phone || '',
       email: location.email || '',
@@ -124,14 +128,14 @@ const LocationMaster: React.FC = () => {
         // Update existing location
         const { data, error } = await database.locations.update(editingLocation.id, formData);
         if (error) throw error;
-        
+
         // Update local state
         setLocations(prev => prev.map(l => l.id === editingLocation.id ? { ...l, ...data } : l));
       } else {
         // Create new location
         const { data, error } = await database.locations.create(formData);
         if (error) throw error;
-        
+
         // Add to local state
         setLocations(prev => [{ ...data, current_credit_balance: 0 }, ...prev]);
       }
@@ -156,7 +160,7 @@ const LocationMaster: React.FC = () => {
     try {
       const { error } = await database.locations.delete(location.id);
       if (error) throw error;
-      
+
       // Remove from local state
       setLocations(prev => prev.filter(l => l.id !== location.id));
     } catch (err: any) {
@@ -176,7 +180,7 @@ const LocationMaster: React.FC = () => {
     try {
       const { data, error } = await database.creditTransactions.getByLocation(locationId, 50);
       if (error) throw error;
-      
+
       setCreditTransactions(data || []);
       setSelectedLocationCredit(locationId);
     } catch (err: any) {
@@ -193,23 +197,23 @@ const LocationMaster: React.FC = () => {
 
     setAddingCredit(true);
     try {
-      const { data, error } = await database.creditTransactions.create({
+      const { error } = await database.creditTransactions.create({
         location_id: locationId,
         amount: newCreditAmount,
         type,
         description: newCreditDescription || `${type === 'credit' ? 'Credit' : 'Debit'} adjustment`,
         reference_type: 'manual_adjustment'
       });
-      
+
       if (error) throw error;
 
       // Refresh credit transactions
       await handleViewCredit(locationId);
-      
+
       // Update location balance in local state
       const { data: creditSummary } = await database.creditTransactions.getCreditSummaryByLocation(locationId);
-      setLocations(prev => prev.map(l => 
-        l.id === locationId 
+      setLocations(prev => prev.map(l =>
+        l.id === locationId
           ? { ...l, current_credit_balance: creditSummary?.current_balance || 0 }
           : l
       ));
@@ -226,8 +230,8 @@ const LocationMaster: React.FC = () => {
   };
 
   // Filter locations based on search term
-  const filteredLocations = locations.filter(location => 
-    !searchTerm || 
+  const filteredLocations = locations.filter(location =>
+    !searchTerm ||
     location.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     location.code?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     location.contact_person?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -246,7 +250,7 @@ const LocationMaster: React.FC = () => {
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
           <p className="text-red-600">{error}</p>
-          <button 
+          <button
             onClick={() => setError(null)}
             className="mt-2 text-sm text-red-500 hover:text-red-700"
           >
@@ -308,6 +312,25 @@ const LocationMaster: React.FC = () => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     placeholder="City Clinic"
                   />
+                </div>
+
+                {/* Type */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Location Type *
+                  </label>
+                  <select
+                    required
+                    value={formData.type}
+                    onChange={(e) => setFormData({ ...formData, type: e.target.value as any })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="diagnostic_center">Diagnostic Center</option>
+                    <option value="hospital">Hospital</option>
+                    <option value="clinic">Clinic</option>
+                    <option value="home_collection">Home Collection</option>
+                    <option value="walk_in">Walk-in</option>
+                  </select>
                 </div>
 
                 {/* Code */}
@@ -443,6 +466,17 @@ const LocationMaster: React.FC = () => {
                 </div>
               </div>
 
+              {/* Report Customization - Only for existing locations */}
+              {editingLocation && (
+                <div className="border-t pt-4 mt-4">
+                  <HeaderFooterUpload
+                    entityType="location"
+                    entityId={editingLocation.id}
+                    entityName={editingLocation.name}
+                  />
+                </div>
+              )}
+
               {/* Form Actions */}
               <div className="flex justify-end gap-3">
                 <button
@@ -547,26 +581,25 @@ const LocationMaster: React.FC = () => {
                       {creditTransactions.map((transaction) => (
                         <tr key={transaction.id}>
                           <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                            {new Date(transaction.transaction_date).toLocaleDateString()}
+                            {new Date(transaction.created_at).toLocaleDateString()}
                           </td>
                           <td className="px-4 py-4 whitespace-nowrap">
-                            <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                              transaction.type === 'credit' 
-                                ? 'bg-green-100 text-green-800' 
-                                : 'bg-red-100 text-red-800'
-                            }`}>
-                              {transaction.type === 'credit' ? 'Credit' : 'Debit'}
+                            <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${transaction.transaction_type === 'credit'
+                              ? 'bg-green-100 text-green-800'
+                              : 'bg-red-100 text-red-800'
+                              }`}>
+                              {transaction.transaction_type === 'credit' ? 'Credit' : 'Debit'}
                             </span>
                           </td>
                           <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
                             ₹{transaction.amount.toLocaleString()}
                           </td>
                           <td className="px-4 py-4 text-sm text-gray-900">
-                            {transaction.description}
+                            {transaction.notes}
                           </td>
                           <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {transaction.reference_type && transaction.reference_id && (
-                              <span>{transaction.reference_type}: {transaction.reference_id}</span>
+                            {transaction.payment_method && transaction.reference_number && (
+                              <span>{transaction.payment_method}: {transaction.reference_number}</span>
                             )}
                           </td>
                         </tr>
@@ -693,11 +726,10 @@ const LocationMaster: React.FC = () => {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex flex-col gap-1">
-                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                            location.is_active 
-                              ? 'bg-green-100 text-green-800' 
-                              : 'bg-red-100 text-red-800'
-                          }`}>
+                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${location.is_active
+                            ? 'bg-green-100 text-green-800'
+                            : 'bg-red-100 text-red-800'
+                            }`}>
                             {location.is_active ? 'Active' : 'Inactive'}
                           </span>
                           {location.is_cash_collection_center && (

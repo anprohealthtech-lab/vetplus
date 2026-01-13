@@ -1,7 +1,7 @@
 // src/pages/Orders.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  Plus, Search, Filter, Clock as ClockIcon, CheckCircle, AlertTriangle,
+  Plus, Search, Clock as ClockIcon, CheckCircle, AlertTriangle,
   Eye, User, Calendar, TestTube, ChevronDown, ChevronUp, TrendingUp, ToggleLeft, ToggleRight, X
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
@@ -10,7 +10,9 @@ import OrderForm from "../components/Orders/OrderForm";
 import OrderDetailsModal from "../components/Orders/OrderDetailsModal";
 import EnhancedOrdersPage from "../components/Orders/EnhancedOrdersPage";
 import OrderFiltersBar, { OrderFilters } from "../components/Orders/OrderFiltersBar";
-import { OrderStatusDisplay } from "../components/Orders/OrderStatusDisplay";
+import { useRealtimeOrders } from "../hooks/useRealtimeOrders";
+import { SampleTypeGroup } from "../components/Common/SampleTypeIndicator";
+import { TATStatusBadge } from "../components/Orders/TATStatusBadge";
 
 /* ===========================
    Types
@@ -36,39 +38,15 @@ type ProgressRow = {
   has_results: boolean;
   is_verified: boolean;
   panel_status: "Not started" | "In progress" | "Partial" | "Complete" | "Verified";
+  sample_type?: string;
+  sample_color?: string;
+  hours_until_tat_breach?: number | null;
+  is_tat_breached?: boolean;
+  tat_hours?: number;
+  tat_start_time?: string | null;
 };
 
-type OrderRow = {
-  id: string;
-  patient_id: string;
-  patient_name: string;
-  status: OrderStatus;
-  priority: Priority;
-  order_date: string;
-  expected_date: string;
-  total_amount: number;
-  doctor: string | null;
 
-  // sample/meta needed by modal
-  sample_id: string | null;
-  color_code: string | null;
-  color_name: string | null;
-  sample_collected_at: string | null;
-  sample_collected_by: string | null;
-
-  // relations
-  patients: { name?: string | null; age?: string | null; gender?: string | null } | null;
-  order_tests: { 
-    id: string; 
-    test_group_id: string | null; 
-    test_name: string;
-    outsourced_lab_id?: string | null;
-    outsourced_labs?: { name: string } | null;
-  }[] | null;
-
-  // daily sequence for sorting
-  order_number?: number | null;
-};
 
 type Panel = {
   name: string;
@@ -78,10 +56,14 @@ type Panel = {
   status: ProgressRow["panel_status"];
   isOutsourced?: boolean;
   outsourcedLab?: string;
+  sample_type?: string;
+  sample_color?: string;
 };
 
 type CardOrder = {
   id: string;
+  lab_id: string;
+  location_id?: string;
   patient_name: string;
   patient_id: string;
   status: OrderStatus;
@@ -94,6 +76,7 @@ type CardOrder = {
   order_number?: number | null;
 
   sample_id: string | null;
+  sample_type?: string;
   color_code: string | null;
   color_name: string | null;
   sample_collected_at: string | null;
@@ -112,6 +95,11 @@ type CardOrder = {
   pendingAnalytes: number;       // not started OR partial/in-progress
   forApprovalAnalytes: number;   // complete but not verified
   approvedAnalytes: number;      // verified
+
+  // TAT aggregation
+  hours_until_tat_breach?: number | null;
+  is_tat_breached?: boolean | null;
+  tat_hours?: number | null;
 };
 
 /* ===========================
@@ -142,6 +130,27 @@ const Orders: React.FC = () => {
   const [selectedTests, setSelectedTests] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoadingTests, setIsLoadingTests] = useState(false);
+  const [locations, setLocations] = useState<{ id: string; name: string }[]>([]);
+
+  // Load locations on mount
+  useEffect(() => {
+    const loadLocations = async () => {
+      const userLocInfo = await database.shouldFilterByLocation();
+      const { data: allLocations } = await database.locations.getAll();
+
+      if (allLocations) {
+        if (userLocInfo.canViewAll || !userLocInfo.shouldFilter) {
+          setLocations(allLocations.map((l: any) => ({ id: l.id, name: l.name })));
+        } else {
+          setLocations(allLocations
+            .filter((l: any) => userLocInfo.locationIds.includes(l.id))
+            .map((l: any) => ({ id: l.id, name: l.name }))
+          );
+        }
+      }
+    };
+    loadLocations();
+  }, []);
 
   // dashboard counters
   const [summary, setSummary] = useState({ allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 });
@@ -149,6 +158,85 @@ const Orders: React.FC = () => {
   useEffect(() => {
     fetchOrders();
   }, []);
+
+  // Get user's lab_id for realtime filtering
+  const [userLabId, setUserLabId] = useState<string>('');
+
+  useEffect(() => {
+    const getLabId = async () => {
+      const labId = await database.getCurrentUserLabId();
+      if (labId) {
+        setUserLabId(labId);
+      }
+    };
+    getLabId();
+  }, []);
+
+  // 🔴 REALTIME: Subscribe to order changes
+  const { isConnected: realtimeConnected } = useRealtimeOrders({
+    labId: userLabId,
+    enabled: !!userLabId, // Only enable when we have lab_id
+    onInsert: async (newOrder) => {
+      console.log('📡 Realtime: New order created', newOrder.id);
+
+      // Fetch full order data with relations
+      const { data: fullOrderData } = await supabase
+        .from("orders")
+        .select(`
+          id, lab_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, doctor,
+          order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
+          patients(name, age, gender),
+          order_tests(id, test_group_id, test_name, outsourced_lab_id, outsourced_labs(name))
+        `)
+        .eq('id', newOrder.id)
+        .single();
+
+      if (fullOrderData) {
+        // Transform to CardOrder format (simplified - no progress data yet)
+        const orderRow = fullOrderData as any;
+        const panels: Panel[] = []; // Will be populated on next refresh
+
+        const newCardOrder: CardOrder = {
+          id: orderRow.id,
+          lab_id: orderRow.lab_id,
+          patient_name: orderRow.patient_name,
+          patient_id: orderRow.patient_id,
+          status: orderRow.status,
+          priority: orderRow.priority,
+          order_date: orderRow.order_date,
+          expected_date: orderRow.expected_date,
+          total_amount: orderRow.total_amount,
+          doctor: orderRow.doctor,
+          order_number: orderRow.order_number ?? null,
+          sample_id: orderRow.sample_id,
+          color_code: orderRow.color_code,
+          color_name: orderRow.color_name,
+          sample_collected_at: orderRow.sample_collected_at,
+          sample_collected_by: orderRow.sample_collected_by,
+          patient: orderRow.patients,
+          tests: (orderRow.order_tests || []).map((t: any) => t.test_name),
+          order_tests: orderRow.order_tests || [],
+          panels,
+          expectedTotal: 0,
+          enteredTotal: 0,
+          pendingAnalytes: 0,
+          forApprovalAnalytes: 0,
+          approvedAnalytes: 0,
+        };
+
+        setOrders(prev => [newCardOrder, ...prev]);
+      }
+    },
+    onUpdate: (updatedOrder) => {
+      console.log('📡 Realtime: Order updated', updatedOrder.id);
+      // Refresh that specific order
+      fetchOrders();
+    },
+    onDelete: (deletedOrderId) => {
+      console.log('📡 Realtime: Order deleted', deletedOrderId);
+      setOrders(prev => prev.filter(order => order.id !== deletedOrderId));
+    }
+  });
 
   // Update selected order when orders change (for modal refresh after status update)
   useEffect(() => {
@@ -340,32 +428,44 @@ const Orders: React.FC = () => {
     }
 
     // 1) base orders
-    const { data: rows, error } = await supabase
+    let query = supabase
       .from("orders")
       .select(`
-        id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, doctor,
+        id, lab_id, location_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, doctor,
         order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
         patients(name, age, gender),
-        order_tests(id, test_group_id, test_name, outsourced_lab_id, outsourced_labs(name))
+        order_tests(
+          id, test_group_id, test_name, outsourced_lab_id,
+          outsourced_labs(name),
+          test_groups(sample_type, sample_color)
+        )
       `)
       .eq('lab_id', lab_id)
       .order("order_date", { ascending: false });
+
+    // Apply location filtering
+    const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
+    if (shouldFilter && locationIds.length > 0) {
+      query = query.in('location_id', locationIds);
+    }
+
+    const { data: rows, error } = await query;
 
     if (error) {
       console.error("orders load error", error);
       return;
     }
 
-    const orderRows = (rows || []) as OrderRow[];
+    const orderRows = (rows || []) as any[]; // Use any temporarily to solve complex relation casting
     const orderIds = orderRows.map((o) => o.id);
     if (orderIds.length === 0) {
       setOrders([]);
       return;
     }
 
-    // 2) view-based progress
+    // 2) view-based progress (Using ENHANCED view for TAT)
     const { data: prog, error: pErr } = await supabase
-      .from("v_order_test_progress")
+      .from("v_order_test_progress_enhanced")
       .select("*")
       .in("order_id", orderIds);
 
@@ -381,11 +481,34 @@ const Orders: React.FC = () => {
     // 3) shape cards with new buckets
     const cards: CardOrder[] = orderRows.map((o) => {
       const rows = byOrder.get(o.id) || [];
+
+      // Calculate dynamic expected date based on TAT
+      let calculatedExpectedDateMs = 0;
+      rows.forEach((r) => {
+        if (r.tat_hours && r.tat_start_time) {
+          const start = new Date(r.tat_start_time).getTime();
+          const duration = Number(r.tat_hours) * 3600 * 1000;
+          const end = start + duration;
+          if (end > calculatedExpectedDateMs) {
+            calculatedExpectedDateMs = end;
+          }
+        }
+      });
+
+      const dynamicExpectedDate = calculatedExpectedDateMs > 0
+        ? new Date(calculatedExpectedDateMs).toISOString()
+        : o.expected_date;
       const panels: Panel[] = rows.map((r) => {
         // Check if this test group is outsourced
-        const outsourcedTest = o.order_tests?.find(ot => 
-          ot.test_group_id === r.test_group_id && ot.outsourced_lab_id
-        );
+        const outsourcedTest = (o.order_tests || []).find((t: any) => t.test_group_id === r.test_group_id);
+        const labInfo = Array.isArray(outsourcedTest?.outsourced_labs)
+          ? outsourcedTest.outsourced_labs[0]
+          : outsourcedTest?.outsourced_labs;
+
+        // Get sample info from joined test_groups if not in view
+        const testGroupInfo = (outsourcedTest as any)?.test_groups;
+        const effectiveSampleType = r.sample_type || testGroupInfo?.sample_type;
+        const effectiveSampleColor = r.sample_color || testGroupInfo?.sample_color;
 
         return {
           name: r.test_group_name || "Test",
@@ -393,10 +516,30 @@ const Orders: React.FC = () => {
           entered: r.entered_analytes || 0,
           verified: !!r.is_verified,
           status: r.panel_status,
-          isOutsourced: !!outsourcedTest,
-          outsourcedLab: outsourcedTest?.outsourced_labs?.name
+          isOutsourced: !!outsourcedTest?.outsourced_lab_id,
+          outsourcedLab: labInfo?.name,
+          sample_type: effectiveSampleType,
+          sample_color: effectiveSampleColor,
         };
       });
+
+      // Calculate TAT aggregates (worst case: min hours remaining)
+      let minHours: number | null = null;
+      let isBreached = false;
+      let maxTatHours: number | null = null;
+
+      rows.forEach(r => {
+        if (r.hours_until_tat_breach !== undefined && r.hours_until_tat_breach !== null) {
+          if (minHours === null || r.hours_until_tat_breach < minHours) {
+            minHours = r.hours_until_tat_breach;
+          }
+        }
+        if (r.is_tat_breached) isBreached = true;
+        if (r.tat_hours && (maxTatHours === null || r.tat_hours > maxTatHours)) {
+          maxTatHours = r.tat_hours;
+        }
+      });
+
 
       // Calculate totals correctly
       const expectedTotal = panels.reduce((sum, p) => sum + p.expected, 0);
@@ -417,17 +560,19 @@ const Orders: React.FC = () => {
 
       // Debug logging for verification (can be removed later)
       if (o.id && expectedTotal > 0) {
-        console.debug(`Order ${o.id.slice(-6)}: Expected=${expectedTotal}, Entered=${enteredTotal}, Approved=${approvedAnalytes}, Pending=${pendingAnalytes}, ForApproval=${forApprovalAnalytes}`);
+        console.debug(`Order ${o.id.slice(-6)}: Expected = ${expectedTotal}, Entered = ${enteredTotal}, Approved = ${approvedAnalytes}, Pending = ${pendingAnalytes}, ForApproval = ${forApprovalAnalytes} `);
       }
 
       return {
         id: o.id,
+        lab_id: o.lab_id,
+        location_id: o.location_id,
         patient_name: o.patient_name,
         patient_id: o.patient_id,
         status: o.status,
         priority: o.priority,
         order_date: o.order_date,
-        expected_date: o.expected_date,
+        expected_date: dynamicExpectedDate,
         total_amount: o.total_amount,
         doctor: o.doctor,
 
@@ -439,7 +584,7 @@ const Orders: React.FC = () => {
         sample_collected_by: o.sample_collected_by,
 
         patient: o.patients,
-        tests: (o.order_tests || []).map((t) => t.test_name),
+        tests: (o.order_tests || []).map((t: any) => t.test_name),
         order_tests: o.order_tests || [], // ✅ Include full order_tests with outsourcing data
 
         panels,
@@ -448,6 +593,10 @@ const Orders: React.FC = () => {
         pendingAnalytes,
         forApprovalAnalytes,
         approvedAnalytes,
+
+        hours_until_tat_breach: minHours,
+        is_tat_breached: isBreached,
+        tat_hours: maxTatHours
       };
     });
 
@@ -510,7 +659,10 @@ const Orders: React.FC = () => {
       const matchesDoctor = !filters.doctor ||
         (o.doctor || "").toLowerCase().includes((filters.doctor || "").toLowerCase());
 
-      return matchesQ && matchesStatus && matchesPriority && matchesDateRange() && matchesDoctor;
+      // Location filter
+      const matchesLocation = !filters.locationId || o.location_id === filters.locationId;
+
+      return matchesQ && matchesStatus && matchesPriority && matchesDateRange() && matchesDoctor && matchesLocation;
     });
   }, [orders, filters]);
 
@@ -557,9 +709,11 @@ const Orders: React.FC = () => {
       order_date: order.order_date,
       created_at: order.order_date,
       sample_id: order.sample_id || undefined,
+      sample_type: order.sample_type,
+      color_name: order.color_name || undefined,
       tests: order.tests,
       can_add_tests: !['Completed', 'Delivered'].includes(order.status),
-      visit_group_id: order.sample_id ? `sample-${order.sample_id}` : `${order.patient_id}-${order.order_date.slice(0, 10)}`,
+      visit_group_id: order.sample_id ? `sample - ${order.sample_id} ` : `${order.patient_id} -${order.order_date.slice(0, 10)} `,
       order_type: 'initial' as const
     }));
   }, [filtered]);
@@ -608,7 +762,7 @@ const Orders: React.FC = () => {
         alert('❌ Error: Patient is required');
         throw new Error('Patient is required');
       }
-      
+
       if (!orderData.referring_doctor_id && !orderData.doctor) {
         alert('❌ Error: Referring doctor is required');
         throw new Error('Referring doctor is required');
@@ -619,7 +773,7 @@ const Orders: React.FC = () => {
       if (orderError) {
         console.error('Error creating order:', orderError);
         const errorMessage = orderError.message || 'Failed to create order';
-        alert(`❌ Order Creation Failed: ${errorMessage}`);
+        alert(`❌ Order Creation Failed: ${errorMessage} `);
         throw orderError;
       }
 
@@ -641,25 +795,78 @@ const Orders: React.FC = () => {
         console.log('Updated TRF attachment to link to order:', order.id);
       }
 
+      // ✅ AUTO-CREATE SAMPLES: Generate samples based on test group requirements
+      try {
+        // Import sample service dynamically to avoid circular dependencies
+        const { createSamplesForOrder } = await import('../services/sampleService');
+
+        // Fetch order_test_groups with test_group info for sample creation
+        const { data: orderTestGroups, error: otgError } = await supabase
+          .from('order_test_groups')
+          .select(`
+    id,
+      order_id,
+      test_group_id,
+      test_name,
+      test_groups!inner(sample_type, sample_color)
+          `)
+          .eq('order_id', order.id);
+
+        if (otgError) {
+          console.error('Error fetching order test groups for sample creation:', otgError);
+        } else if (!orderTestGroups || orderTestGroups.length === 0) {
+          console.warn('⚠️ No order test groups found for sample creation. Samples will NOT be created for Order:', order.id);
+        } else {
+          // Transform data to match service interface
+          const testGroupsWithInfo = orderTestGroups.map(otg => {
+            // Handle potential array return from join
+            const groupData = Array.isArray(otg.test_groups) ? otg.test_groups[0] : otg.test_groups;
+            return {
+              id: otg.id,
+              order_id: otg.order_id,
+              test_group_id: otg.test_group_id,
+              test_name: otg.test_name,
+              test_group: {
+                sample_type: (groupData as any)?.sample_type || 'Blood',
+                sample_color: (groupData as any)?.sample_color
+              }
+            };
+          });
+
+          // Create samples
+          const samples = await createSamplesForOrder(
+            order.id,
+            testGroupsWithInfo,
+            order.lab_id,
+            order.patient_id
+          );
+
+          console.log(`✅ Created ${samples.length} sample(s) for order ${order.id}: `, samples);
+        }
+      } catch (sampleError) {
+        console.error('Error creating samples (non-critical):', sampleError);
+        // Don't fail the order creation if sample generation fails
+      }
+
       // ✅ OPTIMIZED: Instead of re-fetching all orders, fetch only the new order with required data
       const lab_id = await database.getCurrentUserLabId();
       if (lab_id) {
         const { data: newOrderData, error: fetchError } = await supabase
           .from("orders")
           .select(`
-            id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, doctor,
-            order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
-            patients(name, age, gender),
-            order_tests(id, test_group_id, test_name, outsourced_lab_id, outsourced_labs(name))
-          `)
+    id, lab_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, doctor,
+      order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
+      patients(name, age, gender),
+      order_tests(id, test_group_id, test_name, outsourced_lab_id, outsourced_labs(name))
+        `)
           .eq('id', order.id)
           .eq('lab_id', lab_id)
           .single();
 
         if (!fetchError && newOrderData) {
           // Transform the new order into CardOrder format
-          const orderRow = newOrderData as OrderRow;
-          
+          const orderRow = newOrderData as any;
+
           // Fetch progress for this order only
           const { data: prog } = await supabase
             .from("v_order_test_progress")
@@ -668,7 +875,7 @@ const Orders: React.FC = () => {
 
           const rows = (prog || []) as ProgressRow[];
           const panels: Panel[] = rows.map((r) => {
-            const outsourcedTest = orderRow.order_tests?.find(ot => 
+            const outsourcedTest = orderRow.order_tests?.find((ot: any) =>
               ot.test_group_id === r.test_group_id && ot.outsourced_lab_id
             );
 
@@ -679,7 +886,9 @@ const Orders: React.FC = () => {
               verified: !!r.is_verified,
               status: r.panel_status,
               isOutsourced: !!outsourcedTest,
-              outsourcedLab: outsourcedTest?.outsourced_labs?.name
+              outsourcedLab: outsourcedTest?.outsourced_labs?.name,
+              sample_type: r.sample_type,
+              sample_color: r.sample_color,
             };
           });
 
@@ -696,6 +905,7 @@ const Orders: React.FC = () => {
 
           const newCardOrder: CardOrder = {
             id: orderRow.id,
+            lab_id: orderRow.lab_id,
             patient_name: orderRow.patient_name,
             patient_id: orderRow.patient_id,
             status: orderRow.status,
@@ -711,7 +921,7 @@ const Orders: React.FC = () => {
             sample_collected_at: orderRow.sample_collected_at,
             sample_collected_by: orderRow.sample_collected_by,
             patient: orderRow.patients,
-            tests: (orderRow.order_tests || []).map((t) => t.test_name),
+            tests: (orderRow.order_tests || []).map((t: any) => t.test_name),
             order_tests: orderRow.order_tests || [],
             panels,
             expectedTotal,
@@ -738,10 +948,14 @@ const Orders: React.FC = () => {
 
       // Show success message
       alert('✅ Order created successfully!');
+
+      // Return the order so OrderForm can use it for invoice/payment creation
+      return order;
     } catch (error: any) {
       console.error('Error creating order:', error);
       // Don't close form on error so user can fix issues
       // Error message already shown above
+      throw error; // Re-throw so OrderForm knows creation failed
     }
   };
 
@@ -766,23 +980,28 @@ const Orders: React.FC = () => {
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-4">
             <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Test Orders</h1>
+
+            {/* Realtime Connection Indicator */}
+            <div className={`flex items - center gap - 1.5 px - 2 py - 1 rounded - full text - xs font - medium ${realtimeConnected
+              ? 'bg-green-100 text-green-700'
+              : 'bg-gray-100 text-gray-500'
+              } `}>
+              <span className={`w - 2 h - 2 rounded - full ${realtimeConnected ? 'bg-green-500' : 'bg-gray-400'
+                } `}></span>
+              {realtimeConnected ? 'Live' : 'Offline'}
+            </div>
+
             <div className="flex items-center space-x-2 bg-gray-100 rounded-lg p-1">
               <button
                 onClick={() => setViewMode('standard')}
-                className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'standard'
-                  ? 'bg-white text-blue-600 shadow-sm'
-                  : 'text-gray-600 hover:text-gray-800'
-                  }`}
+                className="flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors text-gray-600 hover:text-gray-800"
               >
                 <ToggleLeft className="h-4 w-4 mr-1" />
                 Standard View
               </button>
               <button
                 onClick={() => setViewMode('enhanced')}
-                className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'enhanced'
-                  ? 'bg-white text-blue-600 shadow-sm'
-                  : 'text-gray-600 hover:text-gray-800'
-                  }`}
+                className="flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors bg-white text-blue-600 shadow-sm"
               >
                 <ToggleRight className="h-4 w-4 mr-1" />
                 Patient Visits
@@ -796,6 +1015,7 @@ const Orders: React.FC = () => {
           value={filters}
           onChange={setFilters}
           orderCounts={orderCounts}
+          locations={locations}
         />
 
         <EnhancedOrdersPage
@@ -817,10 +1037,18 @@ const Orders: React.FC = () => {
 
         {selectedOrder && (
           <OrderDetailsModal
-            order={selectedOrder}
+            order={{
+              ...selectedOrder,
+              doctor: selectedOrder.doctor || '',
+              sample_id: selectedOrder.sample_id || undefined,
+              color_code: selectedOrder.color_code || undefined,
+              color_name: selectedOrder.color_name || undefined,
+              sample_collected_at: selectedOrder.sample_collected_at || undefined,
+              sample_collected_by: selectedOrder.sample_collected_by || undefined
+            }}
             onClose={() => setSelectedOrder(null)}
             onUpdateStatus={handleUpdateStatus}
-            onSubmitResults={async (orderId: string, resultsData: any[]) => {
+            onSubmitResults={async (_orderId: string, _resultsData: any[]) => {
               console.log('onSubmitResults called');
               await fetchOrders();
               setSelectedOrder(null);
@@ -844,20 +1072,14 @@ const Orders: React.FC = () => {
           <div className="flex items-center space-x-2 bg-gray-100 rounded-lg p-1">
             <button
               onClick={() => setViewMode('standard')}
-              className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'standard'
-                ? 'bg-white text-blue-600 shadow-sm'
-                : 'text-gray-600 hover:text-gray-800'
-                }`}
+              className="flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors bg-white text-blue-600 shadow-sm"
             >
               <ToggleLeft className="h-4 w-4 mr-1" />
               Standard View
             </button>
             <button
               onClick={() => setViewMode('enhanced')}
-              className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'enhanced'
-                ? 'bg-white text-blue-600 shadow-sm'
-                : 'text-gray-600 hover:text-gray-800'
-                }`}
+              className="flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors text-gray-600 hover:text-gray-800"
             >
               <ToggleRight className="h-4 w-4 mr-1" />
               Patient Visits
@@ -911,6 +1133,7 @@ const Orders: React.FC = () => {
         value={filters}
         onChange={setFilters}
         orderCounts={orderCounts}
+        locations={locations}
       />
 
       {/* Groups + Cards */}
@@ -937,6 +1160,11 @@ const Orders: React.FC = () => {
                   {g.orders.map((o) => {
                     const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
                     const canAddTests = !['Completed', 'Delivered'].includes(o.status);
+
+                    // Debug logging
+                    if (pct === 0 && o.expectedTotal > 0) {
+                      console.debug(`⚠️ Order ${o.sample_id}: pct=0 but expected=${o.expectedTotal}, entered=${o.enteredTotal}, panels=`, o.panels.map(p => ({ name: p.name, entered: p.entered, expected: p.expected })));
+                    }
 
                     return (
                       <div
@@ -977,12 +1205,29 @@ const Orders: React.FC = () => {
                           </div>
                         </div>
 
+                        {/* TAT Badge (New) */}
+                        <div className="mt-1 flex justify-end">
+                          <TATStatusBadge
+                            hoursUntilBreach={o.hours_until_tat_breach ?? null}
+                            isBreached={o.is_tat_breached ?? null}
+                            tatHours={o.tat_hours ?? null}
+                            compact={true}
+                          />
+                        </div>
+
                         {/* Middle: sample + tests */}
                         <div className="mt-3 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 bg-gray-50 rounded-lg p-3">
                           <div className="flex flex-col sm:flex-row sm:items-center gap-6">
                             <div className="min-w-[110px]">
-                              <div className="text-xs text-gray-600">Order</div>
-                              <div className="font-bold text-gray-900">#{(o.id || "").slice(-6)}</div>
+                              <div className="flex flex-col items-start gap-1">
+                                <span className="text-xs text-gray-500 font-mono bg-white px-2 py-0.5 rounded border">
+                                  {o.sample_id ? `#${String(o.sample_id).split("-").pop()} ` : 'No Sample'}
+                                </span>
+                                <SampleTypeGroup
+                                  samples={o.panels.map(p => ({ sampleType: p.sample_type || 'Blood', sampleColor: p.sample_color }))}
+                                  size="sm"
+                                />
+                              </div>
                             </div>
 
                             {o.sample_id && (
@@ -990,7 +1235,7 @@ const Orders: React.FC = () => {
                                 <div
                                   className="w-8 h-8 rounded-full border-2 border-white shadow-md flex items-center justify-center text-white font-bold text-xs"
                                   style={{ backgroundColor: o.color_code || "#8B5CF6" }}
-                                  title={`Sample Tube: ${o.color_name || "Tube"}`}
+                                  title={`Sample Color: ${o.color_code || "N/A"} `}
                                 >
                                   {(o.color_name || "Tube").charAt(0)}
                                 </div>
@@ -1038,8 +1283,8 @@ const Orders: React.FC = () => {
 
                                     return (
                                       <div
-                                        key={`${p.name}-${i}`}
-                                        className={`border rounded-lg px-3 py-2 transition-all duration-300 ${colorClass}`}
+                                        key={`${p.name} -${i} `}
+                                        className={`border rounded - lg px - 3 py - 2 transition - all duration - 300 ${colorClass} `}
                                       >
                                         <div className="font-medium text-sm mb-1 flex items-center gap-1">
                                           {p.isOutsourced && <span>🏥</span>}
@@ -1072,15 +1317,14 @@ const Orders: React.FC = () => {
                                     const orderTests = (o as any).order_tests || [];
                                     const orderTest = orderTests.find((ot: any) => ot.test_name === t);
                                     const isOutsourced = orderTest?.outsourced_lab_id;
-                                    
+
                                     return (
-                                      <span 
-                                        key={i} 
-                                        className={`px-2 py-1 rounded text-sm ${
-                                          isOutsourced 
-                                            ? 'bg-orange-100 text-orange-800 border border-orange-200' 
-                                            : 'bg-blue-100 text-blue-800'
-                                        }`}
+                                      <span
+                                        key={i}
+                                        className={`px - 2 py - 1 rounded text - sm ${isOutsourced
+                                          ? 'bg-orange-100 text-orange-800 border border-orange-200'
+                                          : 'bg-blue-100 text-blue-800'
+                                          } `}
                                       >
                                         {isOutsourced && '🏥 '}{t}
                                       </span>
@@ -1096,8 +1340,8 @@ const Orders: React.FC = () => {
                             </div>
                             <div className="text-sm text-gray-600">
                               <div>Ordered: {new Date(o.order_date).toLocaleDateString()}</div>
-                              <div className={`${new Date(o.expected_date) < new Date() ? "text-red-600 font-bold" : ""}`}>
-                                Expected: {new Date(o.expected_date).toLocaleDateString()}
+                              <div className={`${new Date(o.expected_date) < new Date() ? "text-red-600 font-bold" : ""} `}>
+                                Expected: {new Date(o.expected_date).toLocaleString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                                 {new Date(o.expected_date) < new Date() && " ⚠️ OVERDUE"}
                               </div>
                             </div>
@@ -1148,27 +1392,27 @@ const Orders: React.FC = () => {
                             <div
                               className="absolute left-0 top-0 h-4 transition-all duration-700 rounded-full"
                               style={{
-                                width: `${pct}%`,
+                                width: `${pct}% `,
                                 background: pct === 0 ? '#ef4444' : // red
-                                  pct < 25 ? `linear-gradient(90deg, #ef4444 0%, #f97316 100%)` : // red to orange
-                                    pct < 50 ? `linear-gradient(90deg, #f97316 0%, #eab308 100%)` : // orange to yellow  
-                                      pct < 75 ? `linear-gradient(90deg, #eab308 0%, #84cc16 100%)` : // yellow to lime
-                                        pct < 100 ? `linear-gradient(90deg, #84cc16 0%, #22c55e 100%)` : // lime to green
+                                  pct < 25 ? `linear - gradient(90deg, #ef4444 0 %, #f97316 100 %)` : // red to orange
+                                    pct < 50 ? `linear - gradient(90deg, #f97316 0 %, #eab308 100 %)` : // orange to yellow  
+                                      pct < 75 ? `linear - gradient(90deg, #eab308 0 %, #84cc16 100 %)` : // yellow to lime
+                                        pct < 100 ? `linear - gradient(90deg, #84cc16 0 %, #22c55e 100 %)` : // lime to green
                                           '#10b981', // emerald
-                                boxShadow: pct > 0 ? `0 0 12px ${pct < 50 ? '#ef444440' : '#22c55e40'}` : 'none'
+                                boxShadow: pct > 0 ? `0 0 12px ${pct < 50 ? '#ef444440' : '#22c55e40'} ` : 'none'
                               }}
                             />
 
                             {/* Approved segment overlay (darker green) */}
                             <div
                               className="absolute left-0 top-0 h-4 bg-green-600 transition-all duration-500 rounded-full opacity-80"
-                              style={{ width: `${o.expectedTotal > 0 ? (o.approvedAnalytes / o.expectedTotal) * 100 : 0}%` }}
+                              style={{ width: `${o.expectedTotal > 0 ? (o.approvedAnalytes / o.expectedTotal) * 100 : 0}% ` }}
                             />
 
                             {/* Progress indicator line */}
                             <div
                               className="absolute top-0 w-0.5 h-4 bg-white shadow-lg"
-                              style={{ left: `${pct}%` }}
+                              style={{ left: `${pct}% ` }}
                             />
 
                             {/* Sparkle effect for high progress */}
@@ -1196,7 +1440,7 @@ const Orders: React.FC = () => {
                               <span className="text-green-700">Approved: <strong>{o.approvedAnalytes}</strong></span>
                             </div>
                             <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-blue-200 lg:justify-end">
-                              <span className={`font-bold ${pct < 25 ? 'text-red-600' : pct < 50 ? 'text-orange-600' : pct < 75 ? 'text-yellow-600' : pct < 100 ? 'text-lime-600' : 'text-green-600'}`}>
+                              <span className={`font - bold ${pct < 25 ? 'text-red-600' : pct < 50 ? 'text-orange-600' : pct < 75 ? 'text-yellow-600' : pct < 100 ? 'text-lime-600' : 'text-green-600'} `}>
                                 {pct < 25 ? '🔴' : pct < 50 ? '🟠' : pct < 75 ? '🟡' : pct < 100 ? '🟢' : '✅'} Total: {o.expectedTotal}
                               </span>
                             </div>
@@ -1223,7 +1467,7 @@ const Orders: React.FC = () => {
             <div className="flex items-center">
               <AlertTriangle className="h-4 w-4 text-red-600 mr-1" />
               <span className="text-red-900 font-medium">
-                Overdue: {orders.filter((o) => new Date(o.expected_date) < new Date()).length}
+                Overdue: {orders.filter((o) => new Date(o.expected_date).setHours(0, 0, 0, 0) < new Date().setHours(0, 0, 0, 0)).length}
               </span>
             </div>
           </div>
@@ -1255,18 +1499,21 @@ const Orders: React.FC = () => {
 
       {selectedOrder && (
         <OrderDetailsModal
-          order={selectedOrder}
+          order={{
+            ...selectedOrder,
+            doctor: selectedOrder.doctor || '',
+            sample_id: selectedOrder.sample_id || undefined,
+            color_code: selectedOrder.color_code || undefined,
+            color_name: selectedOrder.color_name || undefined,
+            sample_collected_at: selectedOrder.sample_collected_at || undefined,
+            sample_collected_by: selectedOrder.sample_collected_by || undefined
+          }}
           onClose={() => setSelectedOrder(null)}
-          onUpdateStatus={async () => {
+          onUpdateStatus={handleUpdateStatus}
+          onSubmitResults={async (_orderId: string, _resultsData: any[]) => {
+            console.log('onSubmitResults called');
             await fetchOrders();
             setSelectedOrder(null);
-          }}
-          onAfterSubmit={async () => {
-            await fetchOrders();
-            setSelectedOrder(null);
-          }}
-          onAfterSaveDraft={async () => {
-            await fetchOrders();
           }}
         />
       )}
@@ -1325,10 +1572,10 @@ const Orders: React.FC = () => {
                       <div
                         key={test.id}
                         onClick={() => toggleTestSelection(test)}
-                        className={`p-3 border-2 rounded-lg cursor-pointer transition-all ${isSelected
+                        className={`p - 3 border - 2 rounded - lg cursor - pointer transition - all ${isSelected
                           ? 'border-blue-500 bg-blue-50'
                           : 'border-gray-200 hover:border-gray-300'
-                          }`}
+                          } `}
                       >
                         <div className="flex items-start justify-between">
                           <div className="flex-1">
@@ -1423,6 +1670,25 @@ const Orders: React.FC = () => {
 
       {/* Bottom spacer for FAB */}
       <div className="h-20 sm:hidden"></div>
+
+      {/* Order Details Modal */}
+      {selectedOrder && (
+        <OrderDetailsModal
+          order={{
+            ...selectedOrder,
+            tests: selectedOrder.tests || []
+          }}
+          onClose={() => {
+            setSelectedOrder(null);
+            fetchOrders(); // Refresh orders when modal closes
+          }}
+          onUpdateStatus={handleUpdateStatus}
+          onSubmitResults={() => {
+            fetchOrders(); // Refresh orders after submitting results
+            setSelectedOrder(null);
+          }}
+        />
+      )}
     </div>
   );
 };

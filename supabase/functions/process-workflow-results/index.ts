@@ -632,6 +632,40 @@ function normalizeGeminiResponse(responseText: string) {
   };
 }
 
+/**
+ * Parse numeric value and extract flag character (L/H/C) if present
+ * Examples: "11.1L" -> { value: "11.1", flag: "L" }
+ *           "4.91" -> { value: "4.91", flag: null }
+ *           "10.5H" -> { value: "10.5", flag: "H" }
+ */
+function parseValueAndFlag(rawValue: string): { value: string; extractedFlag: string | null } {
+  if (!rawValue || typeof rawValue !== 'string') {
+    return { value: rawValue, extractedFlag: null };
+  }
+
+  const trimmed = rawValue.trim();
+  
+  // Check if value ends with a flag character (L, H, C, LL, HH)
+  const flagPattern = /^([\d\.\-\+\s,]+?)([LHC]{1,2})$/i;
+  const match = trimmed.match(flagPattern);
+  
+  if (match) {
+    const numericPart = match[1].trim();
+    const flagPart = match[2].toUpperCase();
+    
+    // Validate that the numeric part is actually a valid number
+    if (!isNaN(parseFloat(numericPart))) {
+      return { 
+        value: numericPart, 
+        extractedFlag: flagPart 
+      };
+    }
+  }
+  
+  // No flag found or invalid format, return as-is
+  return { value: trimmed, extractedFlag: null };
+}
+
 function extractValuesFromGemini(result: any) {
   if (!result) return null;
 
@@ -641,11 +675,25 @@ function extractValuesFromGemini(result: any) {
       if (!entry || typeof entry !== "object") return;
       const key = entry.parameter || entry.name;
       if (!key) return;
+      
+      // Parse value to separate numeric value from flag character
+      let parsedValue = entry.value;
+      let extractedFlag = entry.flag;
+      
+      if (typeof entry.value === 'string') {
+        const parsed = parseValueAndFlag(entry.value);
+        parsedValue = parsed.value;
+        // Use extracted flag if no explicit flag was provided
+        if (!extractedFlag && parsed.extractedFlag) {
+          extractedFlag = parsed.extractedFlag;
+        }
+      }
+      
       map[key] = {
-        value: entry.value ?? null,
+        value: parsedValue ?? null,
         unit: entry.unit ?? null,
         reference: entry.reference_range ?? null,
-        flag: entry.flag ?? null,
+        flag: extractedFlag ?? null,
         confidence: entry.confidence ?? null,
         analyte_id: entry.analyte_id ?? null,
       };
@@ -953,8 +1001,13 @@ async function persistExtractedValues(params: PersistParams): Promise<PersistSum
     })();
 
     let valueString: string | null = null;
+    let extractedFlag: string | null = null;
+    
     if (typeof rawValue === "string") {
-      valueString = rawValue;
+      // Parse to separate numeric value from flag characters (e.g., "11.1L" -> "11.1" + flag "L")
+      const parsed = parseValueAndFlag(rawValue);
+      valueString = parsed.value;
+      extractedFlag = parsed.extractedFlag;
     } else if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
       valueString = rawValue.toString();
     } else if (typeof rawValue === "boolean") {
@@ -994,10 +1047,13 @@ async function persistExtractedValues(params: PersistParams): Promise<PersistSum
       return "";
     })();
 
-    const flag =
+    // Use explicit flag from raw data, or fall back to flag extracted from value string
+    const explicitFlag =
       raw && typeof raw === "object" && typeof (raw as Record<string, unknown>).flag === "string"
         ? (raw as Record<string, unknown>).flag
         : null;
+    
+    const flag = explicitFlag || extractedFlag;
 
     const perAnalyteConfidenceValue =
       raw && typeof raw === "object" && "confidence" in raw

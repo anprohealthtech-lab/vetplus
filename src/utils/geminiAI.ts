@@ -182,8 +182,14 @@ class SecureGeminiAIService {
         throw new Error(data.error || 'Edge Function returned unsuccessful response');
       }
       
+      // Handle array response from Edge Function
+      let responseData = data.data;
+      if (Array.isArray(responseData) && responseData.length > 0) {
+        responseData = responseData[0]; // Take first element if it's an array
+      }
+      
       // Transform response if needed (handle legacy format)
-      const result = this.transformResponse(data.data);
+      const result = this.transformResponse(responseData);
       result.inserted = data.inserted || false;
       
       return result;

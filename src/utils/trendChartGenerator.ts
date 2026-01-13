@@ -57,31 +57,87 @@ export const fetchTrendData = async (
   maxRecords: number = 10
 ): Promise<TrendDataPoint[]> => {
   try {
-    const { data, error } = await supabase
-      .from('v_report_template_context')
-      .select('order_date, analytes')
+    // 1. Get analyte_id for the parameter name
+    const { data: analyteInfo } = await supabase
+      .from('analytes')
+      .select('id')
+      .eq('name', parameter)
+      .maybeSingle();
+
+    let query = supabase
+      .from('view_patient_history')
+      .select('result_date, value, unit, reference_range, source')
       .eq('patient_id', patientId)
-      .order('order_date', { ascending: false })
+      .order('result_date', { ascending: false })
       .limit(maxRecords);
+
+    if (analyteInfo) {
+      query = query.eq('analyte_id', analyteInfo.id);
+    } else {
+      // Fallback matching by name using join if ID not found directly
+      const { data: nameMatchData } = await supabase
+        .from('view_patient_history')
+        .select(`
+          result_date, 
+          value, 
+          unit, 
+          reference_range, 
+          source,
+          analytes!inner (name)
+        `)
+        .eq('patient_id', patientId)
+        .eq('analytes.name', parameter)
+        .order('result_date', { ascending: false })
+        .limit(maxRecords);
+      
+      if (nameMatchData && nameMatchData.length > 0) {
+        const trendData = nameMatchData.map((row: any) => ({
+          order_date: row.result_date,
+          value: row.value,
+          unit: row.unit,
+          reference_range: row.reference_range,
+          flag: null, // View doesn't have flags
+        }));
+        return trendData.reverse();
+      }
+
+      // Final fallback to legacy view for internal data only
+      const { data: legacyData } = await supabase
+        .from('v_report_template_context')
+        .select('order_date, analytes')
+        .eq('patient_id', patientId)
+        .order('order_date', { ascending: false })
+        .limit(maxRecords);
+
+      const trendData = legacyData?.flatMap((row: any) => {
+        const analytes = row.analytes || [];
+        return analytes
+          .filter((a: any) => a.parameter === parameter)
+          .map((a: any) => ({
+            order_date: row.order_date,
+            value: a.value,
+            unit: a.unit,
+            reference_range: a.reference_range,
+            flag: a.flag,
+          }));
+      }) || [];
+      return trendData.reverse();
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       console.error('Error fetching trend data:', error);
       return [];
     }
 
-    // Extract relevant analyte data from JSONB array
-    const trendData = data?.flatMap((row: any) => {
-      const analytes = row.analytes || [];
-      return analytes
-        .filter((a: any) => a.parameter === parameter)
-        .map((a: any) => ({
-          order_date: row.order_date,
-          value: a.value,
-          unit: a.unit,
-          reference_range: a.reference_range,
-          flag: a.flag,
-        }));
-    }) || [];
+    const trendData = (data || []).map((row: any) => ({
+      order_date: row.result_date,
+      value: row.value,
+      unit: row.unit,
+      reference_range: row.reference_range,
+      flag: null,
+    }));
 
     // Reverse to show oldest first (left to right on chart)
     return trendData.reverse();

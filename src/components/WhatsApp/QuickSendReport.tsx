@@ -1,11 +1,11 @@
 // src/components/WhatsApp/QuickSendReport.tsx
 import React, { useState } from 'react';
-import { 
-  MessageCircle, 
-  Send, 
-  Phone, 
-  Loader, 
-  CheckCircle, 
+import {
+  MessageCircle,
+  Send,
+  Phone,
+  Loader,
+  CheckCircle,
   XCircle,
   AlertTriangle
 } from 'lucide-react';
@@ -25,7 +25,13 @@ interface QuickSendReportProps {
   patientName?: string;
   patientPhone?: string;
   testName?: string;
+  doctorName?: string;
+  mode?: 'patient' | 'doctor';
   onSent?: (result: MessageResult) => void;
+  // Customization
+  buttonClassName?: string;
+  showIcon?: boolean;
+  label?: string;
 }
 
 const QuickSendReport: React.FC<QuickSendReportProps> = ({
@@ -34,11 +40,16 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
   patientName = '',
   patientPhone = '',
   testName = '',
-  onSent
+  doctorName = '',
+  mode = 'patient',
+  onSent,
+  buttonClassName,
+  showIcon = true,
+  label = 'Send via WhatsApp'
 }) => {
   // Convert old Supabase URLs to custom domain format
   const customDomainReportUrl = reportUrl ? convertToCustomDomain(reportUrl) : reportUrl;
-  
+
   const [isOpen, setIsOpen] = useState(false);
   const [phoneNumber, setPhoneNumber] = useState(() => normalizePhoneForInput(patientPhone));
   const [message, setMessage] = useState('');
@@ -53,35 +64,44 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
   // Load templates when modal opens
   React.useEffect(() => {
     if (isOpen) {
+      if (mode === 'doctor') {
+        // Doctor Mode: Use default message
+        const defaultMsg = `Hello Dr. ${doctorName || 'Doctor'},\n\nPlease find the attached report for patient ${patientName}.\n\nTest: ${testName}`;
+        setMessage(defaultMsg);
+        setTemplatesLoaded(true);
+        return;
+      }
+
+      // Patient Mode: Load templates
       const loadTemplates = async () => {
         try {
           console.log('Loading WhatsApp templates...');
           const { database } = await import('../../utils/supabase');
           const { data } = await database.whatsappTemplates.list(undefined, 'report_ready');
           console.log('Templates loaded:', data);
-          
+
           if (data && data.length > 0) {
             setTemplates(data);
             // Try to get default template
             const defaultTemplate = data.find((t: any) => t.is_default);
             console.log('Default template:', defaultTemplate);
-            
+
             if (defaultTemplate) {
               setSelectedTemplateId(defaultTemplate.id);
-              
+
               // Fetch lab details for placeholder
               const labId = await database.getCurrentUserLabId();
               console.log('Lab ID:', labId);
-              
+
               const { supabase } = await import('../../utils/supabase');
               const { data: labData } = await supabase
                 .from('labs')
                 .select('name, address, phone, email')
                 .eq('id', labId!)
                 .single();
-              
+
               console.log('Lab data:', labData);
-              
+
               const { replacePlaceholders } = await import('../../utils/whatsappTemplates');
               const templateData = {
                 PatientName: patientName || 'Patient',
@@ -94,10 +114,10 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
               };
               console.log('Template data for replacement:', templateData);
               console.log('Original template content:', defaultTemplate.message_content);
-              
+
               const templatedMessage = replacePlaceholders(defaultTemplate.message_content, templateData);
               console.log('Message after placeholder replacement:', templatedMessage);
-              
+
               setMessage(templatedMessage);
             } else {
               // No default, use first template
@@ -139,7 +159,7 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
       // Reset when modal closes
       setTemplatesLoaded(false);
     }
-  }, [isOpen, patientName, testName, reportUrl]);
+  }, [isOpen, patientName, testName, reportUrl, mode, doctorName]);
 
   // Update form fields when props change
   React.useEffect(() => {
@@ -155,16 +175,16 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
       // Prevent body scroll when modal is open
       const originalOverflow = document.body.style.overflow;
       document.body.style.overflow = 'hidden';
-      
+
       // Handle escape key
       const handleEscape = (e: KeyboardEvent) => {
         if (e.key === 'Escape') {
           setIsOpen(false);
         }
       };
-      
+
       document.addEventListener('keydown', handleEscape);
-      
+
       return () => {
         document.body.style.overflow = originalOverflow;
         document.removeEventListener('keydown', handleEscape);
@@ -201,21 +221,21 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
 
   const validateForm = (): string[] => {
     const errors: string[] = [];
-    
+
     if (!phoneNumber) {
       errors.push('Phone number is required');
     } else if (!WhatsAppAPI.validatePhoneNumber(phoneNumber)) {
       errors.push('Please enter a valid Indian mobile number (10 digits)');
     }
-    
+
     if (!message.trim()) {
       errors.push('Message content is required');
     }
-    
+
     if (!reportUrl) {
       errors.push('No report URL provided');
     }
-    
+
     return errors;
   };
 
@@ -234,21 +254,21 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
 
     try {
       const formattedPhone = WhatsAppAPI.formatPhoneNumber(phoneNumber);
-      
+
       // Check connection status before sending
       const connection = await WhatsAppAPI.getConnectionStatus();
-      
+
       if (!connection?.success || !connection.isConnected) {
         console.log('⚠️ WhatsApp not connected, using manual fallback...');
-        
+
         // Import the fallback utility
         const { openWhatsAppManually, buildMessageWithReportLink } = await import('../../utils/whatsappUtils');
-        
+
         // Build message with report link embedded
-        const messageWithLink = customDomainReportUrl 
+        const messageWithLink = customDomainReportUrl
           ? buildMessageWithReportLink(message, customDomainReportUrl, 'patient')
           : message;
-        
+
         // Open WhatsApp manually
         const { success, method } = await openWhatsAppManually(
           phoneNumber,
@@ -256,19 +276,19 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
           customDomainReportUrl,
           'patient'
         );
-        
+
         if (success && method === 'manual_link') {
           setSendResult({
             success: true,
             message: 'WhatsApp opened. Please send the message manually.',
             method: 'manual_link'
           });
-          
+
           // Close modal after showing success
           setTimeout(() => {
             setIsOpen(false);
           }, 2000);
-          
+
           if (onSent) {
             onSent({
               success: true,
@@ -282,11 +302,11 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
             message: 'User cancelled manual send'
           });
         }
-        
+
         setIsSending(false);
         return;
       }
-      
+
       // Connected - use normal backend send
       const result = await WhatsAppAPI.sendReportFromUrl(
         formattedPhone,
@@ -297,14 +317,14 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
       );
 
       setSendResult(result);
-      
+
       if (result.success) {
         // Close modal after success
         setTimeout(() => {
           setIsOpen(false);
         }, 2000);
       }
-      
+
       if (onSent) {
         onSent(result);
       }
@@ -323,19 +343,19 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
     return (
       <button
         onClick={handleOpen}
-        className="inline-flex items-center px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
-        title="Send via WhatsApp"
+        className={buttonClassName || "inline-flex items-center px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"}
+        title={label}
       >
-        <MessageCircle className="h-4 w-4 mr-2" />
-        Send via WhatsApp
+        {showIcon && <MessageCircle className="h-4 w-4 mr-2" />}
+        {label}
       </button>
     );
   }
 
   return (
-    <div 
+    <div
       className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4"
-      style={{ 
+      style={{
         position: 'fixed',
         top: 0,
         left: 0,
@@ -350,9 +370,9 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
         }
       }}
     >
-      <div 
+      <div
         className="bg-white rounded-lg shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto"
-        style={{ 
+        style={{
           position: 'relative',
           margin: 'auto'
         }}
@@ -436,7 +456,7 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
                         .select('name, address, phone, email')
                         .eq('id', labId!)
                         .single();
-                      
+
                       const { replacePlaceholders } = await import('../../utils/whatsappTemplates');
                       const templatedMessage = replacePlaceholders(template.message_content, {
                         PatientName: patientName || 'Patient',
@@ -506,11 +526,10 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
 
           {/* Send Result */}
           {sendResult && (
-            <div className={`mb-4 p-3 rounded-lg border ${
-              sendResult.success 
-                ? 'border-green-200 bg-green-50' 
-                : 'border-red-200 bg-red-50'
-            }`}>
+            <div className={`mb-4 p-3 rounded-lg border ${sendResult.success
+              ? 'border-green-200 bg-green-50'
+              : 'border-red-200 bg-red-50'
+              }`}>
               <div className="flex items-start space-x-2">
                 {sendResult.success ? (
                   <CheckCircle className="h-4 w-4 text-green-600 mt-0.5" />
@@ -518,14 +537,12 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
                   <AlertTriangle className="h-4 w-4 text-red-600 mt-0.5" />
                 )}
                 <div>
-                  <div className={`text-sm font-medium ${
-                    sendResult.success ? 'text-green-900' : 'text-red-900'
-                  }`}>
+                  <div className={`text-sm font-medium ${sendResult.success ? 'text-green-900' : 'text-red-900'
+                    }`}>
                     {sendResult.success ? 'Report sent successfully!' : 'Failed to send report'}
                   </div>
-                  <div className={`text-xs ${
-                    sendResult.success ? 'text-green-800' : 'text-red-800'
-                  }`}>
+                  <div className={`text-xs ${sendResult.success ? 'text-green-800' : 'text-red-800'
+                    }`}>
                     {sendResult.message}
                   </div>
                 </div>

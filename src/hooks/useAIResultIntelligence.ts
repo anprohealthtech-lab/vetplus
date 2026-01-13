@@ -33,6 +33,14 @@ export interface ResultValue {
   ai_suggested_flag?: string | null;
   ai_suggested_interpretation?: string | null;
   trend_interpretation?: string | null;
+  /** Historical values from past orders and external reports */
+  historical_values?: Array<{
+    date: string;
+    value: string;
+    flag?: string | null;
+    source: 'internal' | 'external';
+    lab_name?: string; // For external reports
+  }>;
 }
 
 export interface TestGroupContext {
@@ -87,6 +95,68 @@ export interface ClinicalSummaryResponse {
   _savedFromDb?: boolean;
   _generatedAt?: string;
 }
+
+/**
+ * Patient Summary Response - Patient-friendly summary in selected language
+ * Medical/pathology terms remain in English for accuracy
+ */
+export interface PatientSummaryResponse {
+  /** Overall health status in simple terms */
+  health_status: string;
+  /** Brief summary of normal findings */
+  normal_findings_summary: string;
+  /** List of abnormal findings with simple explanations */
+  abnormal_findings: Array<{
+    test_name: string; // In English (e.g., "Hemoglobin", "LDL Cholesterol")
+    value: string;
+    status: 'high' | 'low' | 'abnormal';
+    explanation: string; // In selected language
+  }>;
+  /** Whether any findings need doctor consultation */
+  needs_consultation: boolean;
+  /** Consultation recommendation message (in selected language) */
+  consultation_message: string;
+  /** Name of the referring doctor if available */
+  referring_doctor_name?: string;
+  /** General health tips based on results (in selected language) */
+  health_tips: string[];
+  /** The language this summary was generated in */
+  language: string;
+  /** Flags for saved summaries loaded from database */
+  _savedFromDb?: boolean;
+  _generatedAt?: string;
+}
+
+/** Supported languages for patient summary */
+export type SupportedLanguage = 
+  | 'english' 
+  | 'hindi' 
+  | 'marathi' 
+  | 'gujarati' 
+  | 'tamil' 
+  | 'telugu' 
+  | 'kannada' 
+  | 'bengali' 
+  | 'punjabi' 
+  | 'malayalam'
+  | 'odia'
+  | 'assamese';
+
+/** Language display names for UI */
+export const LANGUAGE_DISPLAY_NAMES: Record<SupportedLanguage, string> = {
+  english: 'English',
+  hindi: 'हिन्दी (Hindi)',
+  marathi: 'मराठी (Marathi)',
+  gujarati: 'ગુજરાતી (Gujarati)',
+  tamil: 'தமிழ் (Tamil)',
+  telugu: 'తెలుగు (Telugu)',
+  kannada: 'ಕನ್ನಡ (Kannada)',
+  bengali: 'বাংলা (Bengali)',
+  punjabi: 'ਪੰਜਾਬੀ (Punjabi)',
+  malayalam: 'മലയാളം (Malayalam)',
+  odia: 'ଓଡ଼ିଆ (Odia)',
+  assamese: 'অসমীয়া (Assamese)',
+};
 
 interface AIResultIntelligenceState {
   loading: boolean;
@@ -279,6 +349,8 @@ export function useAIResultIntelligence() {
   /**
    * Get clinical summary for referring doctor
    * Call at ORDER level after all results are verified
+   * @param testGroups - Array of test groups with their result values (including historical_values)
+   * @param patient - Optional patient context for personalized summary
    */
   const getClinicalSummary = useCallback(async (
     testGroups: Array<{
@@ -295,6 +367,34 @@ export function useAIResultIntelligence() {
     });
   }, [callAIFunction]);
 
+  /**
+   * Get patient-friendly summary in selected language
+   * Call at ORDER level - generates easy-to-understand summary for patients
+   * 
+   * @param testGroups - Array of test groups with their result values
+   * @param language - Target language for the summary (medical terms stay in English)
+   * @param referringDoctorName - Name of referring doctor for consultation recommendation
+   * @param patient - Optional patient context for personalized summary
+   */
+  const getPatientSummary = useCallback(async (
+    testGroups: Array<{
+      name: string;
+      category: string;
+      result_values: ResultValue[];
+    }>,
+    language: SupportedLanguage = 'english',
+    referringDoctorName?: string,
+    patient?: PatientContext
+  ): Promise<PatientSummaryResponse> => {
+    return callAIFunction<PatientSummaryResponse>({
+      action: 'patient_summary',
+      test_groups: testGroups,
+      language,
+      referring_doctor_name: referringDoctorName || 'your doctor',
+      patient,
+    });
+  }, [callAIFunction]);
+
   return {
     // State
     loading: state.loading,
@@ -306,6 +406,7 @@ export function useAIResultIntelligence() {
     saveResultValueSuggestions,
     getVerifierSummary,
     getClinicalSummary,
+    getPatientSummary,
     
     // Clear error utility
     clearError: useCallback(() => {

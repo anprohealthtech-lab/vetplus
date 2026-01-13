@@ -109,7 +109,8 @@ const DraftReviewer: React.FC<DraftReviewerProps> = ({
         },
         description: 'Generated from IFU ingestion',
         active: false,
-      });
+        test_group_id: testGroupId ?? null,
+      } as any);
 
       if (versionError || !version) {
         throw versionError || new Error('Failed to create workflow version');
@@ -249,9 +250,8 @@ const DraftReviewer: React.FC<DraftReviewerProps> = ({
           type="button"
           onClick={handleFinalize}
           disabled={processing}
-          className={`px-4 py-2 rounded-md font-medium ${
-            processing ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'
-          }`}
+          className={`px-4 py-2 rounded-md font-medium ${processing ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'
+            }`}
         >
           {processing ? 'Finalizing…' : 'Finalize Draft'}
         </button>

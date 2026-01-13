@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Brain, Edit2, Check, X, Loader2, AlertCircle } from 'lucide-react';
+import { Brain, Edit2, Check, X, Loader2, AlertCircle, Split } from 'lucide-react';
 import { database } from '../../utils/supabase';
 import { useAIResultIntelligence } from '../../hooks/useAIResultIntelligence';
 
@@ -24,6 +24,27 @@ const AIDoctorSummaryPanel: React.FC<AIDoctorSummaryPanelProps> = ({
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasExisting, setHasExisting] = useState(false);
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+  const handleInsertPageBreak = () => {
+    const pageBreak = "\n---\n";
+    if (textareaRef.current) {
+      const start = textareaRef.current.selectionStart;
+      const end = textareaRef.current.selectionEnd;
+      const newText = summary.substring(0, start) + pageBreak + summary.substring(end);
+      setSummary(newText);
+
+      setTimeout(() => {
+        if (textareaRef.current) {
+          const newPos = start + pageBreak.length;
+          textareaRef.current.focus();
+          textareaRef.current.setSelectionRange(newPos, newPos);
+        }
+      }, 0);
+    } else {
+      setSummary(prev => prev + pageBreak);
+    }
+  };
 
   // Load existing AI summary
   useEffect(() => {
@@ -56,7 +77,7 @@ const AIDoctorSummaryPanel: React.FC<AIDoctorSummaryPanelProps> = ({
     try {
       // Get patient info
       const { data: patientData } = await database.patients.getById(patientId);
-      
+
       // Prepare test groups with results
       const testGroups = results.map(result => ({
         name: result.test_name || 'Test Panel',
@@ -224,12 +245,30 @@ ${aiSummary.clinical_interpretation}
       {/* Summary Display/Editor */}
       {summary ? (
         isEditing ? (
-          <textarea
-            value={summary}
-            onChange={(e) => setSummary(e.target.value)}
-            className="w-full h-96 p-4 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-purple-500 focus:border-transparent font-mono text-sm"
-            placeholder="AI-generated clinical summary will appear here..."
-          />
+          <div className="space-y-2">
+            {/* Editor Toolbar */}
+            <div className="flex items-center gap-2 pb-2 border-b border-gray-100">
+              <button
+                onClick={handleInsertPageBreak}
+                className="flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors"
+                title="Insert Page Break (\n---\n)"
+              >
+                <Split className="w-3.5 h-3.5" />
+                Insert Page Break
+              </button>
+              <span className="text-xs text-gray-400">
+                Use this to split content across multiple pages in the PDF
+              </span>
+            </div>
+            <textarea
+              ref={textareaRef}
+              value={summary}
+
+              onChange={(e) => setSummary(e.target.value)}
+              className="w-full h-96 p-4 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-purple-500 focus:border-transparent font-mono text-sm"
+              placeholder="AI-generated clinical summary will appear here..."
+            />
+          </div>
         ) : (
           <div className="bg-white rounded-lg border border-purple-200 p-4 prose prose-sm max-w-none">
             <pre className="whitespace-pre-wrap font-sans text-sm text-gray-700">{summary}</pre>

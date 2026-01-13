@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { database } from '../utils/supabase';
+import { database, aiAnalysis } from '../utils/supabase';
 
 export interface TrendDataPoint {
   date: string;
@@ -79,28 +79,37 @@ export const useTrendGraphs = () => {
         analyteNames
       });
 
-      // 1. Fetch historical data from v_report_template_context (same as TrendModal)
-      // This ensures consistency - the view aggregates all analytes by order
-      const { data: orderData, error: fetchError } = await database.supabase
-        .from('v_report_template_context')
-        .select('order_id, order_date, analytes')
+      // 1. Fetch historical data from view_patient_history (Internal + External)
+      // We fetch by patient_id only and filter in memory to handle cases where 
+      // analyte_id might be null (external results) but name matches
+      const { data: historyData, error: fetchError } = await database.supabase
+        .from('view_patient_history')
+        .select(`
+          analyte_id,
+          analyte_name,
+          value,
+          unit,
+          result_date,
+          source,
+          reference_range,
+          source_id
+        `)
         .eq('patient_id', patientId)
-        .order('order_date', { ascending: true })
-        .limit(50); // Get up to 50 orders for trend
+        .order('result_date', { ascending: true })
+        .limit(500); // Increased limit since we filter in-memory
 
       if (fetchError) {
         console.error('[TrendGraphs] Fetch error:', fetchError);
         throw fetchError;
       }
 
-      console.log('[TrendGraphs] Fetched orders:', orderData?.length || 0);
+      console.log('[TrendGraphs] Fetched history points:', historyData?.length || 0);
 
-      if (!orderData || orderData.length === 0) {
+      if (!historyData || historyData.length === 0) {
         throw new Error('No historical data found for trend analysis');
       }
 
-      // 2. Extract analytes from the view data and group by analyte name
-      // The view contains JSONB array of analytes per order
+      // 2. Group by analyte ID/name
       const analyteMap = new Map<string, {
         analyte_id: string;
         analyte_name: string;
@@ -112,55 +121,43 @@ export const useTrendGraphs = () => {
           resultValueId: string;
           value: number;
           flag: string | null;
+          source: 'internal' | 'external';
         }>;
       }>();
 
-      // Build set of analyte names to match (from IDs or provided names)
-      const targetAnalyteNames = new Set<string>();
-      
-      orderData.forEach((order: any) => {
-        const analytes = order.analytes || [];
-        analytes.forEach((a: any) => {
-          // If analyteIds provided, check if this analyte's ID matches
-          const matchesId = analyteIds.length === 0 || analyteIds.includes(a.analyte_id);
-          // If analyteNames provided, also check name match
-          const matchesName = !analyteNames || analyteNames.length === 0 || 
-            analyteNames.some(name => name.toLowerCase() === a.parameter?.toLowerCase());
-          
-          if (matchesId || matchesName) {
-            targetAnalyteNames.add(a.parameter);
-          }
-        });
-      });
+      historyData.forEach((row: any) => {
+        // Filter: Must match requested IDs or Names
+        const matchesId = row.analyte_id && analyteIds.includes(row.analyte_id);
+        const matchesName = analyteNames && row.analyte_name && analyteNames.some(n => 
+            n.toLowerCase().trim() === row.analyte_name.toLowerCase().trim()
+        );
 
-      console.log('[TrendGraphs] Target analyte names:', Array.from(targetAnalyteNames));
+        if (!matchesId && !matchesName) return;
 
-      // Now extract all matching data points
-      orderData.forEach((order: any) => {
-        const analytes = order.analytes || [];
-        analytes.forEach((a: any) => {
-          if (!targetAnalyteNames.has(a.parameter)) return;
-          if (!a.value) return; // Skip if no value
-
-          const key = a.parameter; // Group by analyte name
-          
-          if (!analyteMap.has(key)) {
-            analyteMap.set(key, {
-              analyte_id: a.analyte_id || '',
-              analyte_name: a.parameter,
-              unit: a.unit || '',
-              reference_range: a.reference_range || '',
-              dataPoints: []
-            });
-          }
-
-          analyteMap.get(key)!.dataPoints.push({
-            date: order.order_date,
-            timestamp: order.order_date, // View doesn't have created_at, use order_date
-            resultValueId: a.result_value_id || '',
-            value: parseFloat(a.value),
-            flag: a.flag || null
+        if (!row.value) return;
+        const analyteName = row.analyte_name || 'Unknown';
+        const key = row.analyte_id || analyteName;
+        
+        if (!analyteMap.has(key)) {
+          analyteMap.set(key, {
+            analyte_id: row.analyte_id || '',
+            analyte_name: analyteName,
+            unit: row.unit || '',
+            reference_range: row.reference_range || '',
+            dataPoints: []
           });
+        }
+
+        const numericValue = parseFloat(row.value);
+        if (isNaN(numericValue)) return;
+
+        analyteMap.get(key)!.dataPoints.push({
+          date: row.result_date,
+          timestamp: row.result_date,
+          resultValueId: row.source_id || '',
+          value: numericValue,
+          flag: null, // Basic view doesn't have flags yet
+          source: row.source
         });
       });
 
@@ -217,7 +214,7 @@ export const useTrendGraphs = () => {
       });
 
       // 4. Save to database via RPC
-      const { error: saveError } = await database.aiAnalysis.saveTrendData(
+      const { error: saveError } = await aiAnalysis.saveTrendData(
         orderId,
         trendData
       );
@@ -244,7 +241,7 @@ export const useTrendGraphs = () => {
     setError(null);
 
     try {
-      const { data, error: loadError } = await database.aiAnalysis.getTrendData(orderId);
+      const { data, error: loadError } = await aiAnalysis.getTrendData(orderId);
       
       if (loadError) throw loadError;
 

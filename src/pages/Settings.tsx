@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { database, supabase } from '../utils/supabase';
 import EditUserModal from '../components/Users/EditUserModal';
 import { NotificationSettings } from '../components/Settings/NotificationSettings';
+import { NotificationTriggerSettings } from '../components/Settings/NotificationTriggerSettings';
 import InvoiceTemplateManager from '../components/Billing/InvoiceTemplateManager';
 import {
   Users,
@@ -28,8 +29,11 @@ import {
   FileText,
   Save,
   Loader2,
-  UserCheck
+  UserCheck,
+  Globe
 } from 'lucide-react';
+import { LANGUAGE_DISPLAY_NAMES, type SupportedLanguage } from '../hooks/useAIResultIntelligence';
+import { COUNTRY_CODE_OPTIONS } from '../utils/phoneFormatter';
 
 interface User {
   id: string;
@@ -88,6 +92,8 @@ interface LabSettings {
   watermark_position: string;
   watermark_size: string;
   watermark_rotation: number;
+  preferred_language: SupportedLanguage;
+  country_code?: string;
 }
 
 // Define UserForm component outside of Settings
@@ -120,7 +126,7 @@ const UserFormComponent: React.FC<{
   useEffect(() => {
     const fetchData = async () => {
       if (!labId) return;
-      
+
       // Fetch all locations
       const { data: locationsData } = await database.locations.getAll();
       setLocations(locationsData || []);
@@ -249,12 +255,12 @@ const UserFormComponent: React.FC<{
   };
 
   const handleLocationToggle = (locationId: string) => {
-    setSelectedLocations(prev => 
+    setSelectedLocations(prev =>
       prev.includes(locationId)
         ? prev.filter(id => id !== locationId)
         : [...prev, locationId]
     );
-    
+
     // If unchecking the primary location, clear it
     if (selectedPrimaryLocation === locationId && selectedLocations.includes(locationId)) {
       setSelectedPrimaryLocation('');
@@ -377,13 +383,12 @@ const UserFormComponent: React.FC<{
               </p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 {locations.map(location => (
-                  <label 
-                    key={location.id} 
-                    className={`flex items-center p-3 border rounded-lg hover:bg-gray-50 cursor-pointer ${
-                      selectedPrimaryLocation === location.id 
-                        ? 'border-blue-500 bg-blue-50' 
-                        : 'border-gray-200'
-                    }`}
+                  <label
+                    key={location.id}
+                    className={`flex items-center p-3 border rounded-lg hover:bg-gray-50 cursor-pointer ${selectedPrimaryLocation === location.id
+                      ? 'border-blue-500 bg-blue-50'
+                      : 'border-gray-200'
+                      }`}
                   >
                     <input
                       type="checkbox"
@@ -531,6 +536,8 @@ const Settings: React.FC = () => {
             watermark_position: labData.watermark_position || 'center',
             watermark_size: labData.watermark_size || 'medium',
             watermark_rotation: labData.watermark_rotation || 0,
+            preferred_language: labData.preferred_language || 'english',
+            country_code: (labData as any).country_code || '+91',
           });
         }
 
@@ -713,7 +720,9 @@ const Settings: React.FC = () => {
         watermark_position: labSettings.watermark_position,
         watermark_size: labSettings.watermark_size,
         watermark_rotation: labSettings.watermark_rotation,
-      });
+        preferred_language: labSettings.preferred_language,
+        country_code: labSettings.country_code || '+91',
+      } as any);
 
       if (updateError) throw updateError;
 
@@ -812,8 +821,8 @@ const Settings: React.FC = () => {
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
                 className={`flex items-center px-4 py-3 rounded-md text-sm font-medium transition-all whitespace-nowrap ${activeTab === tab.id
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
                   }`}
               >
                 <tab.icon className="h-4 w-4 mr-2" />
@@ -1231,6 +1240,33 @@ const Settings: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* Patient Summary Settings */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                      <Globe className="h-5 w-5 mr-2 text-blue-600" />
+                      Patient Summary Settings
+                    </h3>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Patient Summary Language
+                        </label>
+                        <select
+                          value={labSettings.preferred_language}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, preferred_language: e.target.value as SupportedLanguage } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          {Object.entries(LANGUAGE_DISPLAY_NAMES).map(([key, label]) => (
+                            <option key={key} value={key}>{label}</option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-gray-500 mt-2">
+                          This is the default language for patient-friendly summaries. Medical terms like "Hemoglobin", "CBC", etc. will remain in English for accuracy, while explanations will be in the selected language.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
                   {/* Contact Information */}
                   <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                     <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
@@ -1251,6 +1287,25 @@ const Settings: React.FC = () => {
                           placeholder="lab@example.com"
                         />
                         <p className="text-xs text-gray-500 mt-1">Used for email forwarding and system notifications</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          <Globe className="h-4 w-4 inline mr-1" />
+                          Country Code
+                        </label>
+                        <select
+                          value={labSettings.country_code || '+91'}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, country_code: e.target.value } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="+91">🇮🇳 India (+91)</option>
+                          <option value="+92">🇵🇰 Pakistan (+92)</option>
+                          <option value="+94">🇱🇰 Sri Lanka (+94)</option>
+                          <option value="+971">🇦🇪 UAE (+971)</option>
+                          <option value="+880">🇧🇩 Bangladesh (+880)</option>
+                          <option value="+977">🇳🇵 Nepal (+977)</option>
+                        </select>
+                        <p className="text-xs text-gray-500 mt-1">Used for WhatsApp messages and phone number formatting</p>
                       </div>
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -1428,7 +1483,12 @@ const Settings: React.FC = () => {
 
         {/* Notifications Tab */}
         {activeTab === 'notifications' && (
-          <NotificationSettings />
+          <div className="space-y-8">
+            <NotificationTriggerSettings />
+            <div className="pt-8 border-t border-gray-200">
+              <NotificationSettings />
+            </div>
+          </div>
         )}
 
         {/* Invoice Templates Tab */}
@@ -1439,27 +1499,31 @@ const Settings: React.FC = () => {
       </div>
 
       {/* User Form Modal (for adding new users) */}
-      {showUserForm && labId && (
-        <UserFormComponent
-          onClose={() => { setShowUserForm(false); setSelectedUser(null); }}
-          user={selectedUser || undefined}
-          permissions={permissions}
-          availableRoles={availableRoles}
-          labId={labId}
-          onSave={reloadUsers}
-        />
-      )}
+      {
+        showUserForm && labId && (
+          <UserFormComponent
+            onClose={() => { setShowUserForm(false); setSelectedUser(null); }}
+            user={selectedUser || undefined}
+            permissions={permissions}
+            availableRoles={availableRoles}
+            labId={labId}
+            onSave={reloadUsers}
+          />
+        )
+      }
 
       {/* Edit User Modal (for editing existing users - no auth changes) */}
-      {showEditUserModal && selectedUser && labId && (
-        <EditUserModal
-          user={selectedUser}
-          onClose={() => { setShowEditUserModal(false); setSelectedUser(null); }}
-          onSuccess={reloadUsers}
-          isAdmin={authUser?.user_metadata?.role === 'Admin'}
-        />
-      )}
-    </div>
+      {
+        showEditUserModal && selectedUser && labId && (
+          <EditUserModal
+            user={selectedUser}
+            onClose={() => { setShowEditUserModal(false); setSelectedUser(null); }}
+            onSuccess={reloadUsers}
+            isAdmin={authUser?.user_metadata?.role === 'Admin'}
+          />
+        )
+      }
+    </div >
   );
 };
 

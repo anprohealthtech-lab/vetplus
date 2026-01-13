@@ -2,12 +2,12 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase, database } from '../utils/supabase';
 import { useMobileOptimizations } from '../utils/platformHelper';
 import { MobileFAB } from '../components/ui/MobileFAB';
-import { 
-  FileText, 
-  Download, 
-  Eye, 
-  Search, 
-  RefreshCw, 
+import {
+  FileText,
+  Download,
+  Eye,
+  Search,
+  RefreshCw,
   Filter,
   X,
   Calendar,
@@ -24,7 +24,10 @@ import {
   SortDesc,
   Wand2,
   Printer,
-  Settings
+  Settings,
+  Trash2,
+  FileCode,
+  Sparkles
 } from 'lucide-react';
 import {
   format,
@@ -48,20 +51,23 @@ import type { LabTemplateRecord, ReportData, LabBrandingHtmlDefaults } from '../
 import PDFProgressModal from '../components/PDFProgressModal';
 import { usePDFGeneration, isOrderReportReady } from '../hooks/usePDFGeneration';
 import QuickSendReport from '../components/WhatsApp/QuickSendReport';
-import PDFSettingsModal, { 
-  PDFRenderSettings, 
+import PDFSettingsModal, {
+  PDFRenderSettings,
   settingsToPdfCoOptions,
   loadSavedPDFSettings,
   PDF_PRESETS
 } from '../components/PDF/PDFSettingsModal';
+import ReportDesignStudio from '../components/ReportStudio/ReportDesignStudio';
+import { SendReportModal } from '../components/Dashboard/SendReportModal';
+import { ReportPreviewModal } from '../components/Reports/ReportPreviewModal';
 
 // Helper function to safely format dates
 const safeFormatDate = (dateValue: string | null | undefined, formatString: string = 'MMM d, yyyy'): string => {
   if (!dateValue) return 'N/A';
-  
+
   const date = new Date(dateValue);
   if (!isValid(date)) return 'Invalid Date';
-  
+
   return format(date, formatString);
 };
 
@@ -139,10 +145,52 @@ const Reports: React.FC = () => {
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [isTestingTemplate, setIsTestingTemplate] = useState(false);
   const [previewingOrderId, setPreviewingOrderId] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   // PDF Settings Modal state
   const [showPDFSettings, setShowPDFSettings] = useState(false);
   const [pdfSettingsOrderId, setPdfSettingsOrderId] = useState<string | null>(null);
+  const [smartReportLoadingId, setSmartReportLoadingId] = useState<string | null>(null);
+  const [generatingOrderId, setGeneratingOrderId] = useState<string | null>(null);
+
+  // Report Studio & Send Report
+  const [reportStudioOrderId, setReportStudioOrderId] = useState<string | null>(null);
+  const [viewingOrder, setViewingOrder] = useState<OrderGroup | null>(null);
+  const [sendReportModalData, setSendReportModalData] = useState<{ orderId: string, patientName: string, doctorName: string, doctorPhone: string, clinicalSummary?: string, reportUrl: string } | null>(null);
+
+  const handleOpenSendDoctor = async (group: OrderGroup) => {
+    try {
+      // Find report URL
+      const finalReport = (group.results[0] as ApprovedResult)?.final_report;
+      const reportUrl = finalReport?.pdf_url;
+
+      if (!reportUrl) {
+        alert('Please generate a final report before sending to doctor.');
+        return;
+      }
+
+      // Fetch latest order details for summary and phone
+      const { data: orderData, error } = await supabase
+        .from('orders')
+        .select('doctor, doctor_phone, ai_clinical_summary')
+        .eq('id', group.order_id)
+        .single();
+
+      if (error) throw error;
+
+      setSendReportModalData({
+        orderId: group.order_id,
+        patientName: group.patient_full_name,
+        doctorName: orderData.doctor || 'Doctor',
+        doctorPhone: orderData.doctor_phone || '',
+        clinicalSummary: orderData.ai_clinical_summary,
+        reportUrl: convertToCustomDomain(reportUrl) || reportUrl
+      });
+    } catch (err) {
+      console.error('Error preparing send modal:', err);
+      alert('Failed to load order details.');
+    }
+  };
 
   // PDF generation hook
   const { isGenerating, stage, progress, generatePDF, regenerateWithSettings, resetState } = usePDFGeneration();
@@ -157,18 +205,29 @@ const Reports: React.FC = () => {
     if (orderIds.length === 0) return;
 
     try {
+      // Optimized: Fetch all jobs in one query
+      const { data: jobs, error } = await supabase
+        .from('pdf_generation_queue')
+        .select('*')
+        .in('order_id', orderIds);
+
+      if (error) {
+        console.error('Error polling PDF queue:', error);
+        return;
+      }
+
       const statusMap = new Map<string, any>();
       let hasNewlyCompleted = false;
-      
-      for (const orderId of orderIds) {
-        const { data: job } = await database.pdfQueue.getJobForOrder(orderId);
-        if (job) {
-          statusMap.set(orderId, job);
-          
-          // Check if this job just completed (was processing/pending, now completed)
-          const prevJob = previousQueueStatusRef.current.get(orderId);
+
+      // Group jobs by order_id
+      if (jobs) {
+        for (const job of jobs) {
+          statusMap.set(job.order_id, job);
+
+          // Check if this job just completed
+          const prevJob = previousQueueStatusRef.current.get(job.order_id);
           if (job.status === 'completed' && prevJob && prevJob.status !== 'completed') {
-            console.log('🎉 Job just completed for order:', orderId);
+            console.log('🎉 Job just completed for order:', job.order_id);
             hasNewlyCompleted = true;
           }
         }
@@ -177,11 +236,10 @@ const Reports: React.FC = () => {
       // Update the ref for next comparison
       previousQueueStatusRef.current = statusMap;
       setPdfQueueStatus(statusMap);
-      
-      // If any job just completed, reload approved results to get updated report data
+
+      // If any job just completed, reload approved results
       if (hasNewlyCompleted && shouldReloadOnComplete) {
         console.log('🔄 Reloading approved results after job completion...');
-        // Small delay to ensure database has committed the report record
         setTimeout(() => {
           loadApprovedResults();
         }, 500);
@@ -243,9 +301,9 @@ const Reports: React.FC = () => {
         .order('verified_at', { ascending: false });
 
       if (!error && data) {
-        // Load existing reports to check which orders already have reports
+        // 1. Bulk Fetch Existing Reports
         let existingReports: any[] = [];
-        const orderIds = data.map((r: ApprovedResult) => r.order_id).filter(Boolean);
+        const orderIds = Array.from(new Set(data.map((r: ApprovedResult) => r.order_id).filter(Boolean)));
 
         if (orderIds.length > 0) {
           const { data: reportsData } = await supabase
@@ -255,6 +313,7 @@ const Reports: React.FC = () => {
           existingReports = (reportsData as any[]) || [];
         }
 
+        // 2. Bulk Fetch Patient Phones
         const patientPhoneMap = new Map<string, string>();
         const patientIds = Array.from(
           new Set((data as ApprovedResult[]).map((r) => r.patient_id).filter(Boolean))
@@ -275,49 +334,60 @@ const Reports: React.FC = () => {
           }
         }
 
-        // Since there's only one report per order due to unique constraint,
-        // we need to check the report_type to determine draft vs final status
+        // 3. Bulk Fetch Panel Readiness
+        const readinessMap = new Map<string, boolean>();
+        if (orderIds.length > 0) {
+          const { data: panelStatusData } = await supabase
+            .from('v_result_panel_status')
+            .select('order_id, panel_ready')
+            .in('order_id', orderIds);
+
+          if (panelStatusData) {
+            // Group by order_id
+            const orderPanelStatus: Record<string, boolean[]> = {};
+            panelStatusData.forEach((row: any) => {
+              if (!orderPanelStatus[row.order_id]) orderPanelStatus[row.order_id] = [];
+              orderPanelStatus[row.order_id].push(row.panel_ready);
+            });
+
+            // Determine readiness
+            Object.keys(orderPanelStatus).forEach(oid => {
+              const statuses = orderPanelStatus[oid];
+              readinessMap.set(oid, statuses.length > 0 && statuses.every(s => s === true));
+            });
+          }
+        }
+
         const reportMap = new Map(
           existingReports.map((r) => [r.order_id, r])
         );
 
-        const enhancedData: ApprovedResult[] = await Promise.all(
-          (data as ApprovedResult[]).map(async (result) => {
-            const report = reportMap.get(result.order_id);
-            const isReady = await isOrderReportReady(result.order_id);
-            const resolvedPhone = result.phone || patientPhoneMap.get(result.patient_id) || '';
-            
-            // Debug logging to track report status
-            if (report) {
-              console.log(`Order ${result.order_id}:`, {
-                report_type: report.report_type,
-                status: report.status,
-                pdf_url: report.pdf_url,
-                is_ready: isReady
-              });
-            }
-            
-            return {
-              ...result,
-              has_report: !!report,
-              report_status: report?.status,
-              report_generated_at: report?.generated_date,
-              is_report_ready: isReady,
-              has_draft_report: report?.report_type === 'draft' && !!report.pdf_url,
-              has_final_report: report?.report_type === 'final' && !!report.pdf_url,
-              has_print_pdf: !!report?.print_pdf_url,
-              draft_report: report?.report_type === 'draft' ? report : null,
-              final_report: report?.report_type === 'final' ? report : null,
-              print_pdf_url: report?.print_pdf_url || undefined,
-              print_pdf_generated_at: report?.print_pdf_generated_at || undefined,
-              phone: resolvedPhone
-            };
-          })
-        );
+        // Process data in memory without inner async calls
+        const enhancedData: ApprovedResult[] = (data as ApprovedResult[]).map((result) => {
+          const report = reportMap.get(result.order_id);
+          const isReady = readinessMap.get(result.order_id) || false;
+          const resolvedPhone = result.phone || patientPhoneMap.get(result.patient_id) || '';
+
+          return {
+            ...result,
+            has_report: !!report,
+            report_status: report?.status,
+            report_generated_at: report?.generated_date,
+            is_report_ready: isReady,
+            has_draft_report: report?.report_type === 'draft' && !!report.pdf_url,
+            has_final_report: report?.report_type === 'final' && !!report.pdf_url,
+            has_print_pdf: !!report?.print_pdf_url,
+            draft_report: report?.report_type === 'draft' ? report : null,
+            final_report: report?.report_type === 'final' ? report : null,
+            print_pdf_url: report?.print_pdf_url || undefined,
+            print_pdf_generated_at: report?.print_pdf_generated_at || undefined,
+            phone: resolvedPhone
+          };
+        });
 
         setApprovedResults(enhancedData);
-        
-        // Poll PDF queue status for orders
+
+        // Poll PDF queue status for orders (bulk)
         const uniqueOrderIds = Array.from(new Set(enhancedData.map(r => r.order_id)));
         await pollPDFQueueStatus(uniqueOrderIds);
       }
@@ -327,6 +397,40 @@ const Reports: React.FC = () => {
       setLoading(false);
     }
   }, [dateFilter, pollPDFQueueStatus]);
+
+  useEffect(() => {
+    const checkAdminStatus = async () => {
+      console.log('🔍 Checking admin status...');
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        console.log('👤 Current user ID:', user?.id);
+
+        if (user) {
+          const { data: userData, error } = await supabase
+            .from('users')
+            .select('role')
+            .eq('id', user.id)
+            .single();
+
+          console.log('📋 User role data:', userData);
+          if (error) console.error('❌ Error fetching user role:', error);
+
+          if (userData && (userData.role === 'admin' || userData.role === 'super_admin' || userData.role === 'lab_admin')) {
+            console.log('✅ User identified as ADMIN');
+            setIsAdmin(true);
+          } else {
+            console.log('⚠️ User is NOT identified as admin. Role:', userData?.role);
+            setIsAdmin(false);
+          }
+        } else {
+          console.log('❌ No authenticated user found during admin check');
+        }
+      } catch (err) {
+        console.error('❌ Exception checking admin status:', err);
+      }
+    };
+    checkAdminStatus();
+  }, []);
 
   useEffect(() => {
     loadApprovedResults();
@@ -345,7 +449,7 @@ const Reports: React.FC = () => {
     if (pendingJobs.length > 0) {
       const [orderId] = pendingJobs[0];
       console.log('🤖 Auto-triggering PDF generation for:', orderId);
-      
+
       // Trigger and poll when complete
       database.pdfQueue.triggerGeneration(orderId).then(({ data, error }) => {
         if (error) {
@@ -381,7 +485,7 @@ const Reports: React.FC = () => {
       const stillHasActiveJobs = Array.from(pdfQueueStatus.values()).some(
         job => job.status === 'pending' || job.status === 'processing'
       );
-      
+
       if (stillHasActiveJobs) {
         pollPDFQueueStatus(orderIds);
       }
@@ -393,7 +497,7 @@ const Reports: React.FC = () => {
   // Transform and filter data
   const orderGroups: OrderGroup[] = useMemo(() => {
     const map = new Map<string, OrderGroup>();
-    
+
     let filtered = approvedResults;
 
     // Apply search filter
@@ -410,14 +514,14 @@ const Reports: React.FC = () => {
 
     // Apply test type filter
     if (selectedTestType !== 'all') {
-      filtered = filtered.filter(result => 
+      filtered = filtered.filter(result =>
         result.test_name.toLowerCase().includes(selectedTestType.toLowerCase())
       );
     }
 
     // Apply doctor filter
     if (selectedDoctor !== 'all') {
-      filtered = filtered.filter(result => 
+      filtered = filtered.filter(result =>
         result.doctor?.toLowerCase().includes(selectedDoctor.toLowerCase())
       );
     }
@@ -476,7 +580,7 @@ const Reports: React.FC = () => {
     // Sort groups
     const sorted = Array.from(map.values()).sort((a, b) => {
       let aValue: any, bValue: any;
-      
+
       switch (sortField) {
         case 'patient_name':
           aValue = a.patient_full_name;
@@ -494,7 +598,7 @@ const Reports: React.FC = () => {
           aValue = new Date(a.verified_at).getTime();
           bValue = new Date(b.verified_at).getTime();
       }
-      
+
       if (sortDirection === 'asc') {
         return aValue < bValue ? -1 : aValue > bValue ? 1 : 0;
       } else {
@@ -522,7 +626,7 @@ const Reports: React.FC = () => {
     const readyForGeneration = orderGroups.filter(g => g.is_report_ready && !g.results[0]?.has_final_report).length;
     const pendingVerification = orderGroups.filter(g => !g.is_report_ready).length;
     const completed = orderGroups.filter(g => g.results[0]?.has_final_report).length;
-    
+
     return { totalOrders, readyForGeneration, pendingVerification, completed };
   }, [orderGroups]);
 
@@ -533,41 +637,205 @@ const Reports: React.FC = () => {
       alert('Order not found');
       return;
     }
-
-    try {
-      // Use the new lightweight JS-to-PDF viewer service
-      const pdfUrl = await quickViewPDF(orderId);
-      
-      if (!pdfUrl) {
-        // Fallback to the old method if quick view fails
-        console.log('Quick view failed, falling back to full PDF generation...');
-        const reportData = await prepareReportData(group);
-        const fallbackUrl = await viewPDFReport(orderId, reportData);
-        if (fallbackUrl) {
-          window.open(fallbackUrl, '_blank');
-        } else {
-          alert('Failed to generate or view PDF report');
-        }
-      }
-      // Note: quickViewPDF already opens the PDF in a new tab
-    } catch (error) {
-      console.error('View failed:', error);
-      alert('Failed to view report: ' + (error instanceof Error ? error.message : 'Unknown error'));
-    }
+    setViewingOrder(group);
   };
 
   const handleDownload = useCallback(async (orderId: string, forceDraft = false) => {
     try {
+      setGeneratingOrderId(orderId);
       await generatePDF(orderId, forceDraft);
-      // Add a small delay to ensure database transaction is complete
+      // Keep button disabled for 3 seconds after generation to prevent double-clicking
+      // The queue polling will show the actual status
       setTimeout(async () => {
         await loadApprovedResults();
-      }, 1000);
+        // Only clear if no queue job is processing for this order
+        const { data: job } = await supabase
+          .from('pdf_generation_queue')
+          .select('status')
+          .eq('order_id', orderId)
+          .single();
+
+        if (!job || job.status !== 'processing') {
+          setGeneratingOrderId(null);
+        }
+      }, 3000);
     } catch (error) {
       console.error('Download failed:', error);
       alert('Download failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+      setGeneratingOrderId(null);
     }
   }, [generatePDF, loadApprovedResults]);
+
+  const handleSmartReport = async (orderId: string) => {
+    try {
+      setSmartReportLoadingId(orderId);
+
+      // 1. Get HTML Content (Raw structure for Gamma)
+      const { data: htmlData, error: htmlError } = await supabase.functions.invoke('create-html-preview', {
+        body: { orderId }
+      });
+
+      if (htmlError || !htmlData?.html) {
+        throw new Error('Failed to generate base HTML for smart report');
+      }
+
+      // 2. Call Gamma Generation
+      // We pass the raw HTML to the new edge function
+      const { data: smartData, error: smartError } = await supabase.functions.invoke('generate-smart-report', {
+        body: { html: htmlData.html }
+      });
+
+      if (smartError) throw smartError;
+
+      console.log('✨ Smart Report Result:', smartData);
+
+      // Open PDF if available
+      if (smartData?.exportUrl) {
+        window.open(smartData.exportUrl, '_blank');
+      } else if (smartData?.gammaUrl) {
+        // Fallback to Gamma Doc URL
+        window.open(smartData.gammaUrl, '_blank');
+      } else {
+        alert('Smart report generated but no URL returned.');
+      }
+
+    } catch (error) {
+      console.error('Smart report failed:', error);
+      alert('Failed to generate Smart Report: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setSmartReportLoadingId(null);
+    }
+  };
+
+  const handleHtmlPreview = async (orderId: string) => {
+    try {
+      console.log('🚀 Triggering Hybrid PDF Generation (One-Shot) for:', orderId);
+      // alert('Starting Hybrid PDF Generation... Please wait.');
+
+      const { data, error } = await supabase.functions.invoke('generate-pdf-oneshot', {
+        body: { order_id: orderId }
+      });
+
+      if (error) throw error;
+
+      console.log('✅ Hybrid Generation Result:', data);
+
+      if (data?.pdfUrl) {
+        window.open(data.pdfUrl, '_blank');
+      } else {
+        alert('Report generated but no URL returned check console.');
+      }
+
+    } catch (error) {
+      console.error('Hybrid Report Gen failed:', error);
+      alert('Failed to generate Hybrid Report: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  };
+
+
+
+  const handleLetterheadGeneration = async (orderId: string) => {
+    try {
+      console.log('🚀 Triggering Letterhead PDF Generation for:', orderId);
+      // alert('Starting Letterhead PDF Generation... Please wait.');
+
+      const { data, error } = await supabase.functions.invoke('generate-pdf-letterhead', {
+        body: { orderId: orderId }
+      });
+
+      if (error) {
+        console.error('Supabase function error:', error);
+        throw error;
+      }
+
+      console.log('✅ Letterhead Generation Result:', data);
+
+      if (data?.pdfUrl) {
+        window.open(data.pdfUrl, '_blank');
+      } else {
+        alert('Report generated but no URL returned. Check console.');
+      }
+
+    } catch (error) {
+      console.error('Letterhead Report Gen failed:', error);
+      alert('Failed to generate Letterhead Report: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  };
+
+  const handleDeleteReport = useCallback(async (orderId: string) => {
+    // Perform on-demand admin check to be absolutely sure and debuggable
+    console.log('🕵️‍♀️ Verifying admin status before deletion...');
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.error('❌ No authenticated user found on click');
+        alert('You must be logged in to delete reports.');
+        return;
+      }
+
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', user.id)
+        .single();
+
+      console.log('📋 On-click User Role:', userData?.role);
+
+      const userRoleLower = (userData?.role || '').toLowerCase();
+      const hasPermission = userData && (
+        userRoleLower === 'admin' ||
+        userRoleLower === 'super_admin' ||
+        userRoleLower === 'lab_admin'
+      );
+
+      if (!hasPermission) {
+        console.warn('⛔ Permission denied. User role:', userData?.role);
+        alert(`Permission denied. Your role is '${userData?.role || 'unknown'}', but 'admin' or 'super_admin' is required.`);
+        return;
+      }
+
+      console.log('✅ Permission granted.');
+
+    } catch (checkError) {
+      console.error('❌ Error checking permissions:', checkError);
+      alert('Failed to verify permissions. See console for details.');
+      return;
+    }
+
+    if (!window.confirm('Are you sure you want to delete this report? This action removes the report record but keeps the order and results. This cannot be undone.')) return;
+
+    try {
+      const { error } = await supabase
+        .from('reports')
+        .delete()
+        .eq('order_id', orderId);
+
+      if (error) throw error;
+
+      alert('Report deleted successfully');
+      // Update local state immediately to reflect removal
+      const updatedResults = approvedResults.map(r => {
+        if (r.order_id === orderId) {
+          return {
+            ...r,
+            has_report: false,
+            has_draft_report: false,
+            has_final_report: false,
+            is_report_ready: true, // Reset to ready since report is gone
+            report_status: undefined,
+            report_generated_at: undefined,
+            print_pdf_url: undefined
+          };
+        }
+        return r;
+      });
+      setApprovedResults(updatedResults);
+      await loadApprovedResults(); // Full reload to be sure
+    } catch (error) {
+      console.error('Error deleting report:', error);
+      alert('Failed to delete report: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  }, [isAdmin, approvedResults, loadApprovedResults]);
 
   // Open PDF Settings modal for a specific order
   const handleOpenPDFSettings = useCallback((orderId: string) => {
@@ -578,16 +846,16 @@ const Reports: React.FC = () => {
   // Handle PDF regeneration with custom settings
   const handleRegenerateWithSettings = useCallback(async (settings: PDFRenderSettings) => {
     if (!pdfSettingsOrderId) return;
-    
+
     try {
       const pdfCoOptions = settingsToPdfCoOptions(settings);
       await regenerateWithSettings(pdfSettingsOrderId, pdfCoOptions);
-      
+
       // Refresh the list after regeneration
       setTimeout(async () => {
         await loadApprovedResults();
       }, 1000);
-      
+
       setShowPDFSettings(false);
       setPdfSettingsOrderId(null);
     } catch (error) {
@@ -757,7 +1025,7 @@ const Reports: React.FC = () => {
         return;
       }
 
-  let brandingDefaults: LabBrandingHtmlDefaults | undefined;
+      let brandingDefaults: LabBrandingHtmlDefaults | undefined;
       try {
         const { data: labBranding, error: brandingError } = await database.labs.getBrandingDefaults();
         if (brandingError) {
@@ -849,7 +1117,7 @@ const Reports: React.FC = () => {
       }
 
       const pdfUrl = await generateTemplatePreviewPDF(
-        templateRecord, 
+        templateRecord,
         {
           context,
           overrides: {
@@ -924,7 +1192,7 @@ const Reports: React.FC = () => {
 
   const getStatusBadge = (group: OrderGroup) => {
     const result = group.results[0] as ApprovedResult;
-    
+
     if (result?.has_final_report) {
       return (
         <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 border border-green-200">
@@ -933,7 +1201,7 @@ const Reports: React.FC = () => {
         </span>
       );
     }
-    
+
     if (result?.has_draft_report) {
       return (
         <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 border border-blue-200">
@@ -942,7 +1210,7 @@ const Reports: React.FC = () => {
         </span>
       );
     }
-    
+
     if (group.is_report_ready) {
       return (
         <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200">
@@ -951,7 +1219,7 @@ const Reports: React.FC = () => {
         </span>
       );
     }
-    
+
     return (
       <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
         <XCircle className="w-3 h-3 mr-1" />
@@ -963,7 +1231,7 @@ const Reports: React.FC = () => {
   // Get PDF auto-generation status badge
   const getPDFAutoGenBadge = (orderId: string) => {
     const job = pdfQueueStatus.get(orderId);
-    
+
     if (!job) return null;
 
     switch (job.status) {
@@ -998,12 +1266,12 @@ const Reports: React.FC = () => {
             </div>
           </div>
         );
-      
+
       case 'processing':
         // Animated progress stages for better UX
         const progressPercent = job.progress_percent || 0;
         const progressStage = job.progress_stage || 'Initializing...';
-        
+
         // Determine stage icon and color based on progress
         const getStageInfo = (percent: number) => {
           if (percent < 20) return { stage: 'Fetching data', icon: '📊' };
@@ -1013,9 +1281,9 @@ const Reports: React.FC = () => {
           if (percent < 95) return { stage: 'Uploading', icon: '☁️' };
           return { stage: 'Finalizing', icon: '✨' };
         };
-        
+
         const stageInfo = getStageInfo(progressPercent);
-        
+
         return (
           <div className="flex flex-col space-y-2 px-3 py-2 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-sm">
             {/* Header with animated spinner */}
@@ -1033,13 +1301,13 @@ const Reports: React.FC = () => {
               </div>
               <span className="text-sm font-bold text-blue-700">{progressPercent}%</span>
             </div>
-            
+
             {/* Animated progress bar */}
             <div className="relative w-full h-2 bg-blue-100 rounded-full overflow-hidden">
               {/* Background shimmer effect */}
               <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-shimmer"></div>
               {/* Actual progress */}
-              <div 
+              <div
                 className="h-full bg-gradient-to-r from-blue-500 via-blue-600 to-indigo-500 rounded-full transition-all duration-500 ease-out relative overflow-hidden"
                 style={{ width: `${Math.max(progressPercent, 5)}%` }}
               >
@@ -1047,18 +1315,18 @@ const Reports: React.FC = () => {
                 <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent animate-shine"></div>
               </div>
             </div>
-            
+
             {/* Helpful message */}
             <p className="text-[10px] text-blue-500 italic animate-pulse">
-              {progressPercent < 50 
+              {progressPercent < 50
                 ? '⏳ Please wait, preparing your report...'
-                : progressPercent < 90 
+                : progressPercent < 90
                   ? '🚀 Almost there, generating PDF...'
                   : '✅ Finishing up, just a moment...'}
             </p>
           </div>
         );
-      
+
       case 'completed':
         return (
           <div className="flex items-center space-x-2 px-2 py-1 bg-green-50 border border-green-200 rounded-md">
@@ -1066,7 +1334,7 @@ const Reports: React.FC = () => {
             <span className="text-xs font-medium text-green-800">Auto-Generated</span>
           </div>
         );
-      
+
       case 'failed':
         return (
           <div className="flex items-center space-x-2 px-3 py-1.5 bg-red-50 border border-red-200 rounded-md">
@@ -1090,7 +1358,7 @@ const Reports: React.FC = () => {
             </div>
           </div>
         );
-      
+
       default:
         return null;
     }
@@ -1181,11 +1449,10 @@ const Reports: React.FC = () => {
           <div className="flex items-center space-x-3">
             <button
               onClick={handleTemplatePreview}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${
-                isTestingTemplate
-                  ? 'bg-purple-400 text-white cursor-not-allowed opacity-80'
-                  : 'bg-purple-600 text-white hover:bg-purple-700'
-              }`}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${isTestingTemplate
+                ? 'bg-purple-400 text-white cursor-not-allowed opacity-80'
+                : 'bg-purple-600 text-white hover:bg-purple-700'
+                }`}
               disabled={isTestingTemplate}
             >
               {isTestingTemplate ? (
@@ -1232,9 +1499,8 @@ const Reports: React.FC = () => {
             </div>
             <button
               onClick={() => setShowFilters(!showFilters)}
-              className={`flex items-center space-x-2 px-4 py-3 border rounded-lg transition-colors ${
-                showFilters ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'
-              }`}
+              className={`flex items-center space-x-2 px-4 py-3 border rounded-lg transition-colors ${showFilters ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                }`}
             >
               <Filter className="w-4 h-4" />
               <span>Filters</span>
@@ -1419,7 +1685,7 @@ const Reports: React.FC = () => {
                   {orderGroups.length} orders ready for report generation
                 </p>
               </div>
-              
+
               <div className="flex items-center space-x-2">
                 <button
                   onClick={selectAllOrders}
@@ -1496,11 +1762,10 @@ const Reports: React.FC = () => {
             ) : (
               <div className="max-h-[60vh] overflow-y-auto">
                 {orderGroups.map((group, index) => (
-                  <div 
-                    key={group.order_id} 
-                    className={`p-6 hover:bg-gray-50 transition-colors ${
-                      index % 2 === 0 ? 'bg-white' : 'bg-gray-25'
-                    }`}
+                  <div
+                    key={group.order_id}
+                    className={`p-6 hover:bg-gray-50 transition-colors ${index % 2 === 0 ? 'bg-white' : 'bg-gray-25'
+                      }`}
                   >
                     {/* Desktop View */}
                     <div className="hidden lg:grid lg:grid-cols-12 lg:gap-4 lg:items-center">
@@ -1559,9 +1824,9 @@ const Reports: React.FC = () => {
                         <div className="flex flex-col space-y-2">
                           {/* PDF Auto-Generation Status */}
                           {getPDFAutoGenBadge(group.order_id)}
-                          
+
                           {/* Action Buttons */}
-                          <div className="flex items-center space-x-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <button
                               className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
                               onClick={() => handleView(group.order_id)}
@@ -1569,147 +1834,229 @@ const Reports: React.FC = () => {
                               <Eye className="w-4 h-4" />
                               <span>View</span>
                             </button>
-                          
-                          {group.is_report_ready ? (
-                            <>
-                              {!(group.results[0] as ApprovedResult)?.has_final_report ? (
-                                <>
-                                  <button
-                                    className={`flex items-center space-x-1 px-3 py-1.5 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors ${
-                                      previewingOrderId === group.order_id ? 'opacity-80 cursor-not-allowed' : ''
-                                    }`}
-                                    onClick={() => handleOrderTemplatePreview(group)}
-                                    disabled={previewingOrderId === group.order_id}
-                                    title="Preview using saved template"
-                                  >
-                                    {previewingOrderId === group.order_id ? (
-                                      <Loader2 className="w-4 h-4 animate-spin" />
-                                    ) : (
-                                      <Wand2 className="w-4 h-4" />
-                                    )}
-                                    <span>Template Preview</span>
-                                  </button>
-                                  <button
-                                    className={`flex items-center space-x-1 px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors ${
-                                      isGenerating ? 'opacity-50 cursor-not-allowed' : ''
-                                    }`}
-                                    onClick={() => handleDownload(group.order_id, false)}
-                                    disabled={isGenerating}
-                                    title="Generate final report"
-                                  >
-                                    {isGenerating ? (
-                                      <Loader2 className="w-4 h-4 animate-spin" />
-                                    ) : (
-                                      <Download className="w-4 h-4" />
-                                    )}
-                                    <span>Generate Final</span>
-                                  </button>
-                                  <button
-                                    className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
-                                    onClick={() => handleOpenPDFSettings(group.order_id)}
-                                    title="Adjust PDF settings and generate"
-                                  >
-                                    <Settings className="w-4 h-4" />
-                                  </button>
-                                </>
-                              ) : (
-                                <>
-                                  <button
-                                    className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
-                                    onClick={() => {
-                                      const finalReport = (group.results[0] as ApprovedResult)?.final_report;
-                                      console.log('Final report object:', finalReport);
-                                      if (finalReport?.pdf_url) {
-                                        window.open(finalReport.pdf_url, '_blank');
-                                      } else {
-                                        console.warn('Final report PDF URL not found, regenerating...');
-                                        handleDownload(group.order_id, false);
-                                      }
-                                    }}
-                                    title="Download final report"
-                                  >
-                                    <Download className="w-4 h-4" />
-                                    <span>Download Final</span>
-                                  </button>
-                                  <button
-                                    className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
-                                    onClick={() => handleOpenPDFSettings(group.order_id)}
-                                    title="Adjust PDF settings and regenerate"
-                                  >
-                                    <Settings className="w-4 h-4" />
-                                    <span>Settings</span>
-                                  </button>
-                                  <button
-                                    className={`flex items-center space-x-1 px-3 py-1.5 text-sm rounded-md transition-colors ${
-                                      (group.results[0] as ApprovedResult)?.final_report?.print_pdf_url
-                                        ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                                        : 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                                    }`}
-                                    onClick={() => {
-                                      const finalReport = (group.results[0] as ApprovedResult)?.final_report;
-                                      const printUrl = finalReport?.print_pdf_url;
-                                      if (printUrl) {
-                                        window.open(printUrl, '_blank');
-                                      }
-                                    }}
-                                    disabled={!(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url}
-                                    title={(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'Open print-ready PDF' : 'Print PDF pending generation'}
-                                  >
-                                    <Printer className="w-4 h-4" />
-                                    <span>Print</span>
-                                  </button>
-                                </>
-                              )}
-                              
-                              {/* WhatsApp Send Button - Show if final report exists */}
-                              {(() => {
-                                const result = group.results[0] as ApprovedResult;
-                                const finalReport = result?.final_report;
-                                const hasFinalReport = result?.has_final_report;
-                                const reportUrl = finalReport?.pdf_url;
-                                
-                                // Convert old Supabase URLs to custom domain format
-                                const customDomainReportUrl = reportUrl ? convertToCustomDomain(reportUrl) : reportUrl;
-                                
-                                // Show WhatsApp button if there's a final report (even without URL for now)
-                                if (hasFinalReport || finalReport) {
-                                  return (
-                                    <QuickSendReport
-                                      reportUrl={customDomainReportUrl || `#demo-report-${group.order_id}`}
-                                      reportName={`${group.patient_full_name} - ${group.test_names.join(', ')}`}
-                                      patientName={group.patient_full_name}
-                                      patientPhone={result?.phone}
-                                      testName={group.test_names.join(', ')}
-                                      onSent={(result) => {
-                                        if (result.success) {
-                                          alert('Report sent successfully via WhatsApp!');
+
+                            <button
+                              className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded-md hover:bg-blue-200 transition-colors"
+                              onClick={() => setReportStudioOrderId(group.order_id)}
+                              title="Design Report Layout"
+                            >
+                              <Sparkles className="w-4 h-4" />
+                              <span>Design</span>
+                            </button>
+
+                            {group.is_report_ready ? (
+                              <>
+                                {!(group.results[0] as ApprovedResult)?.has_final_report ? (
+                                  <>
+                                    <button
+                                      className={`flex items-center space-x-1 px-3 py-1.5 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors ${previewingOrderId === group.order_id ? 'opacity-80 cursor-not-allowed' : ''
+                                        }`}
+                                      onClick={() => handleOrderTemplatePreview(group)}
+                                      disabled={previewingOrderId === group.order_id}
+                                      title="Preview using saved template"
+                                    >
+                                      {previewingOrderId === group.order_id ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                      ) : (
+                                        <Wand2 className="w-4 h-4" />
+                                      )}
+                                      <span>Template Preview</span>
+                                    </button>
+                                    <button
+                                      className={`flex items-center space-x-1 px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
+                                        ? 'opacity-50 cursor-not-allowed'
+                                        : ''
+                                        }`}
+                                      onClick={() => handleDownload(group.order_id, false)}
+                                      disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
+                                      title="Generate final report"
+                                    >
+                                      {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? (
+                                        <div className="flex items-center space-x-1">
+                                          <Loader2 className="w-4 h-4 animate-spin" />
+                                          {pdfQueueStatus.get(group.order_id)?.progress_percent && (
+                                            <span className="text-xs">{pdfQueueStatus.get(group.order_id).progress_percent}%</span>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <Download className="w-4 h-4" />
+                                      )}
+                                      <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Generating...' : 'Generate Final'}</span>
+                                    </button>
+                                    <button
+                                      className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+                                      onClick={() => handleHtmlPreview(group.order_id)}
+                                      title="Preview HTML"
+                                    >
+                                      <FileCode className="w-4 h-4" />
+                                      <span>HTML</span>
+                                    </button>
+                                    <button
+                                      className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
+                                      onClick={() => handleLetterheadGeneration(group.order_id)}
+                                      title="Generate with Letterhead Function"
+                                    >
+                                      <FileCode className="w-4 h-4" />
+                                      <span>LF</span>
+                                    </button>
+                                    <button
+                                      className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
+                                      onClick={() => handleOpenPDFSettings(group.order_id)}
+                                      title="Adjust PDF settings and generate"
+                                    >
+                                      <Settings className="w-4 h-4" />
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button
+                                      className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+                                      onClick={() => {
+                                        const finalReport = (group.results[0] as ApprovedResult)?.final_report;
+                                        console.log('Final report object:', finalReport);
+                                        if (finalReport?.pdf_url) {
+                                          window.open(finalReport.pdf_url, '_blank');
                                         } else {
-                                          alert('Failed to send report: ' + result.message);
+                                          console.warn('Final report PDF URL not found, regenerating...');
+                                          handleDownload(group.order_id, false);
                                         }
                                       }}
-                                    />
-                                  );
-                                }
-                                return null;
-                              })()}
-                            </>
-                          ) : (
-                            <button
-                              className={`flex items-center space-x-1 px-3 py-1.5 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-colors ${
-                                isGenerating ? 'opacity-50 cursor-not-allowed' : ''
-                              }`}
-                              onClick={() => handleDownload(group.order_id, true)}
-                              disabled={isGenerating}
-                              title="Generate draft report"
-                            >
-                              {isGenerating ? (
-                                <Loader2 className="w-4 h-4 animate-spin" />
-                              ) : (
-                                <Download className="w-4 h-4" />
-                              )}
-                              <span>Draft</span>
-                            </button>
-                          )}
+                                      title="Download final report"
+                                    >
+                                      <Download className="w-4 h-4" />
+                                      <span>Download Final</span>
+                                    </button>
+                                    <button
+                                      className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+                                      onClick={() => handleHtmlPreview(group.order_id)}
+                                      title="Preview HTML"
+                                    >
+                                      <FileCode className="w-4 h-4" />
+                                      <span>HTML</span>
+                                    </button>
+                                    <button
+                                      className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
+                                      onClick={() => handleLetterheadGeneration(group.order_id)}
+                                      title="Generate with Letterhead Function"
+                                    >
+                                      <FileCode className="w-4 h-4" />
+                                      <span>LF</span>
+                                    </button>
+                                    <button
+                                      className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
+                                      onClick={() => handleOpenPDFSettings(group.order_id)}
+                                      title="Adjust PDF settings and regenerate"
+                                    >
+                                      <Settings className="w-4 h-4" />
+                                      <span>Settings</span>
+                                    </button>
+                                    <button
+                                      className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-gradient-to-r from-pink-500 to-rose-500 text-white rounded-md hover:from-pink-600 hover:to-rose-600 transition-colors shadow-sm"
+                                      onClick={() => handleSmartReport(group.order_id)}
+                                      disabled={smartReportLoadingId === group.order_id}
+                                      title="Generate Gamma Smart Report"
+                                    >
+                                      {smartReportLoadingId === group.order_id ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                      ) : (
+                                        <Sparkles className="w-4 h-4" />
+                                      )}
+                                      <span>Smart</span>
+                                    </button>
+                                    <button
+                                      className={`flex items-center space-x-1 px-3 py-1.5 text-sm rounded-md transition-colors ${(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url
+                                        ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                        : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                        }`}
+                                      onClick={() => {
+                                        const finalReport = (group.results[0] as ApprovedResult)?.final_report;
+                                        const printUrl = finalReport?.print_pdf_url;
+                                        if (printUrl) {
+                                          window.open(printUrl, '_blank');
+                                        }
+                                      }}
+                                      disabled={!(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url}
+                                      title={(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'Open print-ready PDF' : 'Print PDF pending generation'}
+                                    >
+                                      <Printer className="w-4 h-4" />
+                                      <span>Print</span>
+                                    </button>
+                                  </>
+                                )}
+
+                                {/* WhatsApp Send Button - Show if final report exists */}
+                                {(() => {
+                                  const result = group.results[0] as ApprovedResult;
+                                  const finalReport = result?.final_report;
+                                  const hasFinalReport = result?.has_final_report;
+                                  const reportUrl = finalReport?.pdf_url;
+
+                                  // Convert old Supabase URLs to custom domain format
+                                  const customDomainReportUrl = reportUrl ? convertToCustomDomain(reportUrl) : reportUrl;
+
+                                  if (hasFinalReport || finalReport) {
+                                    return (
+                                      <>
+                                        <QuickSendReport
+                                          reportUrl={customDomainReportUrl || `#demo-report-${group.order_id}`}
+                                          reportName={`${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                          patientName={group.patient_full_name}
+                                          patientPhone={result?.phone}
+                                          testName={group.test_names.join(', ')}
+                                          onSent={(result) => {
+                                            if (result.success) {
+                                              alert('Report sent successfully via WhatsApp!');
+                                            } else {
+                                              alert('Failed to send report: ' + result.message);
+                                            }
+                                          }}
+                                        />
+                                        <button
+                                          onClick={() => handleOpenSendDoctor(group)}
+                                          className="inline-flex items-center px-3 py-2 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition-colors text-sm border border-green-200"
+                                          title="Send to Doctor"
+                                        >
+                                          <User className="h-4 w-4 mr-1" />
+                                          Dr.
+                                        </button>
+                                      </>
+                                    );
+                                  }
+                                  return null;
+                                })()}
+                              </>
+                            ) : (
+                              <button
+                                className={`flex items-center space-x-1 px-3 py-1.5 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
+                                  ? 'opacity-50 cursor-not-allowed'
+                                  : ''
+                                  }`}
+                                onClick={() => handleDownload(group.order_id, true)}
+                                disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
+                                title="Generate draft report"
+                              >
+                                {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? (
+                                  <div className="flex items-center space-x-1">
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    {pdfQueueStatus.get(group.order_id)?.progress_percent && (
+                                      <span className="text-xs">{pdfQueueStatus.get(group.order_id).progress_percent}%</span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <Download className="w-4 h-4" />
+                                )}
+                                <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Generating...' : 'Draft'}</span>
+                              </button>
+                            )}
+                            {(group.results[0] as ApprovedResult)?.has_report && (
+                              <button
+                                className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-red-50 text-red-600 rounded-md hover:bg-red-100 transition-colors border border-red-200"
+                                onClick={() => handleDeleteReport(group.order_id)}
+                                title="Delete Report Record"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1776,15 +2123,14 @@ const Reports: React.FC = () => {
                             <Eye className="w-4 h-4" />
                             <span>View</span>
                           </button>
-                          
+
                           {group.is_report_ready ? (
                             <>
                               {!(group.results[0] as ApprovedResult)?.has_final_report ? (
                                 <>
                                   <button
-                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors ${
-                                      previewingOrderId === group.order_id ? 'opacity-80 cursor-not-allowed' : ''
-                                    }`}
+                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors ${previewingOrderId === group.order_id ? 'opacity-80 cursor-not-allowed' : ''
+                                      }`}
                                     onClick={() => handleOrderTemplatePreview(group)}
                                     disabled={previewingOrderId === group.order_id}
                                     title="Preview using saved template"
@@ -1797,19 +2143,41 @@ const Reports: React.FC = () => {
                                     <span>Template</span>
                                   </button>
                                   <button
-                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors ${
-                                      isGenerating ? 'opacity-50 cursor-not-allowed' : ''
-                                    }`}
+                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
+                                      ? 'opacity-50 cursor-not-allowed'
+                                      : ''
+                                      }`}
                                     onClick={() => handleDownload(group.order_id, false)}
-                                    disabled={isGenerating}
+                                    disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
                                     title="Generate final report"
                                   >
-                                    {isGenerating ? (
-                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? (
+                                      <div className="flex items-center space-x-1">
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        {pdfQueueStatus.get(group.order_id)?.progress_percent && (
+                                          <span className="text-xs">{pdfQueueStatus.get(group.order_id).progress_percent}%</span>
+                                        )}
+                                      </div>
                                     ) : (
                                       <Download className="w-4 h-4" />
                                     )}
-                                    <span>Final</span>
+                                    <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Gen...' : 'Final'}</span>
+                                  </button>
+                                  <button
+                                    className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+                                    onClick={() => handleHtmlPreview(group.order_id)}
+                                    title="Preview HTML"
+                                  >
+                                    <FileCode className="w-4 h-4" />
+                                    <span>HTML</span>
+                                  </button>
+                                  <button
+                                    className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
+                                    onClick={() => handleLetterheadGeneration(group.order_id)}
+                                    title="Generate with Letterhead Function"
+                                  >
+                                    <FileCode className="w-4 h-4" />
+                                    <span>LF</span>
                                   </button>
                                   <button
                                     className="flex items-center justify-center px-3 py-2 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
@@ -1837,6 +2205,35 @@ const Reports: React.FC = () => {
                                     <span>Download</span>
                                   </button>
                                   <button
+                                    className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+                                    onClick={() => handleHtmlPreview(group.order_id)}
+                                    title="Preview HTML"
+                                  >
+                                    <FileCode className="w-4 h-4" />
+                                    <span>HTML</span>
+                                  </button>
+                                  <button
+                                    className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
+                                    onClick={() => handleLetterheadGeneration(group.order_id)}
+                                    title="Generate with Letterhead Function"
+                                  >
+                                    <FileCode className="w-4 h-4" />
+                                    <span>LF</span>
+                                  </button>
+                                  <button
+                                    className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-gradient-to-r from-pink-500 to-rose-500 text-white rounded-md hover:from-pink-600 hover:to-rose-600 transition-colors shadow-sm"
+                                    onClick={() => handleSmartReport(group.order_id)}
+                                    disabled={smartReportLoadingId === group.order_id}
+                                    title="Generate Smart Report"
+                                  >
+                                    {smartReportLoadingId === group.order_id ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <Sparkles className="w-4 h-4" />
+                                    )}
+                                    <span>Smart</span>
+                                  </button>
+                                  <button
                                     className="flex items-center justify-center px-3 py-2 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
                                     onClick={() => handleOpenPDFSettings(group.order_id)}
                                     title="PDF Settings"
@@ -1844,11 +2241,10 @@ const Reports: React.FC = () => {
                                     <Settings className="w-4 h-4" />
                                   </button>
                                   <button
-                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm rounded-md transition-colors ${
-                                      (group.results[0] as ApprovedResult)?.final_report?.print_pdf_url
-                                        ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                                        : 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                                    }`}
+                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm rounded-md transition-colors ${(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url
+                                      ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                      : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                      }`}
                                     onClick={() => {
                                       const finalReport = (group.results[0] as ApprovedResult)?.final_report;
                                       const printUrl = finalReport?.print_pdf_url;
@@ -1869,7 +2265,7 @@ const Reports: React.FC = () => {
                                     const finalReport = result?.final_report;
                                     const hasFinalReport = result?.has_final_report;
                                     const reportUrl = finalReport?.pdf_url;
-                                    
+
                                     if (hasFinalReport || finalReport || reportUrl) {
                                       return (
                                         <div className="flex-1">
@@ -1897,18 +2293,33 @@ const Reports: React.FC = () => {
                             </>
                           ) : (
                             <button
-                              className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-colors ${
-                                isGenerating ? 'opacity-50 cursor-not-allowed' : ''
-                              }`}
+                              className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
+                                ? 'opacity-50 cursor-not-allowed'
+                                : ''
+                                }`}
                               onClick={() => handleDownload(group.order_id, true)}
-                              disabled={isGenerating}
+                              disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
                             >
-                              {isGenerating ? (
-                                <Loader2 className="w-4 h-4 animate-spin" />
+                              {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? (
+                                <div className="flex items-center space-x-1">
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                  {pdfQueueStatus.get(group.order_id)?.progress_percent && (
+                                    <span className="text-xs">{pdfQueueStatus.get(group.order_id).progress_percent}%</span>
+                                  )}
+                                </div>
                               ) : (
                                 <Download className="w-4 h-4" />
                               )}
-                              <span>Draft</span>
+                              <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Gen...' : 'Draft'}</span>
+                            </button>
+                          )}
+                          {(group.results[0] as ApprovedResult)?.has_report && (
+                            <button
+                              className="flex items-center justify-center px-3 py-2 text-sm bg-red-50 text-red-600 rounded-md hover:bg-red-100 transition-colors border border-red-200"
+                              onClick={() => handleDeleteReport(group.order_id)}
+                              title="Delete Report Record"
+                            >
+                              <Trash2 className="w-4 h-4" />
                             </button>
                           )}
                         </div>
@@ -1941,7 +2352,7 @@ const Reports: React.FC = () => {
             <div className="flex items-center">
               <TrendingUp className="h-4 w-4 text-purple-600 mr-2" />
               <span className="text-purple-900 font-medium">
-                Average TAT: {orderGroups.length > 0 ? 
+                Average TAT: {orderGroups.length > 0 ?
                   Math.round(
                     orderGroups.reduce((sum, g) => {
                       const orderDate = new Date(g.order_date).getTime();
@@ -1975,6 +2386,40 @@ const Reports: React.FC = () => {
         currentSettings={loadSavedPDFSettings() || PDF_PRESETS.standard}
         isRegenerating={isGenerating}
       />
+
+      {/* Report Design Studio */}
+      {reportStudioOrderId && (
+        <ReportDesignStudio
+          orderId={reportStudioOrderId}
+          onClose={() => setReportStudioOrderId(null)}
+          onSuccess={(url) => {
+            alert('Report Generated Successfully!');
+            loadApprovedResults(); // Refresh list to show new report
+            // Optionally open Send modal
+          }}
+        />
+      )}
+
+      {/* Send Report Modal */}
+      {sendReportModalData && (
+        <SendReportModal
+          {...sendReportModalData}
+          onClose={() => setSendReportModalData(null)}
+        />
+      )}
+
+      {/* Report Preview Modal */}
+      {viewingOrder && (
+        <ReportPreviewModal
+          isOpen={!!viewingOrder}
+          onClose={() => setViewingOrder(null)}
+          orderId={viewingOrder.order_id}
+          patientName={viewingOrder.patient_full_name}
+          patientPhone={viewingOrder.results[0]?.phone}
+          testNames={viewingOrder.test_names}
+          doctorName={viewingOrder.results[0]?.doctor}
+        />
+      )}
 
       {/* Mobile FAB - Generate Report */}
       <MobileFAB

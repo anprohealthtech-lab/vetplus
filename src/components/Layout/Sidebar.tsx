@@ -43,8 +43,8 @@ const navigation = [
   // Core Laboratory Workflow - Most Used Daily
   { name: 'Dashboard', href: '/', icon: LayoutDashboard, category: 'core' },
   { name: 'Orders', href: '/orders', icon: ClipboardList, category: 'core' },
-  { name: 'Results Entry', href: '/results', icon: Activity, category: 'core' },
-  { name: 'Results Entry 2 (AI)', href: '/results2', icon: Brain, category: 'core' },
+  // { name: 'Results Entry', href: '/results', icon: Activity, category: 'core' }, // Hidden - use Results Entry 2
+  { name: 'Results Entry', href: '/results2', icon: Brain, category: 'core' },
   { name: 'Results Verification', href: '/results-verification', icon: CheckCircle2, category: 'core' },
   { name: 'Reports', href: '/reports', icon: FileText, category: 'core' }, // Moved after Results Entry per request
 
@@ -62,6 +62,7 @@ const navigation = [
 
   // Master Data Management
   { name: 'Doctor Master', href: '/masters/doctors', icon: UserCheck, category: 'masters' },
+  { name: 'Account Master', href: '/masters/accounts', icon: Building, category: 'masters' },
   { name: 'Location Master', href: '/masters/locations', icon: Building, category: 'masters' },
   { name: 'Outsourced Labs', href: '/settings/outsourced-labs', icon: Building2, category: 'masters' },
 
@@ -79,9 +80,9 @@ const navigation = [
   { name: 'Workflow Explainer Demo', href: '/workflow-explainer-demo', icon: Bot, category: 'workflows' },
 
   // Advanced Tools
-  { name: 'AI Tools', href: '/ai-tools', icon: Brain, category: 'tools' },
-  { name: 'AI Prompt Manager', href: '/ai-prompts', icon: Brain, category: 'tools' },
-  { name: 'Template Studio', href: '/template-studio', icon: Palette, category: 'tools' },
+  // { name: 'AI Tools', href: '/ai-tools', icon: Brain, category: 'tools' }, // Hidden
+  // { name: 'AI Prompt Manager', href: '/ai-prompts', icon: Brain, category: 'tools' }, // Hidden
+  // { name: 'Template Studio', href: '/template-studio', icon: Palette, category: 'tools' }, // Hidden
   { name: 'Template Studio (CKE)', href: '/template-studio-cke', icon: Palette, category: 'tools' },
   { name: 'Report Sections', href: '/settings/report-sections', icon: FileText, category: 'tools' },
   { name: 'User Management', href: '/user-management', icon: Users, category: 'tools' },

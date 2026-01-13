@@ -12,7 +12,8 @@
  */
 
 // === Section: Imports ===
-import { supabase, database } from './supabase';
+import { supabase } from './supabase';
+import { notificationTriggerService } from './notificationTriggerService';
 import { getPublicStorageUrl } from './storageUrlBuilder';
 import type { ReportTemplateContext, ReportTemplateAnalyteRow } from './supabase';
 import nunjucks from 'nunjucks';
@@ -2530,6 +2531,20 @@ export const updateReportWithPDFInfo = async (orderId: string, pdfUrl: string, r
     }
 
     console.log(`Database updated successfully for ${reportType} report`);
+
+    // Trigger report ready notification for final reports (async)
+    if (reportType === 'final') {
+      const { data: report } = await supabase
+        .from('reports')
+        .select('id, lab_id')
+        .eq('order_id', orderId)
+        .single();
+      
+      if (report) {
+        notificationTriggerService.triggerReportReady(orderId, report.id, pdfUrl, report.lab_id)
+          .catch(err => console.error('Error triggering report ready notification:', err));
+      }
+    }
   } catch (error) {
     console.error('Failed to update database:', error);
     throw error;

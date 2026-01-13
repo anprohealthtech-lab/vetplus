@@ -18,7 +18,6 @@ const ManualUploader: React.FC<ManualUploaderProps> = ({ labId, testGroupId, onP
   const [file, setFile] = useState<File | null>(null);
   const [processing, setProcessing] = useState(false);
   const [testGroup, setTestGroup] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
   const [testMeta, setTestMeta] = useState<TestMeta>({
     testCode: '',
     vendor: '',
@@ -30,12 +29,11 @@ const ManualUploader: React.FC<ManualUploaderProps> = ({ labId, testGroupId, onP
   React.useEffect(() => {
     const loadTestGroup = async () => {
       if (!testGroupId || !labId) return;
-      
-      setLoading(true);
+
       try {
         const { data: testGroups, error } = await database.testGroups.getByLabId(labId);
         if (error) throw error;
-        
+
         const selectedTestGroup = testGroups?.find(tg => tg.id === testGroupId);
         if (selectedTestGroup) {
           setTestGroup(selectedTestGroup);
@@ -47,8 +45,6 @@ const ManualUploader: React.FC<ManualUploaderProps> = ({ labId, testGroupId, onP
         }
       } catch (error) {
         console.error('Error loading test group:', error);
-      } finally {
-        setLoading(false);
       }
     };
 
@@ -56,30 +52,35 @@ const ManualUploader: React.FC<ManualUploaderProps> = ({ labId, testGroupId, onP
   }, [testGroupId, labId]);
 
   const handleProcessManual = async () => {
-    if (!file) return;
-
     setProcessing(true);
     try {
-      const filePath = generateFilePath(
-        file.name,
-        testMeta.testCode || 'workflow',
-        labId,
-        'workflow-manuals'
-      );
+      let uploadUrl: string | null = null;
 
-      const uploadResult = await uploadFile(file, filePath);
-      if (!uploadResult?.publicUrl) {
-        throw new Error('Unable to upload manual.');
+      if (file) {
+        const filePath = generateFilePath(
+          file.name,
+          testMeta.testCode || 'workflow',
+          labId,
+          'workflow-manuals'
+        );
+
+        const uploadResult = await uploadFile(file, filePath);
+        if (!uploadResult?.publicUrl) {
+          throw new Error('Unable to upload manual.');
+        }
+        uploadUrl = uploadResult.publicUrl;
       }
 
       const protocolPayload = {
-        name: `${testMeta.testCode || file.name} IFU ingestion`,
+        name: `${testMeta.testCode || 'Standard'} ${file ? 'IFU ingestion' : 'Standard Workflow Generation'}`,
         lab_id: labId,
         category: 'test_ifu_parse',
         status: 'processing',
-        description: 'Automated ingestion of test manual to generate workflow drafts',
+        description: file
+          ? 'Automated ingestion of test manual to generate workflow drafts'
+          : 'AI generation of standard NABL workflow based on test metadata',
         config: {
-          manual_uri: uploadResult.publicUrl,
+          manual_uri: uploadUrl,
           lab_id: labId,
           test_group_id: testGroupId ?? null,
           test_meta: testMeta,
@@ -94,7 +95,7 @@ const ManualUploader: React.FC<ManualUploaderProps> = ({ labId, testGroupId, onP
       const invokeResponse = await supabase.functions.invoke('agent-1-manual-builder', {
         body: {
           protocol_id: protocol.id,
-          manual_uri: uploadResult.publicUrl,
+          manual_uri: uploadUrl,
           org_id: labId,
           test_meta: testMeta,
         },
@@ -171,11 +172,10 @@ const ManualUploader: React.FC<ManualUploaderProps> = ({ labId, testGroupId, onP
               type="text"
               value={testMeta.testCode}
               onChange={(event) => setTestMeta({ ...testMeta, testCode: event.target.value })}
-              className={`w-full px-3 py-2 border rounded-md ${
-                testGroup 
-                  ? 'border-green-300 bg-green-50 text-green-800' 
-                  : 'border-gray-300'
-              }`}
+              className={`w-full px-3 py-2 border rounded-md ${testGroup
+                ? 'border-green-300 bg-green-50 text-green-800'
+                : 'border-gray-300'
+                }`}
               placeholder="e.g. URINE-10"
               readOnly={!!testGroup}
             />
@@ -224,14 +224,17 @@ const ManualUploader: React.FC<ManualUploaderProps> = ({ labId, testGroupId, onP
         <button
           type="button"
           onClick={handleProcessManual}
-          disabled={!file || processing}
-          className={`w-full py-3 px-4 rounded-md font-medium transition-colors ${
-            !file || processing
-              ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-              : 'bg-blue-600 text-white hover:bg-blue-700'
-          }`}
+          disabled={processing}
+          className={`w-full py-3 px-4 rounded-md font-medium transition-colors ${processing
+            ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+            : 'bg-blue-600 text-white hover:bg-blue-700'
+            }`}
         >
-          {processing ? 'Processing manual with AI…' : 'Process Manual'}
+          {processing
+            ? 'Processing with AI...'
+            : file
+              ? 'Process Manual with AI'
+              : 'Generate Workflow with AI (Standard NABL)'}
         </button>
       </div>
     </div>

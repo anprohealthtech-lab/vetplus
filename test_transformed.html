@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+    <meta charset='UTF-8'>
+    <title>CBC - ESR Laboratory Report</title>
+    <link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap' rel='stylesheet'>
+</head>
+<body>
+    <div class='report-container'>
+      <div class='report-header'>
+         <h1>CBC - ESR</h1>
+         <div class='report-subtitle'>Laboratory Test Report</div>
+      </div>
+      
+      <div class='report-body'>
+         <div class='section-header'>Patient Information</div>
+         <table class='patient-info'>
+           <tbody>
+             <tr>
+               <td class='label'>Patient Name</td> <td class='value'>{{patientName}}</td>
+               <td class='label'>Patient ID</td> <td class='value'>{{patientId}}</td>
+             </tr>
+             <tr>
+               <td class='label'>Age / Gender</td> <td class='value'>{{patientAge}} / {{patientGender}}</td>
+               <td class='label'>Sample ID</td> <td class='value'>{{sampleId}}</td>
+             </tr>
+             <tr>
+               <td class='label'>Ref. Doctor</td> <td class='value'>{{referringDoctorName}}</td>
+               <td class='label'>Collected On</td> <td class='value'>{{collectionDate}}</td>
+             </tr>
+           </tbody>
+         </table>
+         
+         <div class='section-header'>Test Results</div>
+         <table class='report-table'>
+           <thead>
+             <tr>
+               <th>Test Parameter</th>
+               <th class='col-center'>Result</th>
+               <th class='col-center'>Unit</th>
+               <th>Reference Range</th>
+               <th class='col-center'>Flag</th>
+             </tr>
+           </thead>
+           <tbody>
+             <tr>  
+                <td class='param-name'>Erythrocyte Sedimentation Rate</td> 
+                <td class='col-center value-optimal'>{{ANALYTE_ESR_VALUE}}</td> 
+                <td class='col-center'>{{ANALYTE_ESR_UNIT}}</td> 
+                <td>{{ANALYTE_ESR_REFERENCE}}</td> 
+                <td class='col-center'>{{ANALYTE_ESR_FLAG}}</td>
+             </tr>
+           </tbody>
+         </table>
+         
+         <div class="section-header">Clinical Interpretation</div>
+         <figure class="table">
+           <table class="tbl-interpretation">
+             <thead>
+               <tr>
+                 <th>Level</th>
+                 <th>Meaning & Potential Causes</th>
+               </tr>
+             </thead>
+             <tbody>
+               <tr>
+                 <td>High</td>
+                 <td>Elevated ESR indicates increased inflammation in the body. Values higher than 100 mm/hr suggest more significant inflammatory processes. Potential causes include infections, autoimmune diseases, cancer, kidney disease, and other inflammatory conditions. Correlate clinically with patient's symptoms and other diagnostic findings.</td>
+               </tr>
+               <tr>
+                 <td>Low</td>
+                 <td>Decreased ESR may indicate blood disorders such as polycythemia, sickle cell disease, or leukocytosis. It can also be associated with heart failure or certain kidney and liver problems. Lower values generally suggest reduced inflammatory activity. Correlate with comprehensive clinical assessment.</td>
+               </tr>
+               <tr>
+                 <td>Normal</td>
+                 <td>ESR within reference range suggests no significant inflammatory process. However, a normal result does not definitively rule out underlying medical conditions. Interpretation should always be made in context of patient's overall health status.</td>
+               </tr>
+             </tbody>
+           </table>
+         </figure>
+
+         <div class="note">
+           <strong>Note on Reference Ranges:</strong> ESR reference ranges vary by age, sex, and individual laboratory methodology. Typical ranges for men and women may differ, with age-specific variations.
+           <br><br>
+           <strong>Additional Note:</strong> Factors affecting ESR include age, sex, pregnancy, menstruation, certain medications, and underlying medical conditions. Serial testing may provide more comprehensive insights into inflammatory trends.
+         </div>
+         
+         <div class='report-footer'>
+           <div class='signatures'>
+              <p style='font-weight:bold; margin-bottom:4px;'>{{signatoryName}}</p>
+              <p style='font-size:11px; color:#64748b;'>{{signatoryDesignation}}</p>
+           </div>
+         </div>
+      </div>
+    </div>
+</body>
+</html>

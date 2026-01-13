@@ -208,13 +208,13 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                       </div>
                     ) : (
                       <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-700">
-                        <strong>⚠ No section placeholders found.</strong> Consider adding {{impression}}, {{findings}}, or {{conclusion}} for doctor's notes.
+                        <strong>⚠ No section placeholders found.</strong> Consider adding {"{{impression}}"}, {"{{findings}}"}, or {"{{conclusion}}"} for doctor's notes.
                       </div>
                     )}
                     {result.sectionContent.deprecatedSectionPlaceholders && result.sectionContent.deprecatedSectionPlaceholders.length > 0 && (
                       <AuditList
                         title="Deprecated section placeholders (replace immediately)"
-                        items={result.sectionContent.deprecatedSectionPlaceholders.map((p) => 
+                        items={result.sectionContent.deprecatedSectionPlaceholders.map((p) =>
                           `${p} → Use ${result.sectionContent?.recommendedSectionPlaceholders?.join(' or ') || '{{impression}}'} instead`
                         )}
                         tone="danger"
@@ -231,7 +231,7 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                   <div className="mt-1 space-y-2 text-sm">
                     <div className={clsx(
                       'rounded-md border px-3 py-2',
-                      result.approvalSignature.hasSignatoryName 
+                      result.approvalSignature.hasSignatoryName
                         ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                         : 'border-red-200 bg-red-50 text-red-700'
                     )}>
@@ -239,7 +239,7 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                     </div>
                     <div className={clsx(
                       'rounded-md border px-3 py-2',
-                      result.approvalSignature.hasSignatoryDesignation 
+                      result.approvalSignature.hasSignatoryDesignation
                         ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                         : 'border-amber-200 bg-amber-50 text-amber-700'
                     )}>
@@ -247,7 +247,7 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                     </div>
                     <div className={clsx(
                       'rounded-md border px-3 py-2',
-                      result.approvalSignature.hasSignatoryImage 
+                      result.approvalSignature.hasSignatoryImage
                         ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                         : 'border-amber-200 bg-amber-50 text-amber-700'
                     )}>
@@ -268,10 +268,10 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Placeholders</h3>
                 <div className="mt-1 space-y-2 text-sm">
                   {result.placeholders?.invalidAnalytePlaceholders?.length ? (
-                    <AuditList 
-                      title="Invalid analyte placeholders (CRITICAL - these will NOT render)" 
-                      items={result.placeholders.invalidAnalytePlaceholders.map(p => `${p} → Use {{#results}}...{{/results}} loop instead`)} 
-                      tone="danger" 
+                    <AuditList
+                      title="Invalid analyte placeholders (CRITICAL - these will NOT render)"
+                      items={result.placeholders.invalidAnalytePlaceholders.map(p => `${p} → Use {{#results}}...{{/results}} loop instead`)}
+                      tone="danger"
                     />
                   ) : null}
                   {result.placeholders?.deprecatedPlaceholders?.length ? (
@@ -287,9 +287,9 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                     <AuditList title="Duplicates" items={result.placeholders.duplicates} tone="info" />
                   ) : null}
                   {!result.placeholders?.invalidAnalytePlaceholders?.length &&
-                  !result.placeholders?.requiredMissing?.length &&
-                  !result.placeholders?.unknownPlaceholders?.length &&
-                  !result.placeholders?.duplicates?.length ? (
+                    !result.placeholders?.requiredMissing?.length &&
+                    !result.placeholders?.unknownPlaceholders?.length &&
+                    !result.placeholders?.duplicates?.length ? (
                     <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-sm text-emerald-700">
                       All placeholders look good.
                     </p>
@@ -304,7 +304,7 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                   <div className="mt-1 space-y-2 text-sm">
                     <div className={clsx(
                       'rounded-md border px-3 py-2',
-                      result.resultsLoop.hasResultsLoop 
+                      result.resultsLoop.hasResultsLoop
                         ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                         : 'border-red-200 bg-red-50 text-red-700'
                     )}>
@@ -389,8 +389,8 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                     />
                   ) : null}
                   {!result.analyteCoverage?.invalidIndividualPlaceholders?.length &&
-                  !result.analyteCoverage?.referencedButUnknown?.length &&
-                  !result.analyteCoverage?.missingFromTemplate?.length ? (
+                    !result.analyteCoverage?.referencedButUnknown?.length &&
+                    !result.analyteCoverage?.missingFromTemplate?.length ? (
                     <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-sm text-emerald-700">
                       Template and test group are aligned.
                     </p>

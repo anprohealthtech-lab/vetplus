@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, Eye, EyeOff, AlertCircle } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { supabase } from '../../utils/supabase';
 
 const Login: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -22,11 +23,28 @@ const Login: React.FC = () => {
 
     if (error) {
       setError(error.message);
+      setLoading(false);
     } else {
-      navigate('/');
-    }
+      // Check if user is a B2B account user
+      const { data: { user } } = await supabase.auth.getUser();
 
-    setLoading(false);
+      if (user?.user_metadata?.role === 'b2b_account') {
+        // B2B users should use the B2B portal, not the LIMS dashboard
+        await supabase.auth.signOut();
+        setError('This is a B2B account. Please login at the B2B portal instead.');
+        setLoading(false);
+
+        // Optionally redirect to B2B login after a delay
+        setTimeout(() => {
+          navigate('/b2b');
+        }, 2000);
+        return;
+      }
+
+      // Regular lab user - proceed to dashboard
+      navigate('/');
+      setLoading(false);
+    }
   };
 
   return (

@@ -41,6 +41,8 @@ interface TestGroup {
   onlyMale?: boolean;
   onlyBilling?: boolean;
   startFromNextPage?: boolean;
+  ref_range_ai_config?: any;
+  required_patient_inputs?: string[];
 }
 
 const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGroup }) => {
@@ -73,6 +75,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     startFromNextPage: testGroup?.startFromNextPage ?? false,
     is_outsourced: testGroup?.is_outsourced ?? false,
     default_outsourced_lab_id: testGroup?.default_outsourced_lab_id || '',
+    ref_range_ai_config: testGroup?.ref_range_ai_config || { enabled: false, consider_age: true },
+    required_patient_inputs: testGroup?.required_patient_inputs || [],
   });
 
   const [analytes, setAnalytes] = useState<any[]>([]);
@@ -176,6 +180,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     'Molecular Biology',
     'Histopathology',
     'Cytology',
+    'Clinical Pathology',
   ];
 
   const sampleTypes = [
@@ -208,6 +213,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         to_be_copied: false, // Default to not template (owner will promote manually)
         is_outsourced: formData.is_outsourced,
         default_outsourced_lab_id: formData.default_outsourced_lab_id || null,
+        ref_range_ai_config: formData.ref_range_ai_config,
+        required_patient_inputs: formData.required_patient_inputs,
       });
     } catch (error) {
       console.error('Error getting lab ID:', error);
@@ -661,6 +668,71 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   className="w-full px-3 py-2 border border-green-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
               )}
+            </div>
+          </div>
+
+          {/* AI Reference Range & Input Requirements */}
+          <div className="space-y-4 border-t border-gray-200 pt-6">
+            <h3 className="text-lg font-medium text-gray-900 flex items-center">
+              <Brain className="h-5 w-5 mr-2 text-purple-600" />
+              AI Reference Ranges & Inputs
+            </h3>
+
+            <div className="bg-purple-50 rounded-lg p-4 space-y-4">
+              <label className="flex items-center">
+                <input
+                  type="checkbox"
+                  checked={formData.ref_range_ai_config?.enabled}
+                  onChange={(e) => setFormData(prev => ({
+                    ...prev,
+                    ref_range_ai_config: { ...prev.ref_range_ai_config, enabled: e.target.checked }
+                  }))}
+                  className="h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300 rounded"
+                />
+                <span className="ml-2 font-medium text-gray-900">Enable AI Reference Range Determination</span>
+              </label>
+
+              {formData.ref_range_ai_config?.enabled && (
+                <div className="ml-6 grid grid-cols-2 gap-4">
+                  <label className="flex items-center">
+                    <input
+                      type="checkbox"
+                      checked={formData.ref_range_ai_config?.consider_age}
+                      onChange={(e) => setFormData(prev => ({
+                        ...prev,
+                        ref_range_ai_config: { ...prev.ref_range_ai_config, consider_age: e.target.checked }
+                      }))}
+                      className="h-4 w-4 text-purple-600 rounded"
+                    />
+                    <span className="ml-2 text-sm">Consider Exact Age (Pediatric)</span>
+                  </label>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Required Patient Inputs (for dynamic ranges)</label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {['pregnancy_status', 'lmp', 'weight', 'height', 'blood_pressure'].map(field => (
+                  <label key={field} className="flex items-center px-3 py-2 border rounded-md bg-white">
+                    <input
+                      type="checkbox"
+                      checked={formData.required_patient_inputs.includes(field)}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setFormData(prev => ({
+                          ...prev,
+                          required_patient_inputs: checked
+                            ? [...prev.required_patient_inputs, field]
+                            : prev.required_patient_inputs.filter(f => f !== field)
+                        }));
+                      }}
+                      className="h-4 w-4 text-blue-600 rounded"
+                    />
+                    <span className="ml-2 text-sm capitalize">{field.replace('_', ' ')}</span>
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
 

@@ -1,8 +1,9 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { Upload, X, Camera, FileText, Image as ImageIcon, AlertCircle, Check, Loader } from 'lucide-react';
+import { Upload, X, Camera, FileText, Image as ImageIcon, AlertCircle, Check, Loader, Crop } from 'lucide-react';
 import { database, supabase, uploadFile } from '../../utils/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { capturePhoto, isNative } from '../../utils/androidFileUpload';
+import { ImageCropper } from './ImageCropper';
 
 export interface UploadedFile {
   id: string;
@@ -48,6 +49,7 @@ interface MultiImageUploaderProps {
     orderId: string;
     testId?: string;
     scope: 'order' | 'test';
+    labId: string;
     patientId: string;
   };
   className?: string;
@@ -68,6 +70,9 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+
+  // Crop State
+  const [cropTargetId, setCropTargetId] = useState<string | null>(null);
 
   // Generate batch ID
   const generateBatchId = () => crypto.randomUUID();
@@ -192,7 +197,7 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
         if (permissions.camera !== 'granted') {
           const requested = await Camera.requestPermissions();
           if (requested.camera !== 'granted') {
-            setError('Camera permission is required to take photos. Please enable it in Settings.');
+            alert('Camera permission is required to take photos. Please enable it in Settings.');
             return;
           }
         }
@@ -260,21 +265,36 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
     });
   };
 
-  // Reorder files (for future drag & drop functionality)
-  // const reorderFiles = (fromIndex: number, toIndex: number) => {
-  //   setFiles(prev => {
-  //     const updated = [...prev];
-  //     const [removed] = updated.splice(fromIndex, 1);
-  //     updated.splice(toIndex, 0, removed);
+  // Handle Crop Completion
+  const handleCropComplete = async (croppedFile: File) => {
+    if (!cropTargetId) return;
 
-  //     // Update sequence numbers and labels
-  //     return updated.map((file, index) => ({
-  //       ...file,
-  //       sequence: index + 1,
-  //       label: `Image ${index + 1}`
-  //     }));
-  //   });
-  // };
+    try {
+      const thumbnailUrl = await createPreview(croppedFile);
+      const dimensions = await getImageDimensions(croppedFile);
+
+      setFiles(prev => prev.map(f => {
+        if (f.id === cropTargetId) {
+          return {
+            ...f,
+            file: croppedFile,
+            metadata: {
+              ...f.metadata,
+              size: croppedFile.size,
+              dimensions
+            },
+            thumbnailUrl: thumbnailUrl
+          };
+        }
+        return f;
+      }));
+    } catch (error) {
+      console.error('Error updating cropped file:', error);
+      alert('Failed to update cropped image');
+    } finally {
+      setCropTargetId(null);
+    }
+  };
 
   // Upload all files
   const uploadAllFiles = async () => {
@@ -458,8 +478,8 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
           onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
           onDragLeave={() => setDragActive(false)}
           className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${dragActive
-              ? 'border-blue-400 bg-blue-50'
-              : 'border-gray-300 hover:border-gray-400'
+            ? 'border-blue-400 bg-blue-50'
+            : 'border-gray-300 hover:border-gray-400'
             }`}
         >
           <div className="space-y-4">
@@ -530,19 +550,31 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
                       {file.label}
                     </div>
                     <div className={`w-2 h-2 rounded-full ${file.uploadStatus === 'completed' ? 'bg-green-500' :
-                        file.uploadStatus === 'error' ? 'bg-red-500' :
-                          file.uploadStatus === 'uploading' ? 'bg-blue-500 animate-pulse' :
-                            'bg-gray-300'
+                      file.uploadStatus === 'error' ? 'bg-red-500' :
+                        file.uploadStatus === 'uploading' ? 'bg-blue-500 animate-pulse' :
+                          'bg-gray-300'
                       }`} />
                   </div>
 
                   {!uploading && (
-                    <button
-                      onClick={() => removeFile(file.id)}
-                      className="text-gray-400 hover:text-red-500 p-1"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
+                    <div className="flex gap-1">
+                      {file.metadata.type.startsWith('image/') && file.uploadStatus !== 'completed' && (
+                        <button
+                          onClick={() => setCropTargetId(file.id)}
+                          className="text-gray-400 hover:text-blue-500 p-1"
+                          title="Crop Image"
+                        >
+                          <Crop className="h-4 w-4" />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => removeFile(file.id)}
+                        className="text-gray-400 hover:text-red-500 p-1"
+                        title="Remove"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -679,6 +711,21 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
           </div>
         </div>
       )}
+
+      {/* Cropper Modal */}
+      {cropTargetId && (() => {
+        const targetFile = files.find(f => f.id === cropTargetId);
+        if (targetFile) {
+          return (
+            <ImageCropper
+              imageFile={targetFile.file}
+              onCrop={handleCropComplete}
+              onCancel={() => setCropTargetId(null)}
+            />
+          );
+        }
+        return null;
+      })()}
     </div>
   );
 };

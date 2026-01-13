@@ -26,10 +26,11 @@ const PDFProgressModal: React.FC<PDFProgressModalProps> = ({
           <h3 className="text-lg font-semibold text-gray-900">
             {isComplete ? '✅ PDF Ready!' : isFailed ? '❌ Generation Failed' : '📄 Generating PDF...'}
           </h3>
-          {(isComplete || isFailed) && onClose && (
+          {onClose && (
             <button
               onClick={onClose}
               className="text-gray-400 hover:text-gray-600 transition-colors"
+              title={!isComplete && !isFailed ? "Continue in background" : "Close"}
             >
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -47,11 +48,10 @@ const PDFProgressModal: React.FC<PDFProgressModalProps> = ({
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2">
               <div
-                className={`h-2 rounded-full transition-all duration-300 ${
-                  isComplete 
-                    ? 'bg-green-500' 
-                    : 'bg-blue-500'
-                }`}
+                className={`h-2 rounded-full transition-all duration-300 ${isComplete
+                  ? 'bg-green-500'
+                  : 'bg-blue-500'
+                  }`}
                 style={{ width: `${Math.min(progress, 100)}%` }}
               />
             </div>
@@ -60,13 +60,12 @@ const PDFProgressModal: React.FC<PDFProgressModalProps> = ({
 
         {/* Status Message */}
         <div className="mb-4">
-          <p className={`text-sm ${
-            isFailed 
-              ? 'text-red-600' 
-              : isComplete 
-                ? 'text-green-600' 
-                : 'text-gray-600'
-          }`}>
+          <p className={`text-sm ${isFailed
+            ? 'text-red-600'
+            : isComplete
+              ? 'text-green-600'
+              : 'text-gray-600'
+            }`}>
             {stage}
           </p>
         </div>
@@ -86,6 +85,18 @@ const PDFProgressModal: React.FC<PDFProgressModalProps> = ({
               className="flex-1 bg-green-500 hover:bg-green-600 text-white font-medium py-2 px-4 rounded-md transition-colors"
             >
               ✓ Done
+            </button>
+          </div>
+        )}
+
+        {/* In-Progress Actions */}
+        {!isComplete && !isFailed && onClose && (
+          <div className="flex space-x-3">
+            <button
+              onClick={onClose}
+              className="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded-md transition-colors"
+            >
+              Continue in Background
             </button>
           </div>
         )}

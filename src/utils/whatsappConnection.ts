@@ -27,6 +27,7 @@ export interface WhatsAppConnectResponse {
 
 /**
  * Check WhatsApp connection status for a user
+ * Also ensures whatsapp_user_id is saved to labs table if connected
  */
 export const checkWhatsAppStatus = async (userId: string, labId?: string): Promise<WhatsAppStatus> => {
   try {
@@ -36,11 +37,41 @@ export const checkWhatsAppStatus = async (userId: string, labId?: string): Promi
     const response = await fetch(`/.netlify/functions/whatsapp-status?${params}`);
     const data = await response.json();
     
+    const isConnected = data.connected || (data.data?.sessions?.some((s: any) => s.isConnected));
+    
+    // If connected and we have labId, ensure whatsapp_user_id is saved to labs table
+    if (isConnected && labId) {
+      try {
+        const { supabase } = await import('./supabase');
+        
+        // Check if lab already has whatsapp_user_id set
+        const { data: labData } = await supabase
+          .from('labs')
+          .select('whatsapp_user_id')
+          .eq('id', labId)
+          .single();
+        
+        // Only update if not already set or different
+        if (!labData?.whatsapp_user_id || labData.whatsapp_user_id !== userId) {
+          await supabase
+            .from('labs')
+            .update({ 
+              whatsapp_user_id: userId,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', labId);
+          console.log('✅ Saved whatsapp_user_id to labs table');
+        }
+      } catch (saveError) {
+        console.error('Error saving whatsapp_user_id:', saveError);
+      }
+    }
+    
     return {
       success: response.ok,
-      connected: data.connected || false,
-      sessionId: data.sessionId,
-      phoneNumber: data.phoneNumber,
+      connected: isConnected,
+      sessionId: data.sessionId || data.data?.sessions?.[0]?.sessionId,
+      phoneNumber: data.phoneNumber || data.data?.sessions?.[0]?.phoneNumber,
       error: data.error,
     };
   } catch (error) {
@@ -80,6 +111,7 @@ export const getWhatsAppQR = async (userId: string, labId?: string): Promise<Wha
 
 /**
  * Initiate WhatsApp connection
+ * Also saves whatsapp_user_id to labs table for lab-level integration
  */
 export const connectWhatsApp = async (userId: string, labId?: string): Promise<WhatsAppConnectResponse> => {
   try {
@@ -92,6 +124,31 @@ export const connectWhatsApp = async (userId: string, labId?: string): Promise<W
     });
     
     const data = await response.json();
+    
+    // If connection is successful and we have a labId, save whatsapp_user_id to labs table
+    if (response.ok && (data.connected || data.sessionId) && labId) {
+      try {
+        // Import supabase dynamically to avoid circular dependencies
+        const { supabase } = await import('./supabase');
+        
+        // Save the userId to labs.whatsapp_user_id for lab-level WhatsApp integration
+        const { error: updateError } = await supabase
+          .from('labs')
+          .update({ 
+            whatsapp_user_id: userId,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', labId);
+        
+        if (updateError) {
+          console.error('Failed to save whatsapp_user_id to labs:', updateError);
+        } else {
+          console.log('✅ Saved whatsapp_user_id to labs table for lab:', labId);
+        }
+      } catch (saveError) {
+        console.error('Error saving whatsapp_user_id:', saveError);
+      }
+    }
     
     return {
       success: response.ok,

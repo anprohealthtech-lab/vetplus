@@ -128,9 +128,12 @@ EXTRACT THE FOLLOWING:
    - email: Email address if present
    - address: Full address if present
 
-2. REQUESTED TESTS:
+2. REQUESTED TESTS (CHECKBOX DETECTION):
    - Extract all test names EXACTLY as written
-   - Mark each test as "isSelected: true" if it should be performed
+   - **CRITICAL**: Look for checkboxes (☑, ✓, tick marks) next to each test
+   - Set "isSelected: true" ONLY if the checkbox is CHECKED/TICKED
+   - Set "isSelected: false" if the checkbox is EMPTY/UNCHECKED
+   - If no checkbox is visible, default to "isSelected: false"
    - Provide confidence score (0.0 to 1.0) for each test
 
 3. DOCTOR INFORMATION:
@@ -178,8 +181,9 @@ IMPORTANT GUIDELINES:
 - Use confidence scores based on text clarity
 - Return null for missing fields
 - Preserve original test names exactly
-- Include all tests mentioned
-- Default urgency to "Normal" if not specified`;
+- Include all tests mentioned, but REMOVE DUPLICATES (same test name should appear only once)
+- Default urgency to "Normal" if not specified
+- Pay special attention to checkbox states for test selection`;
   }
   return 'Extract information from the medical document and return as structured JSON.';
 }
@@ -255,16 +259,24 @@ serve(async (req) => {
 
     console.log('Processing TRF extraction for attachment:', attachmentId)
 
-    // Step 1: Get attachment details
+    // Step 1: Get attachment details (including lab_id)
     let imageData = imageBase64
+    let userLabId: string | undefined;
+    
     if (!imageData && attachmentId) {
       const { data: attachment, error: attachmentError } = await supabase
         .from('attachments')
-        .select('file_url, file_path')
+        .select('file_url, file_path, lab_id')
         .eq('id', attachmentId)
         .single()
 
       if (attachmentError) throw new Error(`Failed to fetch attachment: ${attachmentError.message}`)
+
+      // Get lab_id from attachment
+      if (attachment.lab_id) {
+        userLabId = attachment.lab_id;
+        console.log('📌 Using lab_id from attachment:', userLabId);
+      }
 
       console.log('Downloading file from storage bucket: attachments, path:', attachment.file_path)
 
@@ -339,26 +351,8 @@ serve(async (req) => {
     console.log('  - Extracted text length:', fullText.length, 'characters');
     console.log('  - Text preview (first 200 chars):', fullText.substring(0, 200));
 
+    // Step 3: We already have userLabId from the attachment record above
 
-    // Step 3: Get user's lab for prompt context
-    let userLabId: string | undefined;
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { data: userRecord } = await supabase
-          .from('users')
-          .select('lab_id')
-          .eq('id', user.id)
-          .maybeSingle();
-        
-        if (userRecord?.lab_id) {
-          userLabId = userRecord.lab_id;
-          console.log('User lab_id:', userLabId);
-        }
-      }
-    } catch (error) {
-      console.log('Could not fetch user lab_id:', error);
-    }
 
     // Step 4: Fetch dynamic AI prompt (with fallback to hardcoded default)
     console.log('\n📝 Fetching NLP extraction prompt...');
@@ -369,15 +363,18 @@ serve(async (req) => {
     console.log('  - Prompt Length:', basePrompt.length, 'characters');
     console.log('  - Prompt Preview (first 200 chars):', basePrompt.substring(0, 200));
     
-    // Step 5: Call Gemini API for structured extraction
-    console.log('\n🤖 Calling Gemini API for NLP extraction...')
+    // Step 5: Call Gemini API for structured extraction (MULTIMODAL - Image + Text)
+    console.log('\n🤖 Calling Gemini API for NLP extraction (with image vision)...')
 
     const geminiPrompt = `${basePrompt}
 
-EXTRACTED TEXT:
-${fullText}`;
+EXTRACTED TEXT FROM OCR:
+${fullText}
+
+IMPORTANT: Use the IMAGE to verify checkbox states. The OCR text shows what tests are listed, but you must LOOK AT THE IMAGE to see which checkboxes are checked (✓) or unchecked (☐).`;
     
     console.log('  - Full Gemini prompt length:', geminiPrompt.length, 'characters');
+    console.log('  - Sending image for visual checkbox detection');
 
     const geminiResponse = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
@@ -387,7 +384,13 @@ ${fullText}`;
         body: JSON.stringify({
           contents: [{
             parts: [
-              { text: geminiPrompt }
+              { text: geminiPrompt },
+              { 
+                inline_data: {
+                  mime_type: 'image/jpeg',
+                  data: imageData
+                }
+              }
             ]
           }],
           generationConfig: {
@@ -600,15 +603,26 @@ ${fullText}`;
       console.log(`📋 Matching ${extractedData.requestedTests.length} tests against test_groups...`);
       console.log(`📋 Tests from AI:`, extractedData.requestedTests.map((t: any) => `"${t.testName}" (selected: ${t.isSelected})`).join(', '));
       
-      const { data: testGroups, error: testGroupsError } = await supabase
+      // CRITICAL: Filter by lab_id to only match tests from this lab!
+      let testGroupsQuery = supabase
         .from('test_groups')
         .select('id, name, code')
-        .eq('is_active', true)
+        .eq('is_active', true);
+      
+      // Add lab_id filter if available
+      if (userLabId) {
+        testGroupsQuery = testGroupsQuery.eq('lab_id', userLabId);
+        console.log(`  Filtering test groups by lab_id: ${userLabId}`);
+      } else {
+        console.warn('⚠️ WARNING: No lab_id available, matching against ALL labs\' tests!');
+      }
+      
+      const { data: testGroups, error: testGroupsError } = await testGroupsQuery;
 
       if (testGroupsError) {
         console.error('❌ Failed to fetch test groups:', testGroupsError);
       } else {
-        console.log(`✓ Found ${testGroups?.length || 0} active test groups`);
+        console.log(`✓ Found ${testGroups?.length || 0} active test groups for lab ${userLabId || 'ALL LABS'}`);
         console.log(`📋 Sample test groups:`, testGroups?.slice(0, 10).map(g => `"${g.name}" (${g.code})`).join(', '));
       }
 

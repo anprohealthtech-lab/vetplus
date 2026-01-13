@@ -1,7 +1,8 @@
 // src/components/WhatsApp/WhatsAppSendModal.tsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Send, Loader, Phone, MessageCircle } from 'lucide-react';
 import { WhatsAppAPI } from '../../utils/whatsappAPI';
+import { formatPhoneWithLabCountryCode } from '../../utils/phoneFormatter';
 
 interface WhatsAppSendModalProps {
   isOpen: boolean;
@@ -23,11 +24,12 @@ const WhatsAppSendModal: React.FC<WhatsAppSendModalProps> = ({
   onSuccess
 }) => {
   const [phoneNumber, setPhoneNumber] = useState(defaultPhone);
+  const [formattedPhone, setFormattedPhone] = useState('');
   const [message, setMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (isOpen) {
       setPhoneNumber(defaultPhone);
       setMessage(generateDefaultMessage());
@@ -35,21 +37,24 @@ const WhatsAppSendModal: React.FC<WhatsAppSendModalProps> = ({
     }
   }, [isOpen, defaultPhone, patientName, testName]);
 
+  // Format phone number when it changes
+  useEffect(() => {
+    const updateFormattedPhone = async () => {
+      if (phoneNumber) {
+        const formatted = await formatPhoneWithLabCountryCode(phoneNumber);
+        setFormattedPhone(formatted);
+      } else {
+        setFormattedPhone('');
+      }
+    };
+    updateFormattedPhone();
+  }, [phoneNumber]);
+
   const generateDefaultMessage = () => {
     if (patientName && testName) {
       return `Hello ${patientName},\n\nYour ${testName} report is ready. Please find the attached document.\n\nBest regards,\nLaboratory Team`;
     }
     return 'Please find the attached laboratory report.';
-  };
-
-  const formatPhoneNumber = (phone: string) => {
-    const digits = phone.replace(/\D/g, '');
-    if (digits.length === 10) {
-      return `+91${digits}`;
-    } else if (digits.length === 12 && digits.startsWith('91')) {
-      return `+${digits}`;
-    }
-    return phone;
   };
 
   const handleSend = async () => {
@@ -131,7 +136,7 @@ const WhatsAppSendModal: React.FC<WhatsAppSendModalProps> = ({
               disabled={isSending}
             />
             <div className="text-xs text-gray-500 mt-1">
-              Format: {formatPhoneNumber(phoneNumber) || '+91XXXXXXXXXX'}
+              Format: {formattedPhone || 'Enter number to see formatted version'}
             </div>
           </div>
 

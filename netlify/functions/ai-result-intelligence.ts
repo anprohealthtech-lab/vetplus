@@ -37,11 +37,13 @@ interface ResultValue {
   ai_suggested_flag?: string | null;
   ai_suggested_interpretation?: string | null;
   trend_interpretation?: string | null;
-  // Historical data for trend analysis
+  // Historical data for trend analysis (from past orders and external reports)
   historical_values?: Array<{
     date: string;
     value: string;
     flag?: string | null;
+    source: 'internal' | 'external';
+    lab_name?: string; // For external reports
   }>;
 }
 
@@ -89,7 +91,34 @@ interface AnalyzeResultValuesRequest {
   trend_data?: any;
 }
 
-type AIRequest = GenerateInterpretationsRequest | VerifierSummaryRequest | ClinicalSummaryRequest | AnalyzeResultValuesRequest;
+/** Supported languages for patient summary */
+type SupportedLanguage = 
+  | 'english' 
+  | 'hindi' 
+  | 'marathi' 
+  | 'gujarati' 
+  | 'tamil' 
+  | 'telugu' 
+  | 'kannada' 
+  | 'bengali' 
+  | 'punjabi' 
+  | 'malayalam'
+  | 'odia'
+  | 'assamese';
+
+interface PatientSummaryRequest {
+  action: 'patient_summary';
+  test_groups: Array<{
+    name: string;
+    category: string;
+    result_values: ResultValue[];
+  }>;
+  language: SupportedLanguage;
+  referring_doctor_name?: string;
+  patient?: PatientContext;
+}
+
+type AIRequest = GenerateInterpretationsRequest | VerifierSummaryRequest | ClinicalSummaryRequest | AnalyzeResultValuesRequest | PatientSummaryRequest;
 
 /**
  * Generate interpretations for analytes missing them
@@ -184,6 +213,7 @@ Return ONLY the JSON object, no additional text.`;
 
 /**
  * Generate clinical summary for referring doctors
+ * Includes historical data from past orders and external reports for trend analysis
  */
 function buildClinicalSummaryPrompt(request: ClinicalSummaryRequest): string {
   const { test_groups, patient } = request;
@@ -192,24 +222,55 @@ function buildClinicalSummaryPrompt(request: ClinicalSummaryRequest): string {
     tg.result_values.map(r => ({ ...r, test_group: tg.name }))
   );
   const abnormalResults = allResults.filter(r => r.flag);
+  const resultsWithHistory = allResults.filter(r => r.historical_values && r.historical_values.length > 0);
   
-  return `You are a clinical pathologist generating a summary report for a referring physician.
+  // Helper to format historical data for a result
+  const formatHistory = (r: ResultValue): string => {
+    if (!r.historical_values || r.historical_values.length === 0) return '';
+    const history = r.historical_values
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 5) // Last 5 values
+      .map(h => `${h.date}: ${h.value}${h.flag ? ` [${h.flag}]` : ''} (${h.source}${h.lab_name ? ` - ${h.lab_name}` : ''})`);
+    return `\n      Historical: ${history.join(' → ')}`;
+  };
 
-${patient?.age ? `Patient Age: ${patient.age} years` : ''}
-${patient?.gender ? `Patient Gender: ${patient.gender}` : ''}
-${patient?.clinical_notes ? `Clinical History: ${patient.clinical_notes}` : ''}
+  const patientInfo = [
+    patient?.age ? `Patient Age: ${patient.age} years` : '',
+    patient?.gender ? `Patient Gender: ${patient.gender}` : '',
+    patient?.clinical_notes ? `Clinical History: ${patient.clinical_notes}` : ''
+  ].filter(Boolean).join('\n');
 
-Test Results by Group:
-${test_groups.map(tg => `
-**${tg.name}** (${tg.category})
-${tg.result_values.map(r => `  - ${r.analyte_name}: ${r.value} ${r.unit}${r.flag ? ` [${r.flag === 'H' ? '↑' : r.flag === 'L' ? '↓' : '⚠️'}]` : ''}`).join('\n')}
-`).join('\n')}
+  const testResultsSection = test_groups.map(tg => {
+    const testName = `**${tg.name}** (${tg.category})`;
+    const results = tg.result_values.map(r => {
+      const flag = r.flag ? ` [${r.flag === 'H' ? '↑' : r.flag === 'L' ? '↓' : '⚠️'}]` : '';
+      return `  - ${r.analyte_name}: ${r.value} ${r.unit}${flag}${formatHistory(r)}`;
+    }).join('\n');
+    return `${testName}\n${results}`;
+  }).join('\n\n');
 
+  const historyNote = resultsWithHistory.length > 0 ? `
+IMPORTANT: Historical data is available for ${resultsWithHistory.length} parameter(s). 
+Analyze these trends to identify:
+- Improving or worsening patterns
+- Sudden changes that may indicate acute conditions
+- Chronic abnormalities requiring monitoring
+- Response to treatment (if clinical notes suggest any)
+` : '';
+
+  return `You are a clinical pathologist generating a comprehensive summary report for a referring physician.
+
+${patientInfo}
+
+Test Results by Group (current values with historical trends):
+${testResultsSection}
+${historyNote}
 Generate a clinical summary suitable for the referring doctor that includes:
 1. Brief interpretation of results (suitable for non-laboratory clinicians)
-2. Clinically significant findings
-3. Suggested correlations or follow-up tests if applicable
-4. Any urgent findings requiring immediate attention
+2. Clinically significant findings (highlight any notable trends from historical data)
+3. Trend analysis where historical data is available (improving/worsening/stable)
+4. Suggested correlations or follow-up tests if applicable
+5. Any urgent findings requiring immediate attention
 
 The tone should be professional, concise, and clinically useful.
 
@@ -220,9 +281,11 @@ Respond with a JSON object:
     {
       "finding": "Description of finding...",
       "clinical_significance": "Why this matters...",
-      "test_group": "Which test group"
+      "test_group": "Which test group",
+      "trend": "improving/worsening/stable/new_finding (if historical data exists)"
     }
   ],
+  "trend_analysis": "Summary of trends observed from historical data (if available)...",
   "suggested_followup": ["Suggested action or test if any..."],
   "urgent_findings": ["Any findings requiring immediate attention..."],
   "clinical_interpretation": "Detailed interpretation paragraph for the report..."
@@ -230,6 +293,7 @@ Respond with a JSON object:
 
 Return ONLY the JSON object, no additional text.`;
 }
+
 
 /**
  * Analyze result values and generate AI suggestions
@@ -277,6 +341,137 @@ Respond with a JSON array:
 
 Return ONLY the JSON array, no additional text.`;
 }
+
+/**
+ * Generate patient-friendly summary in selected language
+ * Medical/pathology terms remain in English for accuracy
+ * Includes historical data from past orders and external reports
+ */
+function buildPatientSummaryPrompt(request: PatientSummaryRequest): string {
+  const { test_groups, language, referring_doctor_name, patient } = request;
+  
+  const allResults = test_groups.flatMap(tg => 
+    tg.result_values.map(r => ({ ...r, test_group: tg.name }))
+  );
+  const abnormalResults = allResults.filter(r => r.flag);
+  const resultsWithHistory = allResults.filter(r => r.historical_values && r.historical_values.length > 0);
+  
+  // Helper to format historical data for a result (simplified for patient understanding)
+  const formatHistory = (r: ResultValue): string => {
+    if (!r.historical_values || r.historical_values.length === 0) return '';
+    const history = r.historical_values
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 3) // Last 3 values for patient simplicity
+      .map(h => `${h.date}: ${h.value}`);
+    return ` (Previous: ${history.join(' → ')})`;
+  };
+  
+  // Language display names for the prompt
+  const languageNames: Record<SupportedLanguage, string> = {
+    english: 'English',
+    hindi: 'Hindi (हिन्दी)',
+    marathi: 'Marathi (मराठी)',
+    gujarati: 'Gujarati (ગુજરાતી)',
+    tamil: 'Tamil (தமிழ்)',
+    telugu: 'Telugu (తెలుగు)',
+    kannada: 'Kannada (ಕನ್ನಡ)',
+    bengali: 'Bengali (বাংলা)',
+    punjabi: 'Punjabi (ਪੰਜਾਬੀ)',
+    malayalam: 'Malayalam (മലയാളം)',
+    odia: 'Odia (ଓଡ଼ିଆ)',
+    assamese: 'Assamese (অসমীয়া)',
+  };
+  
+  const targetLanguage = languageNames[language] || 'English';
+  const doctorName = referring_doctor_name || 'your doctor';
+
+  const patientInfo = [
+    patient?.age ? `Age: ${patient.age} years` : 'Age: Not specified',
+    patient?.gender ? `Gender: ${patient.gender}` : 'Gender: Not specified'
+  ].join('\n');
+
+  const testResultsSection = test_groups.map(tg => {
+    const testName = `**${tg.name}**`;
+    const results = tg.result_values.map(r => {
+      const flag = r.flag 
+        ? ` [${r.flag === 'H' ? 'HIGH ↑' : r.flag === 'L' ? 'LOW ↓' : 'CRITICAL ⚠️'}]` 
+        : ' [Normal ✓]';
+      return `  - ${r.analyte_name}: ${r.value} ${r.unit}${flag}${formatHistory(r)}`;
+    }).join('\n');
+    return `${testName}\n${results}`;
+  }).join('\n\n');
+
+  const historyNote = resultsWithHistory.length > 0 ? `
+IMPORTANT - HISTORICAL TREND DATA AVAILABLE:
+${resultsWithHistory.length} test(s) have previous results from past visits. 
+When explaining findings to the patient:
+- Compare current values with previous ones
+- Use simple terms like "improving", "stable", or "needs attention"
+- Reassure if trends are positive
+- Be honest but gentle if trends show concern
+` : '';
+
+  return `You are a healthcare communication specialist creating a patient-friendly summary of laboratory test results.
+
+TARGET LANGUAGE: ${targetLanguage}
+
+IMPORTANT LANGUAGE RULES:
+1. Write all explanations and descriptions in ${targetLanguage}
+2. ALWAYS keep medical/pathology terms in ENGLISH (e.g., CBC, Hemoglobin, LDL Cholesterol, Lipid Profile, Creatinine)
+3. The patient might not understand medical jargon - explain findings in simple, everyday language
+4. If ${language} is 'english', write everything in English
+5. For non-English languages, mix English medical terms naturally into ${targetLanguage} sentences
+
+Patient Information:
+${patientInfo}
+
+Test Results (with previous values if available):
+${testResultsSection}
+
+Summary:
+- Total tests: ${allResults.length}
+- Normal results: ${allResults.length - abnormalResults.length}
+- Abnormal results: ${abnormalResults.length}
+- Tests with previous results: ${resultsWithHistory.length}
+${historyNote}
+Create a patient-friendly summary that:
+1. Gives an overall health status in simple terms
+2. Briefly mentions what is normal (reassurance)
+3. Clearly explains each abnormal finding in simple language the patient can understand
+4. If historical data available, mention if values are improving, stable, or need attention
+5. If ANY abnormal findings exist, recommend consulting ${doctorName}
+6. Provide 2-3 general health tips based on the results
+
+The tone should be:
+- Warm and reassuring (not alarming)
+- Easy to understand for someone without medical background
+- Empowering the patient to take action if needed
+
+Respond with a JSON object (all text content in ${targetLanguage} except medical terms in English):
+{
+  "health_status": "Brief 1-2 sentence overall health status in ${targetLanguage}...",
+  "normal_findings_summary": "Brief summary of normal findings in ${targetLanguage}...",
+  "abnormal_findings": [
+    {
+      "test_name": "Medical term in ENGLISH (e.g., Hemoglobin)",
+      "value": "actual value with unit",
+      "status": "high|low|abnormal",
+      "explanation": "Simple explanation in ${targetLanguage} what this means and why it matters...",
+      "trend": "improving|worsening|stable|new (only if historical data exists)"
+    }
+  ],
+  "needs_consultation": true/false,
+  "consultation_message": "Message in ${targetLanguage} recommending consultation with ${doctorName} if needed, or reassurance if all is well...",
+  "health_tips": [
+    "Health tip 1 in ${targetLanguage}...",
+    "Health tip 2 in ${targetLanguage}..."
+  ],
+  "language": "${language}"
+}
+
+Return ONLY the JSON object, no additional text.`;
+}
+
 
 /**
  * Extract JSON from Gemini response
@@ -332,7 +527,7 @@ async function callGemini(prompt: string, apiKey: string): Promise<any> {
         generationConfig: {
           temperature: 0.2, // Low temperature for consistent medical language
           topP: 0.9,
-          maxOutputTokens: 4096,
+          maxOutputTokens: 8000,
           responseMimeType: 'application/json',
         },
       }),
@@ -424,6 +619,17 @@ async function handler(req: Request): Promise<Response> {
           );
         }
         prompt = buildAnalyzeResultValuesPrompt(body as AnalyzeResultValuesRequest);
+        result = await callGemini(prompt, apiKey);
+        break;
+
+      case 'patient_summary':
+        if (!body.test_groups || !body.language) {
+          return new Response(
+            JSON.stringify({ error: 'test_groups and language are required for patient_summary' }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+        prompt = buildPatientSummaryPrompt(body as PatientSummaryRequest);
         result = await callGemini(prompt, apiKey);
         break;
 

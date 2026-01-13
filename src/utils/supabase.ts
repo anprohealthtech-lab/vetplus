@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { generateOrderSampleId, getOrderAssignedColor, generateOrderQRCodeData } from './colorAssignment';
+import { notificationTriggerService } from './notificationTriggerService';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -408,14 +409,39 @@ export const auth = {
   }
 };
 
+// ============================================================================
+// Lab ID Cache - prevents repeated DB queries during result entry sessions
+// ============================================================================
+let _cachedLabId: string | null = null;
+let _cachedLabIdUserId: string | null = null; // Track which user the cache is for
+
+// Clear cache on auth state change
+supabase.auth.onAuthStateChange((event) => {
+  if (event === 'SIGNED_OUT' || event === 'USER_UPDATED') {
+    _cachedLabId = null;
+    _cachedLabIdUserId = null;
+  }
+});
+
 // Database helper functions for patients
 export const database = { 
   // Expose supabase client for direct queries when needed
   supabase,
   
-  // Helper to get current user's lab ID
+  // Clear lab ID cache (call when switching labs or on logout)
+  clearLabIdCache: () => {
+    _cachedLabId = null;
+    _cachedLabIdUserId = null;
+  },
+  
+  // Helper to get current user's lab ID (with caching)
   getCurrentUserLabId: async () => {
     const { data: { user }, error } = await supabase.auth.getUser();
+    
+    // Return cached value if still valid for the same user
+    if (_cachedLabId && _cachedLabIdUserId === user?.id) {
+      return _cachedLabId;
+    }
     if (error || !user) {
       console.error('Error fetching user:', error);
       return null;
@@ -428,18 +454,23 @@ export const database = {
         .select('lab_id')
         .eq('email', user.email) // Match by email since auth.users.id might be different from public.users.id
         .eq('status', 'Active')
-        .single();
+        .maybeSingle();
       
       if (!userDataError && userData?.lab_id) {
+        // Cache the result
+        _cachedLabId = userData.lab_id;
+        _cachedLabIdUserId = user.id;
         return userData.lab_id;
       }
     } catch (err) {
       console.warn('Could not fetch lab_id from users table:', err);
     }
     
-    // Secondary: Check if lab_id is in user metadata (fallback)
     if (user?.user_metadata?.lab_id) {
       console.warn('Using lab_id from user metadata (consider updating users table):', user.user_metadata.lab_id);
+      // Cache the result
+      _cachedLabId = user.user_metadata.lab_id;
+      _cachedLabIdUserId = user.id;
       return user.user_metadata.lab_id;
     }
     
@@ -454,6 +485,9 @@ export const database = {
       
       if (!userLabError && userLab?.lab_id) {
         console.warn('Using lab_id from user_labs table (consider updating users table):', userLab.lab_id);
+        // Cache the result
+        _cachedLabId = userLab.lab_id;
+        _cachedLabIdUserId = user.id;
         return userLab.lab_id;
       }
     } catch (err) {
@@ -471,6 +505,9 @@ export const database = {
       if (!labError && labs && labs.length > 0) {
         console.warn('Lab ID not found for user. Using first available lab for demo:', labs[0].id);
         console.warn('Please update the users table with proper lab_id for user:', user.email);
+        // Cache the result
+        _cachedLabId = labs[0].id;
+        _cachedLabIdUserId = user.id;
         return labs[0].id;
       }
     } catch (err) {
@@ -493,7 +530,7 @@ export const database = {
         .select('id')
         .eq('email', user.email)
         .eq('status', 'Active')
-        .single();
+        .maybeSingle();
       
       if (!userData?.id) return [];
       
@@ -521,7 +558,7 @@ export const database = {
         .select('id')
         .eq('email', user.email)
         .eq('status', 'Active')
-        .single();
+        .maybeSingle();
       
       if (!userData?.id) return null;
       
@@ -566,7 +603,7 @@ export const database = {
         .select('id')
         .eq('email', user.email)
         .eq('status', 'Active')
-        .single();
+        .maybeSingle();
       
       if (!userData?.id) return { shouldFilter: false, locationIds: [], canViewAll: true };
       
@@ -750,6 +787,7 @@ export const database = {
       watermark_position?: string;
       watermark_size?: string;
       watermark_rotation?: number;
+      preferred_language?: string;
     }): Promise<{ data: any; error: any }> => {
       try {
         const { data, error } = await supabase
@@ -912,6 +950,209 @@ export const database = {
     }
   },
 
+  locations: {
+    getAll: async (): Promise<{ data: any[]; error: any }> => {
+      try {
+        const lab_id = await database.getCurrentUserLabId();
+        if (!lab_id) {
+          return { data: [], error: new Error('No lab_id found for current user') };
+        }
+
+        const { data, error } = await supabase
+          .from('locations')
+          .select('*')
+          .eq('lab_id', lab_id)
+          .order('created_at', { ascending: false });
+
+        return { data: data || [], error };
+      } catch (error) {
+        console.error('Error fetching locations:', error);
+        return { data: [], error };
+      }
+    },
+
+    getById: async (id: string): Promise<{ data: any; error: any }> => {
+      try {
+        const { data, error } = await supabase
+          .from('locations')
+          .select('*')
+          .eq('id', id)
+          .single();
+
+        return { data, error };
+      } catch (error) {
+        console.error('Error fetching location:', error);
+        return { data: null, error };
+      }
+    },
+
+    create: async (locationData: {
+      name: string;
+      code?: string;
+      type?: 'hospital' | 'clinic' | 'diagnostic_center' | 'home_collection' | 'walk_in';
+      address?: string;
+      phone?: string;
+      email?: string;
+      contact_person?: string;
+      credit_limit?: number;
+      collection_percentage?: number;
+      is_cash_collection_center?: boolean;
+      notes?: string;
+    }): Promise<{ data: any; error: any }> => {
+      try {
+        const lab_id = await database.getCurrentUserLabId();
+        if (!lab_id) {
+          return { data: null, error: new Error('No lab_id found for current user') };
+        }
+
+        const { data, error } = await supabase
+          .from('locations')
+          .insert([{
+            ...locationData,
+            type: locationData.type || 'diagnostic_center',
+            lab_id,
+            is_active: true,
+            supports_cash_collection: locationData.is_cash_collection_center || false,
+            payment_terms: 0
+          }])
+          .select()
+          .single();
+
+        return { data, error };
+      } catch (error) {
+        console.error('Error creating location:', error);
+        return { data: null, error };
+      }
+    },
+
+    update: async (id: string, locationData: {
+      name?: string;
+      code?: string;
+      type?: 'hospital' | 'clinic' | 'diagnostic_center' | 'home_collection' | 'walk_in';
+      address?: string;
+      phone?: string;
+      email?: string;
+      contact_person?: string;
+      credit_limit?: number;
+      collection_percentage?: number;
+      is_cash_collection_center?: boolean;
+      notes?: string;
+      is_active?: boolean;
+    }): Promise<{ data: any; error: any }> => {
+      try {
+        const { data, error } = await supabase
+          .from('locations')
+          .update({
+            ...locationData,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', id)
+          .select()
+          .single();
+
+        return { data, error };
+      } catch (error) {
+        console.error('Error updating location:', error);
+        return { data: null, error };
+      }
+    },
+
+    delete: async (id: string): Promise<{ error: any }> => {
+      try {
+        const { error } = await supabase
+          .from('locations')
+          .delete()
+          .eq('id', id);
+
+        return { error };
+      } catch (error) {
+        console.error('Error deleting location:', error);
+        return { error };
+      }
+    }
+  },
+
+  creditTransactions: {
+    getByLocation: async (locationId: string, limit: number = 50): Promise<{ data: any[]; error: any }> => {
+      try {
+        const { data, error } = await supabase
+          .from('credit_transactions')
+          .select('*')
+          .eq('location_id', locationId)
+          .order('created_at', { ascending: false })
+          .limit(limit);
+
+        return { data: data || [], error };
+      } catch (error) {
+        console.error('Error fetching credit transactions:', error);
+        return { data: [], error };
+      }
+    },
+
+    getCreditSummaryByLocation: async (locationId: string): Promise<{ data: { current_balance: number } | null; error: any }> => {
+      try {
+        const { data, error } = await supabase
+          .from('credit_transactions')
+          .select('amount, transaction_type')
+          .eq('location_id', locationId);
+
+        if (error) {
+          return { data: null, error };
+        }
+
+        // Calculate current balance: credits - (payments + adjustments)
+        let balance = 0;
+        (data || []).forEach((tx: any) => {
+          if (tx.transaction_type === 'credit') {
+            balance += Number(tx.amount) || 0;
+          } else {
+            balance -= Number(tx.amount) || 0;
+          }
+        });
+
+        return { data: { current_balance: balance }, error: null };
+      } catch (error) {
+        console.error('Error fetching credit summary:', error);
+        return { data: null, error };
+      }
+    },
+
+    create: async (transactionData: {
+      location_id: string;
+      amount: number;
+      type: 'credit' | 'debit';
+      description?: string;
+      reference_type?: string;
+      reference_id?: string;
+    }): Promise<{ data: any; error: any }> => {
+      try {
+        const lab_id = await database.getCurrentUserLabId();
+        if (!lab_id) {
+          return { data: null, error: new Error('No lab_id found for current user') };
+        }
+
+        const { data, error } = await supabase
+          .from('credit_transactions')
+          .insert([{
+            location_id: transactionData.location_id,
+            amount: transactionData.amount,
+            transaction_type: transactionData.type === 'credit' ? 'credit' : 'payment',
+            notes: transactionData.description,
+            reference_number: transactionData.reference_id,
+            lab_id,
+            created_at: new Date().toISOString()
+          }])
+          .select()
+          .single();
+
+        return { data, error };
+      } catch (error) {
+        console.error('Error creating credit transaction:', error);
+        return { data: null, error };
+      }
+    }
+  },
+
   aiProtocols: {
     create: async (payload: {
       name: string;
@@ -958,6 +1199,93 @@ export const database = {
         .single();
 
       return { data, error };
+    }
+  },
+
+  aiAnalysis: {
+    saveDoctorSummary: async (orderId: string, summary: string) => {
+      try {
+        const labId = await database.getCurrentUserLabId();
+        if (!labId) return { error: new Error('No lab_id found for current user') };
+
+        // Check if report exists
+        const { data: existingReport } = await supabase
+          .from('reports')
+          .select('id')
+          .eq('order_id', orderId)
+          .maybeSingle();
+
+        if (existingReport) {
+          const { error } = await supabase
+            .from('reports')
+            .update({
+              ai_doctor_summary: summary,
+              ai_summary_generated_at: new Date().toISOString()
+            })
+            .eq('id', existingReport.id);
+          return { error };
+        } else {
+          // Create new report record if it doesn't exist
+          const { error } = await supabase
+            .from('reports')
+            .insert({
+              lab_id: labId,
+              order_id: orderId,
+              ai_doctor_summary: summary,
+              ai_summary_generated_at: new Date().toISOString(),
+              status: 'Draft',
+              generated_date: new Date().toISOString()
+            });
+          return { error };
+        }
+      } catch (error) {
+        console.error('Error saving doctor summary:', error);
+        return { error };
+      }
+    }
+  },
+
+
+
+  whatsappTemplates: {
+    getDefault: async (category: string, labId?: string) => {
+      try {
+        const id = labId || await database.getCurrentUserLabId();
+        if (!id) return { data: null, error: new Error('No lab_id found') };
+
+        const { data, error } = await supabase
+          .from('whatsapp_message_templates')
+          .select('*')
+          .eq('lab_id', id)
+          .eq('category', category)
+          .eq('is_default', true)
+          .maybeSingle();
+
+        return { data, error };
+      } catch (error) {
+        console.error('Error fetching default WhatsApp template:', error);
+        return { data: null, error };
+      }
+    }
+  },
+
+  invoiceTemplates: {
+    getAll: async () => {
+      try {
+        const labId = await database.getCurrentUserLabId();
+        if (!labId) return { data: [], error: new Error('No lab_id found') };
+
+        const { data, error } = await supabase
+          .from('invoice_templates')
+          .select('*')
+          .eq('lab_id', labId)
+          .order('is_default', { ascending: false });
+
+        return { data: data || [], error };
+      } catch (error) {
+        console.error('Error fetching invoice templates:', error);
+        return { data: [], error };
+      }
     }
   },
 
@@ -2239,7 +2567,13 @@ export const database = {
         }
       }
 
-      return { data: { ...updatedOrder, tests: tests || [] }, error: null };
+      const finalData = { ...updatedOrder, tests: tests || [] };
+
+      // Trigger order registration notification (async, don't block response)
+      notificationTriggerService.triggerOrderRegistered(updatedOrder.id, lab_id)
+        .catch(err => console.error('Error triggering order registration notification:', err));
+
+      return { data: finalData, error: null };
     },
 
     update: async (id: string, orderData: any) => {
@@ -2605,7 +2939,7 @@ export const database = {
         const resultValuesToInsert = values.map((val: any) => ({
           result_id: result.id,
           order_id: result.order_id, // Add order_id for trigger compatibility
-          analyte_id: analyteMap.get(val.parameter) || null, // Map parameter name to analyte_id
+          analyte_id: val.analyte_id || analyteMap.get(val.parameter) || null, // Use provided ID or map parameter name
           parameter: val.parameter, // Keep parameter name as well
           value: val.value,
           unit: val.unit,
@@ -2677,7 +3011,7 @@ export const database = {
         const resultValuesToInsert = values.map((val: any) => ({
           result_id: id,
           order_id: result.order_id, // Add order_id for trigger compatibility
-          analyte_id: analyteMap.get(val.parameter) || null, // Map parameter name to analyte_id
+          analyte_id: val.analyte_id || analyteMap.get(val.parameter) || null, // Use provided ID or map parameter name
           parameter: val.parameter, // Keep parameter name as well
           value: val.value,
           unit: val.unit,
@@ -4040,6 +4374,7 @@ export const database = {
         .select(`
           is_active,
           visible,
+          ref_range_knowledge,
           lab_specific_reference_range,
           lab_specific_interpretation_low,
           lab_specific_interpretation_normal,
@@ -4071,6 +4406,7 @@ export const database = {
                   normal: item.lab_specific_interpretation_normal || analyteObj.interpretation_normal,
                   high: item.lab_specific_interpretation_high || analyteObj.interpretation_high,
                 },
+                ref_range_knowledge: item.ref_range_knowledge || analyteObj.ref_range_knowledge,
               };
             }
             return null;
@@ -4116,6 +4452,8 @@ export const database = {
       value_type?: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
       expected_normal_values?: string[];
       flag_rules?: any;
+      code?: string;
+      description?: string;
     }) => {
       // First create the analyte in the analytes table
       const { data, error } = await supabase
@@ -4144,7 +4482,9 @@ export const database = {
           // Flag determination fields
           value_type: analyteData.value_type || 'numeric',
           expected_normal_values: analyteData.expected_normal_values || [],
-          flag_rules: analyteData.flag_rules || null
+          flag_rules: analyteData.flag_rules || null,
+          code: analyteData.code || null,
+          description: analyteData.description || null
         }])
         .select()
         .single();
@@ -4205,6 +4545,8 @@ export const database = {
       value_type?: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
       expected_normal_values?: string[];
       flag_rules?: any;
+      code?: string;
+      description?: string;
     }) => {
       const { data, error } = await supabase
         .from('analytes')
@@ -4232,6 +4574,8 @@ export const database = {
           value_type: updates.value_type,
           expected_normal_values: updates.expected_normal_values,
           flag_rules: updates.flag_rules,
+          code: updates.code,
+          description: updates.description,
           updated_at: new Date().toISOString()
         })
         .eq('id', analyteId)
@@ -4610,10 +4954,13 @@ export const database = {
       lab_specific_interpretation_low?: string;
       lab_specific_interpretation_normal?: string;
       lab_specific_interpretation_high?: string;
+      ref_range_knowledge?: any;
       // Flag determination fields
       value_type?: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
       expected_normal_values?: string[];
       flag_rules?: any;
+      code?: string;
+      description?: string;
     }) => {
       const { data, error } = await supabase
         .from('lab_analytes')
@@ -4782,6 +5129,8 @@ export const database = {
           group_level_prompt,
           lab_id,
           to_be_copied,
+          required_patient_inputs,
+          ref_range_ai_config,
           test_group_analytes(
             analyte_id,
             analytes(
@@ -4792,7 +5141,8 @@ export const database = {
               reference_range,
               ai_processing_type,
               ai_prompt_override,
-              group_ai_mode
+              group_ai_mode,
+              ref_range_knowledge
             )
           )
         `)
@@ -4822,6 +5172,8 @@ export const database = {
           group_level_prompt,
           lab_id,
           to_be_copied,
+          required_patient_inputs,
+          ref_range_ai_config,
           test_group_analytes(
             analyte_id,
             analytes(
@@ -4832,7 +5184,8 @@ export const database = {
               reference_range,
               ai_processing_type,
               ai_prompt_override,
-              group_ai_mode
+              group_ai_mode,
+              ref_range_knowledge
             )
           )
         `)
@@ -4910,7 +5263,11 @@ export const database = {
           only_female: testGroupData.onlyFemale || false,
           only_male: testGroupData.onlyMale || false,
           only_billing: testGroupData.onlyBilling || false,
-          start_from_next_page: testGroupData.startFromNextPage || false
+          start_from_next_page: testGroupData.startFromNextPage || false,
+          ref_range_ai_config: testGroupData.ref_range_ai_config || null,
+          required_patient_inputs: testGroupData.required_patient_inputs || [],
+          is_outsourced: testGroupData.is_outsourced || false,
+          default_outsourced_lab_id: testGroupData.default_outsourced_lab_id || null
         };
 
         console.log('Creating test group with data:', sanitizedData);
@@ -4983,6 +5340,10 @@ export const database = {
             only_male: updates.onlyMale,
             only_billing: updates.onlyBilling,
             start_from_next_page: updates.startFromNextPage,
+            ref_range_ai_config: updates.ref_range_ai_config,
+            required_patient_inputs: updates.required_patient_inputs,
+            is_outsourced: updates.is_outsourced,
+            default_outsourced_lab_id: updates.default_outsourced_lab_id,
             updated_at: new Date().toISOString()
           })
           .eq('id', id)
@@ -8732,11 +9093,14 @@ const brandingSignatureAPI = {
         `)
         .single();
 
-      // Update order transit_status to received_at_lab
+      // Update order transit_status to received_at_lab AND set sample_received_at
       if (!error && data?.order_id) {
         await supabase
           .from('orders')
-          .update({ transit_status: 'received_at_lab' })
+          .update({ 
+            transit_status: 'received_at_lab',
+            sample_received_at: new Date().toISOString()
+          })
           .eq('id', data.order_id);
       }
 
@@ -8775,7 +9139,10 @@ const brandingSignatureAPI = {
         if (orderIds.length > 0) {
           await supabase
             .from('orders')
-            .update({ transit_status: 'received_at_lab' })
+            .update({ 
+              transit_status: 'received_at_lab',
+              sample_received_at: now
+            })
             .in('id', orderIds);
         }
       }
@@ -9792,7 +10159,7 @@ const pdfQueue = {
       
       // Call edge function - it handles everything server-side:
       // Context fetch → Template rendering → PDF.co generation → Storage upload
-      const { data, error } = await supabase.functions.invoke('generate-pdf-auto', {
+      const { data, error } = await supabase.functions.invoke('generate-pdf-letterhead', {
         body: { orderId }
       });
 
@@ -10266,3 +10633,214 @@ async function syncLabBrandingDefaultsForLab(
 
   return { error: updateResult.error };
 }
+
+// ============================================
+// NOTIFICATION SETTINGS NAMESPACE
+// ============================================
+
+const notificationSettings = {
+  /**
+   * Get notification settings for a lab
+   */
+  async get(labIdOverride?: string) {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    return supabase
+      .from('lab_notification_settings')
+      .select('*')
+      .eq('lab_id', labId)
+      .maybeSingle();
+  },
+
+  /**
+   * Create or update notification settings
+   */
+  async upsert(settings: {
+    auto_send_report_to_patient?: boolean;
+    auto_send_report_to_doctor?: boolean;
+    send_report_on_status?: string;
+    auto_send_invoice_to_patient?: boolean;
+    auto_send_registration_confirmation?: boolean;
+    include_test_details_in_registration?: boolean;
+    include_invoice_in_registration?: boolean;
+    default_patient_channel?: string;
+    send_window_start?: string;
+    send_window_end?: string;
+    queue_outside_window?: boolean;
+    max_messages_per_patient_per_day?: number;
+  }, labIdOverride?: string) {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    return supabase
+      .from('lab_notification_settings')
+      .upsert({
+        lab_id: labId,
+        ...settings,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'lab_id' })
+      .select()
+      .single();
+  },
+};
+
+const notificationQueue = {
+  /**
+   * Get pending notifications
+   */
+  async getPending(limit = 10, labIdOverride?: string) {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    
+    let query = supabase
+      .from('notification_queue')
+      .select('*')
+      .eq('status', 'pending')
+      .lt('attempts', 3)
+      .order('created_at', { ascending: true })
+      .limit(limit);
+
+    if (labId) {
+      query = query.eq('lab_id', labId);
+    }
+
+    return query;
+  },
+
+  /**
+   * Get notification queue with filters
+   */
+  async list(filters?: {
+    status?: string;
+    trigger_type?: string;
+    recipient_type?: string;
+    limit?: number;
+  }, labIdOverride?: string) {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: [], error: new Error('No lab_id found for current user') };
+    }
+
+    let query = supabase
+      .from('notification_queue')
+      .select('*')
+      .eq('lab_id', labId)
+      .order('created_at', { ascending: false })
+      .limit(filters?.limit || 50);
+
+    if (filters?.status) {
+      query = query.eq('status', filters.status);
+    }
+    if (filters?.trigger_type) {
+      query = query.eq('trigger_type', filters.trigger_type);
+    }
+    if (filters?.recipient_type) {
+      query = query.eq('recipient_type', filters.recipient_type);
+    }
+
+    return query;
+  },
+
+  /**
+   * Add notification to queue
+   */
+  async add(notification: {
+    recipient_type: 'patient' | 'doctor';
+    recipient_phone: string;
+    recipient_name?: string;
+    recipient_id?: string;
+    trigger_type: 'report_ready' | 'invoice_generated' | 'order_registered' | 'payment_reminder';
+    order_id?: string;
+    report_id?: string;
+    invoice_id?: string;
+    template_id?: string;
+    message_content?: string;
+    attachment_url?: string;
+    attachment_type?: string;
+    scheduled_for?: string;
+  }, labIdOverride?: string) {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    return supabase
+      .from('notification_queue')
+      .insert({
+        lab_id: labId,
+        ...notification,
+        status: 'pending',
+        scheduled_for: notification.scheduled_for || new Date().toISOString(),
+        attempts: 0,
+        max_attempts: 3,
+      })
+      .select()
+      .single();
+  },
+
+  /**
+   * Update notification status
+   */
+  async updateStatus(id: string, status: string, additionalFields?: {
+    sent_at?: string;
+    last_error?: string;
+    whatsapp_message_id?: string;
+    attempts?: number;
+  }) {
+    return supabase
+      .from('notification_queue')
+      .update({
+        status,
+        ...additionalFields,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id);
+  },
+
+  /**
+   * Get queue stats for a lab
+   */
+  async getStats(labIdOverride?: string) {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    const { data, error } = await supabase
+      .from('notification_queue')
+      .select('status')
+      .eq('lab_id', labId);
+
+    if (error) return { data: null, error };
+
+    const stats = {
+      pending: 0,
+      sent: 0,
+      failed: 0,
+      total: data?.length || 0,
+    };
+
+    data?.forEach(item => {
+      if (item.status === 'pending' || item.status === 'scheduled' || item.status === 'sending') {
+        stats.pending++;
+      } else if (item.status === 'sent') {
+        stats.sent++;
+      } else if (item.status === 'failed') {
+        stats.failed++;
+      }
+    });
+
+    return { data: stats, error: null };
+  },
+};
+
+// Add notification settings to database object
+Object.assign(database, {
+  notificationSettings,
+  notificationQueue,
+});
+

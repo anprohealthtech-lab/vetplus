@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Search, DollarSign, FileText, Download, Eye, CreditCard, Calendar, TrendingUp, Clock as ClockIcon, Calculator, Building, RotateCcw, File } from 'lucide-react';
+import { Plus, Search, DollarSign, FileText, Eye, CreditCard, Calendar, TrendingUp, Clock as ClockIcon, Calculator, Building, RotateCcw, File } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { generateAndDownloadReport, getLabTemplate, ReportData } from '../utils/pdfGenerator';
+
 import { database } from '../utils/supabase';
 import InvoiceForm from '../components/Billing/InvoiceForm';
 import MarkAsPaidModal from '../components/Billing/MarkAsPaidModal';
@@ -10,6 +10,7 @@ import MonthlyAccountBilling from '../components/Billing/MonthlyAccountBilling';
 import RefundRequestModal from '../components/Billing/RefundRequestModal';
 import RefundApprovalConsole from '../components/Billing/RefundApprovalConsole';
 import InvoiceGenerationModal from '../components/Billing/InvoiceGenerationModal';
+import { ThermalPrintButton } from '../components/Invoices/ThermalPrintButton';
 
 type DateRangePreset = 'custom' | 'today' | '7d' | '30d' | '90d' | 'all';
 type PendingScope = 'pending' | 'all';
@@ -50,6 +51,7 @@ interface Invoice {
   invoiceDate?: string;
   dueDate?: string;
   tests?: { name: string; price: number }[];
+  orders?: { sample_id: string } | null;
 }
 
 const Billing: React.FC = () => {
@@ -63,12 +65,16 @@ const Billing: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('All');
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
-  const [downloadingInvoices, setDownloadingInvoices] = useState<Set<string>>(new Set());
+
   const [showInvoiceForm, setShowInvoiceForm] = useState(false);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [datePreset, setDatePreset] = useState<DateRangePreset>('today');
   const [pendingScope, setPendingScope] = useState<PendingScope>('pending');
+
+  // Location filtering state
+  const [locations, setLocations] = useState<{ id: string; name: string }[]>([]);
+  const [selectedLocationId, setSelectedLocationId] = useState<string>('all');
 
   // State for payment modal
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -81,6 +87,42 @@ const Billing: React.FC = () => {
   // State for PDF generation modal
   const [showPdfModal, setShowPdfModal] = useState(false);
   const [pdfInvoiceId, setPdfInvoiceId] = useState<string | null>(null);
+
+  // Lab details for invoice preview
+  const [labDetails, setLabDetails] = useState<any>(null);
+
+  // Fetch lab details and locations on mount
+  useEffect(() => {
+    const loadData = async () => {
+      // Load lab details
+      const labId = await database.getCurrentUserLabId();
+      const { data: lab } = await database.supabase
+        .from('labs')
+        .select('name, address, phone, email, gst_number')
+        .eq('id', labId)
+        .single();
+
+      if (lab) {
+        setLabDetails(lab);
+      }
+
+      // Load locations
+      const userLocInfo = await database.shouldFilterByLocation();
+      const { data: allLocations } = await database.locations.getAll();
+
+      if (allLocations) {
+        if (userLocInfo.canViewAll || !userLocInfo.shouldFilter) {
+          setLocations(allLocations.map((l: any) => ({ id: l.id, name: l.name })));
+        } else {
+          setLocations(allLocations
+            .filter((l: any) => userLocInfo.locationIds.includes(l.id))
+            .map((l: any) => ({ id: l.id, name: l.name }))
+          );
+        }
+      }
+    };
+    loadData();
+  }, []);
 
   // Fetch invoices from Supabase on component mount
   useEffect(() => {
@@ -129,29 +171,61 @@ const Billing: React.FC = () => {
   const fetchInvoices = async () => {
     setLoading(true);
     setError(null);
-    
+
     try {
-      const { data, error } = await database.invoices.getAll();
-      
+      const labId = await database.getCurrentUserLabId();
+      const { data, error } = await database.supabase
+        .from('invoices')
+        .select(`
+          *,
+          invoice_items(*),
+          orders(sample_id)
+        `)
+        .eq('lab_id', labId)
+        .order('created_at', { ascending: false });
+
       if (error) {
         setError(error.message);
         console.error('Error loading invoices:', error);
       } else {
         // Transform the data to match our expected format
-        const formattedInvoices = (data || []).map((invoice: any) => ({
-          ...invoice,
-          // Add UI compatibility fields
-          patientName: invoice.patient_name,
-          patientId: invoice.patient_id,
-          invoiceDate: invoice.invoice_date,
-          dueDate: invoice.due_date,
-          // Transform invoice_items to tests array for UI compatibility
-          tests: invoice.invoice_items ? invoice.invoice_items.map((item: any) => ({
-            name: item.test_name,
-            price: item.price
-          })) : []
-        }));
-        
+        let formattedInvoices = (data || []).map((invoice: any) => {
+          const paid = invoice.amount_paid || 0;
+          const total = invoice.total || 0;
+          let computedPaymentStatus = invoice.payment_status;
+
+          // Auto-calculate status based on payment (allowing for small float diff)
+          if (total > 0 && paid >= (total - 1)) {
+            computedPaymentStatus = 'Paid';
+          } else if (paid > 0) {
+            computedPaymentStatus = 'Partial';
+          }
+
+          return {
+            ...invoice,
+            // Add UI compatibility fields
+            paid_amount: paid,
+            payment_status: computedPaymentStatus,
+            patientName: invoice.patient_name,
+            patientId: invoice.patient_id,
+            invoiceDate: invoice.invoice_date,
+            dueDate: invoice.due_date,
+            // Transform invoice_items to tests array for UI compatibility
+            tests: invoice.invoice_items ? invoice.invoice_items.map((item: any) => ({
+              name: item.test_name,
+              price: item.price
+            })) : [],
+            orders: invoice.orders // Pass through order info
+          };
+        });
+
+        // Apply location filtering if location is selected
+        if (selectedLocationId !== 'all') {
+          formattedInvoices = formattedInvoices.filter(
+            (invoice: any) => invoice.location_id === selectedLocationId
+          );
+        }
+
         setInvoices(formattedInvoices);
       }
     } catch (err) {
@@ -165,15 +239,15 @@ const Billing: React.FC = () => {
   const handleAddInvoice = async (invoiceData: any) => {
     try {
       const { data, error } = await database.invoices.create(invoiceData);
-      
+
       if (error) {
         console.error('Error creating invoice:', error);
         return;
       }
-      
+
       // Refresh the invoices list
       fetchInvoices();
-      
+
       // Close the form
       setShowInvoiceForm(false);
     } catch (err) {
@@ -187,9 +261,9 @@ const Billing: React.FC = () => {
   };
 
   const handleMarkInvoiceAsPaid = async (
-    invoiceId: string, 
-    paymentMethod: string, 
-    amount: number, 
+    invoiceId: string,
+    paymentMethod: string,
+    amount: number,
     reference: string
   ) => {
     try {
@@ -201,21 +275,21 @@ const Billing: React.FC = () => {
         payment_reference: reference || null,
         payment_date: new Date().toISOString().split('T')[0]
       };
-      
+
       const { data, error } = await database.payments.create(paymentData);
-      
+
       if (error) {
         console.error('Error recording payment:', error);
         throw new Error('Failed to record payment');
       }
-      
+
       // Refresh the invoices list to reflect the new payment
       await fetchInvoices();
-      
+
       // Close the payment modal
       setShowPaymentModal(false);
       setInvoiceForPayment(null);
-      
+
       // Show success message (you could add a toast notification here)
       console.log('Payment recorded successfully');
     } catch (err) {
@@ -238,7 +312,7 @@ const Billing: React.FC = () => {
 
   const filteredInvoices = invoices.filter(invoice => {
     const matchesSearch = (invoice.patient_name || invoice.patientName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         invoice.id.toLowerCase().includes(searchTerm.toLowerCase());
+      invoice.id.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = selectedStatus === 'All' || invoice.status === selectedStatus;
     const invoiceDateIso = normalizeInvoiceDate(invoice.invoice_date || invoice.invoiceDate || null);
     const matchesDate = (() => {
@@ -265,61 +339,15 @@ const Billing: React.FC = () => {
     return colors[status as keyof typeof colors] || 'bg-gray-100 text-gray-800';
   };
 
-  const handleDownloadInvoice = async (invoice: Invoice) => {
-    setDownloadingInvoices(prev => new Set(prev).add(invoice.id));
-    
-    try {
-      // Convert invoice data to PDF format
-      const invoiceItems = invoice.invoice_items || [];
-      const testItems = invoiceItems.length > 0 
-        ? invoiceItems.map((item: InvoiceItem) => ({
-            name: item.test_name,
-            price: item.price
-          }))
-        : invoice.tests || [];
-      
-      const reportData: ReportData = {
-        patient: {
-          name: invoice.patient_name || invoice.patientName || '',
-          id: invoice.patient_id || invoice.patientId || '',
-          age: 32, // This would come from patient data
-          gender: 'Female', // This would come from patient data
-          referredBy: 'Self', // This would come from invoice data
-        },
-        report: {
-          reportId: invoice.id,
-          collectionDate: invoice.invoice_date || invoice.invoiceDate || '',
-          reportDate: invoice.invoice_date || invoice.invoiceDate || '',
-          reportType: 'Invoice',
-        },
-        testResults: testItems.map((test: any) => ({
-          parameter: test.name,
-          result: `₹${test.price}`,
-          unit: 'INR',
-          referenceRange: 'Service Fee',
-          flag: undefined,
-        })),
-        interpretation: `Invoice for medical services. Total amount: ₹${invoice.total}. Payment status: ${invoice.status}. ${invoice.payment_method || invoice.paymentMethod ? `Payment method: ${invoice.payment_method || invoice.paymentMethod}` : ''}`,
-        template: getLabTemplate('medilab-default'),
-      };
-      
-      await generateAndDownloadReport(reportData);
-    } catch (error) {
-      console.error('Error downloading invoice:', error);
-      alert('Failed to download invoice. Please try again.');
-    } finally {
-      setDownloadingInvoices(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(invoice.id);
-        return newSet;
-      });
-    }
-  };
 
-  const totalRevenue = invoices.filter(i => i.status === 'Paid').reduce((sum, i) => sum + (i.total || 0), 0);
-  const pendingAmount = invoices.filter(i => i.status === 'Sent').reduce((sum, i) => sum + (i.total || 0), 0);
-  const overdueAmount = invoices.filter(i => i.status === 'Overdue').reduce((sum, i) => sum + (i.total || 0), 0);
-  
+
+  // Updated Financials to use actual payment data (Revenue = Collected Cash)
+  const totalRevenue = invoices.reduce((sum, i) => sum + (i.paid_amount || 0), 0);
+  const pendingAmount = invoices.reduce((sum, i) => sum + Math.max(0, (i.total || 0) - (i.paid_amount || 0)), 0);
+  const overdueAmount = invoices
+    .filter(i => i.status === 'Overdue')
+    .reduce((sum, i) => sum + Math.max(0, (i.total || 0) - (i.paid_amount || 0)), 0);
+
   // Calculate total collected today
   const todayCollections = invoices
     .filter(i => i.payment_date === new Date().toISOString().split('T')[0])
@@ -347,7 +375,7 @@ const Billing: React.FC = () => {
               </div>
             </div>
           </div>
-          
+
           <div className="bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg shadow-sm border border-blue-200 p-6">
             <div className="flex items-center">
               <div className="bg-blue-500 p-3 rounded-lg">
@@ -478,6 +506,29 @@ const Billing: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* Location Filter */}
+            {locations.length > 0 && (
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-medium text-gray-600">Location</span>
+                <select
+                  value={selectedLocationId}
+                  onChange={(e) => {
+                    setSelectedLocationId(e.target.value);
+                    // Trigger refetch when location changes
+                    setTimeout(() => fetchInvoices(), 0);
+                  }}
+                  className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                >
+                  <option value="all">All Locations</option>
+                  {locations.map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {location.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         </div>
 
@@ -495,7 +546,7 @@ const Billing: React.FC = () => {
                 Invoices ({filteredInvoices.length})
               </h3>
             </div>
-            
+
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
@@ -534,11 +585,11 @@ const Billing: React.FC = () => {
                     filteredInvoices.map((invoice) => {
                       // Determine bill-to information
                       const invoiceType = (invoice as any).invoice_type || 'patient';
-                      const billTo = invoiceType === 'account' 
+                      const billTo = invoiceType === 'account'
                         ? { type: 'Account', name: (invoice as any).account?.name || 'Account' }
-                        : (invoice as any).location_id 
-                        ? { type: 'Location', name: (invoice as any).location?.name || 'Location' }
-                        : { type: 'Self', name: 'Direct Pay' };
+                        : (invoice as any).location_id
+                          ? { type: 'Location', name: (invoice as any).location?.name || 'Location' }
+                          : { type: 'Self', name: 'Direct Pay' };
 
                       return (
                         <tr key={invoice.id} className="hover:bg-gray-50 transition-colors">
@@ -548,6 +599,11 @@ const Billing: React.FC = () => {
                               <div className="text-sm text-gray-500">
                                 {(invoice.invoice_items?.length || invoice.tests?.length || 0)} items
                               </div>
+                              {invoice.orders?.sample_id && (
+                                <div className="text-xs text-purple-600 font-medium mt-0.5" title="Sample ID">
+                                  SID: {invoice.orders.sample_id}
+                                </div>
+                              )}
                               {invoiceType === 'account' && (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mt-1">
                                   B2B Credit
@@ -567,11 +623,10 @@ const Billing: React.FC = () => {
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div>
-                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                billTo.type === 'Account' ? 'bg-purple-100 text-purple-800' :
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${billTo.type === 'Account' ? 'bg-purple-100 text-purple-800' :
                                 billTo.type === 'Location' ? 'bg-orange-100 text-orange-800' :
-                                'bg-gray-100 text-gray-800'
-                              }`}>
+                                  'bg-gray-100 text-gray-800'
+                                }`}>
                                 {billTo.type}
                               </span>
                               {billTo.name !== billTo.type && (
@@ -582,10 +637,10 @@ const Billing: React.FC = () => {
                             </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-bold text-gray-900">₹{invoice.total.toLocaleString()}</div>
-                            <div className="text-sm text-gray-500">Sub: ₹{invoice.subtotal}</div>
+                            <div className="text-sm font-bold text-gray-900">{invoice.total.toLocaleString()}</div>
+                            <div className="text-sm text-gray-500">Sub: {invoice.subtotal.toLocaleString()}</div>
                             {invoice.paid_amount !== undefined && invoice.paid_amount > 0 && (
-                              <div className="text-sm text-green-600">Paid: ₹{invoice.paid_amount.toLocaleString()}</div>
+                              <div className="text-sm text-green-600">Paid: {invoice.paid_amount.toLocaleString()}</div>
                             )}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
@@ -603,6 +658,7 @@ const Billing: React.FC = () => {
                             <div>Due: {new Date(invoice.due_date || invoice.dueDate || '').toLocaleDateString()}</div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
+                            {/* View Invoice */}
                             <button
                               onClick={() => setSelectedInvoice(invoice)}
                               className="text-blue-600 hover:text-blue-900 p-1 rounded"
@@ -610,26 +666,40 @@ const Billing: React.FC = () => {
                             >
                               <Eye className="h-4 w-4" />
                             </button>
-                            <button 
-                              onClick={() => handleDownloadInvoice(invoice)}
-                              disabled={downloadingInvoices.has(invoice.id)}
-                              className="text-green-600 hover:text-green-900 p-1 rounded disabled:opacity-50"
-                              title="Download Invoice"
-                            >
-                              <Download className="h-4 w-4" />
-                            </button>
+
+                            {/* View PDF (if exists) */}
+                            {invoice.pdf_url && (
+                              <button
+                                onClick={() => window.open(invoice.pdf_url, '_blank')}
+                                className="text-indigo-600 hover:text-indigo-900 p-1 rounded"
+                                title="View Generated PDF"
+                              >
+                                <FileText className="h-4 w-4" />
+                              </button>
+                            )}
+
+                            {/* Generate/Download PDF */}
                             <button
                               onClick={() => {
                                 setPdfInvoiceId(invoice.id);
                                 setShowPdfModal(true);
                               }}
-                              className="text-purple-600 hover:text-purple-900 p-1 rounded"
-                              title="Generate PDF"
+                              className="text-green-600 hover:text-green-900 p-1 rounded"
+                              title={invoice.pdf_url ? "Regenerate PDF" : "Generate PDF"}
                             >
                               <File className="h-4 w-4" />
                             </button>
+
+                            {/* Thermal Print */}
+                            <ThermalPrintButton
+                              invoiceId={invoice.id}
+                              variant="icon"
+                              format="thermal_80mm"
+                            />
+
+                            {/* Record Payment */}
                             {(invoice.payment_status !== 'Paid' && invoice.status !== 'Paid') && (
-                              <button 
+                              <button
                                 onClick={() => handleOpenPaymentModal(invoice)}
                                 className="text-orange-600 hover:text-orange-900 p-1 rounded"
                                 title="Record Payment"
@@ -637,8 +707,10 @@ const Billing: React.FC = () => {
                                 <CreditCard className="h-4 w-4" />
                               </button>
                             )}
+
+                            {/* Request Refund */}
                             {(((invoice.paid_amount ?? 0) > 0) || invoice.payment_status === 'Paid' || invoice.status === 'Paid') && (
-                              <button 
+                              <button
                                 onClick={() => {
                                   setInvoiceForRefund(invoice);
                                   setShowRefundModal(true);
@@ -678,9 +750,8 @@ const Billing: React.FC = () => {
               params.set('view', 'invoices');
               setSearchParams(params);
             }}
-            className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${
-              view === 'invoices' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
+            className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${view === 'invoices' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
           >
             <FileText className="w-4 h-4" />
             Invoices
@@ -691,9 +762,8 @@ const Billing: React.FC = () => {
               params.set('view', 'b2b-monthly');
               setSearchParams(params);
             }}
-            className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${
-              view === 'b2b-monthly' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
+            className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${view === 'b2b-monthly' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
           >
             <Building className="w-4 h-4" />
             B2B Monthly
@@ -704,9 +774,8 @@ const Billing: React.FC = () => {
               params.set('view', 'cash-reconciliation');
               setSearchParams(params);
             }}
-            className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${
-              view === 'cash-reconciliation' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
+            className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${view === 'cash-reconciliation' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
           >
             <Calculator className="w-4 h-4" />
             Cash Reconciliation
@@ -717,9 +786,8 @@ const Billing: React.FC = () => {
               params.set('view', 'refund-approvals');
               setSearchParams(params);
             }}
-            className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${
-              view === 'refund-approvals' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
+            className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${view === 'refund-approvals' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
           >
             <RotateCcw className="w-4 h-4" />
             Refunds
@@ -733,7 +801,7 @@ const Billing: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Payment Methods</h3>
-          
+
           <div className="space-y-4">
             <div className="flex items-center justify-between p-4 bg-green-50 border border-green-200 rounded-lg">
               <div className="flex items-center">
@@ -747,7 +815,7 @@ const Billing: React.FC = () => {
               </div>
               <span className="text-green-600 bg-green-100 px-2 py-1 rounded text-xs font-medium">Active</span>
             </div>
-            
+
             <div className="flex items-center justify-between p-4 bg-blue-50 border border-blue-200 rounded-lg">
               <div className="flex items-center">
                 <div className="bg-blue-100 p-2 rounded">
@@ -760,7 +828,7 @@ const Billing: React.FC = () => {
               </div>
               <span className="text-blue-600 bg-blue-100 px-2 py-1 rounded text-xs font-medium">Active</span>
             </div>
-            
+
             <div className="flex items-center justify-between p-4 bg-gray-50 border border-gray-200 rounded-lg">
               <div className="flex items-center">
                 <div className="bg-gray-100 p-2 rounded">
@@ -778,7 +846,7 @@ const Billing: React.FC = () => {
 
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
-          
+
           <div className="space-y-3">
             <button
               className="w-full flex items-center justify-center px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
@@ -787,7 +855,7 @@ const Billing: React.FC = () => {
               <Plus className="h-5 w-5 mr-2" />
               Create New Invoice
             </button>
-            
+
             <button
               className="w-full flex items-center justify-center px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
               onClick={() => navigate('/reports?tab=billing')}
@@ -795,7 +863,7 @@ const Billing: React.FC = () => {
               <FileText className="h-5 w-5 mr-2" />
               Generate Payment Report
             </button>
-            
+
             <button
               className="w-full flex items-center justify-center px-4 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors"
               onClick={() => navigate('/whatsapp')}
@@ -803,7 +871,7 @@ const Billing: React.FC = () => {
               <Calendar className="h-5 w-5 mr-2" />
               Send Payment Reminders
             </button>
-            
+
             <button
               className="w-full flex items-center justify-center px-4 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
               onClick={() => navigate('/dashboard2')}
@@ -833,15 +901,18 @@ const Billing: React.FC = () => {
               {/* Invoice Content */}
               <div className="bg-white border border-gray-300 rounded-lg p-6">
                 <div className="text-center mb-6">
-                  <h1 className="text-2xl font-bold text-blue-600">MediLab Diagnostics</h1>
-                  <p className="text-gray-600">123 Health Street, Medical District</p>
-                  <p className="text-gray-600">Phone: +91 80 1234 5678 | GST: 29ABCDE1234F1Z5</p>
+                  <h1 className="text-2xl font-bold text-blue-600">{labDetails?.name || 'Loading...'}</h1>
+                  <p className="text-gray-600">{labDetails?.address || ''}</p>
+                  <p className="text-gray-600">
+                    {labDetails?.phone && `Phone: ${labDetails.phone}`}
+                    {labDetails?.gst_number && ` | GST: ${labDetails.gst_number}`}
+                  </p>
                 </div>
-                
+
                 <div className="border-t border-b border-gray-300 py-4 mb-6">
                   <h2 className="text-lg font-semibold text-center text-gray-900">TAX INVOICE</h2>
                 </div>
-                
+
                 <div className="grid grid-cols-2 gap-6 mb-6">
                   <div>
                     <h3 className="font-semibold text-gray-900 mb-2">Bill To:</h3>
@@ -858,7 +929,7 @@ const Billing: React.FC = () => {
                     </div>
                   </div>
                 </div>
-                
+
                 <table className="w-full mb-6">
                   <thead>
                     <tr className="border-b border-gray-300">
@@ -875,7 +946,7 @@ const Billing: React.FC = () => {
                     ))}
                   </tbody>
                 </table>
-                
+
                 <div className="border-t border-gray-300 pt-4">
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
@@ -898,13 +969,13 @@ const Billing: React.FC = () => {
                     </div>
                   </div>
                 </div>
-                
+
                 <div className="mt-6 text-center text-sm text-gray-600">
-                  <p>Thank you for choosing MediLab Diagnostics!</p>
-                  <p>For queries, contact us at billing@medilab.com</p>
+                  <p>Thank you for choosing {labDetails?.name || 'our services'}!</p>
+                  {labDetails?.email && <p>For queries, contact us at {labDetails.email}</p>}
                 </div>
               </div>
-              
+
               <div className="flex items-center justify-end space-x-4 mt-6">
                 <button
                   onClick={() => setSelectedInvoice(null)}
@@ -913,7 +984,7 @@ const Billing: React.FC = () => {
                   Close
                 </button>
                 {selectedInvoice && (selectedInvoice.payment_status !== 'Paid' && selectedInvoice.status !== 'Paid') && (
-                  <button 
+                  <button
                     onClick={() => {
                       setSelectedInvoice(null);
                       handleOpenPaymentModal(selectedInvoice);
@@ -924,13 +995,16 @@ const Billing: React.FC = () => {
                     Record Payment
                   </button>
                 )}
-                <button 
-                  onClick={() => handleDownloadInvoice(selectedInvoice)}
-                  disabled={downloadingInvoices.has(selectedInvoice.id)}
-                  className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+                <button
+                  onClick={() => {
+                    setPdfInvoiceId(selectedInvoice.id);
+                    setShowPdfModal(true);
+                    setSelectedInvoice(null);
+                  }}
+                  className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
                 >
-                  <Download className="h-4 w-4 mr-2 inline" />
-                  {downloadingInvoices.has(selectedInvoice.id) ? 'Generating...' : 'Download PDF'}
+                  <File className="h-4 w-4 mr-2 inline" />
+                  Generate PDF
                 </button>
                 <button className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors">
                   Send Invoice

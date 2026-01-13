@@ -183,7 +183,7 @@ REQUIREMENTS:
     "clinical_purpose": "string",
     "price": "string (decimal format like '45.00')",
     "turnaround_time": "string (e.g., '24 hours', '2-3 days')",
-    "sample_type": "string",
+    "sample_type": "string (MUST be one of the valid types below)",
     "requires_fasting": boolean,
     "is_active": true,
     "default_ai_processing_type": "gemini",
@@ -215,16 +215,35 @@ REQUIREMENTS:
   "reasoning": "string"
 }
 
-2. Use medically accurate reference ranges and units
-3. Provide realistic prices in decimal format ($15.00-$500.00)
-4. Include relevant analytes for the test type
-5. Always include confidence score (0-1) and reasoning
-6. Generate unique, meaningful codes for test groups (3-8 characters)
-7. Create test_group_analytes mapping for each analyte
+2. VALID SAMPLE TYPES (choose the most appropriate):
+   Laboratory Specimens:
+   - "Serum", "Plasma", "Whole Blood", "EDTA Blood", "Citrated Blood"
+   - "Urine", "Urine (Random)", "Urine (24hr)"
+   - "Stool", "CSF", "Sputum", "Swab", "Aspirate", "Biopsy"
+   
+   Imaging/Radiology:
+   - "X-Ray", "CT Scan", "MRI", "Ultrasound", "Mammography"
+   - "PET Scan", "Fluoroscopy", "Angiography", "DEXA Scan"
+   
+   Diagnostic Procedures:
+   - "ECG", "EEG", "Endoscopy", "Colonoscopy", "Bronchoscopy"
+   - "No Sample Required"
+   
+   Other:
+   - "Other" (use only if none of the above fit)
+
+3. Use medically accurate reference ranges and units
+4. Provide realistic prices in decimal format ($15.00-$500.00)
+5. Include relevant analytes for the test type
+6. Always include confidence score (0-1) and reasoning
+7. Generate unique, meaningful codes for test groups (3-8 characters)
+8. Create test_group_analytes mapping for each analyte
 
 CONTEXT:
 - This is for a clinical laboratory information system
 - Test names may be abbreviated or colloquial
 - Base suggestions on standard medical laboratory practices
-- Ensure all analytes have proper clinical interpretations`
+- Ensure all analytes have proper clinical interpretations
+- For imaging tests (X-Ray, CT, MRI, etc.), use appropriate imaging sample types
+- For procedures (ECG, EEG, etc.), use procedure-specific sample types`
 }

@@ -225,11 +225,11 @@ export async function processTRFImage(
 export function trfToOrderFormData(extraction: TRFExtractionResult) {
   // Filter to only include tests that are marked as selected (isSelected: true)
   const selectedTests = extraction.requestedTests?.filter(test => 
-    test.matched && test.testGroupId && (test as any).isSelected !== false
+    test.matched && test.testGroupId && test.isSelected === true
   ) || [];
 
   const unselectedTests = extraction.requestedTests?.filter(test => 
-    !test.matched || !test.testGroupId || (test as any).isSelected === false
+    !test.matched || !test.testGroupId || test.isSelected !== true
   ) || [];
 
   return {

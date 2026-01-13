@@ -4,6 +4,8 @@ import QRCodeLib from 'qrcode';
 import { supabase, uploadFile, generateFilePath, database } from '../../utils/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { calculateFlagsForResults } from '../../utils/flagCalculation';
+import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
+import SampleCollectionTracker from '../Samples/SampleCollectionTracker';
 
 interface WorkflowStep {
   name: string;
@@ -153,6 +155,7 @@ const getAvailableStatusActions = (currentStatus: string): StatusAction[] => {
 };
 
 interface ExtractedValue {
+  analyte_id?: string;
   parameter: string;
   value: string;
   unit: string;
@@ -173,6 +176,7 @@ interface Order {
   doctor: string;
   // Sample tracking fields
   sample_id?: string;
+  sample_type?: string;
   color_code?: string;
   color_name?: string;
   qr_code_data?: string;
@@ -207,7 +211,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   const [existingResultId, setExistingResultId] = useState<string | null>(null);
   const [orderAnalytes, setOrderAnalytes] = useState<any[]>([]);
   const [selectedAnalyteForAI, setSelectedAnalyteForAI] = useState<any | null>(null);
-  const [aiProcessingConfig, setAiProcessingConfig] = useState<{type: string, prompt?: string} | null>(null);
+  const [aiProcessingConfig, setAiProcessingConfig] = useState<{ type: string, prompt?: string } | null>(null);
   const [savingDraft, setSavingDraft] = useState(false);
   const [submittingResults, setSubmittingResults] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -230,12 +234,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       const ctx = canvas.getContext('2d');
       canvas.width = 200;
       canvas.height = 200;
-      
+
       if (ctx) {
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, 200, 200);
         ctx.fillStyle = '#ffffff';
-        
+
         // Create a simple pattern as fallback
         for (let i = 0; i < 20; i++) {
           for (let j = 0; j < 20; j++) {
@@ -245,7 +249,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           }
         }
       }
-      
+
       return canvas.toDataURL('image/png');
     }
   };
@@ -263,12 +267,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   // Function to print QR code
   const handlePrintQRCode = async () => {
     if (!order.qr_code_data) return;
-    
+
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
-    
+
     const qrCodeImageForPrint = await generateQRCodeDataURL(order.qr_code_data);
-    
+
     printWindow.document.write(`
       <!DOCTYPE html>
       <html>
@@ -341,14 +345,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         </body>
       </html>
     `);
-    
+
     printWindow.document.close();
   };
 
   React.useEffect(() => {
     // Fetch all analytes from database
     fetchAllAnalytes();
-    
+
     // Fetch analytes for this order
     fetchOrderAnalytes();
   }, []);
@@ -357,13 +361,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   React.useEffect(() => {
     if (orderAnalytes.length > 0) {
       setManualValues(orderAnalytes.map(analyte => ({
+        analyte_id: analyte.id,
         parameter: analyte.name,
         value: '',
         unit: analyte.unit || '',
         reference: analyte.reference_range || '',
         flag: undefined
       })));
-      
+
       // After setting analytes, load existing results if any
       fetchExistingResult();
     }
@@ -375,7 +380,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         .from('analytes')
         .select('id, name, unit, reference_range, low_critical, high_critical, category, ai_processing_type, ai_prompt_override')
         .eq('is_active', true);
-      
+
       if (error) {
         console.error('Error fetching analytes:', error);
       } else {
@@ -391,17 +396,17 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     try {
       // Get test groups for this order
       const { data: orderData, error: orderError } = await database.orders.getById(order.id);
-      
+
       if (orderError || !orderData) {
         console.error('Error fetching order details:', orderError);
         return;
       }
-      
+
       // Get test groups from order_tests (already sorted by newest first)
       const testNames = orderData.order_tests?.map((test: any) => test.test_name) || order.tests;
-      
+
       console.log('Test names in order:', testNames);
-      
+
       // Get current user's lab_id
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
@@ -429,14 +434,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         `)
         .in('name', testNames)
         .or(`lab_id.eq.${lab_id},lab_id.is.null`);
-      
+
       if (testGroupsError) {
         console.error('Error fetching test groups:', testGroupsError);
         return;
       }
-      
+
       console.log('Fetched test groups:', testGroups);
-      
+
       // Extract analytes in the same order as testNames (preserve order)
       const allAnalytes: any[] = [];
       testNames.forEach((testName: string) => {
@@ -446,9 +451,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           allAnalytes.push(...testAnalytes);
         }
       });
-      
+
       console.log('Extracted analytes from test groups:', allAnalytes);
-      
+
       if (allAnalytes.length > 0) {
         setOrderAnalytes(allAnalytes);
         console.log('Set order analytes with AI config:', allAnalytes.length);
@@ -461,16 +466,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   const fetchExistingResult = async () => {
     try {
       const { data, error } = await database.results.getByOrderId(order.id);
-      
+
       if (error) {
         console.error('Error fetching existing result:', error);
         return;
       }
-      
+
       if (data && data.length > 0) {
         const mostRecentResult = data[0]; // Get the most recent result
         setExistingResultId(mostRecentResult.id);
-        
+
         // Populate manual values with existing result values
         if (mostRecentResult.result_values && mostRecentResult.result_values.length > 0) {
           setManualValues(prevManualValues => {
@@ -490,31 +495,58 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             return updatedValues;
           });
         }
+
+
+        // Load existing attachment if available
+        if (mostRecentResult.attachment_id) {
+          setAttachmentId(mostRecentResult.attachment_id);
+          // If we have direct file info available, we might want to display it
+          if (mostRecentResult.attachment_info) {
+            // Since we can't easily recreate a File object, we rely on attachmentId 
+            // and potentially fetches elsewhere, or we set a flag. 
+            // Ideally we'd fetch the blob if we want to show it as 'uploadedFile', 
+            // but for now setting attachmentId ensures we know there is one.
+
+            // If file_url is available, we can try to fetch it to simulate 'uploadedFile' for preview
+            if (mostRecentResult.attachment_info.file_url) {
+              // Fetch blob and set as uploaded file for preview
+              try {
+                const response = await fetch(mostRecentResult.attachment_info.file_url);
+                const blob = await response.blob();
+                const file = new File([blob], mostRecentResult.attachment_info.original_filename || "existing_file", { type: blob.type });
+                setUploadedFile(file);
+              } catch (e) {
+                console.error("Could not fetch existing attachment file for preview", e);
+              }
+            }
+          }
+        }
       }
     } catch (err) {
       console.error('Error fetching existing result:', err);
     }
   };
 
+
   const handleFileUpload = async (file: File) => {
     setIsUploading(true);
     setOcrError(null);
-    
+
     try {
       // Generate file path for order results
       const filePath = generateFilePath(
-        file.name, 
-        order.patient_id, 
-        undefined, 
+        file.name,
+        order.patient_id,
+        undefined,
         'order-results'
       );
-      
+
       // Upload to Supabase Storage
       const uploadResult = await uploadFile(file, filePath);
-      
+
       // Get current user's lab_id
       const currentLabId = await database.getCurrentUserLabId();
-      
+
       // Insert attachment record
       const { data: attachment, error } = await supabase
         .from('attachments')
@@ -535,20 +567,20 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         }])
         .select()
         .single();
-      
+
       if (error) {
         throw new Error(`Failed to save attachment metadata: ${error.message}`);
       }
-      
+
       setAttachmentId(attachment.id);
       setUploadedFile(file);
-      
+
       console.log('File uploaded successfully for order:', {
         orderId: order.id,
         attachmentId: attachment.id,
         filePath: uploadResult.path
       });
-      
+
     } catch (error) {
       console.error('Error uploading file:', error);
       setOcrError('Failed to upload file. Please try again.');
@@ -564,24 +596,24 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     }
   };
 
-  const handleRunAIProcessing = async (analyteConfig?: {type: string, prompt?: string}) => {
+  const handleRunAIProcessing = async (analyteConfig?: { type: string, prompt?: string }) => {
     if (!attachmentId) {
       setOcrError('Please upload a file first.');
       return;
     }
-    
+
     const processingType = analyteConfig?.type || aiProcessingConfig?.type || 'ocr_report';
     const customPrompt = analyteConfig?.prompt || aiProcessingConfig?.prompt;
-    
+
     console.log('Starting AI processing for order results:', {
       attachmentId,
       processingType,
       hasCustomPrompt: !!customPrompt
     });
-    
+
     setIsOCRProcessing(true);
     setOcrError(null);
-    
+
     // Identify analytes that are currently missing values in the manual entry form
     const analytesToExtract = manualValues
       .filter(val => val.value.trim() === '')
@@ -596,26 +628,26 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         body: {
           attachmentId,
           documentType: processingType === 'ocr_report' ? 'printed-report' : undefined,
-          testType: processingType === 'vision_card' ? 'test-card' : 
-                   processingType === 'vision_color' ? 'color-analysis' : undefined,
+          testType: processingType === 'vision_card' ? 'test-card' :
+            processingType === 'vision_color' ? 'color-analysis' : undefined,
           aiProcessingType: processingType,
           analysisType: processingType === 'ocr_report' ? 'text' :
-                       processingType === 'vision_card' ? 'objects' :
-                       processingType === 'vision_color' ? 'colors' : 'all'
+            processingType === 'vision_card' ? 'objects' :
+              processingType === 'vision_color' ? 'colors' : 'all'
         }
       });
-      
+
       if (visionResponse.error) {
         throw new Error(`Vision OCR failed: ${visionResponse.error.message}`);
       }
-      
+
       const visionData = visionResponse.data;
       console.log('Vision OCR completed. Extracted text length:', visionData.fullText?.length || 0);
-      
+
       // Use the detected processing type from vision-ocr response (auto-detection result)
       const detectedProcessingType = visionData?.metadata?.aiProcessingType || processingType;
       console.log('Using processing type:', detectedProcessingType, '(detected from vision-ocr)');
-      
+
       // Step 2: Call gemini-nlp Edge Function with metadata headers
       console.log('Calling gemini-nlp Edge Function...');
       const geminiResponse = await supabase.functions.invoke('gemini-nlp', {
@@ -625,7 +657,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           originalBase64Image: visionData.originalBase64Image,
           documentType: detectedProcessingType === 'ocr_report' ? 'printed-report' : undefined,
           testType: detectedProcessingType === 'vision_card' ? 'test-card' :
-                   detectedProcessingType === 'vision_color' ? 'color-analysis' : undefined,
+            detectedProcessingType === 'vision_color' ? 'color-analysis' : undefined,
           aiProcessingType: detectedProcessingType,  // Use detected type from vision-ocr
           aiPromptOverride: customPrompt,
           allAnalytes: allAnalytes,
@@ -636,14 +668,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           'x-order-id': order.id
         }
       });
-      
+
       if (geminiResponse.error) {
         throw new Error(`Gemini NLP failed: ${geminiResponse.error.message}`);
       }
-      
+
       const result = geminiResponse.data;
       console.log('Gemini NLP completed successfully. Result:', result);
-      
+
       // Check if the response is the simplified key-value pair object
       if (analytesToExtract.length > 0 && result && typeof result === 'object' && !Array.isArray(result) && !result.extractedParameters) {
         console.log('Received simplified AI response. Updating manual values.');
@@ -686,9 +718,20 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         setManualValues(prevManualValues => {
           const updatedValues = [...prevManualValues];
           extractedParams.forEach((extracted: any) => {
-            const index = updatedValues.findIndex(val => val.parameter === extracted.parameter);
+            // Try matching by analyte_id first (most accurate), then fall back to parameter name
+            const index = updatedValues.findIndex(val => {
+              if (val.analyte_id && extracted.analyte_id) {
+                return val.analyte_id === extracted.analyte_id;
+              }
+              return val.parameter === extracted.parameter;
+            });
+
             if (index !== -1) {
-              updatedValues[index] = { ...updatedValues[index], value: extracted.value, flag: extracted.flag };
+              updatedValues[index] = {
+                ...updatedValues[index],
+                value: extracted.value,
+                flag: extracted.flag
+              };
             }
           });
           return updatedValues;
@@ -705,7 +748,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       } else {
         setOcrError('No structured data could be extracted from the document.');
       }
-      
+
     } catch (error) {
       console.error('Error running AI processing - Full details:', error);
       setOcrError('Failed to process document. Please try again.');
@@ -715,7 +758,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   };
 
   const handleManualValueChange = (index: number, field: keyof ExtractedValue, value: string) => {
-    setManualValues(prev => prev.map((item, i) => 
+    setManualValues(prev => prev.map((item, i) =>
       i === index ? { ...item, [field]: value } : item
     ));
   };
@@ -726,13 +769,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       alert('Please enter at least one test result before saving draft.');
       return;
     }
-    
+
     setSavingDraft(true);
     setSaveMessage(null);
-    
+
     try {
       // Prepare result values with calculated flags
       const resultValues = validResults.map(item => ({
+        analyte_id: item.analyte_id,
         parameter: item.parameter,
         value: item.value,
         unit: item.unit,
@@ -753,7 +797,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         entered_date: new Date().toISOString().split('T')[0],
         values: valuesWithFlags
       };
-      
+
       let result;
       if (existingResultId) {
         // Update existing result
@@ -771,10 +815,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         result = data;
         setExistingResultId(result.id);
       }
-      
+
       setSaveMessage('Draft saved successfully!');
       setTimeout(() => setSaveMessage(null), 3000);
-      
+
     } catch (error) {
       console.error('Error saving draft:', error);
       setSaveMessage('Failed to save draft. Please try again.');
@@ -790,9 +834,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       alert('Please enter at least one test result.');
       return;
     }
-    
+
     setSubmittingResults(true);
-    
+
     try {
       const resultData = {
         order_id: order.id,
@@ -803,6 +847,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         entered_by: user?.user_metadata?.full_name || user?.email || 'Unknown User',
         entered_date: new Date().toISOString().split('T')[0],
         values: validResults.map(item => ({
+          analyte_id: item.analyte_id,
           parameter: item.parameter,
           value: item.value,
           unit: item.unit,
@@ -810,7 +855,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           flag: item.flag
         }))
       };
-      
+
       if (existingResultId) {
         // Update existing result with final submission
         database.results.update(existingResultId, resultData)
@@ -925,8 +970,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       <label className="block text-sm font-medium text-gray-700 mb-2">
         Upload {
           aiProcessingConfig?.type === 'vision_card' ? 'Test Card Image' :
-          aiProcessingConfig?.type === 'vision_color' ? 'Color Analysis Image' :
-          'Lab Result Document'
+            aiProcessingConfig?.type === 'vision_color' ? 'Color Analysis Image' :
+              'Lab Result Document'
         }
       </label>
       <div className="border-2 border-dashed border-purple-300 rounded-lg p-4 text-center hover:border-purple-400 transition-colors">
@@ -976,15 +1021,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     <Upload className="h-4 w-4 mr-2" />
                     Upload {
                       aiProcessingConfig?.type === 'vision_card' ? 'Test Card' :
-                      aiProcessingConfig?.type === 'vision_color' ? 'Color Image' :
-                      'Document'
+                        aiProcessingConfig?.type === 'vision_color' ? 'Color Image' :
+                          'Document'
                     }
                   </>
                 )}
               </button>
               <p className="text-xs text-gray-500 mt-2">
                 {aiProcessingConfig?.type === 'ocr_report' ? 'Supports JPG, PNG, PDF (max 10MB)' :
-                 'Supports JPG, PNG (max 10MB)'}
+                  'Supports JPG, PNG (max 10MB)'}
               </p>
               {aiProcessingConfig && (
                 <p className="text-xs text-purple-600 mt-1">
@@ -995,7 +1040,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           </div>
         )}
       </div>
-      
+
       <input
         id="file-upload"
         type="file"
@@ -1027,21 +1072,19 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           <div className="flex space-x-8 px-6">
             <button
               onClick={() => setActiveTab('details')}
-              className={`py-4 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === 'details'
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
+              className={`py-4 text-sm font-medium border-b-2 transition-colors ${activeTab === 'details'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
             >
               Order Details
             </button>
             <button
               onClick={() => setActiveTab('results')}
-              className={`py-4 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === 'results'
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
+              className={`py-4 text-sm font-medium border-b-2 transition-colors ${activeTab === 'results'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
             >
               AI Result Entry
             </button>
@@ -1086,108 +1129,128 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     Sample Tracking Information
                   </h3>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {/* Sample ID & Color */}
+                    {/* Sample ID & Visual Indicator */}
                     <div className="flex items-center space-x-4">
-                      <div 
-                        className="w-12 h-12 rounded-full border-4 border-gray-300 flex-shrink-0"
-                        style={{ backgroundColor: order.color_code }}
-                        title={`Sample Color: ${order.color_name}`}
-                      />
                       <div>
                         <div className="text-sm font-medium text-gray-700">Sample ID</div>
                         <div className="text-lg font-bold text-green-900">{order.sample_id}</div>
-                        <div className="text-sm text-green-700">{order.color_name} Tube</div>
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="flex items-center space-x-2">
+                            <SampleTypeIndicator
+                              sampleType={order.sample_type || 'Blood'}
+                              sampleColor={order.color_code || undefined}
+                              showLabel={true}
+                              size="sm"
+                            />
+                          </div>
+                        </div>
                       </div>
-                    </div>
 
-                    {/* QR Code */}
-                    <div>
-                      <div className="text-sm font-medium text-gray-700 mb-2 flex items-center justify-between">
-                        <div className="flex items-center">
-                          <QrCode className="h-4 w-4 mr-1" />
-                          QR Code
-                        </div>
-                        {order.qr_code_data && (
-                          <button
-                            onClick={handlePrintQRCode}
-                            className="flex items-center px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-                          >
-                            <Printer className="h-3 w-3 mr-1" />
-                            Print Label
-                          </button>
-                        )}
-                      </div>
-                      {order.qr_code_data ? (
-                        <div className="space-y-3">
-                          {/* Visual QR Code Display */}
-                          <div className="bg-white border-2 border-green-300 rounded-lg p-4 text-center">
-                            <div className="mb-2">
-                              {qrCodeImage ? (
-                                <img 
-                                  src={qrCodeImage}
-                                  alt="Sample QR Code"
-                                  className="w-32 h-32 mx-auto border border-gray-300 rounded"
-                                />
-                              ) : (
-                                <div className="w-32 h-32 mx-auto border border-gray-300 rounded bg-gray-100 flex items-center justify-center">
-                                  <QrCode className="h-8 w-8 text-gray-400" />
-                                </div>
-                              )}
-                            </div>
-                            <div className="text-xs text-gray-600">
-                              Scan to access sample information
-                            </div>
+                      {/* QR Code */}
+                      <div>
+                        <div className="text-sm font-medium text-gray-700 mb-2 flex items-center justify-between">
+                          <div className="flex items-center">
+                            <QrCode className="h-4 w-4 mr-1" />
+                            QR Code
                           </div>
-                          
-                          {/* QR Code Data Details */}
-                          <div className="bg-gray-50 border border-green-300 rounded-lg p-3">
-                            <div className="text-xs font-medium text-gray-700 mb-2">QR Code Data:</div>
-                            <div className="text-xs font-mono text-gray-600 bg-white border rounded p-2 max-h-20 overflow-y-auto">
-                              {JSON.stringify(JSON.parse(order.qr_code_data), null, 2)}
-                            </div>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
-                          <QrCode className="h-8 w-8 mx-auto mb-2 text-gray-400" />
-                          No QR code generated
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Collection Status */}
-                    <div>
-                      <div className="text-sm font-medium text-gray-700 mb-2">Collection Status</div>
-                      {order.sample_collected_at ? (
-                        <div className="bg-green-100 border border-green-300 rounded-lg p-3">
-                          <div className="flex items-center text-green-800 mb-1">
-                            <CheckCircle className="h-4 w-4 mr-1" />
-                            <span className="font-medium">Collected</span>
-                          </div>
-                          <div className="text-xs text-green-700">
-                            {new Date(order.sample_collected_at).toLocaleString()}
-                          </div>
-                          {order.sample_collected_by && (
-                            <div className="text-xs text-green-700">
-                              By: {order.sample_collected_by}
-                            </div>
+                          {order.qr_code_data && (
+                            <button
+                              onClick={handlePrintQRCode}
+                              className="flex items-center px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                            >
+                              <Printer className="h-3 w-3 mr-1" />
+                              Print Label
+                            </button>
                           )}
                         </div>
-                      ) : (
-                        <div className="bg-yellow-100 border border-yellow-300 rounded-lg p-3">
-                          <div className="flex items-center text-yellow-800 mb-1">
-                            <Clock className="h-4 w-4 mr-1" />
-                            <span className="font-medium">Pending Collection</span>
+                        {order.qr_code_data ? (
+                          <div className="space-y-3">
+                            {/* Visual QR Code Display */}
+                            <div className="bg-white border-2 border-green-300 rounded-lg p-4 text-center">
+                              <div className="mb-2">
+                                {qrCodeImage ? (
+                                  <img
+                                    src={qrCodeImage}
+                                    alt="Sample QR Code"
+                                    className="w-32 h-32 mx-auto border border-gray-300 rounded"
+                                  />
+                                ) : (
+                                  <div className="w-32 h-32 mx-auto border border-gray-300 rounded bg-gray-100 flex items-center justify-center">
+                                    <QrCode className="h-8 w-8 text-gray-400" />
+                                  </div>
+                                )}
+                              </div>
+                              <div className="text-xs text-gray-600">
+                                Scan to access sample information
+                              </div>
+                            </div>
+
+                            {/* QR Code Data Details */}
+                            <div className="bg-gray-50 border border-green-300 rounded-lg p-3">
+                              <div className="text-xs font-medium text-gray-700 mb-2">QR Code Data:</div>
+                              <div className="text-xs font-mono text-gray-600 bg-white border rounded p-2 max-h-20 overflow-y-auto">
+                                {JSON.stringify(JSON.parse(order.qr_code_data), null, 2)}
+                              </div>
+                            </div>
                           </div>
-                          <div className="text-xs text-yellow-700">
-                            Sample needs to be collected from patient
+                        ) : (
+                          <div className="text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
+                            <QrCode className="h-8 w-8 mx-auto mb-2 text-gray-400" />
+                            No QR code generated
                           </div>
-                        </div>
-                      )}
+                        )}
+                      </div>
+
+                      {/* Collection Status */}
+                      <div>
+                        <div className="text-sm font-medium text-gray-700 mb-2">Collection Status</div>
+                        {order.sample_collected_at ? (
+                          <div className="bg-green-100 border border-green-300 rounded-lg p-3">
+                            <div className="flex items-center text-green-800 mb-1">
+                              <CheckCircle className="h-4 w-4 mr-1" />
+                              <span className="font-medium">Collected</span>
+                            </div>
+                            <div className="text-xs text-green-700">
+                              {new Date(order.sample_collected_at).toLocaleString()}
+                            </div>
+                            {order.sample_collected_by && (
+                              <div className="text-xs text-green-700">
+                                By: {order.sample_collected_by}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="bg-yellow-100 border border-yellow-300 rounded-lg p-3">
+                            <div className="flex items-center text-yellow-800 mb-1">
+                              <Clock className="h-4 w-4 mr-1" />
+                              <span className="font-medium">Pending Collection</span>
+                            </div>
+                            <div className="text-xs text-yellow-700">
+                              Sample needs to be collected from patient
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
               )}
+
+              {/* NEW: Sample Collection Management */}
+              <div className="bg-purple-50 border border-purple-200 rounded-lg p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                  <TestTube2 className="h-5 w-5 mr-2 text-purple-600" />
+                  Sample Collection Management
+                </h3>
+                <SampleCollectionTracker
+                  orderId={order.id}
+                  showTitle={false}
+                  onSampleCollected={(sample) => {
+                    console.log('Sample collected:', sample);
+                    // Optional: Trigger order refresh or update
+                  }}
+                />
+              </div>
 
               {/* Tests Ordered */}
               <div className="bg-white border border-gray-200 rounded-lg p-6">
@@ -1214,16 +1277,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       <div key={step.name} className="flex items-center space-x-3">
                         <div className={`
                           w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium
-                          ${step.completed ? 'bg-green-500 text-white' : 
+                          ${step.completed ? 'bg-green-500 text-white' :
                             step.current ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-600'}
                         `}>
                           {step.completed ? <CheckCircle className="h-4 w-4" /> : index + 1}
                         </div>
                         <div className="flex-1">
-                          <div className={`font-medium ${
-                            step.current ? 'text-blue-900' : 
+                          <div className={`font-medium ${step.current ? 'text-blue-900' :
                             step.completed ? 'text-green-900' : 'text-gray-600'
-                          }`}>
+                            }`}>
                             {step.name}
                           </div>
                           <div className="text-sm text-gray-500">{step.description}</div>
@@ -1248,14 +1310,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     {getNextSteps(order.status, order).map((step, index) => (
                       <div key={index} className={`
                         p-4 rounded-lg border-l-4 
-                        ${step.urgent ? 'bg-red-50 border-red-400' : 
+                        ${step.urgent ? 'bg-red-50 border-red-400' :
                           step.priority === 'high' ? 'bg-orange-50 border-orange-400' :
-                          'bg-blue-50 border-blue-400'}
+                            'bg-blue-50 border-blue-400'}
                       `}>
-                        <div className={`font-medium ${
-                          step.urgent ? 'text-red-900' :
+                        <div className={`font-medium ${step.urgent ? 'text-red-900' :
                           step.priority === 'high' ? 'text-orange-900' : 'text-blue-900'
-                        }`}>
+                          }`}>
                           {step.action}
                         </div>
                         <div className="text-sm text-gray-600 mt-1">{step.description}</div>
@@ -1283,11 +1344,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     <button
                       key={action.status}
                       onClick={() => onUpdateStatus(order.id, action.status)}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        action.primary 
-                          ? 'bg-blue-600 text-white hover:bg-blue-700'
-                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                      }`}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${action.primary
+                        ? 'bg-blue-600 text-white hover:bg-blue-700'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`}
                     >
                       {action.label}
                     </button>
@@ -1303,30 +1363,28 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   <Brain className="h-5 w-5 mr-2" />
                   AI-Powered Result Processing
                 </h3>
-                
+
                 {/* Analyte AI Configuration Display */}
                 {orderAnalytes.length > 0 && (
                   <div className="mb-6">
                     <h4 className="text-sm font-medium text-purple-900 mb-3">Available AI Processing for Order Analytes</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {orderAnalytes.map((analyte) => (
-                        <div 
+                        <div
                           key={analyte.id}
                           onClick={() => handleSelectAnalyteForAI(analyte)}
-                          className={`p-3 border-2 rounded-lg cursor-pointer transition-all ${
-                            selectedAnalyteForAI?.id === analyte.id
-                              ? 'border-purple-500 bg-purple-50'
-                              : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                          }`}
+                          className={`p-3 border-2 rounded-lg cursor-pointer transition-all ${selectedAnalyteForAI?.id === analyte.id
+                            ? 'border-purple-500 bg-purple-50'
+                            : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                            }`}
                         >
                           <div className="flex items-center justify-between">
                             <div className="flex-1">
                               <div className="text-sm font-medium text-gray-900">{analyte.name}</div>
                               <div className="text-xs text-gray-500">{analyte.category}</div>
                             </div>
-                            <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium ${
-                              getAIProcessingTypeColor(analyte.ai_processing_type || 'none')
-                            }`}>
+                            <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium ${getAIProcessingTypeColor(analyte.ai_processing_type || 'none')
+                              }`}>
                               {getAIProcessingTypeLabel(analyte.ai_processing_type || 'none')}
                             </span>
                           </div>
@@ -1338,7 +1396,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         </div>
                       ))}
                     </div>
-                    
+
                     {selectedAnalyteForAI && (
                       <div className="mt-4 p-3 bg-white border border-purple-200 rounded-lg">
                         <h5 className="text-sm font-medium text-purple-900 mb-2">
@@ -1367,11 +1425,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     )}
                   </div>
                 )}
-                
+
                 <div className="space-y-4">
                   {/* File Upload */}
                   {renderFileUpload()}
-                  
+
                   {/* OCR Processing */}
                   {uploadedFile && attachmentId && (
                     <div className="space-y-3">
@@ -1393,7 +1451,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           </>
                         )}
                       </button>
-                      
+
                       {isOCRProcessing && (
                         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
                           <div className="text-sm text-blue-800 space-y-1">
@@ -1403,8 +1461,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                             </div>
                             <div>• Google Vision AI: {
                               aiProcessingConfig?.type === 'vision_card' ? 'Analyzing test card objects...' :
-                              aiProcessingConfig?.type === 'vision_color' ? 'Analyzing colors and patterns...' :
-                              'Extracting text from document...'
+                                aiProcessingConfig?.type === 'vision_color' ? 'Analyzing colors and patterns...' :
+                                  'Extracting text from document...'
                             }</div>
                             <div>• Gemini NLP: {
                               aiProcessingConfig?.prompt ? 'Using custom prompt...' : 'Using default analysis...'
@@ -1416,7 +1474,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       )}
                     </div>
                   )}
-                  
+
                   {/* OCR Error */}
                   {ocrError && (
                     <div className="bg-red-50 border border-red-200 rounded-lg p-3">
@@ -1426,7 +1484,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       </div>
                     </div>
                   )}
-                  
+
                   {/* OCR Success */}
                   {ocrResults && extractedValues.length > 0 && (
                     <div className="bg-green-50 border border-green-200 rounded-lg p-4">
@@ -1436,7 +1494,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           AI processing completed! ({getAIProcessingTypeLabel(aiProcessingConfig?.type || 'ocr_report')})
                         </span>
                       </div>
-                      
+
                       {/* OCR Processing Summary */}
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                         <div className="text-center">
@@ -1460,7 +1518,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           <div className="text-xs text-orange-700">Confidence</div>
                         </div>
                       </div>
-                      
+
                       {/* Processing Method */}
                       <div className="text-xs text-green-600 bg-white border border-green-200 rounded p-2">
                         <strong>Processing Method:</strong> {ocrResults.metadata?.processingMethod || 'Google Vision AI + Gemini NLP'}
@@ -1480,7 +1538,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     <Target className="h-5 w-5 mr-2 text-green-600" />
                     AI OCR Extracted Results
                   </h3>
-                  
+
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">
@@ -1567,7 +1625,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     </div>
                   )}
                 </div>
-                
+
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
@@ -1640,14 +1698,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     </tbody>
                   </table>
                 </div>
-                
+
                 {/* Save Message */}
                 {saveMessage && (
-                  <div className={`mt-4 p-3 rounded-lg ${
-                    saveMessage.includes('successfully') 
-                      ? 'bg-green-50 border border-green-200 text-green-700' 
-                      : 'bg-red-50 border border-red-200 text-red-700'
-                  }`}>
+                  <div className={`mt-4 p-3 rounded-lg ${saveMessage.includes('successfully')
+                    ? 'bg-green-50 border border-green-200 text-green-700'
+                    : 'bg-red-50 border border-red-200 text-red-700'
+                    }`}>
                     <div className="flex items-center">
                       {saveMessage.includes('successfully') ? (
                         <CheckCircle className="h-4 w-4 mr-2" />
@@ -1658,7 +1715,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     </div>
                   </div>
                 )}
-                
+
                 <div className="mt-6 flex justify-end space-x-4">
                   <button
                     onClick={handleSaveDraft}

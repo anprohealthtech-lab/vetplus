@@ -10,6 +10,7 @@
  */
 
 import { supabase } from './supabase';
+import { notificationTriggerService } from './notificationTriggerService';
 
 // Edge Function URL for PDF generation (keeps API key secure)
 const PDF_GENERATION_FUNCTION_URL = import.meta.env.VITE_SUPABASE_URL 
@@ -33,6 +34,8 @@ export interface Invoice {
   status: string;
   is_partial: boolean;
   parent_invoice_id?: string;
+  invoice_type?: string;
+  account_id?: string;
   payment_type: string;
   notes?: string;
   invoice_items?: InvoiceItem[];
@@ -50,6 +53,10 @@ export interface Invoice {
     address?: string;
   };
   doctor?: string;
+  account?: {
+    name: string;
+    billing_mode?: string;
+  };
 }
 
 export interface InvoiceItem {
@@ -79,6 +86,23 @@ export interface InvoiceTemplate {
     upi_id?: string;
   };
   tax_disclaimer?: string;
+  // Thermal printer support
+  format_type?: 'a4' | 'thermal_80mm' | 'thermal_58mm';
+  print_mode?: 'pdf' | 'thermal' | 'both';
+  thermal_settings?: {
+    width_mm: number;
+    paper_size: string;
+    font_size: string;
+    line_spacing: string;
+    margins: string;
+    barcode_height: string;
+    barcode_width: string;
+    barcode_format: 'CODE128' | 'QR';
+    include_logo: boolean;
+    logo_height: string;
+    show_barcode: boolean;
+    auto_cut: boolean;
+  };
 }
 
 /**
@@ -125,7 +149,7 @@ export async function generateInvoicePDF(
     );
 
     // 7. Update invoice record
-    await updateInvoiceWithPdf(invoiceId, pdfUrl, template.id, invoice.invoice_number);
+    await updateInvoiceWithPdf(invoiceId, pdfUrl, template.id, invoice.invoice_number, invoice.lab_id);
 
     return pdfUrl;
   } catch (error) {
@@ -135,8 +159,145 @@ export async function generateInvoicePDF(
 }
 
 /**
- * Fetch complete invoice data with relations
+ * Generate Consolidated Invoice PDF
  */
+export async function generateConsolidatedInvoicePDF(
+  consolidatedInvoiceId: string,
+  labId: string
+): Promise<string> {
+  try {
+    // 1. Fetch consolidated invoice data with linked invoices
+    const data = await fetchConsolidatedInvoiceData(consolidatedInvoiceId);
+    if (!data) throw new Error('Consolidated invoice not found');
+
+    // 2. Fetch lab details
+    const { data: lab } = await supabase.from('labs').select('*').eq('id', labId).single();
+
+    // 3. Build HTML
+    const html = buildConsolidatedInvoiceHtml(data, lab);
+
+    // 4. Generate PDF via Edge Function
+    const filename = `CONSOLIDATED-${data.billing_period}-${data.account_name.replace(/\s+/g, '-')}`;
+    const pdfUrl = await callEdgeFunctionPdfGeneration(
+      html,
+      filename,
+      consolidatedInvoiceId, // Using consolidated ID as invoice ID for storage
+      labId
+    );
+
+    // 5. Update record? (Optional, maybe store URL if schema supported it)
+    // For now just return URL
+    return pdfUrl;
+  } catch (error) {
+    console.error('Consolidated PDF generation failed:', error);
+    throw error;
+  }
+}
+
+async function fetchConsolidatedInvoiceData(id: string) {
+  const { data: consolidated, error } = await supabase
+    .from('consolidated_invoices')
+    .select('*')
+    .eq('id', id)
+    .single();
+  
+  if (error || !consolidated) return null;
+
+  // Fetch linked invoices
+  const { data: invoices } = await supabase
+    .from('invoices')
+    .select('*, patient:patients(name)')
+    .eq('consolidated_invoice_id', id)
+    .order('created_at');
+
+  return { ...consolidated, invoices: invoices || [] };
+}
+
+function buildConsolidatedInvoiceHtml(data: any, lab: any): string {
+  const rows = data.invoices.map((inv: any, index: number) => `
+    <tr>
+      <td>${index + 1}</td>
+      <td>${new Date(inv.invoice_date).toLocaleDateString()}</td>
+      <td>${inv.invoice_number || '-'}</td>
+      <td>${inv.patient?.name || 'Unknown'}</td>
+      <td style="text-align: right;">₹${inv.subtotal.toFixed(2)}</td>
+      <td style="text-align: right;">₹${inv.total_discount.toFixed(2)}</td>
+      <td style="text-align: right;">₹${inv.tax.toFixed(2)}</td>
+      <td style="text-align: right;">₹${inv.total.toFixed(2)}</td>
+    </tr>
+  `).join('');
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .title { text-align: right; margin-bottom: 20px; }
+        .meta { display: flex; justify-content: space-between; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f5f5f5; }
+        .totals { margin-left: auto; width: 300px; }
+        .footer { margin-top: 40px; font-size: 12px; color: #666; text-align: center; }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h1>${lab?.name || 'Lab Report'}</h1>
+        <p>${lab?.address || ''}</p>
+        <p>Phone: ${lab?.phone || ''} | Email: ${lab?.email || ''}</p>
+      </div>
+
+      <div class="title">
+        <h2>CONSOLIDATED INVOICE</h2>
+        <p><strong>Period:</strong> ${data.billing_period}</p>
+        <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
+      </div>
+
+      <div class="meta">
+        <div>
+          <h3>Bill To:</h3>
+          <p><strong>${data.account_name}</strong></p>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Date</th>
+            <th>Invoice #</th>
+            <th>Patient</th>
+            <th>Subtotal</th>
+            <th>Discount</th>
+            <th>Tax</th>
+            <th>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+
+      <div class="totals">
+        <table>
+          <tr><td><strong>Subtotal:</strong></td><td style="text-align: right;">₹${data.subtotal.toFixed(2)}</td></tr>
+          <tr><td><strong>Total Discount:</strong></td><td style="text-align: right;">-₹${data.total_discount.toFixed(2)}</td></tr>
+          <tr><td><strong>Tax:</strong></td><td style="text-align: right;">₹${data.tax.toFixed(2)}</td></tr>
+          <tr style="background: #eee; font-size: 1.2em;"><td><strong>Grand Total:</strong></td><td style="text-align: right;"><strong>₹${data.total.toFixed(2)}</strong></td></tr>
+        </table>
+      </div>
+
+      <div class="footer">
+        <p>This is a computer-generated summary.</p>
+      </div>
+    </body>
+    </html>
+  `;
+}
+
 async function fetchInvoiceData(invoiceId: string): Promise<Invoice | null> {
   const { data, error } = await supabase
     .from('invoices')
@@ -144,6 +305,7 @@ async function fetchInvoiceData(invoiceId: string): Promise<Invoice | null> {
       *,
       lab:labs(name, address, phone, email, license_number, registration_number),
       patient:patients(phone, email, address),
+      account:accounts(name, billing_mode),
       invoice_items(*)
     `)
     .eq('id', invoiceId)
@@ -217,7 +379,10 @@ function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplate): st
     '{{invoice_number}}': invoice.invoice_number || 'N/A',
     '{{invoice_date}}': formatDate(invoice.invoice_date),
     '{{due_date}}': formatDate(invoice.due_date),
-    '{{patient_name}}': invoice.patient_name || 'N/A',
+    // For account invoices, show Account Name in Bill To section, with Patient Name below
+    '{{patient_name}}': invoice.account 
+      ? `${invoice.account.name}<br><span style="font-size: 0.9em; font-weight: normal;">Patient: ${invoice.patient_name}</span>`
+      : (invoice.patient_name || 'N/A'),
     '{{patient_phone}}': invoice.patient?.phone || '',
     '{{patient_email}}': invoice.patient?.email || '',
     '{{patient_address}}': invoice.patient?.address || '',
@@ -227,8 +392,11 @@ function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplate): st
     '{{tax}}': formatCurrency(invoice.tax),
     '{{total}}': formatCurrency(invoice.total),
     '{{amount_paid}}': formatCurrency(invoice.amount_paid),
-    '{{balance_due}}': formatCurrency(invoice.total - invoice.amount_paid),
-    '{{payment_type}}': formatPaymentType(invoice.payment_type),
+    // If account is monthly billing, Balance Due is effectively 0 for the patient (handled by account)
+    '{{balance_due}}': (invoice.account && invoice.account.billing_mode === 'monthly') 
+      ? formatCurrency(0) // or 'Billed to Account'
+      : formatCurrency(invoice.total - invoice.amount_paid),
+    '{{payment_type}}': invoice.account ? 'Bill to Account' : formatPaymentType(invoice.payment_type),
     '{{lab_name}}': invoice.lab?.name || '',
     '{{lab_address}}': invoice.lab?.address || '',
     '{{lab_phone}}': invoice.lab?.phone || '',
@@ -385,9 +553,7 @@ async function callEdgeFunctionPdfGeneration(
     throw new Error(`PDF generation failed: ${result.error || 'Unknown error'}`);
   }
 
-  return result.pdfUrl
-
-  return await pdfResponse.blob();
+  return result.pdfUrl;
 }
 
 /**
@@ -402,7 +568,8 @@ async function updateInvoiceWithPdf(
   invoiceId: string,
   pdfUrl: string,
   templateId: string,
-  invoiceNumber: string
+  invoiceNumber: string,
+  labId: string
 ): Promise<void> {
   const { error } = await supabase
     .from('invoices')
@@ -419,6 +586,10 @@ async function updateInvoiceWithPdf(
     console.error('Failed to update invoice:', error);
     throw new Error(`Failed to update invoice: ${error.message}`);
   }
+
+  // Trigger invoice generated notification (async, don't block response)
+  notificationTriggerService.triggerInvoiceGenerated(invoiceId, pdfUrl, labId)
+    .catch(err => console.error('Error triggering invoice generation notification:', err));
 }
 
 /**
@@ -468,7 +639,7 @@ async function generateInvoiceNumber(invoice: Invoice): Promise<string> {
       .like('invoice_number', `INV-ACC${accountCode}-${year}-%`)
       .not('invoice_number', 'ilike', '%-P%') // Exclude partial invoices
       .order('created_at', { ascending: false })
-      .limit(1);
+      .maybeSingle();
 
     let nextSequence = 1;
     if (lastInvoice?.invoice_number) {
@@ -515,7 +686,7 @@ async function generateInvoiceNumber(invoice: Invoice): Promise<string> {
     .not('invoice_number', 'is', null)
     .not('invoice_number', 'ilike', '%-P%') // Exclude partial invoices
     .order('created_at', { ascending: false })
-    .limit(1);
+    .maybeSingle();
 
   // If invoice already exists for this order, add a sequence suffix
   if (existingInvoice?.invoice_number) {

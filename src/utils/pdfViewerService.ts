@@ -179,6 +179,38 @@ export const prepareViewerReportData = async (orderId: string): Promise<ViewerRe
         };
         console.log('🏷️ Lab branding URLs:', { headerUrl: labInfo.headerUrl, footerUrl: labInfo.footerUrl, signatureUrl: labInfo.signatureUrl });
       }
+
+      // override signature with doctor signature if available
+      try {
+        const { data: verifierData } = await supabase
+          .from('results')
+          .select('verified_by')
+          .eq('order_id', orderId)
+          .not('verified_by', 'is', null)
+          .limit(1)
+          .maybeSingle();
+
+        if (verifierData?.verified_by) {
+          const { data: userSignature } = await supabase
+            .from('lab_user_signatures')
+            .select('imagekit_url, file_url, variants')
+            .eq('user_id', verifierData.verified_by)
+            .eq('is_active', true)
+            .order('is_default', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          const variants = userSignature?.variants as any;
+          const doctorSigUrl = variants?.optimized || userSignature?.imagekit_url || userSignature?.file_url;
+
+          if (doctorSigUrl) {
+            labInfo.signatureUrl = doctorSigUrl;
+            console.log('✅ Overriding with Doctor Signature (Optimized):', doctorSigUrl);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching doctor signature:', err);
+      }
     }
 
     // Build test results from analytes
@@ -440,64 +472,59 @@ export const generateViewerPDF = async (
 
     yPos += 35;
 
-    // ============ Report Type Header ============
-    doc.setFillColor(30, 64, 175);
-    doc.rect(margin, yPos, contentWidth, 8, 'F');
-    doc.setFontSize(11);
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(255, 255, 255);
-    doc.text(data.meta.reportType, pageWidth / 2, yPos + 5.5, { align: 'center' });
-    yPos += 12;
-
-    // ============ Test Results Table ============
+    // Group results by Test Name
+    const resultsByTest: Record<string, typeof data.testResults> = {};
+    const testNames: string[] = []; // Store order to preserve sequence if possible
     
-    // Table Header
-    const colWidths = {
-      parameter: contentWidth * 0.35,
-      result: contentWidth * 0.18,
-      unit: contentWidth * 0.15,
-      range: contentWidth * 0.22,
-      flag: contentWidth * 0.10,
-    };
-
-    doc.setFillColor(59, 130, 246);
-    doc.rect(margin, yPos, contentWidth, 8, 'F');
-    
-    doc.setFontSize(9);
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(255, 255, 255);
-    
-    let colX = margin + 2;
-    doc.text('Parameter', colX, yPos + 5.5);
-    colX += colWidths.parameter;
-    doc.text('Result', colX, yPos + 5.5);
-    colX += colWidths.result;
-    doc.text('Unit', colX, yPos + 5.5);
-    colX += colWidths.unit;
-    doc.text('Ref. Range', colX, yPos + 5.5);
-    colX += colWidths.range;
-    doc.text('Flag', colX, yPos + 5.5);
-    
-    yPos += 8;
-
-    // Table Rows
-    doc.setFontSize(9);
-    doc.setFont('helvetica', 'normal');
-    
-    let rowIndex = 0;
     for (const result of data.testResults) {
-      // Check if we need a new page
-      if (yPos > pageHeight - 40) {
-        doc.addPage();
-        yPos = margin;
-        
-        // Re-add table header on new page
-        doc.setFillColor(59, 130, 246);
+      const testName = result.testName || 'Test Results';
+      if (!resultsByTest[testName]) {
+        resultsByTest[testName] = [];
+        testNames.push(testName);
+      }
+      resultsByTest[testName].push(result);
+    }
+
+    // Loop through each test group
+    for (const testName of testNames) {
+        const groupResults = resultsByTest[testName];
+
+        // Check for new page (heuristic)
+        if (yPos > pageHeight - 50) {
+            doc.addPage();
+            yPos = margin;
+        }
+
+        // Test Header
+        doc.setFillColor(30, 64, 175);
         doc.rect(margin, yPos, contentWidth, 8, 'F');
+        doc.setFontSize(11);
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(255, 255, 255);
         
-        colX = margin + 2;
+        // Use test name as header if it's specific, otherwise use report type
+        const headerText = testName === 'Test Results' ? data.meta.reportType : testName;
+        doc.text(headerText, pageWidth / 2, yPos + 5.5, { align: 'center' });
+        yPos += 12;
+
+        // Table Header
+        doc.setFillColor(59, 130, 246);
+        doc.rect(margin, yPos, contentWidth, 8, 'F');
+        
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(255, 255, 255);
+        
+        // Define column widths
+        const colWidths = {
+            parameter: contentWidth * 0.35,
+            result: contentWidth * 0.18,
+            unit: contentWidth * 0.15,
+            range: contentWidth * 0.22,
+            flag: contentWidth * 0.10,
+        };
+        
+        let colX = margin + 2;
         doc.text('Parameter', colX, yPos + 5.5);
         colX += colWidths.parameter;
         doc.text('Result', colX, yPos + 5.5);
@@ -509,15 +536,49 @@ export const generateViewerPDF = async (
         doc.text('Flag', colX, yPos + 5.5);
         
         yPos += 8;
+
+        // Table Rows
+        doc.setFontSize(9);
         doc.setFont('helvetica', 'normal');
-      }
+        
+        let rowIndex = 0;
+        for (const result of groupResults) {
+            // Check if we need a new page
+            if (yPos > pageHeight - 20) {
+                doc.addPage();
+                yPos = margin;
+                
+                // Re-add table header on new page
+                doc.setFillColor(59, 130, 246);
+                doc.rect(margin, yPos, contentWidth, 8, 'F');
+                doc.setFont('helvetica', 'bold');
+                doc.setTextColor(255, 255, 255);
+                
+                colX = margin + 2;
+                doc.text('Parameter', colX, yPos + 5.5);
+                colX += colWidths.parameter;
+                doc.text('Result', colX, yPos + 5.5);
+                colX += colWidths.result;
+                doc.text('Unit', colX, yPos + 5.5);
+                colX += colWidths.unit;
+                doc.text('Ref. Range', colX, yPos + 5.5);
+                colX += colWidths.range;
+                doc.text('Flag', colX, yPos + 5.5);
+                
+                yPos += 8;
+                doc.setFont('helvetica', 'normal');
+            }
 
-      // Alternating row background
-      if (rowIndex % 2 === 0) {
-        doc.setFillColor(248, 250, 252);
-        doc.rect(margin, yPos, contentWidth, 7, 'F');
-      }
+            // Alternating row background
+            if (rowIndex % 2 === 0) {
+                doc.setFillColor(248, 250, 252);
+                doc.rect(margin, yPos, contentWidth, 7, 'F');
+            }
 
+            // Normalize flag for styling
+      const flagNorm = result.flag ? result.flag.toUpperCase() : '';
+      const isAbnormal = ['H', 'L', 'C', 'HIGH', 'LOW', 'CRITICAL', 'ABNORMAL'].includes(flagNorm);
+      
       // Row content
       colX = margin + 2;
       doc.setTextColor(50, 50, 50);
@@ -525,11 +586,15 @@ export const generateViewerPDF = async (
       
       colX += colWidths.parameter;
       // Highlight abnormal results
-      if (result.flag === 'H' || result.flag === 'L' || result.flag === 'C') {
+      if (isAbnormal) {
         doc.setFont('helvetica', 'bold');
-        doc.setTextColor(result.flag === 'H' ? 220 : result.flag === 'L' ? 30 : 180, 
-                         result.flag === 'H' ? 38 : result.flag === 'L' ? 64 : 100, 
-                         result.flag === 'H' ? 38 : result.flag === 'L' ? 175 : 50);
+        
+        let r, g, b;
+        if (flagNorm === 'H' || flagNorm === 'HIGH') { r=220; g=38; b=38; }
+        else if (flagNorm === 'L' || flagNorm === 'LOW') { r=30; g=64; b=175; }
+        else { r=180; g=100; b=50; } // Critical or other
+        
+        doc.setTextColor(r, g, b);
       }
       doc.text(result.result, colX, yPos + 5);
       doc.setFont('helvetica', 'normal');
@@ -543,25 +608,30 @@ export const generateViewerPDF = async (
       
       colX += colWidths.range;
       if (result.flag) {
-        const flagColor = result.flag === 'H' ? [220, 38, 38] : 
-                          result.flag === 'L' ? [30, 64, 175] : 
-                          result.flag === 'C' ? [180, 100, 50] : [100, 100, 100];
-        doc.setTextColor(flagColor[0], flagColor[1], flagColor[2]);
-        doc.setFont('helvetica', 'bold');
+        // Redetermine color for flag column
+        let r=100, g=100, b=100;
+        if (isAbnormal) {
+             if (flagNorm === 'H' || flagNorm === 'HIGH') { r=220; g=38; b=38; }
+             else if (flagNorm === 'L' || flagNorm === 'LOW') { r=30; g=64; b=175; }
+             else { r=180; g=100; b=50; }
+        }
+
+        doc.setTextColor(r, g, b);
+        if (isAbnormal) doc.setFont('helvetica', 'bold');
         doc.text(result.flag, colX + 5, yPos + 5);
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(50, 50, 50);
       }
+            yPos += 7;
+            rowIndex++;
+        }
 
-      yPos += 7;
-      rowIndex++;
+        // Table bottom border
+        doc.setDrawColor(200, 200, 200);
+        doc.setLineWidth(0.3);
+        doc.line(margin, yPos, pageWidth - margin, yPos);
+        yPos += 15; // Space after each table
     }
-
-    // Table bottom border
-    doc.setDrawColor(200, 200, 200);
-    doc.setLineWidth(0.3);
-    doc.line(margin, yPos, pageWidth - margin, yPos);
-    yPos += 10;
 
     // ============ Interpretation Section (from workflow) ============
     if (data.meta.interpretation) {
@@ -970,7 +1040,7 @@ export const generateViewerPDF = async (
       doc.setFontSize(9);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(146, 64, 14);
-      doc.text('⚠ DRAFT REPORT - Some results may still be pending verification', pageWidth / 2, yPos + 7, { align: 'center' });
+      doc.text('DRAFT REPORT - Some results may still be pending verification', pageWidth / 2, yPos + 7, { align: 'center' });
     }
 
     // Page footer
@@ -988,8 +1058,9 @@ export const generateViewerPDF = async (
       window.open(blobUrl, '_blank');
       return blobUrl;
     } else {
-      // Return as data URL
-      return doc.output('dataurlstring');
+      // Return as Blob URL (better for iframes)
+      const pdfBlob = doc.output('blob');
+      return URL.createObjectURL(pdfBlob);
     }
 
   } catch (error) {
@@ -1004,7 +1075,7 @@ export const generateViewerPDF = async (
  * Quick view PDF report - main function for the View button
  * Fetches data and generates PDF in one call
  */
-export const quickViewPDF = async (orderId: string): Promise<string | null> => {
+export const quickViewPDF = async (orderId: string, options: { openInNewTab?: boolean } = { openInNewTab: true }): Promise<string | null> => {
   console.log('📄 quickViewPDF called for order:', orderId);
   
   try {
@@ -1022,7 +1093,7 @@ export const quickViewPDF = async (orderId: string): Promise<string | null> => {
     });
 
     // Generate PDF
-    const pdfUrl = await generateViewerPDF(reportData, { openInNewTab: true });
+    const pdfUrl = await generateViewerPDF(reportData, options);
     
     if (pdfUrl) {
       console.log('✅ PDF generated successfully');

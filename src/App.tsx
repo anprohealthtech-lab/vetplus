@@ -40,6 +40,7 @@ import Result2 from './pages/result2';
 // ⬇️ Master Data Components
 import DoctorMaster from './components/Masters/DoctorMaster';
 import LocationMaster from './components/Masters/LocationMaster';
+import AccountMaster from './components/Masters/AccountMaster';
 import TemplateStudio from './pages/TemplateStudio';
 import TemplateStudioCKE from './pages/TemplateStudioCKE';
 import { BrandingSettings } from './pages/BrandingSettings';
@@ -55,6 +56,13 @@ import OutsourcedTestsQueue from './pages/OutsourcedTestsQueue';
 import OutsourcedLabsSettings from './pages/OutsourcedLabsSettings';
 import IntraLabTransitQueue from './pages/IntraLabTransitQueue';
 import ManageReportSections from './pages/settings/ManageReportSections';
+import LabOnboarding from './pages/LabOnboarding';
+
+// ⬇️ B2B Portal
+import B2BLogin from './pages/B2BLogin';
+import B2BPortal from './pages/B2BPortal';
+import ProtectedB2BRoute from './components/Auth/ProtectedB2BRoute';
+
 
 const AppRoutes: React.FC = () => {
   const { user, loading } = useAuth();
@@ -105,6 +113,25 @@ const AppRoutes: React.FC = () => {
         path="/signup"
         element={user ? <Navigate to="/" replace /> : <Signup />}
       />
+      <Route
+        path="/onboard"
+        element={<LabOnboarding />}
+      />
+
+      {/* B2B Portal routes */}
+      <Route
+        path="/b2b"
+        element={<B2BLogin />}
+      />
+      <Route
+        path="/b2b/portal"
+        element={
+          <ProtectedB2BRoute>
+            <B2BPortal />
+          </ProtectedB2BRoute>
+        }
+      />
+
 
       {/* Protected routes */}
       <Route
@@ -120,7 +147,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/patients" element={<Patients />} />
                 <Route path="/tests" element={<Tests />} />
                 <Route path="/orders" element={<Orders />} />
-                <Route path="/results" element={<Results />} />
+                {/* <Route path="/results" element={<Results />} /> Hidden - use Results Entry 2 */}
                 <Route path="/results2" element={<Result2 />} />
                 <Route path="/results-verification" element={<ResultVerificationConsole />} />
                 <Route path="/reports" element={<Reports />} />
@@ -128,8 +155,8 @@ const AppRoutes: React.FC = () => {
                 <Route path="/workflow-demo/peripheral-smear" element={<PeripheralSmearDemo />} />
                 <Route path="/billing" element={<Billing />} />
                 <Route path="/cash-reconciliation" element={<CashReconciliation />} />
-                <Route path="/ai-tools" element={<AITools />} />
-                <Route path="/ai-prompts" element={<AIPromptManager />} />
+                {/* <Route path="/ai-tools" element={<AITools />} /> Hidden */}
+                {/* <Route path="/ai-prompts" element={<AIPromptManager />} /> Hidden */}
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/settings/branding" element={<BrandingSettings />} />
                 <Route path="/user-management" element={<UserManagement />} />
@@ -142,7 +169,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/optimization-demo" element={<OptimizationDemo />} />
                 <Route path="/visual-form-builder" element={<VisualFormBuilder />} />
                 <Route path="/orders/:id" element={<OrderDetail />} />
-                <Route path="/template-studio" element={<TemplateStudio />} />
+                {/* <Route path="/template-studio" element={<TemplateStudio />} /> Hidden */}
                 <Route path="/template-studio-cke" element={<TemplateStudioCKE />} />
                 {/* WhatsApp Integration */}
                 <Route path="/whatsapp" element={<WhatsApp />} />
@@ -156,6 +183,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/settings/outsourced-labs" element={<OutsourcedLabsSettings />} />
                 <Route path="/settings/report-sections" element={<ManageReportSections />} />
                 <Route path="/masters/doctors" element={<DoctorMaster />} />
+                <Route path="/masters/accounts" element={<AccountMaster />} />
                 <Route path="/masters/locations" element={<LocationMaster />} />
               </Routes>
             </Layout>

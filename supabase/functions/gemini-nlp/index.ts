@@ -694,6 +694,40 @@ async function callGemini(prompt: string, geminiApiKey: string, imageData?: stri
 /**
  * Match extracted parameters to database analytes
  */
+/**
+ * Parse numeric value and extract flag character (L/H/C) if present
+ * Examples: "11.1L" -> { value: "11.1", flag: "L" }
+ *           "4.91" -> { value: "4.91", flag: null }
+ *           "10.5H" -> { value: "10.5", flag: "H" }
+ */
+function parseValueAndFlag(rawValue: string): { value: string; extractedFlag: string | null } {
+  if (!rawValue || typeof rawValue !== 'string') {
+    return { value: rawValue, extractedFlag: null };
+  }
+
+  const trimmed = rawValue.trim();
+  
+  // Check if value ends with a flag character (L, H, C, LL, HH)
+  const flagPattern = /^([\d\.\-\+\s,]+?)([LHC]{1,2})$/i;
+  const match = trimmed.match(flagPattern);
+  
+  if (match) {
+    const numericPart = match[1].trim();
+    const flagPart = match[2].toUpperCase();
+    
+    // Validate that the numeric part is actually a valid number
+    if (!isNaN(parseFloat(numericPart))) {
+      return { 
+        value: numericPart, 
+        extractedFlag: flagPart 
+      };
+    }
+  }
+  
+  // No flag found or invalid format, return as-is
+  return { value: trimmed, extractedFlag: null };
+}
+
 async function matchParametersToAnalytes(extractedParameters: any): Promise<any[]> {
   try {
     // Handle non-array inputs (e.g., custom JSON objects from vision_color)
@@ -711,12 +745,22 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
           continue;
         }
         
+        // Parse value to extract flag if present
+        let cleanValue = typeof paramValue === 'object' ? JSON.stringify(paramValue) : String(paramValue);
+        let extractedFlag = null;
+        
+        if (typeof paramValue === 'string') {
+          const parsed = parseValueAndFlag(paramValue);
+          cleanValue = parsed.value;
+          extractedFlag = parsed.extractedFlag;
+        }
+        
         parametersArray.push({
           parameter: paramName,
-          value: typeof paramValue === 'object' ? JSON.stringify(paramValue) : String(paramValue),
+          value: cleanValue,
           unit: '',
           reference_range: '',
-          flag: 'Normal',
+          flag: extractedFlag || 'Normal',
           matched: false,
           confidence: 0.95
         });
@@ -761,6 +805,19 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
 
     // Match each extracted parameter to analytes
     const enhancedParameters = extractedParameters.map(param => {
+      // Parse value to extract flag if present in value string
+      let cleanValue = param.value;
+      let extractedFlag = param.flag;
+      
+      if (typeof param.value === 'string') {
+        const parsed = parseValueAndFlag(param.value);
+        cleanValue = parsed.value;
+        // Use extracted flag if no explicit flag was provided
+        if (!extractedFlag || extractedFlag === 'Normal') {
+          extractedFlag = parsed.extractedFlag || extractedFlag;
+        }
+      }
+      
       const matchedAnalyte = analytes.find((analyte: any) => 
         analyte.name.toLowerCase().trim() === param.parameter.toLowerCase().trim()
       );
@@ -768,6 +825,8 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
       if (matchedAnalyte) {
         return {
           ...param,
+          value: cleanValue,
+          flag: extractedFlag,
           analyte_id: matchedAnalyte.id,
           matched: true,
           reference_range: param.reference_range || matchedAnalyte.reference_range,
@@ -777,6 +836,8 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
 
       return {
         ...param,
+        value: cleanValue,
+        flag: extractedFlag,
         matched: false
       };
     });

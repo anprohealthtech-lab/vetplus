@@ -58,7 +58,7 @@ export const usePDFGeneration = () => {
 
       setState(prev => ({ ...prev, stage: 'Generating PDF via Edge Function...', progress: 30 }));
 
-      const response = await supabase.functions.invoke('generate-pdf-auto', {
+      const response = await supabase.functions.invoke('generate-pdf-letterhead', {
         body: {
           orderId,
           isDraft: forceDraft

@@ -5,7 +5,7 @@ type ProcessingStatus = 'pending' | 'processing' | 'ready' | 'error' | undefined
 
 export interface BrandingAssetSummary {
   id: string;
-  asset_type: 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead';
+  asset_type: 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead' | 'front_page' | 'last_page';
   asset_name: string;
   is_default: boolean;
   is_active?: boolean;

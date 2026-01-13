@@ -1,16 +1,21 @@
 // src/pages/result2.tsx
 import React, { useEffect, useState } from "react";
-import { Loader, Calendar, TestTube, Clock, AlertTriangle, CheckCircle, Activity, History } from "lucide-react";
+import { Loader, TestTube, Clock, AlertTriangle, CheckCircle, Activity } from "lucide-react";
 import { supabase, database } from "../utils/supabase";
 import OrderDetailsModal from "../components/Orders/OrderDetailsModal";
 import SimpleWorkflowRunner from "../components/Workflow/SimpleWorkflowRunner";
 import WorkflowHistoryViewer from "../components/Workflow/WorkflowHistoryViewer";
+import { SampleTypeIndicator } from "../components/Common/SampleTypeIndicator";
 
 interface TestGroupProgress {
   order_id: string;
   patient_id: string;
   patient_name: string;
   sample_id: string;
+  sample_type?: string;
+  sample_color?: string;
+  color_code?: string;
+  color_name?: string;
   order_status: string;
   priority: string;
   order_date: string;
@@ -54,11 +59,11 @@ const Result2: React.FC = () => {
   const [showWorkflowHistory, setShowWorkflowHistory] = useState(false);
   const [workflowExecutionCount, setWorkflowExecutionCount] = useState<Record<string, number>>({});
   const [isCollapsedView, setIsCollapsedView] = useState(false); // New collapsed view state
-  
+
   // Add state for OrderDetailsModal
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
   const [showOrderModal, setShowOrderModal] = useState(false);
-  
+
   // Add state for workflow execution
   const [selectedWorkflow, setSelectedWorkflow] = useState<any>(null);
 
@@ -69,7 +74,7 @@ const Result2: React.FC = () => {
   const fetchTestGroupProgress = async () => {
     try {
       setLoading(true);
-      
+
       // Get current user's lab ID for filtering
       const currentLabId = await database.getCurrentUserLabId();
       if (!currentLabId) {
@@ -77,15 +82,23 @@ const Result2: React.FC = () => {
         setTestGroups([]);
         return;
       }
-      
+
       console.log('Current user lab ID:', currentLabId);
-      
-      const { data, error } = await supabase
+
+      let query = supabase
         .from('v_order_test_progress_enhanced')
         .select('*')
         .eq('lab_id', currentLabId) // Filter by current user's lab
         .order('work_date', { ascending: false })
         .order('test_group_name', { ascending: true });
+
+      // Apply location filtering
+      const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
+      if (shouldFilter && locationIds.length > 0) {
+        query = query.in('location_id', locationIds);
+      }
+
+      const { data, error } = await query;
 
       if (error) {
         console.error('Error fetching from v_order_test_progress_enhanced:', error);
@@ -109,7 +122,7 @@ const Result2: React.FC = () => {
           setTestGroups([]);
           return;
         }
-        
+
         const { data: fallbackData, error: fallbackError } = await supabase
           .from('orders')
           .select(`
@@ -268,7 +281,7 @@ const Result2: React.FC = () => {
   const handleTestGroupClick = async (testGroup: TestGroupProgress) => {
     try {
       setLoading(true);
-      
+
       // Fetch complete order details - simplified query without problematic patient columns
       const { data: orderData, error: orderError } = await supabase
         .from('orders')
@@ -353,7 +366,7 @@ const Result2: React.FC = () => {
   const handleWorkflowExecute = async (testGroup: TestGroupProgress) => {
     try {
       setLoading(true);
-      
+
       // First fetch the full order details to get patient info
       const { data: orderData, error: orderError } = await supabase
         .from('orders')
@@ -374,7 +387,7 @@ const Result2: React.FC = () => {
       }
 
       const workflow = await checkWorkflowAvailability(testGroup);
-      
+
       if (workflow) {
         // Store both workflow and complete test group + order info
         setSelectedWorkflow({
@@ -452,12 +465,12 @@ const Result2: React.FC = () => {
     }
   };
 
-  const handleUpdateOrderStatus = async (orderId: string, newStatus: string) => {
+  const handleUpdateOrderStatus = async (_orderId: string, _newStatus: string) => {
     // Refresh test groups after status update
     await fetchTestGroupProgress();
   };
 
-  const handleSubmitResults = async (orderId: string, resultsData: any[]) => {
+  const handleSubmitResults = async (_orderId: string, _resultsData: any[]) => {
     // Refresh test groups after results submission
     await fetchTestGroupProgress();
     setShowOrderModal(false);
@@ -515,11 +528,10 @@ const Result2: React.FC = () => {
             </div>
             <button
               onClick={() => setIsCollapsedView(!isCollapsedView)}
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                isCollapsedView 
-                  ? 'bg-blue-600 text-white' 
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${isCollapsedView
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
             >
               {isCollapsedView ? 'Expand Cards' : 'Collapse Cards'}
             </button>
@@ -538,11 +550,10 @@ const Result2: React.FC = () => {
               <button
                 key={option.key}
                 onClick={() => setSelectedRange(option.key)}
-                className={`px-4 py-2 transition-colors ${
-                  selectedRange === option.key
-                    ? 'bg-blue-600 text-white'
-                    : 'text-gray-600 hover:bg-gray-200'
-                }`}
+                className={`px-4 py-2 transition-colors ${selectedRange === option.key
+                  ? 'bg-blue-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-200'
+                  }`}
               >
                 {option.label}
               </button>
@@ -600,9 +611,8 @@ const Result2: React.FC = () => {
             {dateGroups.map(dateGroup => (
               <div key={dateGroup.date}>
                 {/* Date Header */}
-                <div className={`sticky top-0 z-10 bg-white border-b-2 pb-3 mb-4 ${
-                  dateGroup.isToday ? 'border-green-500' : 'border-gray-200'
-                }`}>
+                <div className={`sticky top-0 z-10 bg-white border-b-2 pb-3 mb-4 ${dateGroup.isToday ? 'border-green-500' : 'border-gray-200'
+                  }`}>
                   <h2 className="text-xl font-semibold text-gray-900">
                     {formatDateHeader(dateGroup)}
                   </h2>
@@ -627,6 +637,12 @@ const Result2: React.FC = () => {
                         >
                           <div className="flex items-center space-x-4 flex-1 min-w-0">
                             <StatusIcon className={`h-4 w-4 ${statusConfig.text} flex-shrink-0`} />
+                            {/* Sample Type Indicator */}
+                            <SampleTypeIndicator
+                              sampleType={testGroup.sample_type || 'Blood'}
+                              sampleColor={testGroup.color_code || undefined}
+                              size="sm"
+                            />
                             <span className="font-medium text-gray-900 truncate">{testGroup.patient_name}</span>
                             <span className="text-sm text-gray-600 truncate">{testGroup.test_group_name}</span>
                             <span className="text-xs text-gray-500">{testGroup.sample_id || 'No Sample'}</span>
@@ -667,123 +683,130 @@ const Result2: React.FC = () => {
                           className={`border-2 rounded-lg p-4 cursor-pointer transition-all hover:shadow-lg ${statusConfig.border} ${statusConfig.bg}`}
                           onClick={() => handleTestGroupClick(testGroup)}
                         >
-                        {/* Header */}
-                        <div className="flex items-start justify-between mb-3">
-                          <div className="flex-1">
-                            <h3 className="font-semibold text-gray-900 text-sm">
-                              {testGroup.test_group_name}
-                            </h3>
-                            <p className="text-xs text-gray-600 mt-1">
-                              {testGroup.patient_name}
-                            </p>
+                          {/* Header */}
+                          <div className="flex items-start justify-between mb-3">
+                            <div className="flex items-center gap-3 flex-1">
+                              {/* Sample Type Indicator */}
+                              <SampleTypeIndicator
+                                sampleType={testGroup.sample_type || 'Blood'}
+                                sampleColor={testGroup.color_code || undefined}
+                                size="md"
+                              />
+                              <div className="flex-1">
+                                <h3 className="font-semibold text-gray-900 text-sm">
+                                  {testGroup.test_group_name}
+                                </h3>
+                                <p className="text-xs text-gray-600 mt-1">
+                                  {testGroup.patient_name}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusConfig.bg} ${statusConfig.text}`}>
+                                <StatusIcon className="h-3 w-3 inline mr-1" />
+                                {statusConfig.label}
+                              </span>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusConfig.bg} ${statusConfig.text}`}>
-                              <StatusIcon className="h-3 w-3 inline mr-1" />
-                              {statusConfig.label}
-                            </span>
-                          </div>
-                        </div>
 
-                        {/* Progress Bar */}
-                        <div className="mb-3">
-                          <div className="flex justify-between text-xs text-gray-600 mb-1">
-                            <span>Progress</span>
-                            <span>{testGroup.completion_percentage}%</span>
+                          {/* Progress Bar */}
+                          <div className="mb-3">
+                            <div className="flex justify-between text-xs text-gray-600 mb-1">
+                              <span>Progress</span>
+                              <span>{testGroup.completion_percentage}%</span>
+                            </div>
+                            <div className="w-full bg-gray-200 rounded-full h-2">
+                              <div
+                                className={`h-2 rounded-full transition-all duration-300 ${testGroup.panel_status === 'completed' ? 'bg-green-600' :
+                                  testGroup.panel_status === 'in_progress' ? 'bg-blue-600' :
+                                    'bg-gray-400'
+                                  }`}
+                                style={{ width: `${testGroup.completion_percentage}%` }}
+                              />
+                            </div>
                           </div>
-                          <div className="w-full bg-gray-200 rounded-full h-2">
-                            <div
-                              className={`h-2 rounded-full transition-all duration-300 ${
-                                testGroup.panel_status === 'completed' ? 'bg-green-600' :
-                                testGroup.panel_status === 'in_progress' ? 'bg-blue-600' :
-                                'bg-gray-400'
-                              }`}
-                              style={{ width: `${testGroup.completion_percentage}%` }}
-                            />
-                          </div>
-                        </div>
 
-                        {/* Details */}
-                        <div className="space-y-1 text-xs text-gray-600">
-                          <div className="flex justify-between">
-                            <span>Sample:</span>
-                            <span className="font-medium">{testGroup.sample_id || 'N/A'}</span>
+                          {/* Details */}
+                          <div className="space-y-1 text-xs text-gray-600">
+                            <div className="flex justify-between">
+                              <span>Sample:</span>
+                              <span className="font-medium">{testGroup.sample_id || 'N/A'}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span>Analytes:</span>
+                              <span>{testGroup.completed_analytes}/{testGroup.total_analytes}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span>Department:</span>
+                              <span>{testGroup.department || 'N/A'}</span>
+                            </div>
+                            {testGroup.abnormal_count > 0 && (
+                              <div className="flex justify-between text-red-600">
+                                <span>Abnormal:</span>
+                                <span>{testGroup.abnormal_count}</span>
+                              </div>
+                            )}
                           </div>
-                          <div className="flex justify-between">
-                            <span>Analytes:</span>
-                            <span>{testGroup.completed_analytes}/{testGroup.total_analytes}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span>Department:</span>
-                            <span>{testGroup.department || 'N/A'}</span>
-                          </div>
-                          {testGroup.abnormal_count > 0 && (
-                            <div className="flex justify-between text-red-600">
-                              <span>Abnormal:</span>
-                              <span>{testGroup.abnormal_count}</span>
+
+                          {/* TAT Warning */}
+                          {testGroup.hours_until_tat_breach !== null && testGroup.hours_until_tat_breach < 24 && (
+                            <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+                              <AlertTriangle className="h-3 w-3 inline mr-1" />
+                              TAT breach in {Math.round(testGroup.hours_until_tat_breach)} hours
+                            </div>
+                          )}
+
+                          {/* Workflow Button */}
+                          {testGroup.workflow_eligible && (
+                            <div className="mt-3 pt-3 border-t border-gray-200 space-y-2">
+                              {workflowExecutionCount[testGroup.order_id] > 0 ? (
+                                <>
+                                  {/* Show workflow already executed */}
+                                  <div className="flex items-center justify-between p-2 bg-green-50 border border-green-200 rounded text-xs">
+                                    <div className="flex items-center text-green-700">
+                                      <CheckCircle className="h-4 w-4 mr-1" />
+                                      <span>
+                                        Workflow executed {workflowExecutionCount[testGroup.order_id]} time(s)
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleViewWorkflowHistory(testGroup);
+                                      }}
+                                      className="px-3 py-2 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 transition-colors"
+                                    >
+                                      View History
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleWorkflowExecute(testGroup);
+                                      }}
+                                      className="px-3 py-2 bg-purple-600 text-white text-xs rounded hover:bg-purple-700 transition-colors"
+                                    >
+                                      Execute Again
+                                    </button>
+                                  </div>
+                                </>
+                              ) : (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleWorkflowExecute(testGroup);
+                                  }}
+                                  className="w-full px-3 py-2 bg-purple-600 text-white text-xs rounded hover:bg-purple-700 transition-colors"
+                                >
+                                  Execute Workflow
+                                </button>
+                              )}
                             </div>
                           )}
                         </div>
-
-                        {/* TAT Warning */}
-                        {testGroup.hours_until_tat_breach !== null && testGroup.hours_until_tat_breach < 24 && (
-                          <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
-                            <AlertTriangle className="h-3 w-3 inline mr-1" />
-                            TAT breach in {Math.round(testGroup.hours_until_tat_breach)} hours
-                          </div>
-                        )}
-
-                        {/* Workflow Button */}
-                        {testGroup.workflow_eligible && (
-                          <div className="mt-3 pt-3 border-t border-gray-200 space-y-2">
-                            {workflowExecutionCount[testGroup.order_id] > 0 ? (
-                              <>
-                                {/* Show workflow already executed */}
-                                <div className="flex items-center justify-between p-2 bg-green-50 border border-green-200 rounded text-xs">
-                                  <div className="flex items-center text-green-700">
-                                    <CheckCircle className="h-4 w-4 mr-1" />
-                                    <span>
-                                      Workflow executed {workflowExecutionCount[testGroup.order_id]} time(s)
-                                    </span>
-                                  </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-2">
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleViewWorkflowHistory(testGroup);
-                                    }}
-                                    className="px-3 py-2 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 transition-colors"
-                                  >
-                                    View History
-                                  </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleWorkflowExecute(testGroup);
-                                    }}
-                                    className="px-3 py-2 bg-purple-600 text-white text-xs rounded hover:bg-purple-700 transition-colors"
-                                  >
-                                    Execute Again
-                                  </button>
-                                </div>
-                              </>
-                            ) : (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleWorkflowExecute(testGroup);
-                                }}
-                                className="w-full px-3 py-2 bg-purple-600 text-white text-xs rounded hover:bg-purple-700 transition-colors"
-                              >
-                                Execute Workflow
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
                   </div>
                 )}
               </div>

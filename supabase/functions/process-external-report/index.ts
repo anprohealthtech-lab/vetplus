@@ -42,17 +42,23 @@ serve(async (req) => {
     const prompt = `
       You are an expert lab report analyzer. Your task is to extract structured result data from the provided medical lab report.
       
-      Extract the following fields for each test result found:
+      FIRST, extract the report metadata:
+      - report_date: The date the test was performed or the report was generated (in YYYY-MM-DD format). Look for "Collection Date", "Test Date", "Report Date", or similar fields.
+      - lab_name: The name of the laboratory that performed the tests.
+      
+      THEN, extract the following fields for each test result found:
       - original_analyte_name: The name of the test or analyte exactly as it appears.
       - value: The numeric or text result value.
       - unit: The unit of measurement (e.g., mg/dL, g/L). If none, use null.
       - reference_range: The reference interval provided. If none, use null.
       - confidence: Your confidence score (0.0 to 1.0) in this extraction.
 
-      Strictly return ONLY a JSON object with a "data" property containing an array of these objects. Do not include markdown formatting like \`\`\`json.
+      Strictly return ONLY a JSON object with the following structure. Do not include markdown formatting like \`\`\`json.
       
       Example format:
       {
+        "report_date": "2024-12-20",
+        "lab_name": "ABC Diagnostics",
         "data": [
           { "original_analyte_name": "Hemoglobin", "value": "13.5", "unit": "g/dL", "reference_range": "12.0-15.5", "confidence": 0.99 }
         ]
@@ -99,8 +105,16 @@ serve(async (req) => {
     rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
 
     let extractedData;
+    let reportDate = null;
+    let labName = null;
+    
     try {
       const parsed = JSON.parse(rawText);
+      
+      // Extract metadata from parsed response
+      reportDate = parsed.report_date || null;
+      labName = parsed.lab_name || null;
+      
       extractedData = parsed.data || parsed; // Handle if AI returns array directly or wrapped in object
       if (!Array.isArray(extractedData)) {
          if (Array.isArray(parsed)) extractedData = parsed;
@@ -114,6 +128,8 @@ serve(async (req) => {
     // 5. Enhance with Metadata
     const responseData = {
       success: true,
+      report_date: reportDate,
+      lab_name: labName,
       data: extractedData.map((item: any) => ({
         original_analyte_name: item.original_analyte_name || "Unknown",
         value: String(item.value || ""),

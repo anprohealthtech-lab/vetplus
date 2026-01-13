@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Search, FileText, Plus, Building, Eye } from 'lucide-react';
+
+import { Search, FileText, Plus, Building, Eye, CreditCard, Download } from 'lucide-react';
 import { database } from '../../utils/supabase';
 import type { Invoice, Account, ConsolidatedInvoice } from '../../types';
+import ReceivePaymentModal from './ReceivePaymentModal';
+import { generateConsolidatedInvoicePDF } from '../../utils/invoicePdfService';
 
 interface MonthlyAccountBillingProps {
   onClose?: () => void;
@@ -34,6 +37,7 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
   const [searchTerm, setSearchTerm] = useState('');
   const [consolidating, setConsolidating] = useState<string | null>(null);
   const [previewInvoices, setPreviewInvoices] = useState<Invoice[]>([]);
+  const [showPaymentModal, setShowPaymentModal] = useState<string | null>(null);
 
   useEffect(() => {
     loadAvailablePeriods();
@@ -80,7 +84,7 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
       }).sort((a, b) => b.period.localeCompare(a.period));
 
       setAvailablePeriods(periods);
-      
+
       // Auto-select current month if available
       const currentMonth = new Date().toISOString().slice(0, 7);
       if (periods.find(p => p.period === currentMonth)) {
@@ -126,7 +130,7 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
 
         const totalAmount = accountInvoices.reduce((sum, inv) => sum + (inv.total_after_discount || inv.total), 0);
         const patients = new Set(accountInvoices.map(inv => inv.patient_id));
-        
+
         // Check if already consolidated
         const consolidatedInvoice = (consolidatedInvoices || []).find(
           ci => ci.account_id === accountId && ci.billing_period === selectedPeriod
@@ -326,7 +330,7 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
                         <p className="text-sm text-gray-500 capitalize">{summary.account.type}</p>
                       </div>
                     </div>
-                    
+
                     <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
                       <div>
                         <span className="text-gray-600">Invoices:</span>
@@ -344,11 +348,10 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
                       </div>
                       <div>
                         <span className="text-gray-600">Status:</span>
-                        <span className={`ml-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                          summary.hasConsolidated 
-                            ? 'bg-green-100 text-green-800' 
-                            : 'bg-yellow-100 text-yellow-800'
-                        }`}>
+                        <span className={`ml-1 px-2 py-0.5 rounded-full text-xs font-medium ${summary.hasConsolidated
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-yellow-100 text-yellow-800'
+                          }`}>
                           {summary.hasConsolidated ? 'Consolidated' : 'Pending'}
                         </span>
                       </div>
@@ -366,11 +369,25 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
 
                     {summary.hasConsolidated ? (
                       <button
-                        className="px-3 py-2 text-sm bg-gray-100 text-gray-500 rounded-md cursor-not-allowed flex items-center gap-1"
-                        disabled
+                        onClick={async () => {
+                          if (!summary.consolidatedInvoice) return;
+                          try {
+                            const url = await generateConsolidatedInvoicePDF(summary.consolidatedInvoice.id, await database.getCurrentUserLabId());
+                            const link = document.createElement('a');
+                            link.href = url;
+                            link.download = `Consolidated_Invoice_${summary.account.name}.pdf`;
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                          } catch (e) {
+                            alert('Failed to generate PDF');
+                            console.error(e);
+                          }
+                        }}
+                        className="px-3 py-2 text-sm bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-md flex items-center gap-1"
                       >
-                        <FileText className="w-4 h-4" />
-                        Consolidated
+                        <Download className="w-4 h-4" />
+                        PDF
                       </button>
                     ) : (
                       <button
@@ -382,6 +399,14 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
                         {consolidating === summary.account.id ? 'Creating...' : 'Create Consolidated'}
                       </button>
                     )}
+
+                    <button
+                      onClick={() => setShowPaymentModal(summary.account.id)}
+                      className="px-3 py-2 text-sm border border-green-200 text-green-700 bg-green-50 rounded-md hover:bg-green-100 flex items-center gap-1"
+                    >
+                      <CreditCard className="w-4 h-4" />
+                      Receive Payment
+                    </button>
                   </div>
                 </div>
               </div>
@@ -389,7 +414,7 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
 
             {filteredSummaries.length === 0 && (
               <div className="p-8 text-center text-gray-500">
-                {searchTerm 
+                {searchTerm
                   ? 'No accounts found matching your search'
                   : 'No account invoices found for this period'
                 }
@@ -397,67 +422,88 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
             )}
           </div>
         </div>
-      )}
+      )
+      }
 
       {/* Invoice Preview Modal */}
-      {selectedAccount && previewInvoices.length > 0 && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-bold text-gray-900">
-                Preview Invoices - {accountSummaries.find(s => s.account.id === selectedAccount)?.account.name}
-              </h3>
-              <button
-                onClick={() => {
-                  setSelectedAccount(null);
-                  setPreviewInvoices([]);
-                }}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                ×
-              </button>
-            </div>
+      {
+        selectedAccount && previewInvoices.length > 0 && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold text-gray-900">
+                  Preview Invoices - {accountSummaries.find(s => s.account.id === selectedAccount)?.account.name}
+                </h3>
+                <button
+                  onClick={() => {
+                    setSelectedAccount(null);
+                    setPreviewInvoices([]);
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  ×
+                </button>
+              </div>
 
-            <div className="space-y-4">
-              {previewInvoices.map(invoice => (
-                <div key={invoice.id} className="border border-gray-200 rounded-lg p-4">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <div className="font-medium">Invoice #{invoice.id.slice(0, 8)}</div>
-                      <div className="text-sm text-gray-600">{invoice.patient_name}</div>
-                      <div className="text-sm text-gray-500">
-                        {new Date(invoice.invoice_date).toLocaleDateString()}
+              <div className="space-y-4">
+                {previewInvoices.map(invoice => (
+                  <div key={invoice.id} className="border border-gray-200 rounded-lg p-4">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <div className="font-medium">Invoice #{invoice.id.slice(0, 8)}</div>
+                        <div className="text-sm text-gray-600">{invoice.patient_name}</div>
+                        <div className="text-sm text-gray-500">
+                          {new Date(invoice.invoice_date).toLocaleDateString()}
+                        </div>
                       </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-bold text-green-600">
-                        {formatCurrency(invoice.total_after_discount || invoice.total)}
-                      </div>
-                      <div className="text-sm text-gray-500">
-                        Status: {invoice.status}
+                      <div className="text-right">
+                        <div className="font-bold text-green-600">
+                          {formatCurrency(invoice.total_after_discount || invoice.total)}
+                        </div>
+                        <div className="text-sm text-gray-500">
+                          Status: {invoice.status}
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
 
-            <div className="mt-6 pt-4 border-t border-gray-200">
-              <div className="flex justify-between items-center">
-                <div className="font-medium">
-                  Total: {previewInvoices.length} invoices
-                </div>
-                <div className="font-bold text-lg text-green-600">
-                  {formatCurrency(
-                    previewInvoices.reduce((sum, inv) => sum + (inv.total_after_discount || inv.total), 0)
-                  )}
+              <div className="mt-6 pt-4 border-t border-gray-200">
+                <div className="flex justify-between items-center">
+                  <div className="font-medium">
+                    Total: {previewInvoices.length} invoices
+                  </div>
+                  <div className="font-bold text-lg text-green-600">
+                    {formatCurrency(
+                      previewInvoices.reduce((sum, inv) => sum + (inv.total_after_discount || inv.total), 0)
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )
+      }
+      {/* Payment Modal */}
+      {
+        showPaymentModal && (() => {
+          const summary = accountSummaries.find(s => s.account.id === showPaymentModal);
+          return summary ? (
+            <ReceivePaymentModal
+              accountId={summary.account.id}
+              accountName={summary.account.name}
+              currentBalance={summary.totalAmount} // Note: Real balance should come from ledger, here using current period due
+              onClose={() => setShowPaymentModal(null)}
+              onSuccess={() => {
+                loadPeriodData();
+                alert('Payment recorded successfully');
+              }}
+            />
+          ) : null;
+        })()
+      }
+    </div >
   );
 };
 

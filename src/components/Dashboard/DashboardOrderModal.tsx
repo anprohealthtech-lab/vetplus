@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import ReactDOM from "react-dom";
 import {
   X,
@@ -11,7 +11,6 @@ import {
   Printer,
   QrCode,
   CheckCircle,
-  AlertTriangle,
   Phone,
   Mail,
   TestTube,
@@ -24,20 +23,28 @@ import {
   Save,
   Truck,
   Send,
-  MapPin
+  MapPin,
+  File,
+  Plus,
+  Trash2,
+  Search,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { database, supabase } from "../../utils/supabase";
+import { SampleTypeIndicator } from "../Common/SampleTypeIndicator";
 import { generateAndDownloadReport, getLabTemplate, type ReportData } from "../../utils/pdfGenerator";
 import { generateInvoicePDF } from "../../utils/invoicePdfService";
 import { useAuth } from "../../contexts/AuthContext";
 import { useOrderStatusCentral } from "../../hooks/useOrderStatusCentral";
 import QuickStatusButtons from "../Orders/QuickStatusButtons";
-import PhlebotomistSelector from "../Users/PhlebotomistSelector";
 import { OrderStatusDisplay } from "../Orders/OrderStatusDisplay";
 import CreateInvoiceModal from "../Billing/CreateInvoiceModal";
 import PaymentCapture from "../Billing/PaymentCapture";
 import InvoiceDeliveryTracker from "../Billing/InvoiceDeliveryTracker";
+import InvoiceGenerationModal from "../Billing/InvoiceGenerationModal";
+import SampleCollectionTracker from "../Samples/SampleCollectionTracker";
+import ReportDesignStudio from "../ReportStudio/ReportDesignStudio";
+import { SendReportModal } from "./SendReportModal";
 import {
   processTRFImage,
   trfToOrderFormData,
@@ -94,6 +101,23 @@ export interface DashboardOrder {
   location?: string | null;
   transit_status?: string | null;
   collected_at_location_id?: string | null;
+
+  // B2B Account fields
+  account_name?: string | null;
+  account_billing_mode?: 'standard' | 'monthly' | null;
+
+  panels?: {
+    name: string;
+    expected: number;
+    entered: number;
+    verified: boolean;
+    status: any;
+    sample_type?: string;
+    sample_color?: string;
+  }[];
+
+  // B2B Account
+  // account_name is already defined above
 }
 
 interface DashboardOrderModalProps {
@@ -114,6 +138,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   // Billing Modals
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showPdfModal, setShowPdfModal] = useState(false);
   const [invoiceRefreshTrigger, setInvoiceRefreshTrigger] = useState(0);
 
   // Outsource Modal
@@ -154,6 +179,244 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   const [dispatchPriority, setDispatchPriority] = useState<'normal' | 'urgent' | 'high' | 'low'>('normal');
   const [dispatching, setDispatching] = useState(false);
 
+  // Add/Remove Tests Logic
+  const [currentTotal, setCurrentTotal] = useState(order.total_amount);
+  const [currentDue, setCurrentDue] = useState(order.due_amount || 0);
+  const [showAddTestModal, setShowAddTestModal] = useState(false);
+  const [availableTests, setAvailableTests] = useState<any[]>([]);
+  const [testSearch, setTestSearch] = useState('');
+  const [isAddingTest, setIsAddingTest] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Report Actions
+  const [showReportStudio, setShowReportStudio] = useState(false);
+  const [showSendReport, setShowSendReport] = useState(false);
+  const [lastGeneratedPdf, setLastGeneratedPdf] = useState<string | null>(order.report_url || null);
+
+  // Fetch available tests when modal opens
+  useEffect(() => {
+    if (showAddTestModal && availableTests.length === 0 && labId) {
+      const fetchTests = async () => {
+        // Fetch individual tests
+        const { data: testsData } = await supabase
+          .from('test_groups')
+          .select('*')
+          .eq('is_active', true)
+          .eq('lab_id', labId)
+          .order('name');
+
+        // Fetch packages
+        const { data: packagesData } = await supabase
+          .from('packages')
+          .select('*')
+          .eq('is_active', true)
+          .eq('lab_id', labId)
+          .order('name');
+
+        const combined = [
+          ...(testsData || []).map((t: any) => ({ ...t, type: 'test' })),
+          ...(packagesData || []).map((p: any) => ({ ...p, type: 'package' }))
+        ];
+        // Sort combined by name
+        combined.sort((a, b) => a.name.localeCompare(b.name));
+
+        setAvailableTests(combined);
+      };
+      fetchTests();
+    }
+  }, [showAddTestModal, labId, availableTests.length]);
+
+  const handleAddTest = async (item: any) => {
+    if (!labId) return;
+    try {
+      // Check for duplicate
+      if (tests.some(t => t.test_name === item.name)) {
+        alert('This item is already in the order.');
+        return;
+      }
+
+      setIsAddingTest(true);
+
+      if (item.type === 'package') {
+        // --- PACKAGE ADD LOGIC ---
+        const { data: pkgGroups, error: pkgError } = await supabase
+          .from('package_test_groups')
+          .select('test_group_id, test_groups(*)')
+          .eq('package_id', item.id);
+
+        if (pkgError) throw pkgError;
+
+        // 1. Insert Package Header (Billed Item)
+        const { data: headerTest, error: headerError } = await supabase
+          .from('order_tests')
+          .insert({
+            order_id: order.id,
+            test_name: item.name,
+            package_id: item.id,
+            price: item.price,
+            lab_id: labId,
+            is_billed: false
+            // test_group_id is null for package header
+          })
+          .select()
+          .single();
+        if (headerError) throw headerError;
+
+        // 2. Insert Component Tests (Non-billed items linked to package)
+        // Note: We use source_package_id to link them, and price 0
+        if (pkgGroups && pkgGroups.length > 0) {
+          const components = pkgGroups.map((pg: any) => ({
+            order_id: order.id,
+            test_group_id: pg.test_group_id,
+            test_name: pg.test_groups?.name || 'Unknown Test',
+            price: 0,
+            lab_id: labId,
+            source_package_id: item.id,
+            is_billed: false
+          }));
+
+          const { error: compError } = await supabase
+            .from('order_tests')
+            .insert(components);
+          if (compError) throw compError;
+        }
+
+        // 3. Update Order Totals
+        const newTotal = (currentTotal || 0) + (item.price || 0);
+
+        // If order was fully billed, it is now partially billed because we added a new unbilled item
+        const newBillingStatus = order.billing_status === 'billed' ? 'partial' : order.billing_status;
+
+        const { error: orderError } = await supabase
+          .from('orders')
+          .update({
+            total_amount: newTotal,
+            billing_status: newBillingStatus
+          })
+          .eq('id', order.id);
+        if (orderError) throw orderError;
+
+        setTests(prev => [...prev, {
+          id: headerTest.id,
+          test_name: headerTest.test_name,
+          outsourced_lab_id: null
+        }]);
+        setCurrentTotal(newTotal);
+        console.log(`Added package ${item.name}`);
+        await onUpdateStatus(order.id, order.status);
+
+      } else {
+        // --- INDIVIDUAL TEST LOGIC ---
+        const { data: newTest, error } = await supabase
+          .from('order_tests')
+          .insert({
+            order_id: order.id,
+            test_group_id: item.id,
+            test_name: item.name,
+            price: item.price,
+            lab_id: labId,
+            is_billed: false
+          })
+          .select()
+          .single();
+
+        if (error) throw error;
+
+        const newTotal = (currentTotal || 0) + (item.price || 0);
+
+        // If order was fully billed, it is now partially billed because we added a new unbilled item
+        const newBillingStatus = order.billing_status === 'billed' ? 'partial' : order.billing_status;
+
+        const { error: orderError } = await supabase
+          .from('orders')
+          .update({
+            total_amount: newTotal,
+            billing_status: newBillingStatus
+          })
+          .eq('id', order.id);
+
+        if (orderError) throw orderError;
+
+        setTests(prev => [...prev, {
+          id: newTest.id,
+          test_name: newTest.test_name,
+          outsourced_lab_id: null
+        }]);
+        setCurrentTotal(newTotal);
+        console.log(`Added ${item.name} successfully.`);
+        await onUpdateStatus(order.id, order.status);
+      }
+
+      setTestSearch('');
+      setTimeout(() => {
+        if (searchInputRef.current) {
+          searchInputRef.current.focus();
+        }
+      }, 0);
+
+    } catch (err: any) {
+      console.error('Add test error:', err);
+      alert('Failed to add test: ' + err.message);
+    } finally {
+      setIsAddingTest(false);
+    }
+  };
+
+  const handleRemoveTest = async (testId: string, testName: string) => {
+    if (!confirm(`Are you sure you want to remove ${testName}?`)) return;
+
+    try {
+      // 1. Check if invoiced/billed
+      const { data: testData, error: fetchError } = await supabase
+        .from('order_tests')
+        .select('invoice_id, price, is_billed')
+        .eq('id', testId)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      if (testData.invoice_id || testData.is_billed) {
+        alert('Cannot remove this test because an invoice has already been generated for it. Please cancel/regenerate the invoice first.');
+        return;
+      }
+
+      // 2. Delete
+      const { error: deleteError } = await supabase
+        .from('order_tests')
+        .delete()
+        .eq('id', testId);
+
+      if (deleteError) throw deleteError;
+
+      // 3. Update Order Totals
+      const priceToRemove = testData.price || 0;
+      const newTotal = Math.max(0, (currentTotal || 0) - priceToRemove);
+      const newDue = Math.max(0, (currentDue || 0) - priceToRemove);
+
+      const { error: updateError } = await supabase
+        .from('orders')
+        .update({
+          total_amount: newTotal
+          // due_amount removed
+        })
+        .eq('id', order.id);
+
+      if (updateError) throw updateError;
+
+      // 4. Update Local State
+      setTests(prev => prev.filter(t => t.id !== testId));
+      setCurrentTotal(newTotal);
+      setCurrentDue(newDue);
+
+      // Refresh parent dashboard
+      await onUpdateStatus(order.id, order.status);
+
+    } catch (err: any) {
+      console.error('Remove test error:', err);
+      alert('Failed to remove test: ' + err.message);
+    }
+  };
+
 
   // Init
   useEffect(() => {
@@ -174,7 +437,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
           .order('name');
         setOutsourcedLabs(data || []);
 
-        const { data: doctorsData } = await database.doctors.getAll();
+        const { data: doctorsData } = await (database as any).doctors.getAll();
         setDoctors(doctorsData || []);
 
         // Fetch all locations for dispatch (processing centers + others)
@@ -390,27 +653,25 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       const selectedDoc = doctors.find(d => d.id === editDoctorId);
       if (!selectedDoc) return;
 
-      // Update both doctor_id and doctor name (denormalized)
+      // Update both referring_doctor_id (the foreign key) and doctor name (denormalized)
       const { error } = await supabase
         .from('orders')
         .update({
-          doctor_id: selectedDoc.id,
+          referring_doctor_id: selectedDoc.id,
           doctor: selectedDoc.name,
-          // Also update phone/email if available in doctor record and order has fields for it?
-          // DashboardOrder has doctor_phone, doctor_email. 
-          // Usually these are fetched from relation, but if stored in orders, update them too.
-          // Checking schema.md or types would confirm, but safe to assume we might want to update if they exist on order table.
-          // For now, just updating doctor_id and doctor name is the core requirement.
         })
         .eq('id', order.id);
 
-      if (error) throw error;
+      if (error) {
+        console.error('Error updating doctor:', error);
+        throw error;
+      }
 
       setIsEditingDoctor(false);
-      onUpdateStatus(order.id, order.status);
-    } catch (e) {
+      await onUpdateStatus(order.id, order.status); // Use await if promise
+    } catch (e: any) {
       console.error(e);
-      alert('Failed to update doctor');
+      alert('Failed to update doctor: ' + (e.message || 'Unknown error'));
     }
   };
 
@@ -579,27 +840,39 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
   return ReactDOM.createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+      <div className="bg-gray-50/50 rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col border border-white/20">
 
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gray-50/50">
-          <div className="flex items-center gap-4">
-            <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold">
-              {order.patient_name.charAt(0)}
+        {/* Header - Premium Gradient */}
+        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100 bg-white">
+          <div className="flex items-center gap-5">
+            <div className="flex items-center justify-center w-12 h-12 bg-blue-600 text-white rounded-xl font-bold text-lg shadow-lg shadow-blue-200">
+              {order.patient_name.charAt(0).toUpperCase()}
             </div>
             <div>
-              <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                {order.patient_name}
-                <span className="text-sm font-normal text-gray-500">#{order.patient_id}</span>
-              </h2>
-              <div className="flex items-center gap-3 text-sm text-gray-600">
-                <span>{(order.patient?.age || 'N/A') + 'y'}</span>
+              <div className="flex items-center gap-3">
+                <h2 className="text-2xl font-bold text-gray-900 tracking-tight">{order.patient_name}</h2>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 border border-gray-200">
+                  #{order.id.slice(-6).toUpperCase()}
+                </span>
+                <OrderStatusDisplay order={order} compact={true} />
+              </div>
+              <div className="text-sm text-gray-500 mt-1 flex items-center gap-2">
+                <span className="font-medium">{(order.patient?.age || 'N/A') + 'y'}</span>
                 <span>•</span>
-                <span>{order.patient?.gender || 'N/A'}</span>
+                <span className="font-medium">{order.patient?.gender || 'N/A'}</span>
                 {order.patient_phone && (
                   <>
                     <span>•</span>
                     <span className="flex items-center gap-1"><Phone className="h-3 w-3" /> {order.patient_phone}</span>
+                  </>
+                )}
+                {order.account_name && (
+                  <>
+                    <span className="w-1 h-1 bg-gray-300 rounded-full mx-1"></span>
+                    <span className="flex items-center gap-1 text-indigo-600 font-medium bg-indigo-50 px-2 py-0.5 rounded-full text-xs border border-indigo-100">
+                      <Building className="h-3 w-3" />
+                      {order.account_name}
+                    </span>
                   </>
                 )}
               </div>
@@ -607,6 +880,22 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
           </div>
           <div className="flex items-center gap-3">
             <OrderStatusDisplay order={order as any} />
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setShowReportStudio(true)}
+                className="flex items-center gap-1 px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 text-xs font-medium transition-colors"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                Design Report
+              </button>
+              <button
+                onClick={() => setShowSendReport(true)}
+                className="flex items-center gap-1 px-3 py-1.5 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 text-xs font-medium transition-colors"
+              >
+                <Send className="h-3.5 w-3.5" />
+                Send
+              </button>
+            </div>
             <button onClick={onClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors">
               <X className="h-5 w-5 text-gray-500" />
             </button>
@@ -654,172 +943,210 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
             </div>
           </section>
 
-          {/* Top Row: Order Info, Doctor, Sample & Location */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="p-4 bg-blue-50 rounded-lg border border-blue-100">
-              <div className="text-xs font-semibold text-blue-600 uppercase tracking-wider mb-1">Order Details</div>
-              <div className="font-mono font-bold text-gray-900">#{order.id.slice(-6)}</div>
-              <div className="text-sm text-gray-600 mt-1 flex items-center gap-1">
-                <Calendar className="h-3 w-3" /> {new Date(order.order_date).toLocaleDateString()}
-                <Clock className="h-3 w-3 ml-1" /> {new Date(order.order_date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </div>
-            </div>
+          {/* Top Grid: Doctor, Sample, Location */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
 
-            {/* Referring Doctor (Editable) */}
-            <div className="p-4 bg-purple-50 rounded-lg border border-purple-100 relative group">
-              <div className="flex justify-between items-start">
-                <div className="text-xs font-semibold text-purple-600 uppercase tracking-wider mb-1">Referring Doctor</div>
-                {!isEditingDoctor && (
-                  <button onClick={() => setIsEditingDoctor(true)} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-purple-200 rounded transition-opacity">
-                    <Edit2 className="h-3 w-3 text-purple-700" />
-                  </button>
+            {/* Doctor Info */}
+            <div className="p-4 bg-white rounded-xl border border-purple-100 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
+              <div className="absolute top-0 right-0 w-24 h-24 bg-purple-50 rounded-bl-full -mr-10 -mt-10 transition-transform group-hover:scale-110"></div>
+              <div className="relative z-10">
+                <div className="flex justify-between items-start mb-3">
+                  <div className="text-xs font-bold text-purple-600 uppercase tracking-wider flex items-center gap-1.5">
+                    <User className="h-3.5 w-3.5" /> Referring Doctor
+                  </div>
+                  {!isEditingDoctor && (
+                    <button onClick={() => setIsEditingDoctor(true)} className="text-gray-400 hover:text-purple-600 transition-colors bg-white/50 rounded-full p-1 hover:bg-white">
+                      <Edit2 className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+
+                {isEditingDoctor ? (
+                  <div className="space-y-3 bg-white/80 backdrop-blur-sm rounded-lg">
+                    <select
+                      value={editDoctorId}
+                      onChange={(e) => setEditDoctorId(e.target.value)}
+                      className="w-full text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    >
+                      <option value="">Select Doctor</option>
+                      {doctors.map(d => (
+                        <option key={d.id} value={d.id}>{d.name}</option>
+                      ))}
+                    </select>
+                    <div className="flex gap-2 justify-end">
+                      <button onClick={handleSaveDoctor} className="text-xs bg-purple-600 text-white px-3 py-1.5 rounded-lg hover:bg-purple-700 font-medium">Save</button>
+                      <button onClick={() => setIsEditingDoctor(false)} className="text-xs bg-gray-100 text-gray-700 px-3 py-1.5 rounded-lg hover:bg-gray-200">Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="font-bold text-gray-900 text-base">{order.doctor || 'Self'}</div>
+                    {order.doctor_phone ? (
+                      <div className="text-sm text-gray-500 mt-1 flex items-center gap-1.5">
+                        <Phone className="h-3.5 w-3.5 text-purple-400" />
+                        <span className="font-medium text-gray-600">{order.doctor_phone}</span>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-400 italic mt-1">No contact info</div>
+                    )}
+                  </div>
                 )}
               </div>
-
-              {isEditingDoctor ? (
-                <div className="space-y-2">
-                  <select
-                    value={editDoctorId}
-                    onChange={(e) => setEditDoctorId(e.target.value)}
-                    className="w-full text-sm border border-purple-300 rounded p-1 focus:ring-2 focus:ring-purple-500 outline-none"
-                  >
-                    <option value="">Select Doctor</option>
-                    {doctors.map(d => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
-                    ))}
-                  </select>
-                  <div className="flex gap-2 justify-end">
-                    <button onClick={handleSaveDoctor} className="text-xs bg-purple-600 text-white px-2 py-1 rounded">Save</button>
-                    <button onClick={() => setIsEditingDoctor(false)} className="text-xs bg-gray-200 px-2 py-1 rounded">Cancel</button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="font-bold text-gray-900">{order.doctor || 'Self'}</div>
-                  {order.doctor_phone && (
-                    <div className="text-sm text-gray-600 mt-1 flex items-center gap-1">
-                      <Phone className="h-3 w-3" /> {order.doctor_phone}
-                    </div>
-                  )}
-                </>
-              )}
             </div>
 
-            <div className="p-4 bg-gray-50 rounded-lg border border-gray-100">
-              <div className="text-xs font-semibold text-gray-600 uppercase tracking-wider mb-1">Sample Info</div>
-              {order.sample_id ? (
-                <>
-                  <div className="font-mono font-bold text-gray-900">{order.sample_id}</div>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: order.color_code || '#ccc' }}></span>
-                    <span className="text-sm text-gray-600">{order.color_name || 'Tube'}</span>
+            {/* Sample Info */}
+            <div className="p-4 bg-white rounded-xl border border-blue-100 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
+              <div className="absolute top-0 right-0 w-24 h-24 bg-blue-50 rounded-bl-full -mr-10 -mt-10 transition-transform group-hover:scale-110"></div>
+              <div className="relative z-10">
+                <div className="text-xs font-bold text-blue-600 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                  <TestTube className="h-3.5 w-3.5" /> Sample Details
+                </div>
+                {order.sample_id ? (
+                  <>
+                    <div className="flex items-center gap-3">
+                      <div className="font-mono font-bold text-gray-900 text-lg tracking-tight bg-blue-50/50 px-2.5 py-1 rounded-lg border border-blue-100">
+                        {order.sample_id}
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {order.panels && order.panels.length > 0 ? (
+                        order.panels.map((p, idx) => (
+                          <div key={idx} className="transform hover:scale-105 transition-transform">
+                            <SampleTypeIndicator
+                              sampleType={p.sample_type || 'Blood'}
+                              sampleColor={p.sample_color || order.color_code || undefined}
+                              showLabel={true}
+                              size="sm"
+                            />
+                          </div>
+                        ))
+                      ) : (
+                        <div className="flex items-center gap-2 bg-gray-50 px-2 py-1 rounded-lg border border-gray-100">
+                          <span className="w-3 h-3 rounded-full shadow-sm ring-1 ring-black/5" style={{ backgroundColor: order.color_code || '#ccc' }}></span>
+                          <span className="text-sm text-gray-700 font-medium">{order.color_name || 'Tube'}</span>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-col items-center justify-center p-3 text-gray-400 bg-gray-50/50 rounded-lg border border-dashed border-gray-200">
+                    <span className="text-sm italic">No sample assigned</span>
                   </div>
-                </>
-              ) : (
-                <div className="text-sm text-gray-500 italic">No sample assigned</div>
-              )}
+                )}
+              </div>
             </div>
 
             {/* Location & Transit */}
-            <div className="p-4 bg-amber-50 rounded-lg border border-amber-100">
-              <div className="text-xs font-semibold text-amber-600 uppercase tracking-wider mb-1">Collection Location</div>
-              <div className="font-bold text-gray-900 flex items-center gap-1">
-                <MapPin className="h-3 w-3 text-amber-600" />
-                {order.location || 'Main Lab'}
-              </div>
-              {order.transit_status && (
-                <div className={`text-xs mt-1 px-2 py-0.5 rounded-full inline-flex items-center gap-1 ${order.transit_status === 'in_transit' ? 'bg-amber-200 text-amber-800' :
-                    order.transit_status === 'received_at_lab' ? 'bg-green-200 text-green-800' :
-                      'bg-gray-200 text-gray-700'
-                  }`}>
-                  <Truck className="h-3 w-3" />
-                  {order.transit_status === 'in_transit' ? 'In Transit' :
-                    order.transit_status === 'received_at_lab' ? 'Received' :
-                      order.transit_status === 'at_collection_point' ? 'At Collection' :
-                        order.transit_status}
+            <div className="p-4 bg-white rounded-xl border border-amber-100 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
+              <div className="absolute top-0 right-0 w-24 h-24 bg-amber-50 rounded-bl-full -mr-10 -mt-10 transition-transform group-hover:scale-110"></div>
+              <div className="relative z-10">
+                <div className="text-xs font-bold text-amber-600 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                  <MapPin className="h-3.5 w-3.5" /> Collection Point
                 </div>
-              )}
-              {/* Send Sample button - show if sample collected and locations exist */}
-              {order.sample_collected_at &&
-                (!order.transit_status || order.transit_status === 'at_collection_point') &&
-                dispatchLocations.length > 0 && (
-                  <button
-                    onClick={() => setShowDispatchModal(true)}
-                    className="mt-2 w-full flex items-center justify-center gap-1 text-xs font-medium bg-amber-600 text-white px-2 py-1.5 rounded hover:bg-amber-700 transition-colors"
-                  >
-                    <Send className="h-3 w-3" />
-                    Send Sample
-                  </button>
+                <div className="font-bold text-gray-900 text-base mb-2">{order.location || 'Main Lab'}</div>
+
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {order.transit_status && (
+                    <div className={`text-xs px-2.5 py-1 rounded-full inline-flex items-center gap-1.5 font-bold shadow-sm ${order.transit_status === 'in_transit' ? 'bg-amber-100 text-amber-800 border border-amber-200' :
+                      order.transit_status === 'received_at_lab' ? 'bg-green-100 text-green-800 border border-green-200' :
+                        'bg-gray-100 text-gray-700 border border-gray-200'
+                      }`}>
+                      <Truck className="h-3 w-3" />
+                      {order.transit_status === 'in_transit' ? 'In Transit' :
+                        order.transit_status === 'received_at_lab' ? 'Received' :
+                          order.transit_status === 'at_collection_point' ? 'At Collection' :
+                            order.transit_status}
+                    </div>
+                  )}
+                </div>
+
+                {/* Send Sample button */}
+                {order.sample_collected_at &&
+                  (!order.transit_status || order.transit_status === 'at_collection_point') &&
+                  dispatchLocations.length > 0 && (
+                    <button
+                      onClick={() => setShowDispatchModal(true)}
+                      className="mt-2 w-full flex items-center justify-center gap-2 text-xs font-bold bg-gradient-to-r from-amber-500 to-amber-600 text-white px-3 py-2 rounded-lg hover:from-amber-600 hover:to-amber-700 transition-all shadow-md hover:shadow-lg transform active:scale-95"
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                      Dispatch
+                    </button>
+                  )}
+
+                {/* Status Helpers */}
+                {!order.sample_collected_at && (
+                  <div className="text-xs text-orange-600 font-medium mt-2 bg-orange-50 px-2 py-1 rounded-md border border-orange-100 inline-block">
+                    Pending Collection
+                  </div>
                 )}
-              {/* Debug: Show why button not showing */}
-              {!order.sample_collected_at && (
-                <div className="text-xs text-gray-400 mt-1">Sample not collected yet</div>
-              )}
-              {order.sample_collected_at && dispatchLocations.length === 0 && (
-                <div className="text-xs text-orange-500 mt-1">No destination locations configured</div>
-              )}
-              {order.sample_collected_at && order.transit_status && order.transit_status !== 'at_collection_point' && (
-                <div className="text-xs text-green-600 mt-1">Already dispatched</div>
-              )}
+                {order.sample_collected_at && dispatchLocations.length === 0 && (
+                  <div className="text-xs text-gray-400 mt-2 italic">No routes configured</div>
+                )}
+              </div>
             </div>
           </div>
 
           {/* Patient Info (Editable) */}
-          <div className="bg-white border border-gray-200 rounded-xl p-4 relative group">
-            <div className="flex justify-between items-start mb-2">
-              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-                <User className="h-4 w-4 text-gray-500" />
-                Patient Information
+          <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-bold text-gray-900 flex items-center gap-2 text-sm uppercase tracking-wider">
+                <User className="h-4 w-4 text-blue-600" />
+                Patient Details
               </h3>
               {!isEditingPatient && (
-                <button onClick={() => setIsEditingPatient(true)} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-100 rounded transition-opacity">
-                  <Edit2 className="h-3 w-3 text-gray-600" />
+                <button
+                  onClick={() => setIsEditingPatient(true)}
+                  className="text-xs font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 px-2 py-1 rounded transition-colors flex items-center gap-1"
+                >
+                  <Edit2 className="h-3 w-3" /> Edit Details
                 </button>
               )}
             </div>
 
             {isEditingPatient ? (
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs text-gray-500">Name</label>
-                  <input
-                    type="text"
-                    value={editPatientName}
-                    onChange={(e) => setEditPatientName(e.target.value)}
-                    className="w-full border rounded p-1 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-gray-500">Phone</label>
-                  <input
-                    type="text"
-                    value={editPatientPhone}
-                    onChange={(e) => setEditPatientPhone(e.target.value)}
-                    className="w-full border rounded p-1 text-sm"
-                  />
-                </div>
-                <div className="col-span-2 flex gap-2 justify-end">
-                  <button onClick={handleSavePatient} className="text-xs bg-blue-600 text-white px-3 py-1 rounded">Save Changes</button>
-                  <button onClick={() => setIsEditingPatient(false)} className="text-xs bg-gray-200 px-3 py-1 rounded">Cancel</button>
+              <div className="bg-gray-50 p-4 rounded-lg border border-gray-200 animate-in fade-in slide-in-from-top-2">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Patient Name</label>
+                    <input
+                      type="text"
+                      value={editPatientName}
+                      onChange={(e) => setEditPatientName(e.target.value)}
+                      className="w-full border-gray-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Phone Number</label>
+                    <input
+                      type="text"
+                      value={editPatientPhone}
+                      onChange={(e) => setEditPatientPhone(e.target.value)}
+                      className="w-full border-gray-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+                  <div className="md:col-span-2 flex gap-3 justify-end mt-2">
+                    <button onClick={() => setIsEditingPatient(false)} className="text-sm bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 font-medium">Cancel</button>
+                    <button onClick={handleSavePatient} className="text-sm bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 font-medium shadow-sm">Save Changes</button>
+                  </div>
                 </div>
               </div>
             ) : (
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                <div>
-                  <span className="text-gray-500 block text-xs">Name</span>
-                  <span className="font-medium">{order.patient_name}</span>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                <div className="bg-gray-50 p-3 rounded-lg border border-gray-100">
+                  <span className="text-gray-500 block text-xs font-medium mb-1">Full Name</span>
+                  <span className="font-bold text-gray-900 break-words">{order.patient_name}</span>
                 </div>
-                <div>
-                  <span className="text-gray-500 block text-xs">Phone</span>
-                  <span className="font-medium">{order.patient_phone || 'N/A'}</span>
+                <div className="bg-gray-50 p-3 rounded-lg border border-gray-100">
+                  <span className="text-gray-500 block text-xs font-medium mb-1">Phone Number</span>
+                  <span className="font-bold text-gray-900">{order.patient_phone || 'N/A'}</span>
                 </div>
-                <div>
-                  <span className="text-gray-500 block text-xs">Age/Gender</span>
-                  <span className="font-medium">{order.patient?.age} / {order.patient?.gender}</span>
+                <div className="bg-gray-50 p-3 rounded-lg border border-gray-100">
+                  <span className="text-gray-500 block text-xs font-medium mb-1">Age / Gender</span>
+                  <span className="font-bold text-gray-900">{order.patient?.age || '-'} / {order.patient?.gender || '-'}</span>
                 </div>
-                <div>
-                  <span className="text-gray-500 block text-xs">ID</span>
-                  <span className="font-medium">{order.patient_id}</span>
+                <div className="bg-gray-50 p-3 rounded-lg border border-gray-100">
+                  <span className="text-gray-500 block text-xs font-medium mb-1">Patient ID</span>
+                  <span className="font-bold text-gray-900 font-mono tracking-tight">{order.patient_id}</span>
                 </div>
               </div>
             )}
@@ -829,159 +1156,230 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
             {/* Tests List */}
-            <div className="lg:col-span-2 border border-gray-200 rounded-xl overflow-hidden">
-              <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
-                <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-                  <TestTube className="h-4 w-4 text-gray-500" />
+            <div className="lg:col-span-2 border border-gray-200 rounded-xl overflow-hidden shadow-sm flex flex-col h-full bg-white">
+              <div className="bg-gray-50/80 px-5 py-4 border-b border-gray-200 flex justify-between items-center backdrop-blur-sm">
+                <h3 className="font-bold text-gray-900 flex items-center gap-2 text-base">
+                  <TestTube className="h-4 w-4 text-blue-600" />
                   Prescribed Tests
                 </h3>
-                <span className="text-xs font-medium bg-gray-200 text-gray-700 px-2 py-1 rounded-full">
-                  {tests.length} Items
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold bg-blue-100 text-blue-700 px-2.5 py-1 rounded-full border border-blue-200 shadow-sm">
+                    {tests.length} Items
+                  </span>
+                  <button
+                    onClick={() => setShowAddTestModal(true)}
+                    className="p-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+                    title="Add Test"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
-              <div className="divide-y divide-gray-100">
+              <div className="divide-y divide-gray-100 flex-1">
                 {tests.map((test, i) => (
-                  <div key={i} className="px-4 py-3 flex items-center justify-between hover:bg-gray-50">
-                    <span className="text-sm font-medium text-gray-700">{test.test_name}</span>
+                  <div key={i} className="px-5 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors group">
+                    <div>
+                      <span className="text-sm font-semibold text-gray-900 block mb-0.5 group-hover:text-blue-700 transition-colors">{test.test_name}</span>
+                      <span className="text-xs text-gray-400 font-medium">Test Code: {test.id.slice(0, 8)}</span>
+                    </div>
 
                     {/* Outsourcing Dropdown */}
-                    <select
-                      value={test.outsourced_lab_id || 'inhouse'}
-                      onChange={(e) => handleTestOutsourceChange(test.id, e.target.value)}
-                      className="text-xs border border-gray-300 rounded px-2 py-1 bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                    >
-                      <option value="inhouse">In-House</option>
-                      {outsourcedLabs.map(lab => (
-                        <option key={lab.id} value={lab.id}>
-                          Outsource to {lab.name}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="relative flex items-center gap-2">
+                      <select
+                        value={test.outsourced_lab_id || 'inhouse'}
+                        onChange={(e) => handleTestOutsourceChange(test.id, e.target.value)}
+                        className={`text-xs border rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none appearance-none cursor-pointer pr-8 font-medium transition-all ${test.outsourced_lab_id
+                          ? 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100'
+                          : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                          }`}
+                      >
+                        <option value="inhouse">In-House</option>
+                        {outsourcedLabs.map(lab => (
+                          <option key={lab.id} value={lab.id}>
+                            Outsource to {lab.name}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="absolute right-8 top-1/2 -translate-y-1/2 pointer-events-none">
+                        <Building className={`h-3 w-3 ${test.outsourced_lab_id ? 'text-purple-400' : 'text-gray-400'}`} />
+                      </div>
+                      <button
+                        onClick={() => handleRemoveTest(test.id, test.test_name)}
+                        className="text-gray-400 hover:text-red-500 p-1.5 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Remove Test"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* Billing & Actions */}
-            <div className="space-y-4">
-              {/* Financial Summary */}
-              <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                  <CreditCard className="h-4 w-4 text-gray-500" />
-                  Billing Status
-                </h3>
+            {/* Billing & Actions Column */}
+            <div className="space-y-5">
 
-                <div className="space-y-2 mb-4">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Total Amount</span>
-                    <span className="font-bold text-gray-900">₹{order.total_amount.toLocaleString()}</span>
+              {/* Financial Summary Card */}
+              <div className="bg-white border rounded-xl shadow-sm overflow-hidden relative">
+                <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-blue-500 to-indigo-600"></div>
+                <div className="p-5">
+                  <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2 text-sm uppercase tracking-wide">
+                    <CreditCard className="h-4 w-4 text-indigo-600" />
+                    Billing Status
+                  </h3>
+
+                  <div className="space-y-3 mb-5">
+                    <div className="flex justify-between items-center p-2 rounded hover:bg-gray-50 transition-colors">
+                      <span className="text-sm text-gray-600 font-medium">Total Amount</span>
+                      <span className="font-bold text-gray-900 text-base">₹{(currentTotal || 0).toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between items-center p-2 rounded hover:bg-gray-50 transition-colors">
+                      <span className="text-sm text-gray-600 font-medium">Paid</span>
+                      <span className="font-bold text-green-600 text-base">₹{(order.paid_amount || 0).toLocaleString()}</span>
+                    </div>
+                    {!order.account_name && (
+                      <div className="pt-3 border-t border-gray-100 flex justify-between items-center">
+                        <span className="text-sm font-bold text-gray-900 uppercase tracking-tight">Due Amount</span>
+                        <span className={`text-xl font-extrabold tracking-tight ${(currentDue || 0) > 0 ? 'text-red-500' : 'text-green-600'}`}>
+                          ₹{(currentDue || 0).toLocaleString()}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* B2B Badge if applicable */}
+                    {order.account_name && (
+                      <div className={`border text-xs px-3 py-2 rounded-lg text-center font-medium mt-2 ${order.account_billing_mode === 'monthly'
+                        ? 'bg-purple-50 border-purple-200 text-purple-800'
+                        : 'bg-indigo-50 border-indigo-200 text-indigo-800'
+                        }`}>
+                        {order.account_billing_mode === 'monthly' ? (
+                          <>
+                            <div className="flex items-center justify-center gap-1 mb-1">
+                              <Building className="h-3 w-3" />
+                              <span className="font-bold">Monthly Billing Account</span>
+                            </div>
+                            <div className="text-[10px] text-purple-600">
+                              Billed to: {order.account_name}
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            Billed to Account: <span className="font-bold">{order.account_name}</span>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Paid</span>
-                    <span className="font-medium text-green-600">₹{(order.paid_amount || 0).toLocaleString()}</span>
-                  </div>
-                  <div className="pt-2 border-t border-gray-100 flex justify-between items-center">
-                    <span className="text-sm font-medium text-gray-900">Due Amount</span>
-                    <span className={`text-lg font-bold ${(order.due_amount || 0) > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      ₹{(order.due_amount || 0).toLocaleString()}
-                    </span>
-                  </div>
-                </div>
 
-                <div className="grid grid-cols-1 gap-2">
-                  {order.billing_status !== 'billed' && (
-                    <button
-                      onClick={() => setShowInvoiceModal(true)}
-                      className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
-                    >
-                      <DollarSign className="h-4 w-4" />
-                      Create Invoice
-                    </button>
-                  )}
+                  <div className="grid grid-cols-1 gap-3">
+                    {order.billing_status !== 'billed' && (
+                      <>
+                        {order.account_billing_mode === 'monthly' ? (
+                          <div className="w-full flex items-center justify-center gap-2 bg-gray-100 text-gray-600 py-2.5 px-4 rounded-lg border border-gray-200 text-sm font-semibold">
+                            <Building className="h-4 w-4" />
+                            Monthly Consolidated Billing
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setShowInvoiceModal(true)}
+                            className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-blue-700 text-white py-2.5 rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all text-sm font-bold shadow-md hover:shadow-lg active:scale-95 transform duration-150"
+                          >
+                            <DollarSign className="h-4 w-4" />
+                            Create Invoice
+                          </button>
+                        )}
+                      </>
+                    )}
 
-                  {order.billing_status === 'billed' && (order.due_amount || 0) > 0 && (
-                    <button
-                      onClick={() => setShowPaymentModal(true)}
-                      className="w-full flex items-center justify-center gap-2 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
-                    >
-                      <CreditCard className="h-4 w-4" />
-                      Record Payment
-                    </button>
-                  )}
-
-                  {order.billing_status === 'billed' && (
-                    <>
+                    {order.billing_status === 'billed' && (order.due_amount || 0) > 0 && !(order.account_name && order.billing_status === 'billed') && (
                       <button
-                        onClick={handleViewInvoice}
-                        disabled={viewInvoiceLoading}
-                        className="w-full flex items-center justify-center gap-2 bg-white border border-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                        onClick={() => setShowPaymentModal(true)}
+                        className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-green-600 to-green-700 text-white py-2.5 rounded-lg hover:from-green-700 hover:to-green-800 transition-all text-sm font-bold shadow-md hover:shadow-lg active:scale-95 transform duration-150"
                       >
-                        <FileText className="h-4 w-4" />
-                        {viewInvoiceLoading ? 'Downloading…' : 'View Invoice'}
+                        <CreditCard className="h-4 w-4" />
+                        Record Payment
                       </button>
+                    )}
 
-                      {/* Invoice Delivery Tracker */}
-                      {order.invoice_id && (
-                        <div className="w-full flex justify-center">
-                          <InvoiceDeliveryTracker
-                            invoiceId={order.invoice_id}
-                            invoiceNumber={`INV-${order.id.slice(-6).toUpperCase()}`}
-                            customerPhone={order.patient_phone || undefined}
-                            customerEmail={order.patient?.email || undefined}
-                            onDeliveryTracked={() => {
-                              setInvoiceRefreshTrigger(prev => prev + 1);
+                    {order.billing_status === 'billed' && (
+                      <>
+                        {/* View PDF (if exists) */}
+                        {order.invoice_id && (
+                          <button
+                            onClick={async () => {
+                              try {
+                                const { data: invoice } = await supabase
+                                  .from('invoices')
+                                  .select('pdf_url')
+                                  .eq('id', order.invoice_id)
+                                  .single();
+
+                                if (invoice?.pdf_url) {
+                                  window.open(invoice.pdf_url, '_blank');
+                                } else {
+                                  alert('PDF not generated yet. Use Generate PDF button.');
+                                }
+                              } catch (err) {
+                                console.error('Error checking PDF:', err);
+                                alert('Failed to view PDF');
+                              }
                             }}
-                          />
-                        </div>
-                      )}
-                    </>
-                  )}
+                            className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white py-2.5 rounded-lg hover:bg-indigo-700 transition-all text-sm font-bold shadow-md hover:shadow-lg"
+                          >
+                            <FileText className="h-4 w-4" />
+                            View PDF
+                          </button>
+                        )}
+
+                        {/* Generate/Regenerate PDF */}
+                        <button
+                          onClick={() => {
+                            if (order.invoice_id) {
+                              setShowPdfModal(true);
+                            } else {
+                              alert('Please create an invoice first');
+                            }
+                          }}
+                          className="w-full flex items-center justify-center gap-2 bg-white border-2 border-gray-200 text-gray-700 py-2.5 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-all text-sm font-bold group"
+                        >
+                          <File className="h-4 w-4 group-hover:text-green-600 transition-colors" />
+                          Generate PDF
+                        </button>
+
+                        {/* Invoice Delivery Tracker */}
+                        {order.invoice_id && (
+                          <div className="w-full flex justify-center pt-2">
+                            <InvoiceDeliveryTracker
+                              invoiceId={order.invoice_id}
+                              invoiceNumber={`INV-${order.id.slice(-6).toUpperCase()}`}
+                              customerPhone={order.patient_phone || undefined}
+                              customerEmail={order.patient?.email || undefined}
+                              onDeliveryTracked={() => {
+                                setInvoiceRefreshTrigger(prev => prev + 1);
+                              }}
+                            />
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              {/* Quick Actions */}
-              <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
-                <h3 className="font-semibold text-gray-900 mb-3 text-sm">Front Desk Actions</h3>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={handlePrintBarcode}
-                    disabled={!order.sample_id}
-                    className="flex flex-col items-center justify-center p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-300 hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <QrCode className="h-5 w-5 text-gray-600 mb-1" />
-                    <span className="text-xs font-medium text-gray-700">Barcode</span>
-                  </button>
-
-                  <button
-                    onClick={handlePrintTRF}
-                    className="flex flex-col items-center justify-center p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-300 hover:shadow-sm transition-all"
-                  >
-                    <Printer className="h-5 w-5 text-gray-600 mb-1" />
-                    <span className="text-xs font-medium text-gray-700">Print TRF</span>
-                  </button>
-
-
-
-                  <button
-                    onClick={handleDownloadReport}
-                    disabled={!order.report_url}
-                    className="col-span-2 flex items-center justify-center gap-2 p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-300 hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Download className="h-4 w-4 text-gray-600" />
-                    <span className="text-sm font-medium text-gray-700">Download Report</span>
-                  </button>
-                </div>
-              </div>
             </div>
           </div>
 
           {/* Bottom Row: Status & Sample Collection */}
           <div className="border-t border-gray-100 pt-6">
-            <h3 className="font-semibold text-gray-900 mb-4">Order Status & Workflow</h3>
+            <h3 className="font-bold text-gray-900 mb-4 text-sm uppercase tracking-wide flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-blue-500" />
+              Order Workflow
+            </h3>
 
             <div className="flex flex-col md:flex-row gap-6">
               {/* Status Buttons */}
-              <div className="flex-1">
+              <div className="flex-1 bg-gray-50 rounded-xl p-4 border border-gray-200">
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 block">Update Order Status</span>
                 <QuickStatusButtons
                   currentStatus={order.status}
                   onUpdateStatus={(status) => onUpdateStatus(order.id, status)}
@@ -991,66 +1389,16 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
               {/* Sample Collection */}
               <div className="md:w-1/3">
-                {!order.sample_collected_at ? (
-                  <div className="bg-orange-50 border border-orange-100 rounded-lg p-4">
-                    <div className="flex items-start gap-3">
-                      <AlertTriangle className="h-5 w-5 text-orange-500 mt-0.5" />
-                      <div>
-                        <h4 className="font-medium text-orange-900">Sample Pending</h4>
-                        <p className="text-sm text-orange-700 mt-1 mb-3">
-                          Sample has not been collected yet.
-                        </p>
-
-                        {showPhlebotomistSelector ? (
-                          <div className="space-y-3">
-                            <PhlebotomistSelector
-                              labId={labId || ''}
-                              value={selectedPhlebotomistId}
-                              onChange={(id, name) => {
-                                setSelectedPhlebotomistId(id || '');
-                                setSelectedPhlebotomistName(name);
-                              }}
-                            />
-                            <div className="flex gap-2">
-                              <button
-                                onClick={handleMarkSampleCollected}
-                                disabled={updatingCollection || !selectedPhlebotomistId}
-                                className="flex-1 bg-orange-600 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-orange-700 disabled:opacity-50"
-                              >
-                                {updatingCollection ? 'Saving...' : 'Confirm Collection'}
-                              </button>
-                              <button
-                                onClick={() => setShowPhlebotomistSelector(false)}
-                                className="px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm hover:bg-gray-50"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => setShowPhlebotomistSelector(true)}
-                            className="w-full bg-orange-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-700 transition-colors shadow-sm"
-                          >
-                            Mark Sample Collected
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="bg-green-50 border border-green-100 rounded-lg p-4">
-                    <div className="flex items-start gap-3">
-                      <CheckCircle className="h-5 w-5 text-green-500 mt-0.5" />
-                      <div>
-                        <h4 className="font-medium text-green-900">Sample Collected</h4>
-                        <p className="text-sm text-green-700 mt-1">
-                          Collected by {order.sample_collected_by || 'Unknown'} on {new Date(order.sample_collected_at).toLocaleString()}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                )}
+                <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm h-full">
+                  <h4 className="font-bold text-gray-900 mb-3 flex items-center gap-2 text-sm">
+                    <TestTube className="h-4 w-4 text-purple-600" />
+                    Sample Collection
+                  </h4>
+                  <SampleCollectionTracker
+                    orderId={order.id}
+                    showTitle={false}
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -1058,6 +1406,29 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         </div>
       </div>
 
+      {showReportStudio && (
+        <ReportDesignStudio
+          orderId={order.id}
+          onClose={() => setShowReportStudio(false)}
+          onSuccess={(url) => {
+            setLastGeneratedPdf(url);
+            alert('Report Generated!');
+            onUpdateStatus(order.id, 'Completed'); // Optimistic update
+          }}
+        />
+      )}
+
+      {showSendReport && (
+        <SendReportModal
+          orderId={order.id}
+          patientName={order.patient_name}
+          doctorName={order.doctor}
+          doctorPhone={order.doctor_phone || ''}
+          clinicalSummary={(order as any).ai_clinical_summary || undefined}
+          reportUrl={lastGeneratedPdf || order.report_url}
+          onClose={() => setShowSendReport(false)}
+        />
+      )}
       {/* Modals */}
       {showInvoiceModal && (
         <CreateInvoiceModal
@@ -1065,9 +1436,8 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
           onClose={() => setShowInvoiceModal(false)}
           onSuccess={async () => {
             setShowInvoiceModal(false);
-            // Trigger a refresh in parent if needed, or just close
-            // Ideally we should refresh the order data here, but for now we rely on parent refresh
-            onClose();
+            // Trigger a refresh in parent to update billing status
+            onUpdateStatus(order.id, order.status);
           }}
         />
       )}
@@ -1078,7 +1448,8 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
           onClose={() => setShowPaymentModal(false)}
           onSuccess={() => {
             setShowPaymentModal(false);
-            onClose();
+            // Trigger a refresh in parent to update payment status
+            onUpdateStatus(order.id, order.status);
           }}
         />
       )}
@@ -1221,6 +1592,125 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Add Test Modal */}
+      {showAddTestModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg flex flex-col max-h-[80vh]">
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                <Plus className="h-5 w-5 text-blue-600" />
+                Add Test to Order
+              </h3>
+              <button
+                onClick={() => setShowAddTestModal(false)}
+                className="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 border-b bg-gray-50">
+              <div className="relative">
+                <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  placeholder="Search tests... (Press Enter to add)"
+                  value={testSearch}
+                  onChange={(e) => setTestSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && testSearch) {
+                      const term = testSearch.toLowerCase();
+                      const match = availableTests.find(t =>
+                        t.name.toLowerCase().includes(term) ||
+                        (t.code && t.code.toLowerCase().includes(term))
+                      );
+                      if (match) handleAddTest(match);
+                    }
+                  }}
+                  className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                  autoFocus
+                />
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-2">
+              {availableTests.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">Loading tests...</div>
+              ) : (
+                <div className="space-y-1">
+                  {availableTests
+                    .filter(t => t.name.toLowerCase().includes(testSearch.toLowerCase()) || (t.code && t.code.toLowerCase().includes(testSearch.toLowerCase())))
+                    .map(test => {
+                      const isAdded = tests.some(t => t.test_name === test.name);
+                      return (
+                        <div
+                          key={test.id}
+                          className={`flex items-center justify-between p-3 rounded-lg border ${isAdded ? 'bg-blue-50 border-blue-200' : 'border-gray-100 hover:bg-gray-50'
+                            }`}
+                        >
+                          <div>
+                            <div className="font-semibold text-gray-900 text-sm">{test.name}</div>
+                            <div className="text-xs text-gray-500">
+                              {test.code ? `Code: ${test.code} • ` : ''}
+                              {test.category || 'General'}
+                            </div>
+                            {test.type === 'package' && (
+                              <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-700">PACKAGE</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="font-bold text-gray-900 text-sm">₹{test.price}</span>
+                            <button
+                              onClick={() => !isAdded && handleAddTest(test)}
+                              disabled={isAdded || isAddingTest}
+                              className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${isAdded
+                                ? 'bg-blue-200 text-blue-800 cursor-default'
+                                : 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm'
+                                }`}
+                            >
+                              {isAdded ? 'Added' : 'Add'}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  {availableTests.filter(t => t.name.toLowerCase().includes(testSearch.toLowerCase())).length === 0 && (
+                    <div className="p-8 text-center text-gray-500">No tests found matching "{testSearch}"</div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 border-t bg-gray-50 flex justify-end">
+              <button
+                onClick={() => setShowAddTestModal(false)}
+                className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 font-medium text-sm"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Invoice PDF Generation Modal */}
+      {showPdfModal && order.invoice_id && (
+        <InvoiceGenerationModal
+          invoiceId={order.invoice_id}
+          onClose={() => setShowPdfModal(false)}
+          onSuccess={(pdfUrl) => {
+            setShowPdfModal(false);
+            // Refresh invoice data to show new PDF
+            setInvoiceRefreshTrigger(prev => prev + 1);
+            // Optionally open the PDF
+            if (pdfUrl) {
+              window.open(pdfUrl, '_blank');
+            }
+          }}
+        />
       )}
     </div>,
     document.body

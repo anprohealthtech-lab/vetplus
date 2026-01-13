@@ -7,7 +7,7 @@ const CORS_HEADERS = {
 };
 
 const SUPABASE_BUCKET = process.env.SUPABASE_BRANDING_BUCKET || 'attachments';
-const ASSET_TYPES = new Set(['header', 'footer', 'watermark', 'logo', 'letterhead']);
+const ASSET_TYPES = new Set(['header', 'footer', 'watermark', 'logo', 'letterhead', 'front_page', 'last_page']);
 
 const errorResponse = (statusCode, message) => ({
   statusCode,
@@ -47,7 +47,24 @@ const getExtensionFromName = (fileName = '') => {
   return parts.pop().toLowerCase();
 };
 
-const resolveInvokeUrl = () => process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.DEPLOY_URL || 'http://localhost:8888';
+const resolveInvokeUrl = (event) => {
+  // Priority 1: Use the request origin if available (works for subdomain deployments)
+  if (event && event.headers && event.headers.origin) {
+    return event.headers.origin;
+  }
+
+  // Priority 2: Use the host header
+  if (event && event.headers && event.headers.host) {
+    const protocol = event.headers['x-forwarded-proto'] || 'https';
+    return `${protocol}://${event.headers.host}`;
+  }
+
+  // Priority 3: Netlify environment variables
+  return process.env.URL ||
+    process.env.DEPLOY_PRIME_URL ||
+    process.env.DEPLOY_URL ||
+    'http://localhost:8888';
+};
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
@@ -130,7 +147,7 @@ exports.handler = async (event) => {
     };
   } else {
     if (!assetType || !ASSET_TYPES.has(assetType)) {
-      return errorResponse(400, 'assetType must be one of header, footer, watermark, logo, letterhead');
+      return errorResponse(400, 'assetType must be one of header, footer, watermark, logo, letterhead, front_page, last_page');
     }
     tableName = 'lab_branding_assets';
     scopePath = `labs/${labId}/branding/${assetType}/original`;
@@ -188,7 +205,7 @@ exports.handler = async (event) => {
     };
 
     try {
-      const invokeUrl = resolveInvokeUrl();
+      const invokeUrl = resolveInvokeUrl(event);
       await fetch(`${invokeUrl}/.netlify/functions/imagekit-process`, {
         method: 'POST',
         headers: {

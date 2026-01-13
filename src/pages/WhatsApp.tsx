@@ -5,6 +5,7 @@ import WhatsAppDashboard from '../components/WhatsApp/WhatsAppDashboard';
 import WhatsAppMessaging from '../components/WhatsApp/WhatsAppMessaging';
 import MessageHistory from '../components/WhatsApp/MessageHistory';
 import WhatsAppUserSyncManager from '../components/WhatsApp/WhatsAppUserSyncManager';
+import QueueManagement from '../components/WhatsApp/QueueManagement';
 import { MessageResult } from '../utils/whatsappAPI';
 
 const WhatsApp: React.FC = () => {
@@ -35,8 +36,8 @@ const WhatsApp: React.FC = () => {
 
         <div className="flex items-center space-x-2">
           <div className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-medium ${isConnected
-              ? 'bg-green-100 text-green-800'
-              : 'bg-red-100 text-red-800'
+            ? 'bg-green-100 text-green-800'
+            : 'bg-red-100 text-red-800'
             }`}>
             <span className={`w-2 h-2 rounded-full mr-2 ${isConnected ? 'bg-green-500' : 'bg-red-500'
               }`}></span>
@@ -47,11 +48,12 @@ const WhatsApp: React.FC = () => {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="dashboard">Connection</TabsTrigger>
           <TabsTrigger value="messaging">Send Message</TabsTrigger>
           <TabsTrigger value="history">Message History</TabsTrigger>
           <TabsTrigger value="sync">User Management</TabsTrigger>
+          <TabsTrigger value="queues">Queues</TabsTrigger>
         </TabsList>
 
         <TabsContent value="dashboard" className="space-y-6">
@@ -71,6 +73,10 @@ const WhatsApp: React.FC = () => {
 
         <TabsContent value="sync" className="space-y-6">
           <WhatsAppUserSyncManager />
+        </TabsContent>
+
+        <TabsContent value="queues" className="space-y-6">
+          <QueueManagement />
         </TabsContent>
       </Tabs>
 

@@ -234,9 +234,39 @@ export const DEFAULT_TEMPLATES = {
     message: 'Hello Dr. [DoctorName],\n\nOrder #[OrderId] for patient [PatientName] is currently [OrderStatus].\n\nThank you.',
     requires_attachment: false,
   },
+  doctor_report_ready: {
+    name: 'Doctor Report Ready',
+    message: 'Hello Dr. [DoctorName],\n\nThe report for patient [PatientName] ([TestName]) is ready. Please find it attached.\n\nThank you,\n[LabName]',
+    requires_attachment: true,
+  },
   payment_reminder: {
     name: 'Payment Reminder',
     message: 'Hello [PatientName], this is a reminder that payment of ₹[DueAmount] is pending for Order #[OrderNumber]. Please visit [LabName] to complete payment.',
     requires_attachment: false,
   },
+  invoice_generated: {
+    name: 'Invoice Generated',
+    message: 'Hello [PatientName],\n\nYour invoice for Order #[OrderNumber] has been generated.\nTotal Amount: ₹[Amount]\n\nPlease find the invoice attached.\n\nThank you,\n[LabName]',
+    requires_attachment: true,
+  },
+  registration_confirmation: {
+    name: 'Registration Confirmation',
+    message: 'Hello [PatientName],\n\nYour order has been registered successfully!\n\nOrder #: [OrderNumber]\nTests: [TestName]\nExpected Date: [ExpectedDate]\n\nThank you for choosing [LabName]!',
+    requires_attachment: false,
+  },
 } as const;
+
+/**
+ * Template categories for the settings UI
+ */
+export const TEMPLATE_CATEGORIES = [
+  { key: 'report_ready', label: 'Report Ready (Patient)', description: 'Sent to patient when report is ready' },
+  { key: 'doctor_report_ready', label: 'Report Ready (Doctor)', description: 'Sent to referring doctor when report is ready' },
+  { key: 'invoice_generated', label: 'Invoice Generated', description: 'Sent to patient when invoice is created' },
+  { key: 'registration_confirmation', label: 'Registration Confirmation', description: 'Sent to patient when order is registered' },
+  { key: 'payment_reminder', label: 'Payment Reminder', description: 'Sent for pending payments' },
+  { key: 'appointment_reminder', label: 'Appointment Reminder', description: 'Sent before scheduled appointments' },
+  { key: 'test_results', label: 'Test Results Available', description: 'Notification that results are ready for pickup' },
+  { key: 'doctor_notification', label: 'Doctor Status Update', description: 'General order status updates for doctors' },
+] as const;
+

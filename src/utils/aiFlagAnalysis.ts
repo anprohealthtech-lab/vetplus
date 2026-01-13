@@ -440,38 +440,60 @@ export async function applyFlagAnalysis(
 
   const result = await database.resultValues.bulkUpdateWithAIFlags(updates);
 
-  // Create audit records if requested
+  // Create audit records if requested (BATCH OPTIMIZED)
   if (options?.createAudit) {
     const changedResults = analysisResults.filter(r => r.changed);
-    for (const change of changedResults) {
+    
+    if (changedResults.length > 0) {
       try {
-        // Get result value details for audit
-        const { data: rv } = await supabase
+        // Batch fetch all result values at once (single query)
+        const resultValueIds = changedResults.map(r => r.resultValueId);
+        const { data: resultValues, error: fetchError } = await supabase
           .from('result_values')
-          .select('value, result_id, order_id, analyte_id, lab_id')
-          .eq('id', change.resultValueId)
-          .single();
+          .select('id, value, result_id, order_id, analyte_id, lab_id')
+          .in('id', resultValueIds);
         
-        if (rv) {
-          await database.flagAudits.create({
-            result_value_id: change.resultValueId,
-            original_value: rv.value || '',
-            auto_determined_flag: change.originalFlag || null,
-            auto_flag_source: change.flagSource,
-            ai_suggested_flag: change.flagSource === 'ai' ? change.newFlag : null,
-            final_flag: change.newFlag || null,
-            auto_confidence: change.flagConfidence,
-            ai_confidence: change.flagSource === 'ai' ? change.flagConfidence : null,
-            resolution_notes: change.auditNotes,
-            ai_reasoning: change.interpretation,
-            result_id: rv.result_id,
-            order_id: rv.order_id,
-            analyte_id: rv.analyte_id,
-            lab_id: rv.lab_id
-          });
+        if (fetchError) {
+          console.error('Failed to fetch result values for audit:', fetchError);
+        } else if (resultValues && resultValues.length > 0) {
+          // Build audit records in memory
+          const auditRecords = changedResults
+            .map(change => {
+              const rv = resultValues.find(r => r.id === change.resultValueId);
+              if (!rv) return null;
+              
+              return {
+                result_value_id: change.resultValueId,
+                original_value: rv.value || '',
+                auto_determined_flag: change.originalFlag || null,
+                auto_flag_source: change.flagSource,
+                ai_suggested_flag: change.flagSource === 'ai' ? change.newFlag : null,
+                final_flag: change.newFlag || null,
+                auto_confidence: change.flagConfidence,
+                ai_confidence: change.flagSource === 'ai' ? change.flagConfidence : null,
+                resolution_notes: change.auditNotes,
+                ai_reasoning: change.interpretation,
+                result_id: rv.result_id,
+                order_id: rv.order_id,
+                analyte_id: rv.analyte_id,
+                lab_id: rv.lab_id
+              };
+            })
+            .filter((record): record is NonNullable<typeof record> => record !== null);
+          
+          // Batch insert all audit records (single query)
+          if (auditRecords.length > 0) {
+            const { error: insertError } = await supabase
+              .from('ai_flag_audits')
+              .insert(auditRecords);
+            
+            if (insertError) {
+              console.error('Failed to batch insert audit records:', insertError);
+            }
+          }
         }
       } catch (error) {
-        console.error('Failed to create audit record:', error);
+        console.error('Failed to create audit records:', error);
       }
     }
   }

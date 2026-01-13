@@ -76,8 +76,8 @@ const TestGroupSelector: React.FC<TestGroupSelectorProps> = ({
   };
 
   const filteredTestGroups = unmappedTestGroups.filter(tg =>
-    tg.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    tg.test_code.toLowerCase().includes(searchQuery.toLowerCase())
+    (tg.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (tg.test_code || '').toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   if (loading) {
@@ -170,8 +170,8 @@ const TestGroupSelector: React.FC<TestGroupSelectorProps> = ({
               <div
                 key={testGroup.id}
                 className={`border rounded-lg p-4 cursor-pointer transition-all h-full flex flex-col ${selectedTestGroup?.id === testGroup.id
-                    ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200 shadow-md'
-                    : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50 hover:shadow-sm'
+                  ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200 shadow-md'
+                  : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50 hover:shadow-sm'
                   }`}
                 onClick={() => handleTestGroupSelection(testGroup)}
               >
@@ -227,8 +227,8 @@ const TestGroupSelector: React.FC<TestGroupSelectorProps> = ({
               onClick={handleProceed}
               disabled={!selectedTestGroup}
               className={`px-6 py-2 rounded-md font-medium transition-colors ${selectedTestGroup
-                  ? 'bg-blue-600 text-white hover:bg-blue-700'
-                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                ? 'bg-blue-600 text-white hover:bg-blue-700'
+                : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                 }`}
             >
               Configure Workflow for Selected Test Group

@@ -36,16 +36,17 @@ import {
   Maximize2,
   ExternalLink,
   Download,
+  Crop,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
-import { database, attachments as attachmentsAPI, supabase } from "../../utils/supabase";
-import { calculateFlagsForResults } from "../../utils/flagCalculation";
+import { database, attachments as attachmentsAPI, supabase, uploadFile } from "../../utils/supabase";
 import { useAuth } from "../../contexts/AuthContext";
 import { useOrderStatusCentral } from "../../hooks/useOrderStatusCentral";
 import QuickStatusButtons from "../Orders/QuickStatusButtons";
 import MultiImageUploader from "../Upload/MultiImageUploader";
 import BatchImageViewer from "../Upload/BatchImageViewer";
 import SingleImageViewer from "../Upload/SingleImageViewer";
+import { ImageCropper } from "../Upload/ImageCropper";
 import PopoutInput from "./PopoutInput";
 import PhlebotomistSelector from "../Users/PhlebotomistSelector";
 import { OrderStatusDisplay } from "./OrderStatusDisplay";
@@ -397,6 +398,79 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     fileName: string;
   } | null>(null);
 
+  // Crop State
+  const [cropTargetId, setCropTargetId] = useState<string | null>(null);
+
+  const handleImageCrop = async (croppedFile: File) => {
+    if (!cropTargetId) return;
+
+    try {
+      const attachment = attachments.find(a => a.id === cropTargetId);
+      if (!attachment) {
+        alert('Attachment not found');
+        return;
+      }
+
+      const filePath = attachment.file_path;
+
+      if (!filePath) {
+        alert('File path not found for this attachment');
+        return;
+      }
+
+      console.log('Uploading cropped file:', { filePath, size: croppedFile.size, type: croppedFile.type });
+
+      const { data, error } = await supabase.storage
+        .from('attachments')
+        .upload(filePath, croppedFile, {
+          upsert: true,
+          contentType: croppedFile.type,
+          cacheControl: '0'
+        });
+
+      if (error) {
+        console.error('Supabase storage error:', error);
+        throw error;
+      }
+
+      console.log('Upload successful:', data);
+
+      // Force refresh of the image by updating the local state with a cache buster
+      setAttachments(prev => prev.map(a => {
+        if (a.id === cropTargetId) {
+          const newUrl = a.file_url.includes('?') ? a.file_url + `&t=${Date.now()}` : a.file_url + `?t=${Date.now()}`;
+          return {
+            ...a,
+            resolved_file_url: newUrl,
+            file_size: croppedFile.size,
+          };
+        }
+        return a;
+      }));
+
+      // Find if this image is in availableImagesForAI and update it too
+      setAvailableImagesForAI(prev => prev.map(a => {
+        if (a.id === cropTargetId) {
+          return {
+            ...a,
+            file_size: croppedFile.size
+          }
+        }
+        return a;
+      }));
+
+      alert('Image cropped successfully!');
+
+    } catch (error: any) {
+      console.error('Error cropping image:', error);
+      alert(`Failed to save cropped image: ${error?.message || error?.toString() || 'Unknown error'}`);
+    } finally {
+      setCropTargetId(null);
+    }
+  };
+
+
+
   // --- AI console state ---
   type AiStep = {
     id: string;
@@ -563,7 +637,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   React.useEffect(() => {
     supabase
       .from("attachments")
-      .select("id,file_url,file_type,original_filename,file_size,upload_timestamp,batch_id,batch_sequence,image_label,imagekit_url,processed_url,variants,processing_status,image_processed_at,image_processing_error")
+      .select("id,file_url,file_path,file_type,original_filename,file_size,upload_timestamp,batch_id,batch_sequence,image_label,imagekit_url,processed_url,variants,processing_status,image_processed_at,image_processing_error")
       .or(`order_id.eq.${order.id},and(related_table.eq.orders,related_id.eq.${order.id})`)
       .order("upload_timestamp", { ascending: false })
       .then(({ data }) => {
@@ -579,22 +653,39 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           setActiveAttachment(resolvedData[0]);
           setAttachmentId(resolvedData[0].id);
 
-          // Check if there are multiple images in the same batch
-          const sameBatch = resolvedData.filter(att => att.batch_id === resolvedData[0].batch_id);
-          if (sameBatch.length > 1) {
+          // Check if there are multiple images
+          let imagesToAnalyze = [];
+          let virtualBatchId = null;
+
+          // If first image has a batch_id, filter by that batch
+          if (resolvedData[0].batch_id) {
+            imagesToAnalyze = resolvedData.filter(att => att.batch_id === resolvedData[0].batch_id);
+            virtualBatchId = resolvedData[0].batch_id;
+          } else {
+            // No batch_id - treat all images for this order as a virtual batch
+            imagesToAnalyze = resolvedData.filter(att => att.file_type?.startsWith('image/'));
+            virtualBatchId = `virtual-${order.id}`;
+          }
+
+          if (imagesToAnalyze.length > 1) {
             // Enable multi-image AI analysis
-            setAvailableImagesForAI(sameBatch);
+            setAvailableImagesForAI(imagesToAnalyze);
             setSelectedBatchForAI({
-              batchId: resolvedData[0]?.batch_id,
-              files: sameBatch,
+              id: virtualBatchId,
+              batchId: virtualBatchId,
+              files: imagesToAnalyze,
+              total_files: imagesToAnalyze.length,
             });
 
-            const imageReferences = sameBatch.map((att: any) => att.image_label || `Image ${att.batch_sequence || 1}`).join(', ');
+            const imageReferences = imagesToAnalyze.map((att: any) => att.image_label || `Image ${att.batch_sequence || imagesToAnalyze.indexOf(att) + 1}`).join(', ');
+            const firstImageLabel = imagesToAnalyze[0]?.image_label || `Image ${imagesToAnalyze[0]?.batch_sequence || 1}`;
+            const secondImageLabel = imagesToAnalyze[1] ? (imagesToAnalyze[1]?.image_label || `Image ${imagesToAnalyze[1]?.batch_sequence || 2}`) : '';
+
             setMultiImageAIInstructions(
               `Analyze uploaded images (${imageReferences}):\n` +
-              `- From ${sameBatch[0]?.image_label || 'Image 1'}: Extract primary test results\n` +
-              (sameBatch[1] ? `- From ${sameBatch[1]?.image_label || 'Image 2'}: Extract secondary parameters\n` : '') +
-              (sameBatch.length > 2 ? `- From remaining images: Extract additional data\n` : '') +
+              `- From ${firstImageLabel}: Extract primary test results\n` +
+              (imagesToAnalyze[1] ? `- From ${secondImageLabel}: Extract secondary parameters\n` : '') +
+              (imagesToAnalyze.length > 2 ? `- From remaining images: Extract additional data\n` : '') +
               `\nMap results to specific image references.`
             );
           }
@@ -1505,23 +1596,42 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             const updated = [...prev];
             Object.keys(result).forEach((paramName) => {
               const idx = updated.findIndex((v) => v.parameter === paramName);
-              if (idx !== -1) updated[idx] = { ...updated[idx], value: result[paramName] };
+              // Filter out null, "null", undefined, and empty values
+              const rawValue = result[paramName];
+              const isValidValue = rawValue &&
+                rawValue !== 'null' &&
+                rawValue !== 'NULL' &&
+                (typeof rawValue === 'string' ? rawValue.trim() !== '' : true);
+
+              if (idx !== -1 && isValidValue) {
+                updated[idx] = { ...updated[idx], value: rawValue };
+              }
             });
             return updated;
           });
           setExtractedValues([]);
           matchedCount = foundCount;
         } else if (Array.isArray(result?.extractedParameters)) {
-          const extractedParams = result.extractedParameters.map((p: any) => ({
-            parameter: p.parameter,
-            value: p.value,
-            unit: p.unit || "",
-            reference: p.reference_range || "",
-            flag: p.flag || undefined,
-            matched: !!p.matched,
-            analyte_id: p.analyte_id || null,
-            confidence: p.confidence || 0.95,
-          }));
+          // Filter out null values from extracted parameters
+          const extractedParams = result.extractedParameters
+            .filter((p: any) => {
+              // Skip if value is null, "null", undefined, or empty
+              const rawValue = p.value;
+              return rawValue &&
+                rawValue !== 'null' &&
+                rawValue !== 'NULL' &&
+                (typeof rawValue === 'string' ? rawValue.trim() !== '' : true);
+            })
+            .map((p: any) => ({
+              parameter: p.parameter,
+              value: p.value,
+              unit: p.unit || "",
+              reference: p.reference_range || "",
+              flag: p.flag || undefined,
+              matched: !!p.matched,
+              analyte_id: p.analyte_id || null,
+              confidence: p.confidence || 0.95,
+            }));
           setExtractedValues(extractedParams);
           setOcrResults(result);
           setManualValues((prev) => {
@@ -1863,20 +1973,20 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
         const { error: valuesError } = await supabase.from("result_values").insert(resultValuesData);
         if (valuesError) throw valuesError;
+      }
 
-        // Run AI flag analysis automatically after inserting result values
-        try {
-          const { runAIFlagAnalysis } = await import('../../utils/aiFlagAnalysis');
-          await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true });
-        } catch (flagErr) {
-          console.warn('AI flag analysis failed (non-blocking):', flagErr);
-        }
+      // Run AI flag analysis ONCE after ALL test groups are saved (optimization)
+      try {
+        const { runAIFlagAnalysis } = await import('../../utils/aiFlagAnalysis');
+        await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true });
+      } catch (flagErr) {
+        console.warn('AI flag analysis failed (non-blocking):', flagErr);
       }
 
       // Local immediate UX: hide submitted analytes now
       markAnalytesAsSubmitted(validResults);
 
-      // refresh read-only view + progress
+      // Refresh read-only view + progress ONCE after all saves complete
       fetchReadonlyResults();
       fetchProgressView();
 
@@ -2079,15 +2189,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 )}
               </div>
 
-              {/* Multi-Image Upload Button */}
-              <div className="text-center">
+              {/* Multi-Image Upload Button - TEMPORARILY HIDDEN */}
+              <div className="text-center hidden">
                 <span className="text-xs text-gray-400">or</span>
               </div>
 
               <button
                 onClick={() => setShowMultiUpload(true)}
                 disabled={isUploading || (uploadScope === 'test' && !selectedTestId)}
-                className="flex items-center justify-center mx-auto px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed transition-colors"
+                className="hidden flex items-center justify-center mx-auto px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed transition-colors"
               >
                 <Upload className="h-4 w-4 mr-2" />
                 Upload Multiple Images
@@ -2529,6 +2639,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                             <Download className="h-3.5 w-3.5" />
                             Download
                           </button>
+                          {/* Crop Button for existing images */}
+                          {activeAttachment.file_type?.startsWith("image/") && (
+                            <button
+                              onClick={() => setCropTargetId(activeAttachment.id)}
+                              className="flex-shrink-0 px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-xs font-medium flex items-center gap-1.5"
+                            >
+                              <Crop className="h-3.5 w-3.5" />
+                              Crop
+                            </button>
+                          )}
                         </div>
 
                         {/* Preview Area */}
@@ -2723,45 +2843,47 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       </div>
                     </div>
 
-                    {/* QR code */}
-                    <div>
-                      <div className="text-sm font-medium text-gray-700 mb-2 flex items-center justify-between">
-                        <div className="flex items-center">
-                          <QrCode className="h-4 w-4 mr-1" />
-                          QR Code
+                    {/* QR code - HIDDEN */}
+                    {false && (
+                      <div>
+                        <div className="text-sm font-medium text-gray-700 mb-2 flex items-center justify-between">
+                          <div className="flex items-center">
+                            <QrCode className="h-4 w-4 mr-1" />
+                            QR Code
+                          </div>
+                          {order.qr_code_data && (
+                            <button
+                              onClick={handlePrintQRCode}
+                              className="flex items-center px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                            >
+                              <Printer className="h-3 w-3 mr-1" />
+                              Print Label
+                            </button>
+                          )}
                         </div>
-                        {order.qr_code_data && (
-                          <button
-                            onClick={handlePrintQRCode}
-                            className="flex items-center px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-                          >
-                            <Printer className="h-3 w-3 mr-1" />
-                            Print Label
-                          </button>
+                        {order.qr_code_data ? (
+                          <div className="space-y-3">
+                            <div className="bg-white border-2 border-green-300 rounded-lg p-4 text-center">
+                              <div className="mb-2">
+                                {qrCodeImage ? (
+                                  <img src={qrCodeImage} alt="Sample QR Code" className="w-32 h-32 mx-auto border border-gray-300 rounded" />
+                                ) : (
+                                  <div className="w-32 h-32 mx-auto border border-gray-300 rounded bg-gray-100 flex items-center justify-center">
+                                    <QrCode className="h-8 w-8 text-gray-400" />
+                                  </div>
+                                )}
+                              </div>
+                              <div className="text-xs text-gray-600">Scan to access sample information</div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
+                            <QrCode className="h-8 w-8 mx-auto mb-2 text-gray-400" />
+                            No QR code generated
+                          </div>
                         )}
                       </div>
-                      {order.qr_code_data ? (
-                        <div className="space-y-3">
-                          <div className="bg-white border-2 border-green-300 rounded-lg p-4 text-center">
-                            <div className="mb-2">
-                              {qrCodeImage ? (
-                                <img src={qrCodeImage} alt="Sample QR Code" className="w-32 h-32 mx-auto border border-gray-300 rounded" />
-                              ) : (
-                                <div className="w-32 h-32 mx-auto border border-gray-300 rounded bg-gray-100 flex items-center justify-center">
-                                  <QrCode className="h-8 w-8 text-gray-400" />
-                                </div>
-                              )}
-                            </div>
-                            <div className="text-xs text-gray-600">Scan to access sample information</div>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
-                          <QrCode className="h-8 w-8 mx-auto mb-2 text-gray-400" />
-                          No QR code generated
-                        </div>
-                      )}
-                    </div>
+                    )}
 
                     {/* Collection Status */}
                     <div>
@@ -2964,7 +3086,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           Multi-Image Analysis Ready ({availableImagesForAI.length} images)
                         </h4>
                         <button
-                          onClick={() => setShowBatchViewer(true)}
+                          onClick={() => {
+                            setSelectedBatch(selectedBatchForAI);
+                            setShowBatchViewer(true);
+                          }}
                           className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
                         >
                           Preview Images
@@ -3187,8 +3312,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   </div>
                 )}
 
-                {/* Multi-Image Upload Button */}
-                <div className="mt-4 flex justify-center">
+                {/* Multi-Image Upload Button - TEMPORARILY HIDDEN */}
+                <div className="mt-4 flex justify-center hidden">
                   <button
                     onClick={() => setShowMultiUpload(true)}
                     className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 shadow-md transition-colors"
@@ -3276,85 +3401,157 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       )}
 
       {/* Batch Viewer Modal */}
-      {showBatchViewer && selectedBatch && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
-          <div className="bg-white rounded-lg max-w-6xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b">
-              <div className="flex justify-between items-center">
-                <h2 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-                  <Eye className="h-6 w-6" />
-                  Batch: {selectedBatch.total_files} Images
-                  <span className="text-sm font-normal text-gray-500">
-                    ({new Date(selectedBatch.created_at).toLocaleDateString()})
-                  </span>
-                </h2>
-                <button
-                  onClick={() => setShowBatchViewer(false)}
-                  className="p-2 hover:bg-gray-100 rounded-lg"
-                >
-                  <X className="h-5 w-5" />
-                </button>
+      {
+        showBatchViewer && selectedBatch && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+            <div className="bg-white rounded-lg max-w-6xl w-full max-h-[90vh] overflow-y-auto">
+              <div className="p-6 border-b">
+                <div className="flex justify-between items-center">
+                  <h2 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
+                    <Eye className="h-6 w-6" />
+                    {selectedBatch.id?.startsWith('virtual-') ? 'Images' : 'Batch'}: {selectedBatch.total_files} Images
+                    {selectedBatch.created_at && (
+                      <span className="text-sm font-normal text-gray-500">
+                        ({new Date(selectedBatch.created_at).toLocaleDateString()})
+                      </span>
+                    )}
+                  </h2>
+                  <button
+                    onClick={() => setShowBatchViewer(false)}
+                    className="p-2 hover:bg-gray-100 rounded-lg"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-6">
+                {selectedBatch.id?.startsWith('virtual-') ? (
+                  // Simple inline viewer for virtual batches
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    {selectedBatch.files?.map((img: any, idx: number) => (
+                      <div key={img.id} className="border rounded-lg p-2">
+                        <img
+                          src={img.resolved_file_url || img.file_url}
+                          alt={img.image_label || `Image ${idx + 1}`}
+                          className="w-full h-48 object-contain bg-gray-50 rounded"
+                        />
+                        <p className="text-sm text-center mt-2 text-gray-700">
+                          {img.image_label || `Image ${idx + 1}`}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  // Use BatchImageViewer for real batches
+                  <BatchImageViewer
+                    batchId={selectedBatch.id}
+                    onClose={() => setShowBatchViewer(false)}
+                    onRemove={(imageId) => {
+                      // Handle image removal
+                      fetchUploadBatches();
+                      fetchAttachmentsForOrder();
+                    }}
+                    onUpdateLabel={(imageId, newLabel) => {
+                      // Handle label update
+                      console.log(`Updated label for ${imageId} to ${newLabel}`);
+                    }}
+                    onBatchDeleted={(batchId) => {
+                      // Handle batch deletion - refresh the batches list and close viewer
+                      fetchUploadBatches();
+                      fetchAttachmentsForOrder();
+                      setShowBatchViewer(false);
+                      setSelectedBatch(null);
+
+                      // Update AI state if this was the selected batch for AI
+                      if (selectedBatchForAI?.id === batchId) {
+                        setSelectedBatchForAI(null);
+                        setAvailableImagesForAI([]);
+                        setMultiImageAIInstructions('');
+                      }
+                    }}
+                    enableAIReference={true}
+                    readonly={false}
+                  />
+                )}
               </div>
             </div>
-
-            <div className="p-6">
-              <BatchImageViewer
-                batchId={selectedBatch.id}
-                onClose={() => setShowBatchViewer(false)}
-                onRemove={(imageId) => {
-                  // Handle image removal
-                  fetchUploadBatches();
-                  fetchAttachmentsForOrder();
-                }}
-                onUpdateLabel={(imageId, newLabel) => {
-                  // Handle label update
-                  console.log(`Updated label for ${imageId} to ${newLabel}`);
-                }}
-                onBatchDeleted={(batchId) => {
-                  // Handle batch deletion - refresh the batches list and close viewer
-                  fetchUploadBatches();
-                  fetchAttachmentsForOrder();
-                  setShowBatchViewer(false);
-                  setSelectedBatch(null);
-
-                  // Update AI state if this was the selected batch for AI
-                  if (selectedBatchForAI?.id === batchId) {
-                    setSelectedBatchForAI(null);
-                    setAvailableImagesForAI([]);
-                    setMultiImageAIInstructions('');
-                  }
-                }}
-                enableAIReference={true}
-                readonly={false}
-              />
-            </div>
           </div>
-        </div>
-      )}
+        )
+      }
 
       {/* Single Image Viewer */}
-      {showImageViewer && selectedImageId && (
-        <SingleImageViewer
-          imageId={selectedImageId}
-          onClose={() => {
-            setShowImageViewer(false);
-            setSelectedImageId(null);
-          }}
-          onRemove={(imageId) => {
-            // Handle image removal - refresh attachments
-            fetchAttachmentsForOrder();
-            setShowImageViewer(false);
-            setSelectedImageId(null);
-            setActiveAttachment(null);
-          }}
-          onUpdateDescription={(imageId, description) => {
-            // Handle description update
-            console.log(`Updated description for ${imageId} to ${description}`);
-            fetchAttachmentsForOrder();
-          }}
-          readonly={false}
-        />
-      )}
+      {
+        showImageViewer && selectedImageId && (
+          <SingleImageViewer
+            imageId={selectedImageId}
+            onClose={() => {
+              setShowImageViewer(false);
+              setSelectedImageId(null);
+            }}
+            onRemove={(imageId) => {
+              // Handle image removal - refresh attachments
+              fetchAttachmentsForOrder();
+              setShowImageViewer(false);
+              setSelectedImageId(null);
+              setActiveAttachment(null);
+            }}
+            onUpdateDescription={(imageId, description) => {
+              // Handle description update
+              console.log(`Updated description for ${imageId} to ${description}`);
+              fetchAttachmentsForOrder();
+            }}
+            readonly={false}
+          />
+        )
+      }
+
+      {/* Image Cropper Modal */}
+      {
+        cropTargetId && (() => {
+          const attachment = attachments.find(a => a.id === cropTargetId);
+          if (attachment) {
+            // We need to fetch the file from the URL to pass to ImageCropper
+            // For now, we'll create a simple wrapper that fetches it
+            const fetchAndCrop = async () => {
+              try {
+                const url = resolveAttachmentUrl(attachment);
+                if (!url) return null;
+
+                const response = await fetch(url);
+                const blob = await response.blob();
+                const file = new File([blob], attachment.original_filename, { type: attachment.file_type });
+
+                return (
+                  <ImageCropper
+                    imageFile={file}
+                    onCrop={handleImageCrop}
+                    onCancel={() => setCropTargetId(null)}
+                  />
+                );
+              } catch (error) {
+                console.error('Error loading image for crop:', error);
+                setCropTargetId(null);
+                return null;
+              }
+            };
+
+            // Use a simple component to handle async loading
+            const CropperWrapper = () => {
+              const [cropperElement, setCropperElement] = React.useState<JSX.Element | null>(null);
+
+              React.useEffect(() => {
+                fetchAndCrop().then(setCropperElement);
+              }, []);
+
+              return cropperElement;
+            };
+
+            return <CropperWrapper />;
+          }
+          return null;
+        })()
+      }
 
       {/* ✅ Pop-out Input Modal */}
       <PopoutInput
@@ -3367,7 +3564,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         suggestions={popoutInput?.suggestions}
       />
 
-    </div>,
+    </div >,
     document.body
   );
 };

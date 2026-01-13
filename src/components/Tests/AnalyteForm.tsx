@@ -25,6 +25,7 @@ interface Analyte {
   aiProcessingType?: string;
   groupAiMode?: 'group_only' | 'individual' | 'both';
   aiPromptOverride?: string;
+  ref_range_knowledge?: any;
   // Calculated parameter fields
   isCalculated?: boolean;
   formula?: string;
@@ -47,6 +48,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
     groupAiMode: analyte?.groupAiMode || 'individual',
     aiProcessingType: analyte?.aiProcessingType || 'ocr_report',
     aiPromptOverride: analyte?.aiPromptOverride || '',
+    refRangeKnowledgeText: analyte?.ref_range_knowledge?.text_rules || '',
     // Calculated parameter fields
     isCalculated: analyte?.isCalculated || false,
     formula: analyte?.formula || '',
@@ -56,7 +58,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
 
   const categories = [
     'Hematology',
-    'Biochemistry', 
+    'Biochemistry',
     'Serology',
     'Microbiology',
     'Immunology',
@@ -71,7 +73,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
     { value: 'vision_card', label: 'Vision Card Analysis', description: 'Analyze test cards and lateral flow devices' },
     { value: 'vision_color', label: 'Vision Color Analysis', description: 'Color-based analysis for strips and visual tests' },
   ];
-  
+
   const groupAiModes = [
     { value: 'individual', label: 'Individual Analyte Processing', description: 'AI processes this analyte independently.' },
     { value: 'group_only', label: 'Group-Level Processing Only', description: 'AI processes this analyte only as part of a test group.' },
@@ -87,6 +89,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
         normal: formData.interpretationNormal,
         high: formData.interpretationHigh,
       },
+      ref_range_knowledge: { text_rules: formData.refRangeKnowledgeText },
       // Parse formula variables from comma-separated string
       formulaVariables: formData.formulaVariables
         ? formData.formulaVariables.split(',').map(v => v.trim()).filter(Boolean)
@@ -125,7 +128,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
               <Settings className="h-5 w-5 mr-2" />
               Basic Information
             </h3>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -195,7 +198,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
               <AlertTriangle className="h-5 w-5 mr-2 text-red-500" />
               Critical Values
             </h3>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -229,7 +232,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
           {/* Clinical Interpretation */}
           <div className="space-y-4">
             <h3 className="text-lg font-medium text-gray-900">Clinical Interpretation</h3>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -279,7 +282,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
               <Settings className="h-5 w-5 mr-2" />
               Analyte Settings
             </h3>
-            
+
             <div className="space-y-3">
               <label className="flex items-center">
                 <input
@@ -311,7 +314,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
                 <Calculator className="h-5 w-5 mr-2 text-amber-600" />
                 Formula Configuration
               </h3>
-              
+
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -385,7 +388,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
               <Brain className="h-5 w-5 mr-2 text-purple-600" />
               AI Processing Configuration
             </h3>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -405,7 +408,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
                   {aiProcessingTypes.find(t => t.value === formData.aiProcessingType)?.description}
                 </div>
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Group AI Mode
@@ -422,7 +425,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
                 </select>
                 <div className="text-xs text-gray-500 mt-1">{groupAiModes.find(m => m.value === formData.groupAiMode)?.description}</div>
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Custom AI Prompt (Optional)
@@ -439,7 +442,24 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
                   Custom prompts override default AI behavior for this specific analyte
                 </div>
               </div>
-              
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Reference Range Rules (AI Context)
+                </label>
+                <textarea
+                  name="refRangeKnowledgeText"
+                  rows={4}
+                  value={formData.refRangeKnowledgeText}
+                  onChange={handleChange}
+                  placeholder="Describe specific rules for this analyte (e.g., 'Adult Males: 13-17, Females: 12-16. Pregnancy T1: 11-14...'). The AI will use this knowledge to resolve ranges dynamically."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                />
+                <div className="text-xs text-gray-500 mt-1">
+                  Provide specific context, conditions, or rules that the AI should follow when determining reference ranges and flags.
+                </div>
+              </div>
+
               {/* AI Configuration Preview */}
               {formData.aiProcessingType !== 'none' && (
                 <div className="bg-purple-50 border border-purple-200 rounded-lg p-3">
@@ -448,8 +468,8 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
                     <div><strong>Processing Type:</strong> {aiProcessingTypes.find(t => t.value === formData.aiProcessingType)?.label}</div>
                     <div><strong>Vision API Features:</strong> {
                       formData.aiProcessingType === 'ocr_report' ? 'Text Detection' :
-                      formData.aiProcessingType === 'vision_card' ? 'Object Detection' :
-                      formData.aiProcessingType === 'vision_color' ? 'Color Analysis' : 'None'
+                        formData.aiProcessingType === 'vision_card' ? 'Object Detection' :
+                          formData.aiProcessingType === 'vision_color' ? 'Color Analysis' : 'None'
                     }</div>
                     <div><strong>Custom Prompt:</strong> {formData.aiPromptOverride ? 'Yes' : 'Default'}</div>
                   </div>

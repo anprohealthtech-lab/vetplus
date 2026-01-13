@@ -39,11 +39,14 @@ const TestGroupDetailModal: React.FC<TestGroupDetailModalProps> = ({ testGroup, 
       'Serology': 'bg-green-100 text-green-800',
       'Microbiology': 'bg-purple-100 text-purple-800',
       'Immunology': 'bg-orange-100 text-orange-800',
+      'Clinical Pathology': 'bg-yellow-100 text-yellow-800',
     };
     return colors[category as keyof typeof colors] || 'bg-gray-100 text-gray-800';
   };
 
-  const includedAnalytes = analytes.filter(analyte => testGroup.analytes.includes(analyte.id));
+  const includedAnalytes = analytes.filter(analyte =>
+    testGroup.analytes && Array.isArray(testGroup.analytes) && testGroup.analytes.includes(analyte.id)
+  );
 
   return (
     <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
@@ -72,9 +75,8 @@ const TestGroupDetailModal: React.FC<TestGroupDetailModalProps> = ({ testGroup, 
                   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(testGroup.category)}`}>
                     {testGroup.category}
                   </span>
-                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                    testGroup.isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                  }`}>
+                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${testGroup.isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                    }`}>
                     {testGroup.isActive ? 'Active' : 'Inactive'}
                   </span>
                   {testGroup.requiresFasting && (
@@ -109,7 +111,7 @@ const TestGroupDetailModal: React.FC<TestGroupDetailModalProps> = ({ testGroup, 
                 </div>
                 <div>
                   <div className="text-sm text-gray-600">Analytes Count</div>
-                  <div className="font-medium text-gray-900">{testGroup.analytes.length} analytes</div>
+                  <div className="font-medium text-gray-900">{testGroup.analytes?.length || 0} analytes</div>
                 </div>
                 <div>
                   <div className="text-sm text-gray-600">Created Date</div>

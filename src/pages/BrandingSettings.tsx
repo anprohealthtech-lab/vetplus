@@ -19,7 +19,7 @@ import { BrandingPreview } from '../components/Branding/BrandingPreview';
 
 interface BrandingAsset {
   id: string;
-  asset_type: 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead';
+  asset_type: 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead' | 'front_page' | 'last_page';
   asset_name: string;
   file_url: string;
   file_type: string;
@@ -94,7 +94,7 @@ export const BrandingSettings: React.FC = () => {
   // Upload states
   const [showAssetUploader, setShowAssetUploader] = useState(false);
   const [showSignatureUploader, setShowSignatureUploader] = useState(false);
-  const [selectedAssetType, setSelectedAssetType] = useState<'header' | 'footer' | 'watermark' | 'logo' | 'letterhead'>('logo');
+  const [selectedAssetType, setSelectedAssetType] = useState<'header' | 'footer' | 'watermark' | 'logo' | 'letterhead' | 'front_page' | 'last_page'>('logo');
 
   // Processing status polling
   const { processingItems, isPolling } = useBrandingProcessingStatus(labId);
@@ -353,6 +353,8 @@ export const BrandingSettings: React.FC = () => {
       case 'watermark':
         return <Eye className="w-5 h-5" />;
       case 'letterhead':
+      case 'front_page':
+      case 'last_page':
         return <FileText className="w-5 h-5" />;
       default:
         return <Image className="w-5 h-5" />;
@@ -458,7 +460,7 @@ export const BrandingSettings: React.FC = () => {
                 Upload logos, headers, footers, watermarks, or letterheads
               </p>
               <div className="mt-6 flex gap-2 justify-center flex-wrap">
-                {(['logo', 'header', 'footer', 'watermark', 'letterhead'] as const).map((type) => (
+                {(['logo', 'header', 'footer', 'watermark', 'letterhead', 'front_page', 'last_page'] as const).map((type) => (
                   <button
                     key={type}
                     onClick={() => {

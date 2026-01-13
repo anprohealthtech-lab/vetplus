@@ -18,7 +18,7 @@ import TemplateAIConsole from '../components/TemplateStudio/TemplateAIConsole';
 import TemplateAIAuditModal, { TemplateAuditResult } from '../components/TemplateStudio/TemplateAIAuditModal';
 import PlaceholderPicker, { PlaceholderOption } from '../components/TemplateStudio/PlaceholderPicker';
 import { useAuth } from '../contexts/AuthContext';
-import { database, LabBrandingAsset, LabUserSignature } from '../utils/supabase';
+import { database, supabase, LabBrandingAsset, LabUserSignature } from '../utils/supabase';
 import { ensureReportRegions } from '../utils/reportTemplateRegions';
 import '../styles/report-baseline.css';
 
@@ -59,6 +59,7 @@ interface AuditTestGroup {
   analytes: Array<{
     id: string;
     name: string;
+    code: string;
     unit: string | null;
     reference_range: string | null;
   }>;
@@ -68,6 +69,7 @@ type RawTestGroupAnalyte = {
   analytes?: {
     id?: string | null;
     name?: string | null;
+    code?: string | null;
     unit?: string | null;
     reference_range?: string | null;
   } | null;
@@ -87,7 +89,7 @@ const REQUIRED_PLACEHOLDERS: Record<string, string> = {
   referringDoctorName: '{{referringDoctorName}}',
   reportDate: '{{reportDate}}',
   orderId: '{{orderId}}',
-  
+
   // Approval/Signature (At least one required)
   approverName: '{{approverName}}',
   approverRole: '{{approverRole}}',
@@ -103,12 +105,7 @@ const BRANDING_TYPE_LABELS: Record<LabBrandingAsset['asset_type'], string> = {
   letterhead: 'Letterhead',
 };
 
-const VARIANT_LABEL_OVERRIDES: Record<string, string> = {
-  optimized: 'Optimized',
-  preview1x: 'Preview 1x',
-  preview2x: 'Preview 2x',
-  webp: 'WebP',
-};
+
 
 const toTitleCase = (value: string) =>
   value
@@ -152,30 +149,21 @@ const parseVariantMap = (value: unknown): Record<string, string> => {
   return {};
 };
 
-const formatVariantLabel = (variantKey: string) =>
-  VARIANT_LABEL_OVERRIDES[variantKey] ||
-  toTitleCase(
-    variantKey
-      .replace(/([a-z])([0-9])/g, '$1 $2')
-      .replace(/([0-9])x/i, '$1x')
-      .replace(/([a-z])([A-Z])/g, '$1 $2')
-  );
-
 const CKEDITOR_VERSION = '47.1.0';
 const CKEDITOR_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.umd.js`;
 const CKEDITOR_PREMIUM_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5-premium-features/${CKEDITOR_VERSION}/ckeditor5-premium-features.umd.js`;
 const CKEDITOR_CSS_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.css`;
 const CKEDITOR_PREMIUM_CSS_URL = `https://cdn.ckeditor.com/ckeditor5-premium-features/${CKEDITOR_VERSION}/ckeditor5-premium-features.css`;
 
-const resourcePromises: Record<string, Promise<void>> = {};
+const resourcePromises: Record<string, Promise<void> | undefined> = {};
 
 const ensureStylesheet = (href: string) => {
   if (typeof window === 'undefined') {
     return Promise.resolve();
   }
 
-  if (resourcePromises[href]) {
-    return resourcePromises[href];
+  if (resourcePromises[href] !== undefined) {
+    return resourcePromises[href]!;
   }
 
   resourcePromises[href] = new Promise<void>((resolve, reject) => {
@@ -202,8 +190,8 @@ const ensureScript = (src: string) => {
     return Promise.resolve();
   }
 
-  if (resourcePromises[src]) {
-    return resourcePromises[src];
+  if (resourcePromises[src] !== undefined) {
+    return resourcePromises[src]!;
   }
 
   resourcePromises[src] = new Promise<void>((resolve, reject) => {
@@ -756,6 +744,7 @@ const TemplateStudioCKE: React.FC = () => {
   const [htmlContent, setHtmlContentState] = useState('');
   const [cssContent, setCssContent] = useState('');
   const [ckeditorInstance, setCkeditorInstance] = useState<any | null>(null);
+  const [labDetails, setLabDetails] = useState<any | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -801,6 +790,7 @@ const TemplateStudioCKE: React.FC = () => {
   const [auditRevertSnapshot, setAuditRevertSnapshot] = useState<{ html: string; css: string } | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
+  const [templateSearchQuery, setTemplateSearchQuery] = useState('');
 
   const PATIENT_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
     () => [
@@ -993,7 +983,7 @@ const TemplateStudioCKE: React.FC = () => {
       } else {
         toolbarElement.classList.remove('toolbar-collapsed');
       }
-      
+
       // Add close button to toolbar if not already present
       if (!toolbarElement.querySelector('.toolbar-close-btn')) {
         const closeBtn = document.createElement('button');
@@ -1048,15 +1038,15 @@ const TemplateStudioCKE: React.FC = () => {
       try {
         const [labParamsResult, brandingResult, signatureResult] = await Promise.all([
           database.templateParameters.listLabParameters(labId),
-          database.labBrandingAssets.getAll(labId),
-          database.userSignatures.getAll(user?.id, labId),
+          (database as any).labBrandingAssets.getAll(labId),
+          (database as any).userSignatures.getAll(user?.id, labId),
         ]);
 
         if (labParamsResult.error) {
           console.warn('Lab parameter fetch failed:', labParamsResult.error);
         } else if (labParamsResult.data?.length) {
           aggregated.push(
-            ...labParamsResult.data.map((item) => ({
+            ...(labParamsResult.data as any[]).map((item) => ({
               ...item,
               group: 'lab' as const,
             }))
@@ -1068,7 +1058,7 @@ const TemplateStudioCKE: React.FC = () => {
         } else if (brandingResult.data?.length) {
           const byType = new Map<LabBrandingAsset['asset_type'], LabBrandingAsset>();
 
-          brandingResult.data.forEach((asset) => {
+          (brandingResult.data as any[]).forEach((asset) => {
             if (!asset || !asset.file_url) {
               return;
             }
@@ -1614,6 +1604,24 @@ const TemplateStudioCKE: React.FC = () => {
       return;
     }
 
+    // Fetch Lab Details for Preview
+    const fetchLabDetails = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('labs')
+          .select('name, address_line_1, phone_number, email, website')
+          .eq('id', labId)
+          .single();
+
+        if (data) {
+          setLabDetails(data);
+        }
+      } catch (err) {
+        console.warn('Failed to fetch lab details for preview:', err);
+      }
+    };
+    fetchLabDetails();
+
     let isActive = true;
 
     const fetchTestGroups = async () => {
@@ -1862,7 +1870,7 @@ const TemplateStudioCKE: React.FC = () => {
     try {
       const { data, error: updateError } = await database.labTemplates.updateMetadata({
         templateId: templateMeta.id,
-        labId,
+        labId: labId || undefined,
         name: metadataDraft.name,
         description: metadataDraft.description,
         category: metadataDraft.category,
@@ -1937,7 +1945,7 @@ const TemplateStudioCKE: React.FC = () => {
             const group = option.group ?? 'lab';
             // Only include patient, test, and signature groups
             // Explicitly exclude branding (header/footer) and lab details
-            return ['patient', 'test', 'signature'].includes(group);
+            return ['patient', 'test', 'signature', 'section'].includes(group);
           })
           .map((option) => [
             option.placeholder,
@@ -2153,7 +2161,7 @@ const TemplateStudioCKE: React.FC = () => {
       ];
       const protectedPlaceholders = Array.from(new Set(Object.values(REQUIRED_PLACEHOLDERS)));
       const missingPlaceholders = findMissingPlaceholders(currentHtml, nextHtml, allowedRemovals, protectedPlaceholders);
-      
+
       // Apply changes even if placeholders are missing - let user fix in next audit
       let warningMessage = '';
       if (missingPlaceholders.length) {
@@ -2533,16 +2541,33 @@ const TemplateStudioCKE: React.FC = () => {
                     </button>
                   </div>
                 </div>
+
+                {/* Search input for filtering templates */}
+                <input
+                  type="text"
+                  value={templateSearchQuery}
+                  onChange={(e) => setTemplateSearchQuery(e.target.value)}
+                  placeholder="Search templates..."
+                  className="mt-2 w-full rounded-md border border-gray-300 px-3 py-1.5 text-sm placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-0"
+                />
+
                 <select
                   value={selectedTemplateId || ''}
                   onChange={(event) => handleTemplateSelect(event.target.value)}
                   className="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
                 >
-                  {templates.map((template) => (
-                    <option key={template.id} value={template.id}>
-                      {template.template_name || 'Untitled Template'}
-                    </option>
-                  ))}
+                  {templates
+                    .filter((template) => {
+                      const searchLower = templateSearchQuery.toLowerCase().trim();
+                      if (!searchLower) return true;
+                      const templateName = (template.template_name || 'Untitled Template').toLowerCase();
+                      return templateName.includes(searchLower);
+                    })
+                    .map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.template_name || 'Untitled Template'}
+                      </option>
+                    ))}
                 </select>
                 {lastSavedAt ? (
                   <p className="mt-2 text-[11px] text-gray-500">Last saved {lastSavedAt.toLocaleString()}</p>
@@ -3022,29 +3047,115 @@ const TemplateStudioCKE: React.FC = () => {
 
                           // Render placeholders with sample data
                           const sampleContext = {
+                            // Patient Details
                             patientName: 'John Doe',
-                            patientAge: '45',
-                            registrationDate: '2025-11-26',
-                            locationName: 'Main Lab',
-                            sampleCollectedAt: '2025-11-26 10:30 AM',
-                            approvedAt: '2025-11-26 2:45 PM',
-                            referringDoctorName: 'Dr. Smith',
+                            patientAge: '45 Years',
+                            patientGender: 'Male',
+                            patientId: 'PID-2024-001',
+                            patientMobile: '+1 234 567 8900',
+                            patientAddress: '123 Main St, Springfield, IL',
+
+                            // Visit/Order Details
+                            visitDate: '26 Nov 2025',
+                            registrationDate: '26 Nov 2025',
+                            sampleCollectedAt: '26 Nov 2025, 10:30 AM',
+                            sampleReceivedAt: '26 Nov 2025, 11:00 AM',
+                            reportDate: '26 Nov 2025, 02:30 PM',
+                            approvedAt: '26 Nov 2025, 02:45 PM',
+                            orderId: 'ORD-2024-00123',
+                            labNumber: 'LAB-123',
+                            referringDoctorName: 'Dr. Robert Smith, MD',
+                            referringDoctorId: 'DOC-555',
+
+                            // Location/Lab Details (for internal logic)
+                            // Location/Lab Details (for internal logic)
+                            locationName: 'Main Diagnostic Center',
+
+                            // Lab Info for Header (Actual or Dummy)
+                            labName: labDetails?.name || 'City Diagnostic Labs',
+                            labAddress: labDetails?.address_line_1 || '456 Healthcare Ave, Medical District, NY 10001',
+                            labPhone: labDetails?.phone_number || '(555) 123-4567',
+                            labEmail: labDetails?.email || 'results@citydiagnostics.com',
+                            labWebsite: labDetails?.website || 'www.citydiagnostics.com',
+
+                            // Dynamic Content Placeholders
                             crpResult: '66',
-                            crpRemarks: 'Elevated levels',
-                            approverSignature: 'https://via.placeholder.com/150x60/4F46E5/FFFFFF?text=Signature',
-                            approvedByName: 'Dr. Sarah Johnson',
-                            approverName: 'Dr. Sarah Johnson',
+                            crpUnit: 'mg/L',
+                            crpRefRange: '< 5',
+                            crpRemarks: 'Elevated levels indicating inflammation.',
+
+                            // Analytes shown in user feedback
+                            ANALYTE_EOS_VALUE: '0.45',
+                            ANALYTE_EOS_UNIT: '10^9/L',
+                            ANALYTE_EOS_REFERENCE_RANGE: '0.04 - 0.54',
+                            ANALYTE_WBC_VALUE: '7.5',
+                            ANALYTE_WBC_UNIT: '10^9/L',
+                            ANALYTE_RBC_VALUE: '4.8',
+
+                            // Signatures & Approvers
+                            approverSignature: 'https://upload.wikimedia.org/wikipedia/commons/thumb/e/e4/John_Hancock_Signature.svg/1200px-John_Hancock_Signature.svg.png',
+                            approvedByName: 'Dr. Sarah Johnson, PhD',
+                            approverDesignation: 'Senior Pathologist',
+                            signatoryName: 'Dr. Sarah Johnson, PhD',
+                            signatoryDesignation: 'Senior Pathologist',
+                            technicianName: 'Jane Technician',
+
+
+
+
+                            // Common Table Headers
+                            testNameHeader: 'Test Description',
+                            resultHeader: 'Result',
+                            unitHeader: 'Units',
+                            refRangeHeader: 'Reference Range'
                           };
+
+                          // Helper to generate a dummy barcode URL
+                          const barcodeUrl = 'https://bwipjs-api.metafloor.com/?bcid=code128&text=ORD-2024-00123&scale=2&height=10&incltext';
 
                           // Simple placeholder replacement (regex-based for print preview)
                           const replacePlaceholders = (html: string) => {
                             let result = html;
+
+                            // 1. Replace known context keys
                             Object.entries(sampleContext).forEach(([key, value]) => {
-                              const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'g');
+                              const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'gi'); // Case insensitive replacement
                               result = result.replace(regex, String(value));
                             });
+
+                            // 2. Handle patterns that might be missing from context but are common
+                            result = result.replace(/\{\{lab_name\}\}/gi, sampleContext.labName);
+                            result = result.replace(/\{\{lab_address\}\}/gi, sampleContext.labAddress);
+
+                            // 3. Handle signature injection if {{approverSignature}} is used in an img src
+                            result = result.replace(/src="\{\{approverSignature\}\}"/gi, `src="${sampleContext.approverSignature}"`);
+
+                            // 4. Generic fallback for unknown ANALYTE_ placeholders to avoid ugly {{...}}
+                            result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_VALUE\}\}/g, '25.5');
+                            result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_UNIT\}\}/g, 'mg/dL');
+                            result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_REFERENCE_RANGE\}\}/g, '10.0 - 40.0');
+                            result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_REFERENCE\}\}/g, '10.0 - 40.0');
+                            result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_FLAG\}\}/g, 'Normal');
+
                             return result;
                           };
+
+
+
+                          // UNWRAP TABLES FROM FIGURES
+                          // The gray box issue is caused by CKEditor's <figure> wrapper handling
+                          const tempDiv = document.createElement('div');
+                          tempDiv.innerHTML = bodyHtml;
+
+                          const figures = tempDiv.querySelectorAll('figure.table');
+                          figures.forEach(figure => {
+                            const table = figure.querySelector('table');
+                            if (table) {
+                              figure.replaceWith(table);
+                            }
+                          });
+
+                          bodyHtml = tempDiv.innerHTML;
 
                           bodyHtml = replacePlaceholders(bodyHtml);
 
@@ -3052,6 +3163,7 @@ const TemplateStudioCKE: React.FC = () => {
                             <html>
                               <head>
                                 <title>Print Preview - ${templateMeta?.template_name || 'Untitled'}</title>
+                                <base href="${window.location.origin}/" />
                                 <style>
                                   /* Page layout controlled by PDF.co API parameters - no hardcoded margins */
                                   @page { 
@@ -3263,12 +3375,47 @@ const TemplateStudioCKE: React.FC = () => {
                               </head>
                               <body>
                                 <div class="pdf-container">
-                                  <div class="pdf-header" style="text-align: center; color: #666; font-size: 11px; padding: 8px;">
-                                    <em>Header will be added from lab settings during PDF generation</em>
+                                  <div class="pdf-header">
+                                    <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #333; padding-bottom: 15px; margin-bottom: 20px;">
+                                      <div style="flex: 1;">
+                                        <div style="font-size: 24px; font-weight: bold; color: #1a56db; margin-bottom: 5px;">${sampleContext.labName}</div>
+                                        <div style="font-size: 12px; color: #555; line-height: 1.4;">
+                                          ${sampleContext.labAddress}<br>
+                                          Ph: ${sampleContext.labPhone} | Email: ${sampleContext.labEmail}<br>
+                                          ${sampleContext.labWebsite}
+                                        </div>
+                                      </div>
+                                      <div style="text-align: right;">
+                                        <div style="background: #f0f0f0; padding: 5px 10px; border-radius: 4px; display: inline-block; margin-bottom: 5px;">
+                                          <span style="font-weight: bold; font-size: 12px;">LAB No: ${sampleContext.labNumber}</span>
+                                        </div>
+                                        <br>
+                                        <img src="${barcodeUrl}" alt="Barcode" style="height: 35px; width: auto; margin-top: 5px;" />
+                                      </div>
+                                    </div>
                                   </div>
-                                  <div class="pdf-body">${bodyHtml}</div>
-                                  <div class="pdf-footer" style="text-align: center; color: #666; font-size: 11px; padding: 8px;">
-                                    <em>Footer will be added from lab settings during PDF generation</em>
+                                  
+                                  <div class="pdf-body">
+                                    ${bodyHtml}
+                                  
+                                    <!-- Dummy End of Report Line if not present -->
+                                    ${!bodyHtml.includes('End of Report') ? `
+                                    <div style="margin-top: 30px; text-align: center; font-size: 11px; color: #888; border-top: 1px dotted #ccc; padding-top: 10px;">
+                                      *** End of Report ***
+                                    </div>
+                                    ` : ''}
+                                  </div>
+                                  
+                                  <div class="pdf-footer">
+                                    <div style="border-top: 2px solid #333; padding-top: 10px; margin-top: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: #666;">
+                                      <div style="text-align: left;">
+                                        Generated on: ${new Date().toLocaleString()}<br>
+                                        This is a system generated report.
+                                      </div>
+                                      <div style="text-align: right;">
+                                        Page <span class="pageNumber">1</span> of <span class="totalPages">1</span>
+                                      </div>
+                                    </div>
                                   </div>
                                 </div>
                               </body>
@@ -3288,59 +3435,62 @@ const TemplateStudioCKE: React.FC = () => {
             </div>
           </div>
         </div>
-      ) : null}
+      ) : null
+      }
 
-      {isDeleteConfirmOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-          <div className="w-full max-w-md rounded-lg border border-gray-200 bg-white shadow-2xl">
-            <div className="flex items-center gap-3 border-b border-gray-200 px-6 py-4">
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100">
-                <Trash2 className="h-5 w-5 text-red-600" />
+      {
+        isDeleteConfirmOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+            <div className="w-full max-w-md rounded-lg border border-gray-200 bg-white shadow-2xl">
+              <div className="flex items-center gap-3 border-b border-gray-200 px-6 py-4">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100">
+                  <Trash2 className="h-5 w-5 text-red-600" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900">Delete Template</h2>
+                  <p className="text-sm text-gray-500">This action cannot be undone</p>
+                </div>
               </div>
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">Delete Template</h2>
-                <p className="text-sm text-gray-500">This action cannot be undone</p>
-              </div>
-            </div>
 
-            <div className="px-6 py-4">
-              <p className="text-sm text-gray-700 mb-4">
-                Are you sure you want to delete the template <strong>"{templateMeta?.template_name || 'Untitled Template'}"</strong>?
-                This will permanently remove the template and all its versions.
-              </p>
+              <div className="px-6 py-4">
+                <p className="text-sm text-gray-700 mb-4">
+                  Are you sure you want to delete the template <strong>"{templateMeta?.template_name || 'Untitled Template'}"</strong>?
+                  This will permanently remove the template and all its versions.
+                </p>
 
-              <div className="flex justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setIsDeleteConfirmOpen(false)}
-                  disabled={isDeleting}
-                  className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDeleteTemplate}
-                  disabled={isDeleting}
-                  className="inline-flex items-center gap-2 rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-400"
-                >
-                  {isDeleting ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Deleting...
-                    </>
-                  ) : (
-                    <>
-                      <Trash2 className="h-4 w-4" />
-                      Delete Template
-                    </>
-                  )}
-                </button>
+                <div className="flex justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setIsDeleteConfirmOpen(false)}
+                    disabled={isDeleting}
+                    className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteTemplate}
+                    disabled={isDeleting}
+                    className="inline-flex items-center gap-2 rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-400"
+                  >
+                    {isDeleting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Deleting...
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="h-4 w-4" />
+                        Delete Template
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      ) : null}
+        ) : null
+      }
 
       <TemplateAIConsole
         open={isAiConsoleOpen}
@@ -3365,7 +3515,7 @@ const TemplateStudioCKE: React.FC = () => {
         canRevert={!!auditRevertSnapshot}
         successMessage={auditSuccessMessage}
       />
-    </div>
+    </div >
   );
 };
 

@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Link, Users, Activity, ChevronRight, ChevronDown, Search, TestTube, X, Calendar, CheckCircle, AlertCircle, FlaskConical } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
 import { OrderStatusDisplay } from './OrderStatusDisplay';
+import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
+import { TATStatusBadge } from './TATStatusBadge';
 
 interface Order {
   id: string;
@@ -15,8 +17,13 @@ interface Order {
   order_date: string;
   created_at?: string;
   sample_id?: string;
+  sample_type?: string;
+  color_name?: string;
   tests: string[];
   can_add_tests?: boolean;
+  hours_until_tat_breach?: number | null;
+  is_tat_breached?: boolean | null;
+  tat_hours?: number | null;
 }
 
 interface EnhancedOrdersPageProps {
@@ -56,7 +63,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
   onViewOrderDetails
 }) => {
   const [expanded, setExpanded] = useState(false);
-  
+
   const getOrderTypeIcon = (orderType?: string) => {
     switch (orderType) {
       case 'initial': return '🏥';
@@ -91,7 +98,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
         console.log(`Sample ID ${order.sample_id} -> number: ${num}`);
         return num;
       }
-      
+
       // Try to extract number from visit_group_id (e.g., "sample-06-Sep-2025-004" -> 4)
       const visitGroupIdMatch = order.visit_group_id?.match(/-(\d+)$/);
       if (visitGroupIdMatch) {
@@ -99,7 +106,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
         console.log(`Visit Group ID ${order.visit_group_id} -> number: ${num}`);
         return num;
       }
-      
+
       // Try to extract number from order.id if it has a pattern
       const orderIdMatch = order.id?.match(/(\d+)$/);
       if (orderIdMatch) {
@@ -107,31 +114,31 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
         console.log(`Order ID ${order.id} -> number: ${num}`);
         return num;
       }
-      
+
       console.log(`No number found for order ${order.id}, using 0`);
       return 0;
     };
-    
+
     // First try to sort by sample number (HIGHEST numbers first - newest)
     const sampleNumA = extractSampleNumber(a);
     const sampleNumB = extractSampleNumber(b);
-    
+
     if (sampleNumA !== sampleNumB) {
       const result = sampleNumB - sampleNumA; // Higher numbers first (4, 3, 2, 1)
       console.log(`Sorting: ${sampleNumB} - ${sampleNumA} = ${result}`);
       return result;
     }
-    
+
     // If sample numbers are same, fallback to timestamp sorting (newest first)
     const timeA = a.created_at || a.order_date;
     const timeB = b.created_at || b.order_date;
     const timestampA = new Date(timeA).getTime();
     const timestampB = new Date(timeB).getTime();
-    
+
     if (timestampA !== timestampB) {
       return timestampB - timestampA; // Newest first
     }
-    
+
     // Final fallback to ID comparison for consistency
     return (b.id || '').localeCompare(a.id || '');
   });
@@ -148,7 +155,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
             >
               {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
             </button>
-            
+
             <div>
               <h3 className="text-lg font-semibold text-gray-900">
                 👤 {visit.patient_name}
@@ -164,13 +171,13 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
               </div>
             </div>
           </div>
-          
+
           <div className="flex items-center space-x-4">
             <div className="text-right">
               <div className="text-lg font-bold text-gray-900">₹{visit.total_amount.toLocaleString()}</div>
               <div className="text-sm text-gray-600">{visit.total_orders} orders</div>
             </div>
-            
+
             <div className="flex items-center space-x-2">
               <button
                 onClick={() => onViewActivity(visit.visit_group_id)}
@@ -179,7 +186,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
               >
                 <Activity className="h-4 w-4" />
               </button>
-              
+
               {primaryOrder && primaryOrder.can_add_tests && (
                 <button
                   onClick={() => onAddTests(primaryOrder.id)}
@@ -189,7 +196,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                   <Plus className="h-4 w-4" />
                 </button>
               )}
-              
+
               <button
                 onClick={() => onCreateFollowUp(primaryOrder.id)}
                 className="p-2 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"
@@ -209,7 +216,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
             <Users className="h-4 w-4 mr-2" />
             Order Chain ({sortedOrders.length} orders)
           </h4>
-          
+
           <div className="space-y-3">
             {sortedOrders.map((order, index) => (
               <div key={order.id} className="w-full p-4 bg-white rounded-lg border-2 border-gray-200 hover:border-blue-300 hover:shadow-md transition-all duration-200">
@@ -221,7 +228,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                     <div className="flex items-center justify-center w-8 h-8 bg-blue-100 text-blue-700 rounded-full font-bold text-sm border-2 border-blue-200">
                       {index + 1}
                     </div>
-                    
+
                     {/* Order Icon & ID */}
                     <div className="flex items-center space-x-3">
                       <span className="text-2xl">{getOrderTypeIcon(order.order_type)}</span>
@@ -229,24 +236,32 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                         <div className="text-lg font-bold text-gray-900">
                           Order #{order.id.substring(0, 8)}
                         </div>
-                        <div className="text-sm text-gray-600 flex items-center space-x-2">
-                          <span className="capitalize font-medium">{order.order_type}</span>
-                          {order.sample_id && (
-                            <>
-                              <span>•</span>
-                              <span className="bg-gray-100 px-2 py-1 rounded text-xs font-mono">
-                                ID: {order.sample_id.split('-').pop()}
-                              </span>
-                            </>
-                          )}
-                          {order.parent_order_id && (
-                            <>
-                              <span>•</span>
-                              <span className="text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded border">
-                                ↳ Linked Order
-                              </span>
-                            </>
-                          )}
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <SampleTypeIndicator
+                            sampleType={order.sample_type || 'Blood'}
+                            sampleColor={order.color_name}
+                            size="sm"
+                          />
+                          <div className="text-sm text-gray-600 flex items-center space-x-2">
+                            <span className="capitalize font-medium">{order.order_type}</span>
+                            {order.sample_id && (
+                              <>
+                                <span>•</span>
+                                <span className="bg-gray-100 px-2 py-1 rounded text-xs font-mono text-gray-700">
+                                  ID: {order.sample_id.split('-').pop()}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        {/* TAT Badge (New) */}
+                        <div className="mt-1">
+                          <TATStatusBadge
+                            hoursUntilBreach={(order as any).hours_until_tat_breach}
+                            isBreached={(order as any).is_tat_breached}
+                            tatHours={(order as any).tat_hours}
+                            compact={true}
+                          />
                         </div>
                       </div>
                     </div>
@@ -274,7 +289,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                         const orderTests = (order as any).order_tests || [];
                         const outsourcedTests = orderTests.filter((ot: any) => ot.outsourced_lab_id);
                         const inhouseTests = orderTests.filter((ot: any) => !ot.outsourced_lab_id);
-                        
+
                         if (outsourcedTests.length > 0) {
                           return (
                             <div className="flex items-center justify-end gap-1 mt-1">
@@ -293,11 +308,11 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                       })()}
                     </div>
                   </div>
-                  
+
                   {/* Right Section: Status & Actions */}
                   <div className="flex items-center space-x-3">
                     <OrderStatusDisplay order={order} compact={true} />
-                    
+
                     {order.can_add_tests && (
                       <button
                         onClick={() => onAddTests(order.id)}
@@ -312,7 +327,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
               </div>
             ))}
           </div>
-          
+
           <div className="mt-4 pt-3 border-t border-gray-200">
             <div className="flex items-center justify-between text-sm">
               <span className="text-gray-600">
@@ -330,8 +345,8 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
 };
 
 // Enhanced Orders page component
-const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({ 
-  orders, 
+const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
+  orders,
   // onAddOrder, 
   // onUpdateStatus,
   onRefreshOrders,
@@ -423,10 +438,10 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
 
   const handleAddSelectedTests = async () => {
     if (selectedTests.length === 0 || !selectedOrderId) return;
-    
+
     try {
       console.log('Adding tests to order:', selectedOrderId, selectedTests);
-      
+
       // Find the current order to get existing data
       const currentOrder = orders.find(order => order.id === selectedOrderId);
       if (!currentOrder) {
@@ -437,10 +452,10 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
       // Separate packages from individual tests
       const packages = selectedTests.filter(test => test.type === 'package');
       const individualTests = selectedTests.filter(test => test.type !== 'package');
-      
+
       // Build order_tests records
       const newOrderTests: any[] = [];
-      
+
       // Add individual tests
       individualTests.forEach(test => {
         newOrderTests.push({
@@ -450,7 +465,7 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
           package_id: null
         });
       });
-      
+
       // Add packages and their test groups
       if (packages.length > 0) {
         // Fetch package details
@@ -466,7 +481,7 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
             )
           `)
           .in('id', packageIds);
-        
+
         packages.forEach(pkg => {
           // Add package entry
           newOrderTests.push({
@@ -475,7 +490,7 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
             test_group_id: null,
             package_id: pkg.id
           });
-          
+
           // Expand package test groups
           const pkgDetails = packageDetails?.find(pd => pd.id === pkg.id);
           if (pkgDetails?.package_test_groups) {
@@ -492,49 +507,49 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
           }
         });
       }
-      
+
       // Insert new tests into order_tests table
       const { error: testsError } = await supabase
         .from('order_tests')
         .insert(newOrderTests);
-      
+
       if (testsError) {
         console.error('Error inserting order tests:', testsError);
         alert('Failed to add tests. Please try again.');
         return;
       }
-      
+
       // Calculate new total amount and update the order
       const newTestsTotal = selectedTests.reduce((sum, test) => sum + test.price, 0);
       const updatedTotalAmount = currentOrder.total_amount + newTestsTotal;
-      
+
       // Update the order's total amount
       const { data, error } = await database.orders.update(selectedOrderId, {
         total_amount: updatedTotalAmount
       });
-      
+
       if (error) {
         console.error('Error updating order total:', error);
         alert('Tests added but failed to update total amount.');
         return;
       }
-      
+
       console.log('Order updated successfully:', data);
-      
+
       // Reset modal state
       setSelectedTests([]);
       setSearchQuery('');
       setShowAddTestModal(false);
       setSelectedOrderId(null);
-      
+
       // Refresh the orders data if the callback is provided
       if (onRefreshOrders) {
         await onRefreshOrders();
       }
-      
+
       // Show success message
       alert(`Successfully added ${selectedTests.length} tests to the order! Total cost: ₹${newTestsTotal.toLocaleString()}`);
-      
+
     } catch (error) {
       console.error('Error adding tests:', error);
       alert('Failed to add tests. Please try again.');
@@ -576,7 +591,7 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
         patient_name: safePatientName,
         order_date: safeDate,
         order_type: order.order_type || 'initial',
-        can_add_tests: order.can_add_tests !== false && !['Completed','Delivered'].includes(order.status)
+        can_add_tests: order.can_add_tests !== false && !['Completed', 'Delivered'].includes(order.status)
       };
 
       const group = visitGroups[visitGroupId];
@@ -584,75 +599,75 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
       group.total_orders += 1;
       group.total_amount += order.total_amount;
 
-      const allDone = group.orders.every(o => ['Completed','Delivered'].includes(o.status));
-      const anyActive = group.orders.some(o => ['In Progress','Sample Collection'].includes(o.status));
+      const allDone = group.orders.every(o => ['Completed', 'Delivered'].includes(o.status));
+      const anyActive = group.orders.some(o => ['In Progress', 'Sample Collection'].includes(o.status));
       group.visit_status = allDone ? 'Completed' : anyActive ? 'In Progress' : group.visit_status;
     });
 
     // Sort orders inside groups (newest first by sample ID number, fallback to timestamp)
     Object.values(visitGroups).forEach(g => {
       g.orders.sort((a, b) => {
-    // Function to extract sample number from sample_id or visit_group_id
+        // Function to extract sample number from sample_id or visit_group_id
         const extractSampleNumber = (order: any) => {
           // First try to extract number from sample_id (e.g., "06-Sep-2025-004" -> 4)
           const sampleIdMatch = order.sample_id?.match(/-(\d+)$/);
           if (sampleIdMatch) {
             return parseInt(sampleIdMatch[1]);
           }
-          
+
           // Try to extract number from visit_group_id (e.g., "sample-06-Sep-2025-004" -> 4)
           const visitGroupIdMatch = order.visit_group_id?.match(/-(\d+)$/);
           if (visitGroupIdMatch) {
             return parseInt(visitGroupIdMatch[1]);
           }
-          
+
           // Try to extract number from order.id if it has a pattern
           const orderIdMatch = order.id?.match(/-(\d+)$/);
           if (orderIdMatch) {
             return parseInt(orderIdMatch[1]);
           }
-          
+
           // Fallback to 0 if no number found
           return 0;
         };
-        
+
         // First try to sort by sample number (newest sample number first)
         const sampleNumA = extractSampleNumber(a);
         const sampleNumB = extractSampleNumber(b);
-        
+
         if (sampleNumA !== sampleNumB) {
           return sampleNumB - sampleNumA; // Higher numbers first (newest)
         }
-        
+
         // If sample numbers are same, fallback to timestamp sorting
         const timeA = a.created_at || a.order_date;
         const timeB = b.created_at || b.order_date;
         const timestampA = new Date(timeA).getTime();
         const timestampB = new Date(timeB).getTime();
-        
+
         if (timestampA !== timestampB) {
           return timestampB - timestampA; // Newest first
         }
-        
+
         // Final fallback to ID comparison for consistency
         return (b.id || '').localeCompare(a.id || '');
       });
     });
-    
+
     // Sort groups by visit_date desc
-  return Object.values(visitGroups).sort((a,b) => b.visit_date.localeCompare(a.visit_date));
+    return Object.values(visitGroups).sort((a, b) => b.visit_date.localeCompare(a.visit_date));
   }, [orders]);
 
   // Filter visits by selected date range before grouping
   const filteredVisits = React.useMemo(() => {
-    const todayKey = new Date().toISOString().slice(0,10);
-    const yesterdayKey = new Date(Date.now() - 86400000).toISOString().slice(0,10);
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const yesterdayKey = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
     return patientVisits.filter(v => {
       const key = normalizeDate(v.visit_date);
       switch (selectedRange) {
         case 'today': return key === todayKey;
         case 'yesterday': return key === yesterdayKey;
-        case 'last7': return (Date.now() - new Date(key).getTime()) <= 7*86400000;
+        case 'last7': return (Date.now() - new Date(key).getTime()) <= 7 * 86400000;
         case 'all': default: return true;
       }
     });
@@ -662,7 +677,7 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
   const groupVisitsByDate = () => {
     const today = new Date();
     const groups: { [key: string]: { date: Date; dateString: string; visits: PatientVisit[]; isToday: boolean; isFuture: boolean } } = {};
-    
+
     // Always include today, even if no visits
     const todayString = today.toISOString().split('T')[0];
     groups[todayString] = {
@@ -672,12 +687,12 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
       isToday: true,
       isFuture: false
     };
-    
-  // Group visits by date (filtered)
-  filteredVisits.forEach(visit => {
+
+    // Group visits by date (filtered)
+    filteredVisits.forEach(visit => {
       const visitDate = new Date(visit.visit_date);
       const visitDateString = visitDate.toISOString().split('T')[0];
-      
+
       if (!groups[visitDateString]) {
         groups[visitDateString] = {
           date: visitDate,
@@ -687,17 +702,17 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
           isFuture: visitDate > today
         };
       }
-      
+
       groups[visitDateString].visits.push(visit);
     });
-    
+
     // Convert to array and sort (today first, then by date descending)
     const sortedGroups = Object.values(groups).sort((a, b) => {
       if (a.isToday) return -1;
       if (b.isToday) return 1;
       return b.date.getTime() - a.date.getTime();
     });
-    
+
     // Sort visits within each date group by sample number (newest first)
     sortedGroups.forEach(group => {
       group.visits.sort((a, b) => {
@@ -709,19 +724,19 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
           });
           return Math.max(...numbers, 0);
         };
-        
+
         const maxA = getMaxSampleNumber(a);
         const maxB = getMaxSampleNumber(b);
-        
+
         if (maxA !== maxB) {
           return maxB - maxA; // Higher sample numbers first (004 before 002)
         }
-        
+
         // Fallback to visit date/time
         return b.visit_date.localeCompare(a.visit_date);
       });
     });
-    
+
     return sortedGroups;
   };
 
@@ -748,36 +763,36 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
     const today = new Date();
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
-    
+
     if (isToday) {
-      return `📅 Today - ${date.toLocaleDateString('en-IN', { 
-        weekday: 'long', 
-        day: 'numeric', 
-        month: 'long', 
-        year: 'numeric' 
+      return `📅 Today - ${date.toLocaleDateString('en-IN', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
       })}`;
     } else if (date.toDateString() === yesterday.toDateString()) {
-      return `📅 Yesterday - ${date.toLocaleDateString('en-IN', { 
-        weekday: 'long', 
-        day: 'numeric', 
-        month: 'long' 
+      return `📅 Yesterday - ${date.toLocaleDateString('en-IN', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long'
       })}`;
     } else if (isFuture) {
-      return `📅 ${date.toLocaleDateString('en-IN', { 
-        weekday: 'long', 
-        day: 'numeric', 
-        month: 'long', 
-        year: 'numeric' 
+      return `📅 ${date.toLocaleDateString('en-IN', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
       })} (Future)`;
     } else {
       const diffTime = today.getTime() - date.getTime();
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      
-      return `📅 ${date.toLocaleDateString('en-IN', { 
-        weekday: 'long', 
-        day: 'numeric', 
-        month: 'long', 
-        year: 'numeric' 
+
+      return `📅 ${date.toLocaleDateString('en-IN', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
       })} (${diffDays} days ago)`;
     }
   };
@@ -793,9 +808,9 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
   };
 
   const handleViewActivity = () => {
-  // Activity modal not yet implemented post-refactor
-  // setSelectedVisitGroupId(visitGroupId);
-  // setShowActivityModal(true);
+    // Activity modal not yet implemented post-refactor
+    // setSelectedVisitGroupId(visitGroupId);
+    // setShowActivityModal(true);
   };
 
   return (
@@ -883,32 +898,27 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
         {visitGroups.map((group) => (
           <div key={group.dateString}>
             {/* Date Header */}
-            <div className={`sticky top-0 z-10 bg-white border-b-2 pb-3 mb-4 ${
-              group.isToday ? 'border-green-500' : 'border-gray-200'
-            }`}>
-              <div className={`flex items-center justify-between p-4 rounded-lg ${
-                group.isToday 
-                  ? 'bg-gradient-to-r from-green-50 to-blue-50 border border-green-200' 
-                  : 'bg-gray-50 border border-gray-200'
+            <div className={`sticky top-0 z-10 bg-white border-b-2 pb-3 mb-4 ${group.isToday ? 'border-green-500' : 'border-gray-200'
               }`}>
-                <h2 className={`text-lg font-bold ${
-                  group.isToday ? 'text-green-800' : 'text-gray-700'
+              <div className={`flex items-center justify-between p-4 rounded-lg ${group.isToday
+                ? 'bg-gradient-to-r from-green-50 to-blue-50 border border-green-200'
+                : 'bg-gray-50 border border-gray-200'
                 }`}>
+                <h2 className={`text-lg font-bold ${group.isToday ? 'text-green-800' : 'text-gray-700'
+                  }`}>
                   {formatDateHeader(group)}
                 </h2>
                 <div className="flex items-center space-x-4 text-sm">
-                  <span className={`px-3 py-1 rounded-full ${
-                    group.isToday 
-                      ? 'bg-green-100 text-green-800 border border-green-200' 
-                      : 'bg-gray-100 text-gray-600 border border-gray-200'
-                  }`}>
+                  <span className={`px-3 py-1 rounded-full ${group.isToday
+                    ? 'bg-green-100 text-green-800 border border-green-200'
+                    : 'bg-gray-100 text-gray-600 border border-gray-200'
+                    }`}>
                     {group.visits.length} visit{group.visits.length !== 1 ? 's' : ''}
                   </span>
-                  <span className={`px-3 py-1 rounded-full ${
-                    group.isToday 
-                      ? 'bg-blue-100 text-blue-800 border border-blue-200' 
-                      : 'bg-gray-100 text-gray-600 border border-gray-200'
-                  }`}>
+                  <span className={`px-3 py-1 rounded-full ${group.isToday
+                    ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                    : 'bg-gray-100 text-gray-600 border border-gray-200'
+                    }`}>
                     ₹{group.visits.reduce((sum, visit) => sum + visit.total_amount, 0).toLocaleString()}
                   </span>
                 </div>
@@ -945,14 +955,14 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
             <h3 className="text-xl font-semibold text-gray-600 mb-2">No patient visits found</h3>
             <p className="text-gray-500 mb-6">Start by creating a new patient visit or session</p>
             <div className="flex justify-center space-x-4">
-              <button 
+              <button
                 onClick={onNewSession}
                 className="flex items-center px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
               >
                 <Plus className="h-5 w-5 mr-2" />
                 New Session
               </button>
-              <button 
+              <button
                 onClick={onNewPatientVisit}
                 className="flex items-center px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
               >
@@ -1018,11 +1028,10 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
                     filteredTests.map((test) => (
                       <div
                         key={test.id}
-                        className={`border rounded-lg p-3 cursor-pointer transition-all ${
-                          selectedTests.some(t => t.id === test.id)
-                            ? 'border-blue-500 bg-blue-50'
-                            : 'border-gray-200 hover:border-gray-300'
-                        }`}
+                        className={`border rounded-lg p-3 cursor-pointer transition-all ${selectedTests.some(t => t.id === test.id)
+                          ? 'border-blue-500 bg-blue-50'
+                          : 'border-gray-200 hover:border-gray-300'
+                          }`}
                         onClick={() => toggleTestSelection(test)}
                       >
                         <div className="flex items-center justify-between">
@@ -1041,11 +1050,10 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
                             </div>
                           </div>
                           <div className="ml-3">
-                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center ${
-                              selectedTests.some(t => t.id === test.id)
-                                ? 'bg-blue-500 border-blue-500'
-                                : 'border-gray-300'
-                            }`}>
+                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center ${selectedTests.some(t => t.id === test.id)
+                              ? 'bg-blue-500 border-blue-500'
+                              : 'border-gray-300'
+                              }`}>
                               {selectedTests.some(t => t.id === test.id) && (
                                 <span className="text-white text-xs">✓</span>
                               )}
@@ -1061,7 +1069,7 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
               {/* Right Panel - Selected Tests */}
               <div className="w-80 border-l border-gray-200 p-6 bg-gray-50">
                 <h4 className="text-sm font-medium text-gray-700 mb-3">Selected Tests ({selectedTests.length})</h4>
-                
+
                 {selectedTests.length === 0 ? (
                   <div className="text-center text-gray-500 py-8">
                     <TestTube className="h-12 w-12 mx-auto mb-3 text-gray-300" />
@@ -1086,7 +1094,7 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
                         </div>
                       </div>
                     ))}
-                    
+
                     <div className="border-t border-gray-200 pt-4 mt-4">
                       <div className="flex justify-between text-sm font-medium">
                         <span>Total:</span>
@@ -1101,7 +1109,7 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
             {/* Modal Footer */}
             <div className="flex items-center justify-between p-6 border-t border-gray-200 bg-gray-50">
               <div className="text-sm text-gray-600">
-                {selectedTests.length > 0 
+                {selectedTests.length > 0
                   ? `${selectedTests.length} test${selectedTests.length !== 1 ? 's' : ''} selected • Total: ₹${getTotalPrice().toLocaleString()}`
                   : 'Select tests to add to this order'
                 }
