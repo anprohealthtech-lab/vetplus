@@ -26,6 +26,7 @@ import {
   Receipt,
   Briefcase,
   Trash2,
+  X,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { supabase, database } from "../utils/supabase";

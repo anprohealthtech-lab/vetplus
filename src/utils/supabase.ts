@@ -5545,26 +5545,77 @@ export const database = {
       return { data, error };
     },
 
+
     create: async (packageData: any) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
         return { data: null, error: { message: 'No lab context found' } };
       }
-      const { data, error } = await supabase
+
+      // Extract testGroupIds to prevent Supabase error (column does not exist)
+      const { testGroupIds, ...pkgData } = packageData;
+
+      const { data: pkg, error: pkgError } = await supabase
         .from('packages')
-        .insert([{ ...packageData, lab_id }])
+        .insert([{ ...pkgData, lab_id }])
         .select()
         .single();
-      return { data, error };
+      
+      if (pkgError || !pkg) return { data: null, error: pkgError };
+
+      // Link test groups if provided
+      if (testGroupIds && Array.isArray(testGroupIds) && testGroupIds.length > 0) {
+        const links = testGroupIds.map((tgId: string) => ({
+          package_id: pkg.id,
+          test_group_id: tgId
+        }));
+        
+        const { error: linkError } = await supabase
+          .from('package_test_groups')
+          .insert(links);
+          
+        if (linkError) console.error('Error linking test groups:', linkError);
+      }
+
+      return { data: pkg, error: null };
     },
 
     update: async (id: string, packageData: any) => {
+      // Extract testGroupIds
+      const { testGroupIds, ...pkgData } = packageData;
+
       const { data, error } = await supabase
         .from('packages')
-        .update(packageData)
+        .update(pkgData)
         .eq('id', id)
         .select()
         .single();
+
+      if (error) return { data: null, error };
+
+      // If testGroupIds is provided, update the links
+      if (testGroupIds && Array.isArray(testGroupIds)) {
+        // Delete existing links
+        await supabase
+          .from('package_test_groups')
+          .delete()
+          .eq('package_id', id);
+
+        // Insert new links if any
+        if (testGroupIds.length > 0) {
+          const links = testGroupIds.map((tgId: string) => ({
+            package_id: id,
+            test_group_id: tgId
+          }));
+          
+          const { error: linkError } = await supabase
+            .from('package_test_groups')
+            .insert(links);
+            
+          if (linkError) console.error('Error updating test group links:', linkError);
+        }
+      }
+
       return { data, error };
     },
 
