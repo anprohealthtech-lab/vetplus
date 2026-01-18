@@ -600,12 +600,17 @@ export const database = {
       
       const { data: userData } = await supabase
         .from('users')
-        .select('id')
+        .select('id, role')
         .eq('email', user.email)
         .eq('status', 'Active')
         .maybeSingle();
       
       if (!userData?.id) return { shouldFilter: false, locationIds: [], canViewAll: true };
+
+      // Admins bypass location restrictions
+      if (userData.role === 'admin' || userData.role === 'super_admin') {
+        return { shouldFilter: false, locationIds: [], canViewAll: true };
+      }
       
       // Check user's location assignments and override flag
       const { data: centers } = await supabase
@@ -621,9 +626,9 @@ export const database = {
       
       const locationIds = centers?.map(c => c.location_id).filter(Boolean) || [];
       
-      // If user has no assigned locations, don't filter (fallback behavior)
+      // If user has no assigned locations, FAIL CLOSED (show nothing)
       if (locationIds.length === 0) {
-        return { shouldFilter: false, locationIds: [], canViewAll: true };
+        return { shouldFilter: true, locationIds: ['00000000-0000-0000-0000-000000000000'], canViewAll: false };
       }
       
       return { shouldFilter: true, locationIds, canViewAll: false };
@@ -958,12 +963,20 @@ export const database = {
           return { data: [], error: new Error('No lab_id found for current user') };
         }
 
-        const { data, error } = await supabase
+        const filterCheck = await database.shouldFilterByLocation();
+
+        let query = supabase
           .from('locations')
           .select('*')
           .eq('lab_id', lab_id)
-          .order('created_at', { ascending: false });
+          .eq('is_active', true)
+          .order('name');
 
+        if (filterCheck.shouldFilter && !filterCheck.canViewAll && filterCheck.locationIds.length > 0) {
+          query = query.in('id', filterCheck.locationIds);
+        }
+
+        const { data, error } = await query;
         return { data: data || [], error };
       } catch (error) {
         console.error('Error fetching locations:', error);
@@ -5473,38 +5486,6 @@ export const database = {
     }
   },
 
-  bookings: {
-    create: async (bookingData: any) => {
-      const lab_id = await database.getCurrentUserLabId();
-      if (!lab_id) return { data: null, error: { message: 'No lab context' } };
-      const { data, error } = await supabase
-        .from('bookings')
-        .insert([{ ...bookingData, lab_id }])
-        .select()
-        .single();
-      return { data, error };
-    },
-    list: async () => {
-      const lab_id = await database.getCurrentUserLabId();
-      if (!lab_id) return { data: null, error: { message: 'No lab context' } };
-      const { data, error } = await supabase
-        .from('bookings')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .order('created_at', { ascending: false });
-      return { data, error };
-    },
-    update: async (id: string, updates: any) => {
-      const { data, error } = await supabase
-        .from('bookings')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
-      return { data, error };
-    },
-  },
-
   packages: {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
@@ -7177,16 +7158,26 @@ const masterDataAPI = {
   locations: {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
+      console.log('[locations.getAll v2] Lab ID:', lab_id);
       if (!lab_id) {
         return { data: null, error: new Error('No lab_id found for current user') };
       }
       
-      const { data, error } = await supabase
+      // Apply location filtering based on user restrictions
+      const filterCheck = await database.shouldFilterByLocation();
+
+      let query = supabase
         .from('locations')
         .select('*')
         .eq('lab_id', lab_id)
         .eq('is_active', true)
         .order('name');
+
+      if (filterCheck.shouldFilter && !filterCheck.canViewAll && filterCheck.locationIds.length > 0) {
+        query = query.in('id', filterCheck.locationIds);
+      }
+
+      const { data, error } = await query;
       return { data, error };
     },
 
@@ -7361,13 +7352,22 @@ const masterDataAPI = {
         return { data: null, error: new Error('No lab_id found for current user') };
       }
       
-      const { data, error } = await supabase
+      // Apply location filtering
+      const filterCheck = await database.shouldFilterByLocation();
+      
+      let query = supabase
         .from('locations')
         .select('*')
         .eq('lab_id', lab_id)
         .eq('is_active', true)
         .eq('is_collection_center', true)
         .order('name');
+
+      if (filterCheck.shouldFilter && !filterCheck.canViewAll && filterCheck.locationIds.length > 0) {
+        query = query.in('id', filterCheck.locationIds);
+      }
+
+      const { data, error } = await query;
       return { data, error };
     },
 
@@ -7378,13 +7378,22 @@ const masterDataAPI = {
         return { data: null, error: new Error('No lab_id found for current user') };
       }
       
-      const { data, error } = await supabase
+      // Apply location filtering
+      const filterCheck = await database.shouldFilterByLocation();
+      
+      let query = supabase
         .from('locations')
         .select('*')
         .eq('lab_id', lab_id)
         .eq('is_active', true)
         .eq('is_processing_center', true)
         .order('name');
+
+      if (filterCheck.shouldFilter && !filterCheck.canViewAll && filterCheck.locationIds.length > 0) {
+        query = query.in('id', filterCheck.locationIds);
+      }
+
+      const { data, error } = await query;
       return { data, error };
     },
 
@@ -7395,13 +7404,22 @@ const masterDataAPI = {
         return { data: null, error: new Error('No lab_id found for current user') };
       }
       
-      const { data, error } = await supabase
+      // Apply location filtering
+      const filterCheck = await database.shouldFilterByLocation();
+      
+      let query = supabase
         .from('locations')
         .select('*')
         .eq('lab_id', lab_id)
         .eq('is_active', true)
         .eq('can_receive_samples', true)
         .order('name');
+
+      if (filterCheck.shouldFilter && !filterCheck.canViewAll && filterCheck.locationIds.length > 0) {
+        query = query.in('id', filterCheck.locationIds);
+      }
+
+      const { data, error } = await query;
       return { data, error };
     },
 

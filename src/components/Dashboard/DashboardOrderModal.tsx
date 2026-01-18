@@ -440,15 +440,25 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         const { data: doctorsData } = await (database as any).doctors.getAll();
         setDoctors(doctorsData || []);
 
-        // Fetch all locations for dispatch (processing centers + others)
-        const { data: locations, error: locationsError } = await supabase
+        // Fetch all locations (filtered by user access if restricted)
+        const filterCheck = await database.shouldFilterByLocation();
+
+        let query = supabase
           .from('locations')
           .select('id, name, type, is_processing_center')
           .eq('lab_id', id)
           .eq('is_active', true)
           .order('name');
 
-        console.log('[DashboardOrderModal] Dispatch locations:', locations, 'Error:', locationsError);
+        if (filterCheck.shouldFilter && !filterCheck.canViewAll && filterCheck.locationIds.length > 0) {
+          query = query.in('id', filterCheck.locationIds);
+        }
+
+        const { data: locations, error: locationsError } = await query;
+
+        if (locationsError) {
+          console.error('[DashboardOrderModal] Error fetching locations:', locationsError);
+        }
         setDispatchLocations(locations || []);
 
         // Default to a processing center if available, otherwise first location

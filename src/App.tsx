@@ -57,6 +57,7 @@ import OutsourcedLabsSettings from './pages/OutsourcedLabsSettings';
 import IntraLabTransitQueue from './pages/IntraLabTransitQueue';
 import ManageReportSections from './pages/settings/ManageReportSections';
 import LabOnboarding from './pages/LabOnboarding';
+import VerificationPage from './pages/VerificationPage';
 
 // ⬇️ B2B Portal
 import B2BLogin from './pages/B2BLogin';
@@ -116,6 +117,12 @@ const AppRoutes: React.FC = () => {
       <Route
         path="/onboard"
         element={<LabOnboarding />}
+      />
+
+      {/* Public Verification Route */}
+      <Route
+        path="/verify"
+        element={<VerificationPage />}
       />
 
       {/* B2B Portal routes */}

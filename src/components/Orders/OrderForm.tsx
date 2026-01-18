@@ -453,21 +453,71 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     }
   }, [initialBookingData]);
 
-  // Initial loads
+  // ✅ OPTIMIZED: Search patients on-demand instead of preloading all
+  const searchPatients = async (query: string) => {
+    if (query.length < 2) {
+      setPatients([]);
+      return;
+    }
+
+    setLoadingPatients(true);
+    try {
+      const labId = await database.getCurrentUserLabId();
+      const { data, error } = await supabase
+        .from('patients')
+        .select('id, name, phone, age, gender, age_unit, dob, date_of_birth, default_doctor_id, default_location_id, default_payment_type')
+        .eq('lab_id', labId)
+        .or(`name.ilike.%${query}%,phone.ilike.%${query}%`)
+        .order('name')
+        .limit(20);
+
+      if (!error && data) {
+        setPatients(data as Patient[]);
+      }
+    } catch (err) {
+      console.error('Error searching patients:', err);
+    } finally {
+      setLoadingPatients(false);
+    }
+  };
+
+  // Debounce patient search
+  const patientSearchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    if (patientSearchTimeoutRef.current) {
+      clearTimeout(patientSearchTimeoutRef.current);
+    }
+
+    if (patientSearch.length >= 2) {
+      patientSearchTimeoutRef.current = setTimeout(() => {
+        searchPatients(patientSearch);
+      }, 300); // 300ms debounce
+    } else {
+      setPatients([]);
+    }
+
+    return () => {
+      if (patientSearchTimeoutRef.current) {
+        clearTimeout(patientSearchTimeoutRef.current);
+      }
+    };
+  }, [patientSearch]);
+
+  // Initial loads - ✅ OPTIMIZED: Removed patients.getAll() - now on-demand
   useEffect(() => {
     const fetchMasters = async () => {
       try {
         setLoadingDoctors(true);
         setLoadingLocations(true);
         setLoadingAccounts(true);
-        setLoadingPatients(true);
         setLoadingTests(true);
 
+        // ✅ OPTIMIZED: 6 parallel calls instead of 7 (removed patients)
         const [
           doctorsRes,
           locationsRes,
           accountsRes,
-          patientsRes,
           testsRes,
           packagesRes,
           outsourcedLabsRes
@@ -475,7 +525,6 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           (database as any).doctors?.getAll?.() ?? Promise.resolve({ data: [] }),
           (database as any).locations?.getAll?.() ?? Promise.resolve({ data: [] }),
           (database as any).accounts?.getAll?.() ?? Promise.resolve({ data: [] }),
-          (database as any).patients?.getAll?.() ?? Promise.resolve({ data: [] }),
           (database as any).testGroups?.getAll?.() ?? Promise.resolve({ data: [] }),
           (database as any).packages?.getAll?.() ?? Promise.resolve({ data: [] }),
           supabase.from('outsourced_labs').select('*').eq('is_active', true).order('name')
@@ -484,7 +533,6 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         setDoctors(doctorsRes?.data ?? []);
         setLocations(locationsRes?.data ?? []);
         setAccounts(accountsRes?.data ?? []);
-        setPatients(patientsRes?.data ?? []);
 
         // Combine test groups and packages into a single list
         const testGroupsList = (testsRes?.data ?? []).map((tg: any) => ({
@@ -525,7 +573,6 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         setLoadingDoctors(false);
         setLoadingLocations(false);
         setLoadingAccounts(false);
-        setLoadingPatients(false);
         setLoadingTests(false);
       }
     };
@@ -1086,13 +1133,21 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             throw new Error('Order created but ID not available');
           }
 
+          // ✅ OPTIMIZED: Get labId and authUser ONCE at the start (was called 2-3 times)
+          const [labId, authUserResult] = await Promise.all([
+            database.getCurrentUserLabId(),
+            supabase.auth.getUser()
+          ]);
+          const authUser = authUserResult.data;
+
           console.log('📝 Creating invoice for order:', orderId);
+
           // Create invoice
           const invoiceData = {
             order_id: orderId,
             patient_id: selectedPatient!.id,
             patient_name: selectedPatient!.name,
-            lab_id: await database.getCurrentUserLabId(),
+            lab_id: labId,
             subtotal: calculatedTotal,
             total_before_discount: calculatedTotal,
             discount: discountValue > 0 ? discountValue : 0,
@@ -1103,35 +1158,28 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             tax: 0,
             due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
             status: amountPaid >= finalAmount ? 'Paid' : (amountPaid > 0 ? 'Partial' : 'Draft'),
-            // Use Order Number if available, else generate one
             invoice_number: (result as any)?.order_number ? `INV-${(result as any).order_number}` : `INV-${Date.now().toString().slice(-6)}`,
           };
 
-          const { data: invoice, error: invoiceError } = await supabase
-            .from('invoices')
-            .insert(invoiceData)
-            .select()
-            .single();
+          // ✅ OPTIMIZED: Run invoice creation and order update in parallel
+          const [invoiceResult, orderUpdateResult] = await Promise.all([
+            supabase.from('invoices').insert(invoiceData).select().single(),
+            supabase.from('orders').update({ billing_status: 'billed', is_billed: true }).eq('id', orderId)
+          ]);
 
-          if (invoiceError) {
-            console.error('Invoice creation failed:', invoiceError);
-            throw invoiceError;
+          if (invoiceResult.error) {
+            console.error('Invoice creation failed:', invoiceResult.error);
+            throw invoiceResult.error;
           }
 
+          const invoice = invoiceResult.data;
           console.log('✅ Invoice created:', invoice.id);
 
-          // Update order billing status
-          const { error: updateOrderError } = await supabase
-            .from('orders')
-            .update({
-              billing_status: 'billed',
-              is_billed: true
-            })
-            .eq('id', orderId);
+          if (orderUpdateResult.error) {
+            console.error('Failed to update order billing status:', orderUpdateResult.error);
+          }
 
-          if (updateOrderError) console.error('Failed to update order billing status:', updateOrderError);
-
-          // Create invoice items
+          // Create invoice items (depends on invoice.id)
           const invoiceItemsData = selectedTestDetails.map(t => {
             const price = accountPrices[t.id] ?? t.price ?? 0;
             return {
@@ -1140,51 +1188,52 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               price: price,
               quantity: 1,
               total: price,
-              lab_id: invoice.lab_id,
+              lab_id: labId,
               order_id: orderId
             };
           });
 
-          if (invoiceItemsData.length > 0) {
-            const { error: itemsError } = await supabase
-              .from('invoice_items')
-              .insert(invoiceItemsData);
+          // ✅ OPTIMIZED: Run invoice items and payment creation in parallel if applicable
+          const parallelOps: Promise<any>[] = [];
 
-            if (itemsError) {
-              console.error('Error creating invoice items:', itemsError);
-            } else {
-              console.log(`✅ Added ${invoiceItemsData.length} invoice items`);
-            }
-          } else {
-            console.warn('⚠️ No invoice items to add');
+          if (invoiceItemsData.length > 0) {
+            parallelOps.push(
+              (async () => {
+                const res = await supabase.from('invoice_items').insert(invoiceItemsData);
+                if (res.error) console.error('Error creating invoice items:', res.error);
+                else console.log(`✅ Added ${invoiceItemsData.length} invoice items`);
+                return res;
+              })()
+            );
           }
 
-          // Create payment record if amount was paid
           if (amountPaid > 0 && invoice) {
-            const { data: authUser } = await supabase.auth.getUser();
-
             const paymentData = {
               invoice_id: invoice.id,
               amount: amountPaid,
               payment_method: paymentMethod,
               received_by: authUser.user?.id,
-              lab_id: await database.getCurrentUserLabId(),
+              lab_id: labId,
               location_id: selectedLocation || null,
               payment_reference: `PAY-${Date.now()}`,
             };
 
-            const { data: payment, error: paymentError } = await supabase
-              .from('payments')
-              .insert(paymentData)
-              .select()
-              .single();
+            parallelOps.push(
+              (async () => {
+                const res = await supabase.from('payments').insert(paymentData).select().single();
+                if (res.error) {
+                  console.error('Payment creation failed:', res.error);
+                  throw res.error;
+                }
+                console.log('✅ Payment created:', res.data.id);
+                return res;
+              })()
+            );
+          }
 
-            if (paymentError) {
-              console.error('Payment creation failed:', paymentError);
-              throw paymentError;
-            }
-
-            console.log('✅ Payment created:', payment.id);
+          // Wait for all parallel operations
+          if (parallelOps.length > 0) {
+            await Promise.all(parallelOps);
           }
 
           setSubmissionProgress('Order, invoice, and payment created successfully!');

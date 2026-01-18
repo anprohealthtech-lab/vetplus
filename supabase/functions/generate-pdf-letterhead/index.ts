@@ -921,12 +921,17 @@ function buildPdfBodyDocumentV2(bodyHtml: string, customCss: string, letterheadB
   const topSpacerHeight = pdfSettings?.margins?.top ?? 130;
   const bottomSpacerHeight = pdfSettings?.margins?.bottom ?? 130;
   
+  // DYNAMIC QR POSITIONING:
+  // - If E-Copy (Letterhead): Push QR code down below the header graphic (spacer height + padding)
+  // - If Print (No Letterhead): Keep it at top right (25px)
+  const qrTopPos = letterheadBackgroundUrl ? (topSpacerHeight + 20) : 25;
+  
   // Generate Qr Code HTML if verification URL provided
   const qrCodeHtml = verificationUrl ? 
     `<img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(verificationUrl)}" 
           class="report-auth-qr" 
           alt="Verify Report"
-          style="position: absolute; top: 25px; right: 25px; width: 75px; height: 75px; z-index: 9999; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" />` 
+          style="position: absolute; top: ${qrTopPos}px; right: 25px; width: 75px; height: 75px; z-index: 9999; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" />` 
     : '';
   // 🎨 PDF.co compatibility: Expand CSS custom properties (variables) to literal values
   let normalizedCss = customCss
@@ -1060,10 +1065,7 @@ function buildPdfBodyDocumentV2(bodyHtml: string, customCss: string, letterheadB
   
   console.log('  letterheadStyles length:', letterheadStyles.length);
   
-  // Calculate spacer heights from settings (default to 130px)
-  const topSpacerHeight = pdfSettings?.margins?.top ?? 130;
-  const bottomSpacerHeight = pdfSettings?.margins?.bottom ?? 130;
-
+  
   // Wrap content with fixed background AND repeating layout table
   // This "Print Table" technique ensures top/bottom spacing repeats on EVERY page
   // ALSO: Inject QR Code if enabled
@@ -3224,7 +3226,7 @@ serve(async (req) => {
       
       console.log('🔧 About to call buildPdfBodyDocumentV2 with letterhead:', letterheadBackgroundUrl || 'NONE');
       
-      const verifyUrl = `https://reports.limsapp.in/verify?id=${encodeURIComponent(context.sampleId || orderId || '')}`;
+      const verifyUrl = `https://app.limsapp.in/verify?id=${encodeURIComponent(context.sampleId || orderId || '')}`;
       bodyHtml = buildPdfBodyDocumentV2(renderedHtml, (template.gjs_css || '') + '\n' + dynamicCss, letterheadBackgroundUrl, pdfSettings, verifyUrl)
       console.log('✅ buildPdfBodyDocumentV2 returned, HTML length:', bodyHtml.length);
       console.log('🔍 Checking if letterhead is in returned HTML:', bodyHtml.includes('page-background') ? 'YES' : 'NO');
@@ -3340,7 +3342,7 @@ serve(async (req) => {
       const dynamicCss = generateDynamicCss(pdfSettings)
       console.log('🔧 About to call buildPdfBodyDocumentV2 (multi-template) with letterhead:', letterheadBackgroundUrl || 'NONE');
       
-      const verifyUrl = `https://reports.limsapp.in/verify?id=${encodeURIComponent(context.sampleId || orderId || '')}`;
+      const verifyUrl = `https://app.limsapp.in/verify?id=${encodeURIComponent(context.sampleId || orderId || '')}`;
       bodyHtml = buildPdfBodyDocumentV2(renderedSections.join('\n'), (template.gjs_css || '') + '\n' + dynamicCss, letterheadBackgroundUrl, pdfSettings, verifyUrl)
       console.log('✅ buildPdfBodyDocumentV2 returned, HTML length:', bodyHtml.length);
       console.log('🔍 Checking if letterhead is in returned HTML:', bodyHtml.includes('page-background') ? 'YES' : 'NO');
@@ -3462,7 +3464,7 @@ serve(async (req) => {
         
         // Build print HTML WITHOUT gjs_css - pass empty string for clean print output
         // CRITICAL: Pass null for letterhead so we get a clean HTML without background/spacers
-        const verifyUrl = `https://reports.limsapp.in/verify?id=${encodeURIComponent(context.sampleId || orderId || '')}`;
+        const verifyUrl = `https://app.limsapp.in/verify?id=${encodeURIComponent(context.sampleId || orderId || '')}`;
         printHtml = buildPdfBodyDocumentV2(printRenderedHtml, '', null, pdfSettings, verifyUrl)
         console.log('✅ Built print HTML without gjs_css (clean print mode)')
         

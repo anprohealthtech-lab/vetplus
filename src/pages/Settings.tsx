@@ -87,6 +87,15 @@ interface LabSettings {
   email_domain?: string;
   license_number: string;
   registration_number: string;
+  gst_number: string;
+  upi_id: string;
+  bank_details: {
+    bank_name?: string;
+    account_number?: string;
+    ifsc_code?: string;
+    account_holder?: string;
+    branch?: string;
+  } | null;
   watermark_enabled: boolean;
   watermark_opacity: number;
   watermark_position: string;
@@ -531,6 +540,9 @@ const Settings: React.FC = () => {
             email_domain: labData.email_domain || '',
             license_number: labData.license_number || '',
             registration_number: labData.registration_number || '',
+            gst_number: (labData as any).gst_number || '',
+            upi_id: (labData as any).upi_id || '',
+            bank_details: (labData as any).bank_details || null,
             watermark_enabled: labData.watermark_enabled || false,
             watermark_opacity: labData.watermark_opacity || 0.15,
             watermark_position: labData.watermark_position || 'center',
@@ -715,6 +727,9 @@ const Settings: React.FC = () => {
         email: labSettings.email,
         license_number: labSettings.license_number,
         registration_number: labSettings.registration_number,
+        gst_number: labSettings.gst_number || null,
+        upi_id: labSettings.upi_id || null,
+        bank_details: labSettings.bank_details || null,
         watermark_enabled: labSettings.watermark_enabled,
         watermark_opacity: labSettings.watermark_opacity,
         watermark_position: labSettings.watermark_position,
@@ -1262,6 +1277,122 @@ const Settings: React.FC = () => {
                         </select>
                         <p className="text-xs text-gray-500 mt-2">
                           This is the default language for patient-friendly summaries. Medical terms like "Hemoglobin", "CBC", etc. will remain in English for accuracy, while explanations will be in the selected language.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Payment & Billing Settings */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                      <FileText className="h-5 w-5 mr-2 text-green-600" />
+                      Payment & Billing Settings
+                    </h3>
+                    <p className="text-sm text-gray-500 mb-4">
+                      Configure payment details for invoices. UPI QR codes will automatically appear on invoices when balance is due.
+                    </p>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">GST Number (GSTIN)</label>
+                        <input
+                          type="text"
+                          value={labSettings.gst_number}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, gst_number: e.target.value.toUpperCase() } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 uppercase"
+                          placeholder="22AAAAA0000A1Z5"
+                          maxLength={15}
+                        />
+                        <p className="text-xs text-gray-500 mt-1">15-digit GST Identification Number for B2B invoices</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          UPI ID (Virtual Payment Address)
+                        </label>
+                        <input
+                          type="text"
+                          value={labSettings.upi_id}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, upi_id: e.target.value.toLowerCase() } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="yourlab@paytm or 9876543210@ybl"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          UPI QR code will be shown on invoices for quick payment via PhonePe, Google Pay, Paytm, etc.
+                        </p>
+                      </div>
+                      
+                      {/* Bank Details Section */}
+                      <div className="border-t pt-4 mt-4">
+                        <h4 className="text-sm font-semibold text-gray-800 mb-3">Bank Account Details (for NEFT/RTGS)</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Bank Name</label>
+                            <input
+                              type="text"
+                              value={labSettings.bank_details?.bank_name || ''}
+                              onChange={(e) => setLabSettings(prev => prev ? { 
+                                ...prev, 
+                                bank_details: { ...prev.bank_details, bank_name: e.target.value } 
+                              } : prev)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              placeholder="HDFC Bank"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Branch</label>
+                            <input
+                              type="text"
+                              value={labSettings.bank_details?.branch || ''}
+                              onChange={(e) => setLabSettings(prev => prev ? { 
+                                ...prev, 
+                                bank_details: { ...prev.bank_details, branch: e.target.value } 
+                              } : prev)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              placeholder="Main Branch"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Account Holder Name</label>
+                            <input
+                              type="text"
+                              value={labSettings.bank_details?.account_holder || ''}
+                              onChange={(e) => setLabSettings(prev => prev ? { 
+                                ...prev, 
+                                bank_details: { ...prev.bank_details, account_holder: e.target.value } 
+                              } : prev)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              placeholder="Your Lab Name Pvt Ltd"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Account Number</label>
+                            <input
+                              type="text"
+                              value={labSettings.bank_details?.account_number || ''}
+                              onChange={(e) => setLabSettings(prev => prev ? { 
+                                ...prev, 
+                                bank_details: { ...prev.bank_details, account_number: e.target.value } 
+                              } : prev)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              placeholder="1234567890123"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">IFSC Code</label>
+                            <input
+                              type="text"
+                              value={labSettings.bank_details?.ifsc_code || ''}
+                              onChange={(e) => setLabSettings(prev => prev ? { 
+                                ...prev, 
+                                bank_details: { ...prev.bank_details, ifsc_code: e.target.value.toUpperCase() } 
+                              } : prev)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 uppercase"
+                              placeholder="HDFC0001234"
+                              maxLength={11}
+                            />
+                          </div>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-3">
+                          Bank details will appear on invoices for NEFT/RTGS payments.
                         </p>
                       </div>
                     </div>

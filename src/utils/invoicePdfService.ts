@@ -7,10 +7,12 @@
  * - Partial invoice support (INV-2024-001-P1 suffix pattern)
  * - Financial validation before generation
  * - Upload to Supabase Storage (invoices bucket)
+ * - UPI QR Code generation for payments
  */
 
 import { supabase } from './supabase';
 import { notificationTriggerService } from './notificationTriggerService';
+import { generateUPIPaymentBlock, isValidUPIId } from './upiQrService';
 
 // Edge Function URL for PDF generation (keeps API key secure)
 const PDF_GENERATION_FUNCTION_URL = import.meta.env.VITE_SUPABASE_URL 
@@ -136,8 +138,8 @@ export async function generateInvoicePDF(
       invoice.invoice_number = await generateInvoiceNumber(invoice);
     }
 
-    // 5. Build HTML bundle with data
-    const htmlBundle = buildInvoiceHtmlBundle(invoice, template);
+    // 5. Build HTML bundle with data (async for UPI QR generation)
+    const htmlBundle = await buildInvoiceHtmlBundle(invoice, template);
 
     // 6. Call Edge Function to generate and upload PDF
     // Pass invoice number without .pdf extension (edge function will add it)
@@ -303,7 +305,7 @@ async function fetchInvoiceData(invoiceId: string): Promise<Invoice | null> {
     .from('invoices')
     .select(`
       *,
-      lab:labs(name, address, phone, email, license_number, registration_number),
+      lab:labs(name, address, phone, email, license_number, registration_number, upi_id, bank_details, gst_number),
       patient:patients(phone, email, address),
       account:accounts(name, billing_mode),
       invoice_items(*)
@@ -368,11 +370,42 @@ async function fetchDefaultTemplate(labId: string): Promise<InvoiceTemplate | nu
 }
 
 /**
- * Build HTML bundle with template and invoice data
+ * Build HTML bundle with template and invoice data (async for QR generation)
  */
-function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplate): string {
+async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplate): Promise<string> {
   let html = template.gjs_html || getDefaultInvoiceHtml();
   let css = template.gjs_css || getDefaultInvoiceCss();
+
+  // Calculate balance due
+  const balanceDue = invoice.total - invoice.amount_paid;
+  const isPaid = balanceDue <= 0;
+
+  // Generate UPI QR Code if lab has UPI ID and balance is due
+  let upiQrHtml = '';
+  const labUpiId = (invoice.lab as any)?.upi_id || (invoice.lab as any)?.bank_details?.upi_id || template.bank_details?.upi_id;
+  
+  if (labUpiId && isValidUPIId(labUpiId) && !isPaid && balanceDue > 0) {
+    try {
+      upiQrHtml = await generateUPIPaymentBlock({
+        upiId: labUpiId,
+        payeeName: invoice.lab?.name || 'Lab',
+        amount: balanceDue,
+        transactionNote: `INV-${invoice.invoice_number}`,
+      }, {
+        size: 140,
+        showAmount: true,
+        showUpiId: true,
+        title: 'Scan to Pay via UPI',
+      });
+    } catch (qrError) {
+      console.error('UPI QR generation failed:', qrError);
+    }
+  }
+
+  // Calculate GST split (for B2B invoices)
+  const gstAmount = invoice.tax || 0;
+  const cgst = gstAmount / 2;
+  const sgst = gstAmount / 2;
 
   // Replace basic placeholders
   const placeholders: Record<string, string> = {
@@ -390,19 +423,24 @@ function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplate): st
     '{{subtotal}}': formatCurrency(invoice.subtotal),
     '{{discount}}': formatCurrency(invoice.discount),
     '{{tax}}': formatCurrency(invoice.tax),
+    '{{cgst}}': formatCurrency(cgst),
+    '{{sgst}}': formatCurrency(sgst),
     '{{total}}': formatCurrency(invoice.total),
     '{{amount_paid}}': formatCurrency(invoice.amount_paid),
     // If account is monthly billing, Balance Due is effectively 0 for the patient (handled by account)
     '{{balance_due}}': (invoice.account && invoice.account.billing_mode === 'monthly') 
       ? formatCurrency(0) // or 'Billed to Account'
-      : formatCurrency(invoice.total - invoice.amount_paid),
+      : formatCurrency(balanceDue),
     '{{payment_type}}': invoice.account ? 'Bill to Account' : formatPaymentType(invoice.payment_type),
+    '{{payment_status}}': isPaid ? 'PAID' : 'PENDING',
     '{{lab_name}}': invoice.lab?.name || '',
     '{{lab_address}}': invoice.lab?.address || '',
     '{{lab_phone}}': invoice.lab?.phone || '',
     '{{lab_email}}': invoice.lab?.email || '',
     '{{lab_license}}': invoice.lab?.license_number || '',
     '{{lab_registration}}': invoice.lab?.registration_number || '',
+    '{{lab_gst}}': (invoice.lab as any)?.gst_number || '',
+    '{{lab_upi}}': labUpiId || '',
     '{{notes}}': invoice.notes || '',
     '{{current_date}}': formatDate(new Date().toISOString()),
   };
@@ -437,6 +475,13 @@ function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplate): st
     html = html.replace(/{{bank_details}}/g, '');
   }
 
+  // Add UPI QR Code block
+  if (upiQrHtml) {
+    html = html.replace(/{{upi_qr_code}}/g, upiQrHtml);
+  } else {
+    html = html.replace(/{{upi_qr_code}}/g, '');
+  }
+
   // Add tax disclaimer if present
   if (template.tax_disclaimer) {
     html = html.replace(/{{tax_disclaimer}}/g, template.tax_disclaimer);
@@ -452,6 +497,36 @@ function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplate): st
     html = html.replace(/{{partial_badge}}/g, '');
   }
 
+  // Payment status badge
+  const statusBadge = isPaid 
+    ? '<div class="payment-status-badge paid">✓ PAID</div>'
+    : '<div class="payment-status-badge pending">PAYMENT PENDING</div>';
+  html = html.replace(/{{payment_status_badge}}/g, statusBadge);
+
+  // Add status badge CSS
+  const statusBadgeCss = `
+    .payment-status-badge {
+      display: inline-block;
+      padding: 8px 16px;
+      border-radius: 4px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    .payment-status-badge.paid {
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    .payment-status-badge.pending {
+      background: #fff3cd;
+      color: #856404;
+      border: 1px solid #ffeeba;
+    }
+    .upi-payment-block {
+      page-break-inside: avoid;
+    }
+  `;
+
   // Wrap in complete HTML document
   return `
     <!DOCTYPE html>
@@ -460,7 +535,7 @@ function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplate): st
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Invoice ${invoice.invoice_number}</title>
-        <style>${css}</style>
+        <style>${css}${statusBadgeCss}</style>
       </head>
       <body>
         ${html}
@@ -850,6 +925,8 @@ function getDefaultInvoiceHtml(): string {
       {{payment_terms}}
       {{bank_details}}
       
+      {{upi_qr_code}}
+      
       <div class="invoice-footer">
         <p>{{tax_disclaimer}}</p>
         <p><em>Thank you for your business!</em></p>
@@ -882,5 +959,14 @@ function getDefaultInvoiceCss(): string {
     .payment-terms, .bank-details { margin: 20px 0; padding: 15px; background: #f9f9f9; border-left: 4px solid #0066cc; }
     .invoice-footer { margin-top: 40px; text-align: center; font-size: 12px; color: #666; }
     .partial-invoice-badge { position: absolute; top: 20px; right: 20px; background: #ff9800; color: white; padding: 10px 20px; font-weight: bold; transform: rotate(10deg); }
+    .upi-payment-block { margin: 20px 0; padding: 20px; background: linear-gradient(135deg, #f0f8ff 0%, #e8f5e9 100%); border: 2px dashed #4caf50; border-radius: 10px; text-align: center; }
+    .upi-payment-block h3 { margin-bottom: 15px; color: #2e7d32; font-size: 18px; }
+    .upi-payment-block img { max-width: 150px; height: auto; margin: 10px 0; border: 4px solid white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .upi-payment-block .upi-id { font-family: monospace; background: white; padding: 8px 16px; border-radius: 5px; display: inline-block; margin: 10px 0; font-size: 14px; border: 1px solid #ddd; }
+    .upi-payment-block .upi-apps { font-size: 12px; color: #666; margin-top: 10px; }
+    .upi-payment-block .balance-amount { font-size: 20px; font-weight: bold; color: #d32f2f; margin: 10px 0; }
+    .payment-status-badge { display: inline-block; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 12px; text-transform: uppercase; }
+    .payment-status-badge.paid { background: #e8f5e9; color: #2e7d32; border: 2px solid #4caf50; }
+    .payment-status-badge.pending { background: #fff3e0; color: #e65100; border: 2px solid #ff9800; }
   `;
 }

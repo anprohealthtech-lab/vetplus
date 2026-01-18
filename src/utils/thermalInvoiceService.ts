@@ -1,6 +1,8 @@
 import { database, supabase } from './supabase';
+import { generateUPIQRCodeDataURL, generateUPIPaymentLink, isValidUPIId } from './upiQrService';
+import JsBarcode from 'jsbarcode';
 
-// Helper function to fetch invoice data
+// Helper function to fetch invoice data with UPI details
 async function fetchInvoiceData(invoiceId: string) {
   const { data, error } = await supabase
     .from('invoices')
@@ -8,13 +10,33 @@ async function fetchInvoiceData(invoiceId: string) {
       *,
       patient:patients(*),
       invoice_items(*),
-      lab:labs(name, address, phone, email, gst_number)
+      lab:labs(name, address, phone, email, gst_number, upi_id, bank_details)
     `)
     .eq('id', invoiceId)
     .single();
 
   if (error) throw error;
   return data;
+}
+
+// Generate barcode as data URL
+async function generateBarcodeDataURL(text: string, height: number = 40): Promise<string> {
+  return new Promise((resolve, reject) => {
+    try {
+      const canvas = document.createElement('canvas');
+      JsBarcode(canvas, text, {
+        format: 'CODE128',
+        width: 1.5,
+        height: height,
+        displayValue: false,
+        margin: 0,
+      });
+      resolve(canvas.toDataURL('image/png'));
+    } catch (error) {
+      console.error('Barcode generation failed:', error);
+      resolve(''); // Return empty on error
+    }
+  });
 }
 
 // Helper function to validate invoice
@@ -42,7 +64,7 @@ async function generateInvoiceNumber(invoice: any) {
 }
 
 /**
- * Generate Thermal Invoice HTML
+ * Generate Thermal Invoice HTML with UPI QR Code & Barcode
  */
 export async function generateThermalInvoiceHTML(
   invoiceId: string,
@@ -68,7 +90,70 @@ export async function generateThermalInvoiceHTML(
         .eq('id', invoiceId);
     }
 
-    // 4. Generate thermal HTML
+    // 4. Calculate balance due
+    const balanceDue = invoice.total - (invoice.amount_paid || 0);
+    const isPaid = balanceDue <= 0;
+
+    // 5. Generate UPI QR Code if lab has UPI ID and balance is due
+    let upiQrHtml = '';
+    const labUpiId = invoice.lab?.upi_id || invoice.lab?.bank_details?.upi_id;
+    
+    if (labUpiId && isValidUPIId(labUpiId) && !isPaid && balanceDue > 0) {
+      try {
+        const qrSize = format === 'thermal_80mm' ? 120 : 90;
+        const qrDataURL = await generateUPIQRCodeDataURL({
+          upiId: labUpiId,
+          payeeName: invoice.lab?.name || 'Lab',
+          amount: balanceDue,
+          transactionNote: `INV-${invoice.invoice_number}`,
+        }, { size: qrSize });
+
+        upiQrHtml = `
+          <div class="line"></div>
+          <div class="center bold" style="font-size: ${format === 'thermal_80mm' ? '12px' : '10px'}; margin: 5px 0;">
+            SCAN TO PAY
+          </div>
+          <div class="center">
+            <img src="${qrDataURL}" alt="UPI QR" style="width: ${qrSize}px; height: ${qrSize}px;" />
+          </div>
+          <div class="center" style="font-size: 9px; margin: 3px 0;">
+            UPI: ${labUpiId}
+          </div>
+          <div class="center bold" style="font-size: ${format === 'thermal_80mm' ? '14px' : '12px'}; color: #000;">
+            Pay ₹${balanceDue.toFixed(2)}
+          </div>
+          <div class="center" style="font-size: 8px; color: #666;">
+            PhonePe • GPay • Paytm • BHIM
+          </div>
+        `;
+      } catch (qrError) {
+        console.error('UPI QR generation failed:', qrError);
+      }
+    }
+
+    // 6. Generate Invoice Barcode
+    let barcodeHtml = '';
+    try {
+      const barcodeHeight = format === 'thermal_80mm' ? 35 : 25;
+      const barcodeDataURL = await generateBarcodeDataURL(invoice.invoice_number, barcodeHeight);
+      if (barcodeDataURL) {
+        barcodeHtml = `
+          <div class="center" style="margin: 5px 0;">
+            <img src="${barcodeDataURL}" alt="Barcode" style="max-width: ${format === 'thermal_80mm' ? '70mm' : '48mm'}; height: ${barcodeHeight}px;" />
+          </div>
+          <div class="center" style="font-size: 9px;">${invoice.invoice_number}</div>
+        `;
+      }
+    } catch (barcodeError) {
+      console.error('Barcode generation failed:', barcodeError);
+    }
+
+    // 7. Payment status badge
+    const statusBadge = isPaid 
+      ? `<div class="center bold" style="background: #d4edda; color: #155724; padding: 5px; margin: 5px 0; font-size: ${format === 'thermal_80mm' ? '14px' : '12px'};">✓ PAID</div>`
+      : `<div class="center bold" style="background: #fff3cd; color: #856404; padding: 5px; margin: 5px 0; font-size: ${format === 'thermal_80mm' ? '14px' : '12px'};">PAYMENT DUE: ₹${balanceDue.toFixed(2)}</div>`;
+
+    // 8. Generate thermal HTML
     const width = format === 'thermal_80mm' ? '80mm' : '58mm';
     const fontSize = format === 'thermal_80mm' ? '12px' : '10px';
     
@@ -84,78 +169,146 @@ export async function generateThermalInvoiceHTML(
           }
           @media print {
             body { margin: 0; }
+            .no-print { display: none; }
           }
+          * { box-sizing: border-box; }
           body { 
             width: ${width}; 
-            font-family: 'Courier New', monospace; 
+            font-family: 'Courier New', 'Lucida Console', monospace; 
             font-size: ${fontSize};
-            margin: 5mm;
-            padding: 0;
+            margin: 0;
+            padding: 3mm;
+            line-height: 1.3;
           }
           .center { text-align: center; }
           .bold { font-weight: bold; }
-          .line { border-top: 1px dashed #000; margin: 5px 0; }
+          .line { border-top: 1px dashed #000; margin: 6px 0; }
+          .double-line { border-top: 3px double #000; margin: 6px 0; }
           .right { text-align: right; }
-          .item-row { display: flex; justify-content: space-between; margin: 3px 0; }
+          .item-row { 
+            display: flex; 
+            justify-content: space-between; 
+            margin: 3px 0;
+            gap: 5px;
+          }
+          .item-row > div:first-child {
+            flex: 1;
+            word-break: break-word;
+          }
+          .item-row > div:last-child {
+            flex-shrink: 0;
+            text-align: right;
+          }
+          .header-title {
+            font-size: ${format === 'thermal_80mm' ? '16px' : '13px'};
+            font-weight: bold;
+            margin-bottom: 3px;
+          }
+          .sub-text {
+            font-size: ${format === 'thermal_80mm' ? '10px' : '9px'};
+            color: #333;
+          }
+          .total-row {
+            font-size: ${format === 'thermal_80mm' ? '14px' : '12px'};
+            font-weight: bold;
+          }
         </style>
       </head>
       <body>
-        <div class="center bold" style="font-size: ${format === 'thermal_80mm' ? '14px' : '12px'};">
-          ${invoice.lab?.name || 'Lab'}
+        <!-- Header -->
+        <div class="center header-title">${invoice.lab?.name || 'Laboratory'}</div>
+        <div class="center sub-text">${invoice.lab?.address || ''}</div>
+        <div class="center sub-text">Ph: ${invoice.lab?.phone || ''} ${invoice.lab?.email ? `| ${invoice.lab.email}` : ''}</div>
+        ${invoice.lab?.gst_number ? `<div class="center sub-text">GSTIN: ${invoice.lab.gst_number}</div>` : ''}
+        
+        <div class="double-line"></div>
+        
+        <!-- Invoice Info -->
+        <div class="center bold" style="font-size: ${format === 'thermal_80mm' ? '13px' : '11px'};">INVOICE / RECEIPT</div>
+        <div class="item-row">
+          <div>Invoice #:</div>
+          <div class="bold">${invoice.invoice_number}</div>
         </div>
-        <div class="center">${invoice.lab?.address || ''}</div>
-        <div class="center">Ph: ${invoice.lab?.phone || ''}</div>
-        ${invoice.lab?.gst_number ? `<div class="center">GST: ${invoice.lab.gst_number}</div>` : ''}
+        <div class="item-row">
+          <div>Date:</div>
+          <div>${new Date(invoice.invoice_date).toLocaleDateString('en-IN')}</div>
+        </div>
+        <div class="item-row">
+          <div>Time:</div>
+          <div>${new Date(invoice.invoice_date).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>
+        </div>
+        
         <div class="line"></div>
         
-        <div class="bold">Invoice: ${invoice.invoice_number}</div>
-        <div>Date: ${new Date(invoice.invoice_date).toLocaleDateString()}</div>
-        <div>Patient: ${invoice.patient_name}</div>
-        ${invoice.patient?.phone ? `<div>Phone: ${invoice.patient.phone}</div>` : ''}
+        <!-- Patient Info -->
+        <div class="bold">Patient: ${invoice.patient_name}</div>
+        ${invoice.patient?.phone ? `<div class="sub-text">Phone: ${invoice.patient.phone}</div>` : ''}
+        
         <div class="line"></div>
         
-        ${(invoice.invoice_items || []).map((item: any) => `
+        <!-- Items -->
+        <div class="bold" style="margin-bottom: 5px;">Tests/Services:</div>
+        ${(invoice.invoice_items || []).map((item: any, index: number) => `
           <div class="item-row">
-            <div style="flex: 1;">${item.test_name}</div>
-            <div>${item.price.toFixed(2)}</div>
+            <div>${index + 1}. ${item.test_name}</div>
+            <div>₹${item.price.toFixed(2)}</div>
           </div>
         `).join('')}
         
         <div class="line"></div>
+        
+        <!-- Totals -->
         <div class="item-row">
           <div>Subtotal:</div>
-          <div>${invoice.subtotal.toFixed(2)}</div>
+          <div>₹${invoice.subtotal.toFixed(2)}</div>
         </div>
         ${invoice.discount > 0 ? `
-          <div class="item-row">
+          <div class="item-row" style="color: #28a745;">
             <div>Discount:</div>
-            <div>-${invoice.discount.toFixed(2)}</div>
+            <div>-₹${invoice.discount.toFixed(2)}</div>
           </div>
         ` : ''}
         ${invoice.tax > 0 ? `
           <div class="item-row">
-            <div>Tax:</div>
-            <div>${invoice.tax.toFixed(2)}</div>
+            <div>Tax (GST):</div>
+            <div>₹${invoice.tax.toFixed(2)}</div>
           </div>
         ` : ''}
-        <div class="line"></div>
-        <div class="item-row bold" style="font-size: ${format === 'thermal_80mm' ? '14px' : '12px'};">
-          <div>TOTAL:</div>
-          <div>${invoice.total.toFixed(2)}</div>
+        
+        <div class="double-line"></div>
+        
+        <div class="item-row total-row">
+          <div>GRAND TOTAL:</div>
+          <div>₹${invoice.total.toFixed(2)}</div>
         </div>
+        
         ${invoice.amount_paid > 0 ? `
-          <div class="item-row">
-            <div>Paid:</div>
-            <div>${invoice.amount_paid.toFixed(2)}</div>
+          <div class="item-row" style="color: #28a745;">
+            <div>Amount Paid:</div>
+            <div>₹${invoice.amount_paid.toFixed(2)}</div>
           </div>
-          <div class="item-row bold">
-            <div>Balance:</div>
-            <div>${(invoice.total - invoice.amount_paid).toFixed(2)}</div>
+          <div class="item-row bold" style="color: ${isPaid ? '#28a745' : '#dc3545'};">
+            <div>Balance Due:</div>
+            <div>₹${balanceDue.toFixed(2)}</div>
           </div>
         ` : ''}
+        
+        <!-- Payment Status -->
+        ${statusBadge}
+        
+        <!-- UPI QR Code (if balance due) -->
+        ${upiQrHtml}
+        
+        <!-- Barcode -->
+        ${barcodeHtml}
+        
         <div class="line"></div>
-        <div class="center">Thank You!</div>
-        ${invoice.lab?.email ? `<div class="center" style="font-size: 10px;">${invoice.lab.email}</div>` : ''}
+        
+        <!-- Footer -->
+        <div class="center bold" style="margin: 8px 0;">Thank You for Choosing Us!</div>
+        <div class="center sub-text">This is a computer generated receipt.</div>
+        <div class="center sub-text">Please retain for your records.</div>
+        
       </body>
       </html>
     `;
