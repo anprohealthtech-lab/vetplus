@@ -58,6 +58,7 @@ import IntraLabTransitQueue from './pages/IntraLabTransitQueue';
 import ManageReportSections from './pages/settings/ManageReportSections';
 import LabOnboarding from './pages/LabOnboarding';
 import VerificationPage from './pages/VerificationPage';
+import FinancialReports from './pages/FinancialReports';
 
 // ⬇️ B2B Portal
 import B2BLogin from './pages/B2BLogin';
@@ -162,6 +163,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/workflow-demo/peripheral-smear" element={<PeripheralSmearDemo />} />
                 <Route path="/billing" element={<Billing />} />
                 <Route path="/cash-reconciliation" element={<CashReconciliation />} />
+                <Route path="/financial-reports" element={<FinancialReports />} />
                 {/* <Route path="/ai-tools" element={<AITools />} /> Hidden */}
                 {/* <Route path="/ai-prompts" element={<AIPromptManager />} /> Hidden */}
                 <Route path="/settings" element={<Settings />} />

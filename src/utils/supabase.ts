@@ -600,7 +600,13 @@ export const database = {
       
       const { data: userData } = await supabase
         .from('users')
-        .select('id, role')
+        .select(`
+          id, 
+          role,
+          user_roles (
+            role_name
+          )
+        `)
         .eq('email', user.email)
         .eq('status', 'Active')
         .maybeSingle();
@@ -608,7 +614,12 @@ export const database = {
       if (!userData?.id) return { shouldFilter: false, locationIds: [], canViewAll: true };
 
       // Admins bypass location restrictions
-      if (userData.role === 'admin' || userData.role === 'super_admin') {
+      const userRole = (userData.role || '').toLowerCase();
+      // Safe access to nested role name
+      const joinRoleName = (userData.user_roles as any)?.role_name?.toLowerCase() || '';
+      
+      if (['admin', 'administrator', 'super_admin', 'super admin'].includes(userRole) || 
+          ['admin', 'administrator', 'super_admin', 'super admin'].includes(joinRoleName)) {
         return { shouldFilter: false, locationIds: [], canViewAll: true };
       }
       
@@ -11002,9 +11013,968 @@ const notificationQueue = {
   },
 };
 
-// Add notification settings to database object
+// ============================================================================
+// PRICING API - Location, Outsourced Lab, and Account Pricing
+// ============================================================================
+
+/**
+ * Location Test Prices - B2C pricing for franchise locations
+ */
+const locationTestPrices = {
+  /**
+   * Get all test prices for a location
+   */
+  async getByLocation(locationId: string) {
+    const { data, error } = await supabase
+      .from('location_test_prices')
+      .select(`
+        *,
+        test_group:test_groups(id, name, code, price, category)
+      `)
+      .eq('location_id', locationId)
+      .eq('is_active', true)
+      .lte('effective_from', new Date().toISOString().split('T')[0])
+      .order('test_group(name)');
+    return { data, error };
+  },
+
+  /**
+   * Get all location prices for current lab (all locations)
+   */
+  async getAll() {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    const { data, error } = await supabase
+      .from('location_test_prices')
+      .select(`
+        *,
+        location:locations!inner(id, name, lab_id, collection_percentage, receivable_type),
+        test_group:test_groups(id, name, code, price, category)
+      `)
+      .eq('location.lab_id', lab_id)
+      .eq('is_active', true)
+      .order('location(name), test_group(name)');
+    return { data, error };
+  },
+
+  /**
+   * Get effective price for a test at a location
+   */
+  async getPrice(locationId: string, testGroupId: string) {
+    const today = new Date().toISOString().split('T')[0];
+    const { data, error } = await supabase
+      .from('location_test_prices')
+      .select('*')
+      .eq('location_id', locationId)
+      .eq('test_group_id', testGroupId)
+      .eq('is_active', true)
+      .lte('effective_from', today)
+      .order('effective_from', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return { data, error };
+  },
+
+  /**
+   * Upsert test price for location
+   */
+  async upsert(data: {
+    location_id: string;
+    test_group_id: string;
+    patient_price: number;
+    lab_receivable?: number | null;
+    effective_from?: string;
+    notes?: string;
+  }) {
+    const { data: { user } } = await supabase.auth.getUser();
+    const userId = user?.id;
+
+    // Check if exists
+    const { data: existing } = await supabase
+      .from('location_test_prices')
+      .select('id')
+      .eq('location_id', data.location_id)
+      .eq('test_group_id', data.test_group_id)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (existing) {
+      // Update
+      const { data: updated, error } = await supabase
+        .from('location_test_prices')
+        .update({
+          patient_price: data.patient_price,
+          lab_receivable: data.lab_receivable,
+          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          notes: data.notes,
+          updated_by: userId,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id)
+        .select()
+        .single();
+      return { data: updated, error };
+    } else {
+      // Insert
+      const { data: inserted, error } = await supabase
+        .from('location_test_prices')
+        .insert({
+          ...data,
+          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          created_by: userId,
+          is_active: true,
+        })
+        .select()
+        .single();
+      return { data: inserted, error };
+    }
+  },
+
+  /**
+   * Bulk upsert prices (for CSV import)
+   */
+  async bulkUpsert(locationId: string, prices: Array<{
+    test_group_id: string;
+    patient_price: number;
+    lab_receivable?: number | null;
+  }>) {
+    const { data: { user } } = await supabase.auth.getUser();
+    const userId = user?.id;
+    const today = new Date().toISOString().split('T')[0];
+
+    const results = { success: 0, failed: 0, errors: [] as string[] };
+
+    for (const price of prices) {
+      const { error } = await this.upsert({
+        location_id: locationId,
+        test_group_id: price.test_group_id,
+        patient_price: price.patient_price,
+        lab_receivable: price.lab_receivable,
+        effective_from: today,
+      });
+
+      if (error) {
+        results.failed++;
+        results.errors.push(`${price.test_group_id}: ${error.message}`);
+      } else {
+        results.success++;
+      }
+    }
+
+    return results;
+  },
+
+  /**
+   * Delete (soft) a price entry
+   */
+  async delete(id: string) {
+    const { data, error } = await supabase
+      .from('location_test_prices')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  /**
+   * Copy prices from one location to another
+   */
+  async copyFromLocation(sourceLocationId: string, targetLocationId: string) {
+    const { data: sourcePrices, error: fetchError } = await this.getByLocation(sourceLocationId);
+    if (fetchError || !sourcePrices) {
+      return { success: false, error: fetchError };
+    }
+
+    const results = await this.bulkUpsert(
+      targetLocationId,
+      sourcePrices.map(p => ({
+        test_group_id: p.test_group_id,
+        patient_price: p.patient_price,
+        lab_receivable: p.lab_receivable,
+      }))
+    );
+
+    return { success: results.failed === 0, ...results };
+  },
+};
+
+/**
+ * Location Package Prices
+ */
+const locationPackagePrices = {
+  async getByLocation(locationId: string) {
+    const { data, error } = await supabase
+      .from('location_package_prices')
+      .select(`
+        *,
+        package:packages(id, name, price, category)
+      `)
+      .eq('location_id', locationId)
+      .eq('is_active', true)
+      .lte('effective_from', new Date().toISOString().split('T')[0])
+      .order('package(name)');
+    return { data, error };
+  },
+
+  async upsert(data: {
+    location_id: string;
+    package_id: string;
+    patient_price: number;
+    lab_receivable?: number | null;
+    effective_from?: string;
+    notes?: string;
+  }) {
+    const { data: { user } } = await supabase.auth.getUser();
+    const userId = user?.id;
+
+    const { data: existing } = await supabase
+      .from('location_package_prices')
+      .select('id')
+      .eq('location_id', data.location_id)
+      .eq('package_id', data.package_id)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (existing) {
+      const { data: updated, error } = await supabase
+        .from('location_package_prices')
+        .update({
+          patient_price: data.patient_price,
+          lab_receivable: data.lab_receivable,
+          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          notes: data.notes,
+          updated_by: userId,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id)
+        .select()
+        .single();
+      return { data: updated, error };
+    } else {
+      const { data: inserted, error } = await supabase
+        .from('location_package_prices')
+        .insert({
+          ...data,
+          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          created_by: userId,
+          is_active: true,
+        })
+        .select()
+        .single();
+      return { data: inserted, error };
+    }
+  },
+
+  async delete(id: string) {
+    const { data, error } = await supabase
+      .from('location_package_prices')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+    return { data, error };
+  },
+};
+
+/**
+ * Outsourced Lab Prices - Cost tracking for outsourced tests
+ */
+const outsourcedLabPrices = {
+  /**
+   * Get all prices for an outsourced lab
+   */
+  async getByOutsourcedLab(outsourcedLabId: string) {
+    const { data, error } = await supabase
+      .from('outsourced_lab_prices')
+      .select(`
+        *,
+        test_group:test_groups(id, name, code, price, category)
+      `)
+      .eq('outsourced_lab_id', outsourcedLabId)
+      .eq('is_active', true)
+      .lte('effective_from', new Date().toISOString().split('T')[0])
+      .order('test_group(name)');
+    return { data, error };
+  },
+
+  /**
+   * Get all outsourced lab prices for current lab
+   */
+  async getAll() {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    const { data, error } = await supabase
+      .from('outsourced_lab_prices')
+      .select(`
+        *,
+        outsourced_lab:outsourced_labs(id, name),
+        test_group:test_groups(id, name, code, price, category)
+      `)
+      .eq('lab_id', lab_id)
+      .eq('is_active', true)
+      .order('outsourced_lab(name), test_group(name)');
+    return { data, error };
+  },
+
+  /**
+   * Get cost for a test at an outsourced lab
+   */
+  async getCost(outsourcedLabId: string, testGroupId: string) {
+    const today = new Date().toISOString().split('T')[0];
+    const { data, error } = await supabase
+      .from('outsourced_lab_prices')
+      .select('*')
+      .eq('outsourced_lab_id', outsourcedLabId)
+      .eq('test_group_id', testGroupId)
+      .eq('is_active', true)
+      .lte('effective_from', today)
+      .order('effective_from', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return { data, error };
+  },
+
+  /**
+   * Upsert cost for outsourced lab
+   */
+  async upsert(data: {
+    outsourced_lab_id: string;
+    test_group_id: string;
+    cost: number;
+    effective_from?: string;
+    notes?: string;
+  }) {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    const { data: { user } } = await supabase.auth.getUser();
+    const userId = user?.id;
+
+    const { data: existing } = await supabase
+      .from('outsourced_lab_prices')
+      .select('id')
+      .eq('outsourced_lab_id', data.outsourced_lab_id)
+      .eq('test_group_id', data.test_group_id)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (existing) {
+      const { data: updated, error } = await supabase
+        .from('outsourced_lab_prices')
+        .update({
+          cost: data.cost,
+          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          notes: data.notes,
+          updated_by: userId,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id)
+        .select()
+        .single();
+      return { data: updated, error };
+    } else {
+      const { data: inserted, error } = await supabase
+        .from('outsourced_lab_prices')
+        .insert({
+          ...data,
+          lab_id,
+          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          created_by: userId,
+          is_active: true,
+        })
+        .select()
+        .single();
+      return { data: inserted, error };
+    }
+  },
+
+  /**
+   * Bulk upsert prices (for CSV import)
+   */
+  async bulkUpsert(outsourcedLabId: string, prices: Array<{
+    test_group_id: string;
+    cost: number;
+  }>) {
+    const results = { success: 0, failed: 0, errors: [] as string[] };
+
+    for (const price of prices) {
+      const { error } = await this.upsert({
+        outsourced_lab_id: outsourcedLabId,
+        test_group_id: price.test_group_id,
+        cost: price.cost,
+      });
+
+      if (error) {
+        results.failed++;
+        results.errors.push(`${price.test_group_id}: ${error.message}`);
+      } else {
+        results.success++;
+      }
+    }
+
+    return results;
+  },
+
+  /**
+   * Delete (soft) a price entry
+   */
+  async delete(id: string) {
+    const { data, error } = await supabase
+      .from('outsourced_lab_prices')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  /**
+   * Get outsourced costs report (date range)
+   */
+  async getCostsReport(startDate: string, endDate: string, outsourcedLabId?: string) {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    let query = supabase
+      .from('order_tests')
+      .select(`
+        id,
+        test_name,
+        price,
+        created_at,
+        order:orders!inner(
+          id,
+          patient_name,
+          order_date,
+          lab_id
+        ),
+        test_group:test_groups(id, name, code),
+        outsourced_lab:outsourced_labs(id, name)
+      `)
+      .eq('order.lab_id', lab_id)
+      .not('outsourced_lab_id', 'is', null)
+      .gte('created_at', startDate)
+      .lte('created_at', endDate);
+
+    if (outsourcedLabId) {
+      query = query.eq('outsourced_lab_id', outsourcedLabId);
+    }
+
+    const { data: tests, error } = await query.order('created_at', { ascending: false });
+
+    if (error) return { data: null, error };
+
+    // Enrich with costs from outsourced_lab_prices
+    const enrichedData = await Promise.all(
+      (tests || []).map(async (test: any) => {
+        if (test.outsourced_lab?.id && test.test_group?.id) {
+          const { data: costData } = await this.getCost(test.outsourced_lab.id, test.test_group.id);
+          return {
+            ...test,
+            outsourced_cost: costData?.cost || 0,
+            margin: (test.price || 0) - (costData?.cost || 0),
+          };
+        }
+        return { ...test, outsourced_cost: 0, margin: test.price || 0 };
+      })
+    );
+
+    // Calculate summary
+    const summary = {
+      total_tests: enrichedData.length,
+      total_revenue: enrichedData.reduce((sum, t) => sum + (t.price || 0), 0),
+      total_cost: enrichedData.reduce((sum, t) => sum + (t.outsourced_cost || 0), 0),
+      total_margin: enrichedData.reduce((sum, t) => sum + (t.margin || 0), 0),
+      by_lab: {} as Record<string, { name: string; tests: number; revenue: number; cost: number; margin: number }>,
+    };
+
+    enrichedData.forEach((t: any) => {
+      const labId = t.outsourced_lab?.id || 'unknown';
+      const labName = t.outsourced_lab?.name || 'Unknown';
+      if (!summary.by_lab[labId]) {
+        summary.by_lab[labId] = { name: labName, tests: 0, revenue: 0, cost: 0, margin: 0 };
+      }
+      summary.by_lab[labId].tests++;
+      summary.by_lab[labId].revenue += t.price || 0;
+      summary.by_lab[labId].cost += t.outsourced_cost || 0;
+      summary.by_lab[labId].margin += t.margin || 0;
+    });
+
+    return { data: { details: enrichedData, summary }, error: null };
+  },
+};
+
+/**
+ * Account Package Prices - B2B package pricing
+ */
+const accountPackagePrices = {
+  /**
+   * Get all package prices for an account
+   */
+  async getByAccount(accountId: string) {
+    const { data, error } = await supabase
+      .from('account_package_prices')
+      .select(`
+        *,
+        package:packages(id, name, price, category, description)
+      `)
+      .eq('account_id', accountId)
+      .eq('is_active', true)
+      .lte('effective_from', new Date().toISOString().split('T')[0])
+      .order('package(name)');
+    return { data, error };
+  },
+
+  /**
+   * Get all account package prices for current lab
+   */
+  async getAll() {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    const { data, error } = await supabase
+      .from('account_package_prices')
+      .select(`
+        *,
+        account:accounts!inner(id, name, lab_id, type),
+        package:packages(id, name, price, category)
+      `)
+      .eq('account.lab_id', lab_id)
+      .eq('is_active', true)
+      .order('account(name), package(name)');
+    return { data, error };
+  },
+
+  /**
+   * Get price for a package for an account
+   */
+  async getPrice(accountId: string, packageId: string) {
+    const today = new Date().toISOString().split('T')[0];
+    const { data, error } = await supabase
+      .from('account_package_prices')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('package_id', packageId)
+      .eq('is_active', true)
+      .lte('effective_from', today)
+      .order('effective_from', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return { data, error };
+  },
+
+  /**
+   * Upsert package price for account
+   */
+  async upsert(data: {
+    account_id: string;
+    package_id: string;
+    price: number;
+    effective_from?: string;
+    notes?: string;
+  }) {
+    const { data: { user } } = await supabase.auth.getUser();
+    const userId = user?.id;
+
+    const { data: existing } = await supabase
+      .from('account_package_prices')
+      .select('id')
+      .eq('account_id', data.account_id)
+      .eq('package_id', data.package_id)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (existing) {
+      const { data: updated, error } = await supabase
+        .from('account_package_prices')
+        .update({
+          price: data.price,
+          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          notes: data.notes,
+          updated_by: userId,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id)
+        .select()
+        .single();
+      return { data: updated, error };
+    } else {
+      const { data: inserted, error } = await supabase
+        .from('account_package_prices')
+        .insert({
+          ...data,
+          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          created_by: userId,
+          is_active: true,
+        })
+        .select()
+        .single();
+      return { data: inserted, error };
+    }
+  },
+
+  /**
+   * Bulk upsert prices (for CSV import)
+   */
+  async bulkUpsert(accountId: string, prices: Array<{
+    package_id: string;
+    price: number;
+  }>) {
+    const results = { success: 0, failed: 0, errors: [] as string[] };
+
+    for (const price of prices) {
+      const { error } = await this.upsert({
+        account_id: accountId,
+        package_id: price.package_id,
+        price: price.price,
+      });
+
+      if (error) {
+        results.failed++;
+        results.errors.push(`${price.package_id}: ${error.message}`);
+      } else {
+        results.success++;
+      }
+    }
+
+    return results;
+  },
+
+  /**
+   * Delete (soft) a price entry
+   */
+  async delete(id: string) {
+    const { data, error } = await supabase
+      .from('account_package_prices')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+    return { data, error };
+  },
+};
+
+/**
+ * Location Receivables Report
+ */
+const locationReceivables = {
+  /**
+   * Get receivables report for a date range
+   */
+  async getReport(startDate: string, endDate: string, locationId?: string) {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    // Get orders with location and invoice info
+    let query = supabase
+      .from('orders')
+      .select(`
+        id,
+        patient_name,
+        order_date,
+        total_amount,
+        collected_at_location_id,
+        location:locations!collected_at_location_id(
+          id, name, collection_percentage, receivable_type
+        ),
+        order_tests(
+          id,
+          test_name,
+          price,
+          test_group_id
+        ),
+        invoices(
+          id,
+          total,
+          amount_paid,
+          status
+        )
+      `)
+      .eq('lab_id', lab_id)
+      .gte('order_date', startDate)
+      .lte('order_date', endDate)
+      .not('collected_at_location_id', 'is', null);
+
+    if (locationId) {
+      query = query.eq('collected_at_location_id', locationId);
+    }
+
+    const { data: orders, error } = await query.order('order_date', { ascending: false });
+
+    if (error) return { data: null, error };
+
+    // Calculate receivables for each order
+    const enrichedOrders = await Promise.all(
+      (orders || []).map(async (order: any) => {
+        const location = order.location;
+        let receivable = 0;
+
+        if (location?.receivable_type === 'own_center') {
+          // Own center: receivable = 100% of collected amount
+          receivable = order.total_amount || 0;
+        } else if (location?.receivable_type === 'test_wise') {
+          // Test-wise: lookup each test's receivable
+          for (const test of (order.order_tests || [])) {
+            const { data: priceData } = await locationTestPrices.getPrice(
+              location.id,
+              test.test_group_id
+            );
+            if (priceData?.lab_receivable) {
+              receivable += priceData.lab_receivable;
+            } else if (location.collection_percentage) {
+              receivable += (test.price || 0) * (location.collection_percentage / 100);
+            }
+          }
+        } else {
+          // Percentage-based
+          receivable = (order.total_amount || 0) * ((location?.collection_percentage || 0) / 100);
+        }
+
+        return {
+          ...order,
+          calculated_receivable: Math.round(receivable * 100) / 100,
+          collected_amount: order.invoices?.[0]?.amount_paid || 0,
+        };
+      })
+    );
+
+    // Calculate summary
+    const summary = {
+      total_orders: enrichedOrders.length,
+      total_order_value: enrichedOrders.reduce((sum, o) => sum + (o.total_amount || 0), 0),
+      total_receivable: enrichedOrders.reduce((sum, o) => sum + (o.calculated_receivable || 0), 0),
+      total_collected: enrichedOrders.reduce((sum, o) => sum + (o.collected_amount || 0), 0),
+      by_location: {} as Record<string, { 
+        name: string; 
+        orders: number; 
+        order_value: number; 
+        receivable: number; 
+        collected: number;
+        receivable_type: string;
+      }>,
+    };
+
+    enrichedOrders.forEach((o: any) => {
+      const locId = o.location?.id || 'unknown';
+      const locName = o.location?.name || 'Unknown';
+      const recType = o.location?.receivable_type || 'percentage';
+      
+      if (!summary.by_location[locId]) {
+        summary.by_location[locId] = { 
+          name: locName, 
+          orders: 0, 
+          order_value: 0, 
+          receivable: 0, 
+          collected: 0,
+          receivable_type: recType,
+        };
+      }
+      summary.by_location[locId].orders++;
+      summary.by_location[locId].order_value += o.total_amount || 0;
+      summary.by_location[locId].receivable += o.calculated_receivable || 0;
+      summary.by_location[locId].collected += o.collected_amount || 0;
+    });
+
+    return { data: { details: enrichedOrders, summary }, error: null };
+  },
+};
+
+/**
+ * Pricing Helper - Resolve final price for an order item
+ */
+const pricingHelper = {
+  /**
+   * Resolve the effective price for a test
+   * Priority: Account Price (B2B) → Location Price (B2C) → Base Price
+   */
+  async resolveTestPrice(
+    testGroupId: string,
+    basePrice: number,
+    options: {
+      accountId?: string | null;
+      locationId?: string | null;
+    }
+  ): Promise<{
+    price: number;
+    source: 'account' | 'location' | 'base';
+    lab_receivable?: number;
+  }> {
+    // 1. Check B2B account price (highest priority)
+    if (options.accountId) {
+      const { data: accountPrice } = await supabase
+        .from('account_prices')
+        .select('price')
+        .eq('account_id', options.accountId)
+        .eq('test_group_id', testGroupId)
+        .eq('is_active', true)
+        .lte('effective_from', new Date().toISOString().split('T')[0])
+        .order('effective_from', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (accountPrice?.price !== undefined) {
+        return { price: accountPrice.price, source: 'account' };
+      }
+    }
+
+    // 2. Check location price (B2C franchise)
+    if (options.locationId) {
+      const { data: locationPrice } = await locationTestPrices.getPrice(
+        options.locationId,
+        testGroupId
+      );
+
+      if (locationPrice?.patient_price !== undefined) {
+        return { 
+          price: locationPrice.patient_price, 
+          source: 'location',
+          lab_receivable: locationPrice.lab_receivable || undefined,
+        };
+      }
+    }
+
+    // 3. Fall back to base price
+    return { price: basePrice, source: 'base' };
+  },
+
+  /**
+   * Resolve the effective price for a package
+   * Priority: Account Price (B2B) → Location Price (B2C) → Base Price
+   */
+  async resolvePackagePrice(
+    packageId: string,
+    basePrice: number,
+    options: {
+      accountId?: string | null;
+      locationId?: string | null;
+    }
+  ): Promise<{
+    price: number;
+    source: 'account' | 'location' | 'base';
+    lab_receivable?: number;
+  }> {
+    // 1. Check B2B account price (highest priority)
+    if (options.accountId) {
+      const { data: accountPrice } = await accountPackagePrices.getPrice(
+        options.accountId,
+        packageId
+      );
+
+      if (accountPrice?.price !== undefined) {
+        return { price: accountPrice.price, source: 'account' };
+      }
+    }
+
+    // 2. Check location price (B2C franchise)
+    if (options.locationId) {
+      const { data: locationPrice } = await supabase
+        .from('location_package_prices')
+        .select('*')
+        .eq('location_id', options.locationId)
+        .eq('package_id', packageId)
+        .eq('is_active', true)
+        .lte('effective_from', new Date().toISOString().split('T')[0])
+        .order('effective_from', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (locationPrice?.patient_price !== undefined) {
+        return { 
+          price: locationPrice.patient_price, 
+          source: 'location',
+          lab_receivable: locationPrice.lab_receivable || undefined,
+        };
+      }
+    }
+
+    // 3. Fall back to base price
+    return { price: basePrice, source: 'base' };
+  },
+
+  /**
+   * Get all prices for a location or account (for order form dropdown)
+   */
+  async getPriceMatrix(options: {
+    accountId?: string | null;
+    locationId?: string | null;
+  }): Promise<{
+    testPrices: Record<string, { price: number; source: string; lab_receivable?: number }>;
+    packagePrices: Record<string, { price: number; source: string; lab_receivable?: number }>;
+  }> {
+    const testPrices: Record<string, { price: number; source: string; lab_receivable?: number }> = {};
+    const packagePrices: Record<string, { price: number; source: string; lab_receivable?: number }> = {};
+
+    // Get account test prices (B2B)
+    if (options.accountId) {
+      const { data: accountTestPrices } = await supabase
+        .from('account_prices')
+        .select('test_group_id, price')
+        .eq('account_id', options.accountId)
+        .eq('is_active', true);
+
+      (accountTestPrices || []).forEach((p: any) => {
+        testPrices[p.test_group_id] = { price: p.price, source: 'account' };
+      });
+
+      const { data: accountPkgPrices } = await accountPackagePrices.getByAccount(options.accountId);
+      (accountPkgPrices || []).forEach((p: any) => {
+        packagePrices[p.package_id] = { price: p.price, source: 'account' };
+      });
+    }
+
+    // Get location prices (B2C) - only if not already set by account
+    if (options.locationId) {
+      const { data: locTestPrices } = await locationTestPrices.getByLocation(options.locationId);
+      (locTestPrices || []).forEach((p: any) => {
+        if (!testPrices[p.test_group_id]) {
+          testPrices[p.test_group_id] = { 
+            price: p.patient_price, 
+            source: 'location',
+            lab_receivable: p.lab_receivable || undefined,
+          };
+        }
+      });
+
+      const { data: locPkgPrices } = await locationPackagePrices.getByLocation(options.locationId);
+      (locPkgPrices || []).forEach((p: any) => {
+        if (!packagePrices[p.package_id]) {
+          packagePrices[p.package_id] = { 
+            price: p.patient_price, 
+            source: 'location',
+            lab_receivable: p.lab_receivable || undefined,
+          };
+        }
+      });
+    }
+
+    return { testPrices, packagePrices };
+  },
+};
+
+// Add pricing namespaces to database object
 Object.assign(database, {
   notificationSettings,
   notificationQueue,
+  locationTestPrices,
+  locationPackagePrices,
+  outsourcedLabPrices,
+  accountPackagePrices,
+  locationReceivables,
+  pricingHelper,
 });
 

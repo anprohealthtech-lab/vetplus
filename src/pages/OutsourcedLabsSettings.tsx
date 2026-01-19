@@ -10,8 +10,12 @@ import {
     X,
     Mail,
     Phone,
-    User
+    User,
+    IndianRupee,
+    ChevronRight,
+    ArrowLeft
 } from 'lucide-react';
+import PricingGrid from '../components/Pricing/PricingGrid';
 
 interface OutsourcedLab {
     id: string;
@@ -28,6 +32,7 @@ const OutsourcedLabsSettings: React.FC = () => {
     const [editingLab, setEditingLab] = useState<OutsourcedLab | null>(null);
     const [isNew, setIsNew] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [selectedLabForPricing, setSelectedLabForPricing] = useState<OutsourcedLab | null>(null);
 
     useEffect(() => {
         fetchLabs();
@@ -109,6 +114,39 @@ const OutsourcedLabsSettings: React.FC = () => {
         }
     };
 
+    // If viewing pricing for a specific lab
+    if (selectedLabForPricing) {
+        return (
+            <div className="p-6 max-w-6xl mx-auto">
+                <div className="mb-6">
+                    <button
+                        onClick={() => setSelectedLabForPricing(null)}
+                        className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4"
+                    >
+                        <ArrowLeft className="h-4 w-4" />
+                        Back to Labs
+                    </button>
+                    <div className="flex items-center gap-3">
+                        <div className="p-3 bg-green-50 rounded-lg text-green-600">
+                            <IndianRupee className="h-6 w-6" />
+                        </div>
+                        <div>
+                            <h1 className="text-2xl font-bold text-gray-900">Test Costs - {selectedLabForPricing.name}</h1>
+                            <p className="text-sm text-gray-500">Set costs for tests outsourced to this lab (for margin calculation)</p>
+                        </div>
+                    </div>
+                </div>
+
+                <PricingGrid
+                    entityType="outsourced_lab"
+                    entityId={selectedLabForPricing.id}
+                    entityName={selectedLabForPricing.name}
+                    showCost={true}
+                />
+            </div>
+        );
+    }
+
     return (
         <div className="p-6 max-w-5xl mx-auto">
             <div className="flex justify-between items-center mb-6">
@@ -178,6 +216,15 @@ const OutsourcedLabsSettings: React.FC = () => {
                             </div>
 
                             <div className="flex items-center gap-2 self-end sm:self-center">
+                                <button
+                                    onClick={() => setSelectedLabForPricing(lab)}
+                                    className="flex items-center gap-1 px-3 py-1.5 text-green-700 bg-green-50 hover:bg-green-100 rounded-lg transition-colors text-sm font-medium"
+                                    title="Manage Prices"
+                                >
+                                    <IndianRupee className="h-4 w-4" />
+                                    Costs
+                                    <ChevronRight className="h-4 w-4" />
+                                </button>
                                 <button
                                     onClick={() => {
                                         setEditingLab(lab);

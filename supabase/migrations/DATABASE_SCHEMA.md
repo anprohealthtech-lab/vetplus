@@ -282,6 +282,48 @@ CREATE TABLE public.analytes (
   ref_range_knowledge jsonb DEFAULT '{}'::jsonb,
   CONSTRAINT analytes_pkey PRIMARY KEY (id)
 );
+CREATE TABLE public.analyzer_connections (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  name text NOT NULL,
+  connection_type text CHECK (connection_type = ANY (ARRAY['tcp'::text, 'serial'::text, 'file'::text])),
+  config jsonb DEFAULT '{}'::jsonb,
+  status text DEFAULT 'offline'::text,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT analyzer_connections_pkey PRIMARY KEY (id),
+  CONSTRAINT analyzer_connections_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
+CREATE TABLE public.analyzer_knowledge (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  knowledge_type text NOT NULL CHECK (knowledge_type = ANY (ARRAY['protocol'::text, 'mapping'::text, 'correction'::text])),
+  title text,
+  content text NOT NULL,
+  embedding USER-DEFINED,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  confidence_score numeric DEFAULT 1.0,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT analyzer_knowledge_pkey PRIMARY KEY (id),
+  CONSTRAINT analyzer_knowledge_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
+CREATE TABLE public.analyzer_raw_messages (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  analyzer_connection_id uuid,
+  direction text NOT NULL CHECK (direction = ANY (ARRAY['INBOUND'::text, 'OUTBOUND'::text])),
+  raw_content text NOT NULL,
+  ai_status text DEFAULT 'pending'::text CHECK (ai_status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'failed'::text, 'review_needed'::text])),
+  ai_confidence numeric,
+  ai_result jsonb,
+  sample_barcode text,
+  order_id uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT analyzer_raw_messages_pkey PRIMARY KEY (id),
+  CONSTRAINT analyzer_raw_messages_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT analyzer_raw_messages_analyzer_connection_id_fkey FOREIGN KEY (analyzer_connection_id) REFERENCES public.analyzer_connections(id),
+  CONSTRAINT analyzer_raw_messages_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id)
+);
 CREATE TABLE public.attachment_batches (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   order_id uuid,
@@ -362,6 +404,30 @@ CREATE TABLE public.audit_logs (
   timestamp timestamp with time zone DEFAULT now(),
   CONSTRAINT audit_logs_pkey PRIMARY KEY (id),
   CONSTRAINT audit_logs_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id)
+);
+CREATE TABLE public.bookings (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  lab_id uuid NOT NULL,
+  booking_source text CHECK (booking_source = ANY (ARRAY['b2b_portal'::text, 'front_desk'::text, 'patient_app'::text, 'phone_call'::text])),
+  status text DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'quoted'::text, 'confirmed'::text, 'converted'::text, 'cancelled'::text])),
+  patient_info jsonb,
+  test_details jsonb,
+  scheduled_at timestamp with time zone,
+  collection_type text CHECK (collection_type = ANY (ARRAY['home_collection'::text, 'walk_in'::text, 'lab_pickup'::text])),
+  home_collection_address jsonb,
+  b2b_client_id uuid,
+  quotation_amount numeric,
+  converted_order_id uuid,
+  created_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  account_id uuid,
+  CONSTRAINT bookings_pkey PRIMARY KEY (id),
+  CONSTRAINT bookings_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT bookings_b2b_client_id_fkey FOREIGN KEY (b2b_client_id) REFERENCES public.accounts(id),
+  CONSTRAINT bookings_converted_order_id_fkey FOREIGN KEY (converted_order_id) REFERENCES public.orders(id),
+  CONSTRAINT bookings_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id),
+  CONSTRAINT bookings_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id)
 );
 CREATE TABLE public.cash_register (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -945,6 +1011,8 @@ CREATE TABLE public.labs (
   thermal_paper_width integer DEFAULT 80 CHECK (thermal_paper_width = ANY (ARRAY[58, 80])),
   currency_code character varying DEFAULT 'INR'::character varying,
   gst_number text,
+  upi_id text,
+  bank_details jsonb,
   CONSTRAINT labs_pkey PRIMARY KEY (id),
   CONSTRAINT labs_default_processing_location_id_fkey FOREIGN KEY (default_processing_location_id) REFERENCES public.locations(id)
 );

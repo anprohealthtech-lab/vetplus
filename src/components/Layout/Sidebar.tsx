@@ -28,6 +28,7 @@ import {
   Building2,
   FileStack,
   ListOrdered,
+  TrendingUp,
   Truck,
 } from 'lucide-react';
 
@@ -55,6 +56,7 @@ const navigation = [
   // Business & Administrative
   { name: 'Billing', href: '/billing', icon: Receipt, category: 'business' },
   { name: 'Cash Reconciliation', href: '/cash-reconciliation', icon: DollarSign, category: 'business' },
+  { name: 'Financial Reports', href: '/financial-reports', icon: TrendingUp, category: 'business' },
 
   // Communication
   { name: 'WhatsApp Integration', href: '/whatsapp', icon: MessageCircle, category: 'communication' },

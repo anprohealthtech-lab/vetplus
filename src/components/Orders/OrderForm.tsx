@@ -151,6 +151,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   // Account specific prices: { testGroupId: price }
   const [accountPrices, setAccountPrices] = useState<Record<string, number>>({});
 
+  // Location specific prices: { testGroupId: { patient_price, lab_receivable } }
+  const [locationPrices, setLocationPrices] = useState<Record<string, { patient_price: number; lab_receivable: number }>>({});
+
   // AI Reference Range Inputs
   const [additionalInputs, setAdditionalInputs] = useState<Record<string, string>>({});
 
@@ -209,6 +212,34 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [discountValue, setDiscountValue] = useState<number>(0);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'upi' | 'online'>('cash');
   const [amountPaid, setAmountPaid] = useState<number>(0);
+
+  /**
+   * Resolve the price for a test/package based on priority:
+   * 1. Account price (B2B) - highest priority
+   * 2. Location price (franchise) - if location has custom pricing
+   * 3. Base price - fallback
+   * 
+   * Also returns lab_receivable for location pricing (what the lab receives from the location)
+   */
+  const resolvePrice = React.useCallback((testId: string, basePrice: number): { price: number; source: 'account' | 'location' | 'base'; labReceivable?: number } => {
+    // Priority 1: Account price (B2B billing)
+    if (selectedAccount && accountPrices[testId] !== undefined) {
+      return { price: accountPrices[testId], source: 'account' };
+    }
+    
+    // Priority 2: Location price (franchise/collection center pricing)
+    if (selectedLocation && locationPrices[testId]) {
+      const locPrice = locationPrices[testId];
+      return { 
+        price: locPrice.patient_price, 
+        source: 'location',
+        labReceivable: locPrice.lab_receivable
+      };
+    }
+    
+    // Priority 3: Base price
+    return { price: basePrice ?? 0, source: 'base' };
+  }, [selectedAccount, accountPrices, selectedLocation, locationPrices]);
 
 
   // Handle TRF modal close and apply edited values
@@ -684,6 +715,50 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     fetchAccountPrices();
   }, [selectedAccount]);
 
+  // Fetch location prices when location changes
+  useEffect(() => {
+    const fetchLocationPrices = async () => {
+      if (!selectedLocation) {
+        setLocationPrices({});
+        return;
+      }
+
+      try {
+        // Get effective location test prices
+        const { data, error } = await supabase
+          .from('location_test_prices')
+          .select('test_group_id, patient_price, lab_receivable')
+          .eq('location_id', selectedLocation)
+          .eq('is_active', true)
+          .lte('effective_from', new Date().toISOString());
+
+        if (error) throw error;
+
+        const priceMap: Record<string, { patient_price: number; lab_receivable: number }> = {};
+        if (data) {
+          // Use the most recent effective price per test
+          const sortedData = [...data].sort((a, b) => 
+            new Date(b.effective_from || 0).getTime() - new Date(a.effective_from || 0).getTime()
+          );
+          
+          sortedData.forEach((item: any) => {
+            if (!priceMap[item.test_group_id]) {
+              priceMap[item.test_group_id] = {
+                patient_price: item.patient_price,
+                lab_receivable: item.lab_receivable
+              };
+            }
+          });
+        }
+        setLocationPrices(priceMap);
+      } catch (err) {
+        console.error('Error fetching location prices:', err);
+      }
+    };
+
+    fetchLocationPrices();
+  }, [selectedLocation]);
+
   // Check for Admin Role
   useEffect(() => {
     const checkRole = async () => {
@@ -1058,13 +1133,14 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         selectedTestDetails.length > 0
           ? selectedTestDetails.map((t) => {
             const outsourcedLabId = testOutsourcingConfig[t.id] === 'inhouse' ? null : testOutsourcingConfig[t.id] || null;
-            const finalPrice = accountPrices[t.id] ?? t.price ?? 0;
+            const { price: finalPrice, labReceivable } = resolvePrice(t.id, t.price);
             return {
               id: t.id,
               name: t.name,
               type: t.type ?? 'test',
               price: finalPrice,
-              outsourced_lab_id: outsourcedLabId
+              outsourced_lab_id: outsourcedLabId,
+              location_receivable: labReceivable // Track what lab receives from location
             };
           })
           : undefined;
@@ -1072,9 +1148,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       // Compose order payload (account layer included)
       setSubmissionProgress('Creating order record...');
 
-      // Calculate total from selected tests (respects package prices and account prices)
+      // Calculate total from selected tests (respects package prices, account prices, and location prices)
       const calculatedTotal = selectedTestDetails.reduce((sum, t) => {
-        const price = accountPrices[t.id] ?? t.price ?? 0;
+        const { price } = resolvePrice(t.id, t.price);
         return sum + price;
       }, 0);
 
@@ -1181,7 +1257,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
           // Create invoice items (depends on invoice.id)
           const invoiceItemsData = selectedTestDetails.map(t => {
-            const price = accountPrices[t.id] ?? t.price ?? 0;
+            const { price, labReceivable } = resolvePrice(t.id, t.price);
+            const outsourcedLabId = testOutsourcingConfig[t.id] === 'inhouse' ? null : testOutsourcingConfig[t.id] || null;
             return {
               invoice_id: invoice.id,
               test_name: t.name,
@@ -1189,7 +1266,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               quantity: 1,
               total: price,
               lab_id: labId,
-              order_id: orderId
+              order_id: orderId,
+              location_receivable: labReceivable || null,
+              outsourced_lab_id: outsourcedLabId || null
             };
           });
 
@@ -1266,7 +1345,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   // Totals (for UI display only)
   const selectedTestRows = testGroups.filter((t) => selectedTests.includes(t.id));
   const totalAmount = selectedTestRows.reduce((sum, t) => {
-    const price = accountPrices[t.id] ?? t.price ?? 0;
+    const { price } = resolvePrice(t.id, t.price);
     return sum + price;
   }, 0);
 
@@ -1723,14 +1802,25 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                           </div>
                           <div className="flex items-center gap-3">
                             <div className="flex flex-col items-end">
-                              <span className={`font-medium ${isPackage ? 'text-purple-900' : 'text-green-900'} whitespace-nowrap`}>
-                                {currencySymbol}{accountPrices[t.id] ?? t.price ?? 0}
-                              </span>
-                              {accountPrices[t.id] !== undefined && (
-                                <span className="text-[10px] text-indigo-600 font-medium bg-indigo-50 px-1 rounded border border-indigo-100">
-                                  Account Price
-                                </span>
-                              )}
+                              {(() => {
+                                const { price, source } = resolvePrice(t.id, t.price);
+                                return (
+                                  <>
+                                    <span className={`font-medium ${isPackage ? 'text-purple-900' : 'text-green-900'} whitespace-nowrap`}>
+                                      {currencySymbol}{price}
+                                    </span>
+                                    {source !== 'base' && (
+                                      <span className={`text-[10px] font-medium px-1 rounded border ${
+                                        source === 'account' 
+                                          ? 'text-indigo-600 bg-indigo-50 border-indigo-100' 
+                                          : 'text-orange-600 bg-orange-50 border-orange-100'
+                                      }`}>
+                                        {source === 'account' ? 'Account Price' : 'Location Price'}
+                                      </span>
+                                    )}
+                                  </>
+                                );
+                              })()}
                             </div>
                             <button
                               type="button"

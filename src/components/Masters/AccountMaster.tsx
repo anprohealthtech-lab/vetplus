@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Edit, Trash2, X, DollarSign, Lock } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, X, DollarSign, Lock, Package } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
 import { createB2BAccountUser } from '../../utils/b2bAuth';
 import HeaderFooterUpload from '../Settings/HeaderFooterUpload';
@@ -82,6 +82,11 @@ const AccountMaster: React.FC = () => {
     const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
     const [loadingPrices, setLoadingPrices] = useState(false);
     const [priceSearchTerm, setPriceSearchTerm] = useState('');
+    
+    // Package Pricing State
+    const [priceTab, setPriceTab] = useState<'tests' | 'packages'>('tests');
+    const [packages, setPackages] = useState<{ id: string; name: string; code: string; price: number }[]>([]);
+    const [accountPackagePrices, setAccountPackagePrices] = useState<{ id: string; package_id: string; price: number; package?: { name: string; code: string; price: number } }[]>([]);
 
     useEffect(() => {
         const init = async () => {
@@ -224,13 +229,14 @@ const AccountMaster: React.FC = () => {
         setSelectedAccountForPrices(account);
         setShowPriceModal(true);
         setLoadingPrices(true);
+        setPriceTab('tests');
 
         try {
             // Fetch Test Groups
             const { data: tgData } = await database.testGroups.getAll();
             setTestGroups(tgData || []);
 
-            // Fetch Existing Prices
+            // Fetch Existing Test Prices
             const { data: apData } = await supabase
                 .from('account_prices')
                 .select('*, test_group:test_groups(name, code, price)')
@@ -247,6 +253,27 @@ const AccountMaster: React.FC = () => {
             }));
 
             setAccountPrices(formattedPrices);
+
+            // Fetch Packages
+            const { data: pkgData } = await database.packages.getAll();
+            setPackages((pkgData || []).map((p: any) => ({ id: p.id, name: p.name, code: p.code, price: p.price })));
+
+            // Fetch Existing Package Prices
+            const { data: appData } = await supabase
+                .from('account_package_prices')
+                .select('*, package:packages(name, code, price)')
+                .eq('account_id', account.id);
+
+            setAccountPackagePrices((appData || []).map((ap: any) => ({
+                id: ap.id,
+                package_id: ap.package_id,
+                price: ap.price,
+                package: ap.package ? {
+                    name: ap.package.name,
+                    code: ap.package.code,
+                    price: ap.package.price
+                } : undefined
+            })));
 
         } catch (err) {
             console.error("Error loading price data", err);
@@ -305,6 +332,56 @@ const AccountMaster: React.FC = () => {
         }
     }
 
+    // Package Price Handlers
+    const handleSavePackagePrice = async (packageId: string, price: number) => {
+        if (!selectedAccountForPrices) return;
+
+        try {
+            const { error } = await supabase
+                .from('account_package_prices')
+                .upsert({
+                    account_id: selectedAccountForPrices.id,
+                    package_id: packageId,
+                    price: price,
+                    updated_at: new Date().toISOString()
+                }, { onConflict: 'account_id, package_id' });
+
+            if (error) throw error;
+
+            // Refresh package prices
+            const { data: appData } = await supabase
+                .from('account_package_prices')
+                .select('*, package:packages(name, code, price)')
+                .eq('account_id', selectedAccountForPrices.id);
+
+            setAccountPackagePrices((appData || []).map((ap: any) => ({
+                id: ap.id,
+                package_id: ap.package_id,
+                price: ap.price,
+                package: ap.package ? {
+                    name: ap.package.name,
+                    code: ap.package.code,
+                    price: ap.package.price
+                } : undefined
+            })));
+
+        } catch (err) {
+            console.error('Error saving package price:', err);
+            alert('Failed to save package price');
+        }
+    };
+
+    const handleRemovePackagePrice = async (priceId: string) => {
+        if (!confirm('Revert to base price?')) return;
+        try {
+            const { error } = await supabase.from('account_package_prices').delete().eq('id', priceId);
+            if (error) throw error;
+            setAccountPackagePrices(prev => prev.filter(p => p.id !== priceId));
+        } catch (err) {
+            console.error(err);
+        }
+    };
+
 
     const filteredAccounts = accounts.filter(a =>
         !searchTerm || a.name.toLowerCase().includes(searchTerm.toLowerCase())
@@ -312,6 +389,10 @@ const AccountMaster: React.FC = () => {
 
     const filteredTestGroups = testGroups.filter(tg =>
         !priceSearchTerm || tg.name.toLowerCase().includes(priceSearchTerm.toLowerCase())
+    );
+
+    const filteredPackages = packages.filter(pkg =>
+        !priceSearchTerm || pkg.name.toLowerCase().includes(priceSearchTerm.toLowerCase())
     );
 
     return (
@@ -567,15 +648,41 @@ const AccountMaster: React.FC = () => {
                             <div className="p-4 border-b flex justify-between items-center bg-gray-50">
                                 <div>
                                     <h2 className="text-xl font-bold text-gray-900">Manage Prices: {selectedAccountForPrices.name}</h2>
-                                    <p className="text-sm text-gray-500">Set fixed prices for specific tests. These override base prices and percentage discounts.</p>
+                                    <p className="text-sm text-gray-500">Set fixed prices for specific tests and packages. These override base prices and percentage discounts.</p>
                                 </div>
                                 <button onClick={() => setShowPriceModal(false)}><X className="w-6 h-6 text-gray-500" /></button>
+                            </div>
+
+                            {/* Tabs */}
+                            <div className="flex border-b bg-gray-50 px-4">
+                                <button
+                                    onClick={() => setPriceTab('tests')}
+                                    className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                                        priceTab === 'tests'
+                                            ? 'border-purple-600 text-purple-600'
+                                            : 'border-transparent text-gray-500 hover:text-gray-700'
+                                    }`}
+                                >
+                                    <DollarSign className="w-4 h-4 inline mr-2" />
+                                    Test Prices ({accountPrices.length} custom)
+                                </button>
+                                <button
+                                    onClick={() => setPriceTab('packages')}
+                                    className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                                        priceTab === 'packages'
+                                            ? 'border-purple-600 text-purple-600'
+                                            : 'border-transparent text-gray-500 hover:text-gray-700'
+                                    }`}
+                                >
+                                    <Package className="w-4 h-4 inline mr-2" />
+                                    Package Prices ({accountPackagePrices.length} custom)
+                                </button>
                             </div>
 
                             <div className="p-4 border-b">
                                 <input
                                     type="text"
-                                    placeholder="Search test list..."
+                                    placeholder={`Search ${priceTab === 'tests' ? 'tests' : 'packages'}...`}
                                     value={priceSearchTerm}
                                     onChange={e => setPriceSearchTerm(e.target.value)}
                                     className="w-full border p-2 rounded"
@@ -583,51 +690,105 @@ const AccountMaster: React.FC = () => {
                             </div>
 
                             <div className="flex-1 overflow-y-auto p-4">
-                                <table className="min-w-full divide-y divide-gray-200">
-                                    <thead>
-                                        <tr>
-                                            <th className="text-left py-2 font-medium text-gray-500">Test Name</th>
-                                            <th className="text-left py-2 font-medium text-gray-500">Base Price</th>
-                                            <th className="text-left py-2 font-medium text-gray-500">Account Price</th>
-                                            <th className="text-right py-2 font-medium text-gray-500">Action</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-gray-100">
-                                        {filteredTestGroups.map(tg => {
-                                            const override = accountPrices.find(ap => ap.test_group_id === tg.id);
-                                            return (
-                                                <tr key={tg.id} className={override ? "bg-purple-50" : ""}>
-                                                    <td className="py-2 text-sm">{tg.name} <span className="text-xs text-gray-400">({tg.code})</span></td>
-                                                    <td className="py-2 text-sm">₹{tg.price}</td>
-                                                    <td className="py-2">
-                                                        <input
-                                                            type="number"
-                                                            defaultValue={override ? override.price : ''}
-                                                            placeholder={override ? String(override.price) : "Default"}
-                                                            onBlur={(e) => {
-                                                                const val = parseFloat(e.target.value);
-                                                                if (!isNaN(val)) {
-                                                                    handleSavePrice(tg.id, val);
-                                                                }
-                                                            }}
-                                                            className="border rounded px-2 py-1 w-24 text-sm"
-                                                        />
-                                                    </td>
-                                                    <td className="py-2 text-right">
-                                                        {override && (
-                                                            <button
-                                                                onClick={() => handleRemovePrice(override.id)}
-                                                                className="text-red-500 hover:text-red-700 text-xs underline"
-                                                            >
-                                                                Reset
-                                                            </button>
-                                                        )}
+                                {priceTab === 'tests' ? (
+                                    <table className="min-w-full divide-y divide-gray-200">
+                                        <thead>
+                                            <tr>
+                                                <th className="text-left py-2 font-medium text-gray-500">Test Name</th>
+                                                <th className="text-left py-2 font-medium text-gray-500">Base Price</th>
+                                                <th className="text-left py-2 font-medium text-gray-500">Account Price</th>
+                                                <th className="text-right py-2 font-medium text-gray-500">Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-100">
+                                            {filteredTestGroups.map(tg => {
+                                                const override = accountPrices.find(ap => ap.test_group_id === tg.id);
+                                                return (
+                                                    <tr key={tg.id} className={override ? "bg-purple-50" : ""}>
+                                                        <td className="py-2 text-sm">{tg.name} <span className="text-xs text-gray-400">({tg.code})</span></td>
+                                                        <td className="py-2 text-sm">₹{tg.price}</td>
+                                                        <td className="py-2">
+                                                            <input
+                                                                type="number"
+                                                                defaultValue={override ? override.price : ''}
+                                                                placeholder={override ? String(override.price) : "Default"}
+                                                                onBlur={(e) => {
+                                                                    const val = parseFloat(e.target.value);
+                                                                    if (!isNaN(val)) {
+                                                                        handleSavePrice(tg.id, val);
+                                                                    }
+                                                                }}
+                                                                className="border rounded px-2 py-1 w-24 text-sm"
+                                                            />
+                                                        </td>
+                                                        <td className="py-2 text-right">
+                                                            {override && (
+                                                                <button
+                                                                    onClick={() => handleRemovePrice(override.id)}
+                                                                    className="text-red-500 hover:text-red-700 text-xs underline"
+                                                                >
+                                                                    Reset
+                                                                </button>
+                                                            )}
+                                                        </td>
+                                                    </tr>
+                                                )
+                                            })}
+                                        </tbody>
+                                    </table>
+                                ) : (
+                                    <table className="min-w-full divide-y divide-gray-200">
+                                        <thead>
+                                            <tr>
+                                                <th className="text-left py-2 font-medium text-gray-500">Package Name</th>
+                                                <th className="text-left py-2 font-medium text-gray-500">Base Price</th>
+                                                <th className="text-left py-2 font-medium text-gray-500">Account Price</th>
+                                                <th className="text-right py-2 font-medium text-gray-500">Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-100">
+                                            {filteredPackages.length === 0 ? (
+                                                <tr>
+                                                    <td colSpan={4} className="py-8 text-center text-gray-500">
+                                                        No packages found. Create packages in Test Configuration first.
                                                     </td>
                                                 </tr>
-                                            )
-                                        })}
-                                    </tbody>
-                                </table>
+                                            ) : filteredPackages.map(pkg => {
+                                                const override = accountPackagePrices.find(ap => ap.package_id === pkg.id);
+                                                return (
+                                                    <tr key={pkg.id} className={override ? "bg-purple-50" : ""}>
+                                                        <td className="py-2 text-sm">{pkg.name} <span className="text-xs text-gray-400">({pkg.code})</span></td>
+                                                        <td className="py-2 text-sm">₹{pkg.price}</td>
+                                                        <td className="py-2">
+                                                            <input
+                                                                type="number"
+                                                                defaultValue={override ? override.price : ''}
+                                                                placeholder={override ? String(override.price) : "Default"}
+                                                                onBlur={(e) => {
+                                                                    const val = parseFloat(e.target.value);
+                                                                    if (!isNaN(val)) {
+                                                                        handleSavePackagePrice(pkg.id, val);
+                                                                    }
+                                                                }}
+                                                                className="border rounded px-2 py-1 w-24 text-sm"
+                                                            />
+                                                        </td>
+                                                        <td className="py-2 text-right">
+                                                            {override && (
+                                                                <button
+                                                                    onClick={() => handleRemovePackagePrice(override.id)}
+                                                                    className="text-red-500 hover:text-red-700 text-xs underline"
+                                                                >
+                                                                    Reset
+                                                                </button>
+                                                            )}
+                                                        </td>
+                                                    </tr>
+                                                )
+                                            })}
+                                        </tbody>
+                                    </table>
+                                )}
                             </div>
                         </div>
                     </div>

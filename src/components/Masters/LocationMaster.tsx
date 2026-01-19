@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Edit, Trash2, Save, X, MapPin, Building, Phone, Mail, CreditCard, DollarSign, TrendingUp, User } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, Save, X, MapPin, Building, Phone, Mail, CreditCard, DollarSign, TrendingUp, User, IndianRupee, ArrowLeft, ChevronRight } from 'lucide-react';
 import { database } from '../../utils/supabase';
 import { Location, CreditTransaction } from '../../types';
 import HeaderFooterUpload from '../Settings/HeaderFooterUpload';
+import PricingGrid from '../Pricing/PricingGrid';
 
 interface LocationFormData {
   name: string;
@@ -51,6 +52,7 @@ const LocationMaster: React.FC = () => {
   const [newCreditAmount, setNewCreditAmount] = useState<number>(0);
   const [newCreditDescription, setNewCreditDescription] = useState('');
   const [addingCredit, setAddingCredit] = useState(false);
+  const [selectedLocationForPricing, setSelectedLocationForPricing] = useState<Location | null>(null);
 
   // Load locations on component mount
   useEffect(() => {
@@ -240,6 +242,65 @@ const LocationMaster: React.FC = () => {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
+      {/* Pricing View */}
+      {selectedLocationForPricing ? (
+        <div>
+          {/* Header with Back Button */}
+          <div className="mb-6">
+            <button
+              onClick={() => setSelectedLocationForPricing(null)}
+              className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              Back to Locations
+            </button>
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 bg-purple-100 rounded-full flex items-center justify-center">
+                <IndianRupee className="h-5 w-5 text-purple-600" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900">
+                  {selectedLocationForPricing.name} - Pricing
+                </h1>
+                <p className="text-gray-600">
+                  Set patient prices and lab receivable amounts for tests and packages
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Location Pricing Info */}
+          <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="flex items-start gap-3">
+              <MapPin className="w-5 h-5 text-blue-600 mt-0.5" />
+              <div>
+                <h3 className="font-medium text-blue-900">Location Pricing Configuration</h3>
+                <p className="text-sm text-blue-700 mt-1">
+                  <strong>Patient Price:</strong> The price shown to patients (B2C price) at this location.
+                </p>
+                <p className="text-sm text-blue-700">
+                  <strong>Lab Receivable:</strong> The amount your lab receives from this location per test.
+                </p>
+                <p className="text-sm text-blue-700 mt-1">
+                  <em>Collection Percentage: {selectedLocationForPricing.collection_percentage || 0}%</em>
+                  {selectedLocationForPricing.is_cash_collection_center && 
+                    <span className="ml-2 px-2 py-0.5 bg-blue-200 text-blue-800 rounded text-xs">Cash Collection Center</span>
+                  }
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Pricing Grid */}
+          <PricingGrid
+            entityType="location"
+            entityId={selectedLocationForPricing.id}
+            entityName={selectedLocationForPricing.name}
+            showReceivable={true}
+          />
+        </div>
+      ) : (
+      <>
       {/* Header */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900 mb-2">Location Master</h1>
@@ -742,6 +803,13 @@ const LocationMaster: React.FC = () => {
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <div className="flex items-center gap-2 justify-end">
                           <button
+                            onClick={() => setSelectedLocationForPricing(location)}
+                            className="text-purple-600 hover:text-purple-900 p-1 rounded"
+                            title="Manage Prices"
+                          >
+                            <IndianRupee className="w-4 h-4" />
+                          </button>
+                          <button
                             onClick={() => handleViewCredit(location.id)}
                             className="text-green-600 hover:text-green-900 p-1 rounded"
                             title="Manage Credit"
@@ -778,6 +846,8 @@ const LocationMaster: React.FC = () => {
         <div className="mt-4 text-sm text-gray-600">
           Found {filteredLocations.length} location{filteredLocations.length !== 1 ? 's' : ''} matching "{searchTerm}"
         </div>
+      )}
+      </>
       )}
     </div>
   );
