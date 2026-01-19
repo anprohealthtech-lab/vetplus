@@ -2,7 +2,7 @@ import { database, supabase } from './supabase';
 import { generateUPIQRCodeDataURL, generateUPIPaymentLink, isValidUPIId } from './upiQrService';
 import JsBarcode from 'jsbarcode';
 
-// Helper function to fetch invoice data with UPI details
+// Helper function to fetch invoice data with UPI details (location + lab fallback)
 async function fetchInvoiceData(invoiceId: string) {
   const { data, error } = await supabase
     .from('invoices')
@@ -10,7 +10,8 @@ async function fetchInvoiceData(invoiceId: string) {
       *,
       patient:patients(*),
       invoice_items(*),
-      lab:labs(name, address, phone, email, gst_number, upi_id, bank_details)
+      lab:labs(name, address, phone, email, gst_number, upi_id, bank_details),
+      location:locations(id, name, address, phone, email, contact_person, upi_id, bank_details)
     `)
     .eq('id', invoiceId)
     .single();
@@ -94,16 +95,21 @@ export async function generateThermalInvoiceHTML(
     const balanceDue = invoice.total - (invoice.amount_paid || 0);
     const isPaid = balanceDue <= 0;
 
-    // 5. Generate UPI QR Code if lab has UPI ID and balance is due
+    // 5. Generate UPI QR Code - prioritize location UPI ID, fallback to lab UPI ID
     let upiQrHtml = '';
+    // Location-wise UPI: Check location first, then fall back to lab
+    const locationUpiId = invoice.location?.upi_id || invoice.location?.bank_details?.upi_id;
     const labUpiId = invoice.lab?.upi_id || invoice.lab?.bank_details?.upi_id;
+    const effectiveUpiId = locationUpiId || labUpiId;
     
-    if (labUpiId && isValidUPIId(labUpiId) && !isPaid && balanceDue > 0) {
+    if (effectiveUpiId && isValidUPIId(effectiveUpiId) && !isPaid && balanceDue > 0) {
       try {
         const qrSize = format === 'thermal_80mm' ? 120 : 90;
+        // Use location name if location has UPI, else use lab name
+        const payeeName = locationUpiId ? (invoice.location?.name || invoice.lab?.name || 'Lab') : (invoice.lab?.name || 'Lab');
         const qrDataURL = await generateUPIQRCodeDataURL({
-          upiId: labUpiId,
-          payeeName: invoice.lab?.name || 'Lab',
+          upiId: effectiveUpiId,
+          payeeName,
           amount: balanceDue,
           transactionNote: `INV-${invoice.invoice_number}`,
         }, { size: qrSize });
@@ -117,7 +123,7 @@ export async function generateThermalInvoiceHTML(
             <img src="${qrDataURL}" alt="UPI QR" style="width: ${qrSize}px; height: ${qrSize}px;" />
           </div>
           <div class="center" style="font-size: 9px; margin: 3px 0;">
-            UPI: ${labUpiId}
+            UPI: ${effectiveUpiId}
           </div>
           <div class="center bold" style="font-size: ${format === 'thermal_80mm' ? '14px' : '12px'}; color: #000;">
             Pay ₹${balanceDue.toFixed(2)}

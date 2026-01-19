@@ -59,6 +59,7 @@ import ManageReportSections from './pages/settings/ManageReportSections';
 import LabOnboarding from './pages/LabOnboarding';
 import VerificationPage from './pages/VerificationPage';
 import FinancialReports from './pages/FinancialReports';
+import Analytics from './pages/Analytics';
 
 // ⬇️ B2B Portal
 import B2BLogin from './pages/B2BLogin';
@@ -164,6 +165,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/billing" element={<Billing />} />
                 <Route path="/cash-reconciliation" element={<CashReconciliation />} />
                 <Route path="/financial-reports" element={<FinancialReports />} />
+                <Route path="/analytics" element={<Analytics />} />
                 {/* <Route path="/ai-tools" element={<AITools />} /> Hidden */}
                 {/* <Route path="/ai-prompts" element={<AIPromptManager />} /> Hidden */}
                 <Route path="/settings" element={<Settings />} />

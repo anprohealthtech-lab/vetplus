@@ -58,6 +58,10 @@ type Panel = {
   outsourcedLab?: string;
   sample_type?: string;
   sample_color?: string;
+  // TAT fields per panel
+  hours_until_tat_breach?: number | null;
+  is_tat_breached?: boolean;
+  tat_hours?: number | null;
 };
 
 type CardOrder = {
@@ -520,6 +524,10 @@ const Orders: React.FC = () => {
           outsourcedLab: labInfo?.name,
           sample_type: effectiveSampleType,
           sample_color: effectiveSampleColor,
+          // TAT fields per panel
+          hours_until_tat_breach: r.hours_until_tat_breach,
+          is_tat_breached: r.is_tat_breached,
+          tat_hours: r.tat_hours,
         };
       });
 
@@ -1289,6 +1297,21 @@ const Orders: React.FC = () => {
                                         <div className="font-medium text-sm mb-1 flex items-center gap-1">
                                           {p.isOutsourced && <span>🏥</span>}
                                           {p.name}
+                                          {/* TAT indicator per panel */}
+                                          {p.tat_hours && !p.isOutsourced && (
+                                            <span 
+                                              className={`ml-1 text-xs px-1 py-0.5 rounded ${
+                                                p.is_tat_breached 
+                                                  ? 'bg-red-500 text-white animate-pulse' 
+                                                  : p.hours_until_tat_breach !== null && p.hours_until_tat_breach !== undefined && p.hours_until_tat_breach < 2 
+                                                    ? 'bg-yellow-400 text-yellow-900' 
+                                                    : 'bg-gray-200 text-gray-600'
+                                              }`}
+                                              title={`TAT: ${p.tat_hours}h | ${p.is_tat_breached ? 'BREACHED' : p.hours_until_tat_breach !== null ? `${p.hours_until_tat_breach.toFixed(1)}h left` : 'Not started'}`}
+                                            >
+                                              {p.is_tat_breached ? '⏰!' : `${p.tat_hours}h`}
+                                            </span>
+                                          )}
                                         </div>
                                         <div className="flex items-center justify-between text-xs">
                                           {p.isOutsourced ? (

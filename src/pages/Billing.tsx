@@ -45,6 +45,9 @@ interface Invoice {
   created_at: string;
   updated_at: string;
   invoice_items?: InvoiceItem[];
+  // Refund fields
+  total_refunded_amount?: number;
+  refund_status?: 'not_requested' | 'pending' | 'partially_refunded' | 'fully_refunded';
   // For UI compatibility
   patientName?: string;
   patientId?: string;
@@ -637,16 +640,29 @@ const Billing: React.FC = () => {
                             </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-bold text-gray-900">{invoice.total.toLocaleString()}</div>
-                            <div className="text-sm text-gray-500">Sub: {invoice.subtotal.toLocaleString()}</div>
+                            <div className="text-sm font-bold text-gray-900">₹{invoice.total.toLocaleString()}</div>
+                            <div className="text-sm text-gray-500">Sub: ₹{invoice.subtotal.toLocaleString()}</div>
                             {invoice.paid_amount !== undefined && invoice.paid_amount > 0 && (
-                              <div className="text-sm text-green-600">Paid: {invoice.paid_amount.toLocaleString()}</div>
+                              <div className="text-sm text-green-600">Paid: ₹{invoice.paid_amount.toLocaleString()}</div>
+                            )}
+                            {invoice.total_refunded_amount !== undefined && invoice.total_refunded_amount > 0 && (
+                              <div className="text-sm text-orange-600 font-medium">Refund: ₹{invoice.total_refunded_amount.toLocaleString()}</div>
                             )}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(invoice.payment_status || invoice.status)}`}>
                               {invoice.payment_status || invoice.status}
                             </span>
+                            {invoice.refund_status && invoice.refund_status !== 'not_requested' && (
+                              <span className={`ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                                invoice.refund_status === 'fully_refunded' ? 'bg-orange-100 text-orange-800' :
+                                invoice.refund_status === 'partially_refunded' ? 'bg-yellow-100 text-yellow-800' :
+                                'bg-gray-100 text-gray-600'
+                              }`}>
+                                {invoice.refund_status === 'fully_refunded' ? 'Refunded' : 
+                                 invoice.refund_status === 'partially_refunded' ? 'Partial Refund' : 'Refund Pending'}
+                              </span>
+                            )}
                             {invoice.payment_method && (
                               <div className="text-xs text-gray-500 mt-1">
                                 {invoice.payment_method}

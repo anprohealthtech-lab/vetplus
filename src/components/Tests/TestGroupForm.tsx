@@ -19,6 +19,7 @@ interface TestGroup {
   analytes: string[];
   price: number;
   turnaroundTime: string;
+  tat_hours?: number;
   sampleType: string;
   requiresFasting: boolean;
   isActive: boolean;
@@ -55,6 +56,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     selectedAnalytes: testGroup?.analytes || [],
     price: testGroup?.price?.toString() || '',
     turnaroundTime: testGroup?.turnaroundTime || '',
+    tat_hours: testGroup?.tat_hours?.toString() || '3',
     sampleType: testGroup?.sampleType || '',
     requiresFasting: testGroup?.requiresFasting ?? false,
     isActive: testGroup?.isActive ?? true,
@@ -254,6 +256,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         ...formData,
         analytes: formData.selectedAnalytes,
         price: parseFloat(formData.price),
+        tat_hours: parseFloat(formData.tat_hours) || 3,
         default_ai_processing_type: formData.default_ai_processing_type,
         group_level_prompt: formData.group_level_prompt,
         lab_id: labId, // Add lab_id for lab-specific test group
@@ -549,6 +552,26 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   placeholder="0"
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                 />
+              </div>
+
+              {/* TAT Hours */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  TAT (Hours) *
+                </label>
+                <input
+                  type="number"
+                  name="tat_hours"
+                  required
+                  min="0.5"
+                  max="720"
+                  step="0.5"
+                  value={formData.tat_hours}
+                  onChange={handleChange}
+                  placeholder="3"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                />
+                <p className="text-xs text-gray-500 mt-1">Turnaround time for this test (used for TAT breach alerts)</p>
               </div>
             </div>
 

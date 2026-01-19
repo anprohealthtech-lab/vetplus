@@ -6,6 +6,73 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// Helper to extract Base64 images from HL7/ASTM messages
+function extractEmbeddedImages(rawContent: string): Array<{ type: string; data: string; name: string }> {
+  const images: Array<{ type: string; data: string; name: string }> = [];
+  
+  // Pattern 1: OBX segments with ED (Encapsulated Data) - HL7 standard
+  // Format: OBX|1|ED|HISTOGRAM^WBC||^^PNG^BASE64^/9j/4AAQSkZJRgABAQAA...
+  const obxEdPattern = /OBX\|[^|]*\|ED\|([^|]*)\|[^|]*\|([^^]*)\^([^^]*)\^([^^]*)\^([^|]*)/gi;
+  let match;
+  while ((match = obxEdPattern.exec(rawContent)) !== null) {
+    const [_, testCode, _, mimeType, encoding, data] = match;
+    if (encoding?.toUpperCase() === 'BASE64' && data) {
+      images.push({
+        type: mimeType?.toLowerCase() || 'png',
+        data: data.trim(),
+        name: testCode || 'analyzer_image'
+      });
+    }
+  }
+  
+  // Pattern 2: Inline base64 data (common in some analyzers)
+  // Look for PNG/JPEG magic bytes in base64
+  const base64Pattern = /data:image\/(png|jpeg|jpg|gif);base64,([A-Za-z0-9+/=]+)/gi;
+  while ((match = base64Pattern.exec(rawContent)) !== null) {
+    images.push({
+      type: match[1],
+      data: match[2],
+      name: 'inline_image'
+    });
+  }
+  
+  // Pattern 3: Raw base64 blocks (PNG starts with iVBOR, JPEG with /9j/)
+  const rawBase64Pattern = /(iVBOR[A-Za-z0-9+/=]{100,}|\/9j\/[A-Za-z0-9+/=]{100,})/g;
+  while ((match = rawBase64Pattern.exec(rawContent)) !== null) {
+    const data = match[1];
+    const type = data.startsWith('iVBOR') ? 'png' : 'jpeg';
+    images.push({
+      type,
+      data,
+      name: 'raw_image'
+    });
+  }
+  
+  return images;
+}
+
+// Helper to extract histogram/waveform numeric data
+function extractWaveformData(rawContent: string): Array<{ name: string; data: number[] }> {
+  const waveforms: Array<{ name: string; data: number[] }> = [];
+  
+  // Pattern: OBX with NA (Numeric Array) data type
+  // Format: OBX|1|NA|HISTOGRAM^RBC||12^15^18^22^...
+  const naPattern = /OBX\|[^|]*\|NA\|([^|]*)\|[^|]*\|([^|]*)/gi;
+  let match;
+  while ((match = naPattern.exec(rawContent)) !== null) {
+    const name = match[1]?.split('^')[0] || 'histogram';
+    const dataStr = match[2];
+    if (dataStr) {
+      const numbers = dataStr.split('^').map(n => parseFloat(n)).filter(n => !isNaN(n));
+      if (numbers.length > 0) {
+        waveforms.push({ name, data: numbers });
+      }
+    }
+  }
+  
+  return waveforms;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -29,12 +96,21 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
-    // 3. Init AI
+    // 3. Init AI - Use vision model if images detected
     const genAI = new GoogleGenerativeAI(Deno.env.get('GEMINI_API_KEY') || '')
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' })
+    
+    // 3a. Extract embedded images and waveform data
+    const embeddedImages = extractEmbeddedImages(record.raw_content);
+    const waveformData = extractWaveformData(record.raw_content);
+    
+    console.log(`📊 Found ${embeddedImages.length} images and ${waveformData.length} waveforms in analyzer data`);
+    
+    // Use vision model if images are present
+    const modelName = embeddedImages.length > 0 ? 'gemini-2.0-flash-exp' : 'gemini-2.0-flash-exp';
+    const model = genAI.getGenerativeModel({ model: modelName })
 
-    // 4. AI Parse
-    const prompt = `
+    // 4. AI Parse - Include image analysis if images present
+    let prompt = `
     You are a strictly technical laboratory interface parser. 
     Output ONLY valid JSON. Do NOT write introduction text. Do NOT write "Okay".
     
@@ -47,11 +123,48 @@ Deno.serve(async (req) => {
       "results": [
         { "test_code": "string", "value": "string", "unit": "string", "flag": "string" }
       ],
-      "instrument": "string"
+      "instrument": "string",
+      "graphs": [
+        { "type": "histogram|scatter|waveform", "name": "string", "description": "string", "associated_test": "string" }
+      ]
     }
+    
+    If waveform/histogram data is present, include it in the graphs array.
     `
+    
+    // Build content parts for AI
+    const contentParts: any[] = [{ text: prompt }];
+    
+    // Add images if present (for vision analysis)
+    if (embeddedImages.length > 0) {
+      for (const img of embeddedImages) {
+        contentParts.push({
+          inlineData: {
+            mimeType: `image/${img.type}`,
+            data: img.data
+          }
+        });
+      }
+      contentParts.push({
+        text: `\n\nANALYZE THE ATTACHED ${embeddedImages.length} IMAGE(S) FROM THE ANALYZER.
+        For each image, identify:
+        - What type of graph/chart it is (histogram, scatter plot, waveform, etc.)
+        - What test/parameter it relates to (WBC diff, RBC histogram, etc.)
+        - Any abnormalities visible
+        - Include this analysis in the "graphs" array of your response.`
+      });
+    }
+    
+    // Add waveform data context
+    if (waveformData.length > 0) {
+      contentParts.push({
+        text: `\n\nWAVEFORM DATA DETECTED:
+        ${JSON.stringify(waveformData, null, 2)}
+        Include these in the "graphs" array with type "waveform".`
+      });
+    }
 
-    const aiResult = await model.generateContent(prompt)
+    const aiResult = await model.generateContent(contentParts)
     const aiText = aiResult.response.text()
     
     // Robust JSON Extraction
@@ -264,26 +377,104 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                     mappedCount++
                 }
             }
-            statusLog += `Mapped ${mappedCount} analytes.`
+            statusLog += `Mapped ${mappedCount} analytes. `
+            
+            // E. Store analyzer graphs/images if present
+            if (embeddedImages.length > 0 || waveformData.length > 0 || parsedData.graphs?.length > 0) {
+                statusLog += `Processing ${embeddedImages.length} images, ${waveformData.length} waveforms. `
+                
+                // Store images in Supabase Storage
+                const storedImages: Array<{ name: string; url: string; type: string }> = [];
+                for (const img of embeddedImages) {
+                    try {
+                        // Decode base64 and upload to storage
+                        const binaryData = Uint8Array.from(atob(img.data), c => c.charCodeAt(0));
+                        const fileName = `analyzer-graphs/${sample.lab_id}/${sample.order_id}/${img.name}_${Date.now()}.${img.type}`;
+                        
+                        const { data: uploadData, error: uploadError } = await supabase.storage
+                            .from('attachments')
+                            .upload(fileName, binaryData, {
+                                contentType: `image/${img.type}`,
+                                upsert: true
+                            });
+                        
+                        if (!uploadError && uploadData) {
+                            const { data: urlData } = supabase.storage
+                                .from('attachments')
+                                .getPublicUrl(fileName);
+                            
+                            storedImages.push({
+                                name: img.name,
+                                url: urlData?.publicUrl || '',
+                                type: img.type
+                            });
+                            statusLog += `Uploaded ${img.name}. `;
+                        }
+                    } catch (imgErr) {
+                        console.error('Failed to upload analyzer image:', imgErr);
+                    }
+                }
+                
+                // Build analyzer_graph_data structure for the order
+                const analyzerGraphData = {
+                    generated_at: new Date().toISOString(),
+                    source: 'analyzer_interface',
+                    instrument: parsedData.instrument,
+                    images: storedImages,
+                    waveforms: waveformData,
+                    ai_analysis: parsedData.graphs || [],
+                };
+                
+                // Store in order's trend_graph_data (or a dedicated field)
+                // We'll merge with existing trend_graph_data if present
+                const { data: existingOrder } = await supabase
+                    .from('orders')
+                    .select('trend_graph_data')
+                    .eq('id', sample.order_id)
+                    .single();
+                
+                const existingData = existingOrder?.trend_graph_data || {};
+                const updatedGraphData = {
+                    ...existingData,
+                    analyzer_graphs: analyzerGraphData
+                };
+                
+                await supabase
+                    .from('orders')
+                    .update({ trend_graph_data: updatedGraphData })
+                    .eq('id', sample.order_id);
+                
+                statusLog += `Stored ${storedImages.length} graph images. `;
+            }
             }
         }
     }
 
-    // 6. Update Message Log
+    // 6. Update Message Log with complete data including graphs
+    const finalResult = {
+      ...parsedData,
+      processing_log: statusLog,
+      extracted_images: embeddedImages.length,
+      extracted_waveforms: waveformData.length,
+      graphs_analyzed: parsedData.graphs?.length || 0
+    };
+    
     await supabase
       .from('analyzer_raw_messages')
       .update({
         ai_status: 'completed',
-        ai_result: parsedData,
+        ai_result: finalResult,
         ai_confidence: 0.9,
         sample_barcode: parsedData.sample_barcode,
-        // Save the log
-        // metadata: { status_log: statusLog } // if metadata column existed, or just store in ai_result?
-        ai_result: { ...parsedData, processing_log: statusLog } 
       })
       .eq('id', record.id)
 
-    return new Response(JSON.stringify({ success: true, log: statusLog }), {
+    return new Response(JSON.stringify({ 
+      success: true, 
+      log: statusLog,
+      images_found: embeddedImages.length,
+      waveforms_found: waveformData.length 
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
 

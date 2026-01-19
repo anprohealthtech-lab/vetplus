@@ -330,6 +330,8 @@ exports.handler = async (event) => {
     const templateName = payload.templateName || 'Template';
     const labId = payload.labId || payload.labContext || 'lab';
     const history = Array.isArray(payload.history) ? payload.history : [];
+    // Accept placeholder catalog from frontend for accurate analyte placeholders
+    const placeholderCatalog = payload.placeholderCatalog || null;
 
     if (!prompt) {
       return {
@@ -342,10 +344,31 @@ exports.handler = async (event) => {
     // Allow creating new templates from scratch (empty HTML is OK)
     const isNewTemplate = !html || html.trim() === '';
 
+    // Build placeholder catalog context if provided
+    let placeholderContext = '';
+    if (placeholderCatalog && Array.isArray(placeholderCatalog.analytes) && placeholderCatalog.analytes.length > 0) {
+      placeholderContext = `
+═══════════════════════════════════════════════════════════════════════════════
+AVAILABLE ANALYTE PLACEHOLDERS FOR THIS TEST GROUP
+═══════════════════════════════════════════════════════════════════════════════
+
+The following analytes are available for this template. USE THESE EXACT PLACEHOLDERS:
+
+${placeholderCatalog.analytes.map(a => `${a.label} (Code: ${a.code}):
+  - Value: {{ANALYTE_${a.code}_VALUE}}
+  - Unit: {{ANALYTE_${a.code}_UNIT}}
+  - Reference: {{ANALYTE_${a.code}_REFERENCE}}
+  - Flag: {{ANALYTE_${a.code}_FLAG}}`).join('\n\n')}
+
+IMPORTANT: Only use the analyte placeholders listed above. Do NOT invent new analyte codes.
+═══════════════════════════════════════════════════════════════════════════════
+`;
+    }
+
     const promptParts = [
       {
         role: 'user',
-        parts: [{ text: PROMPT_INTRO }],
+        parts: [{ text: PROMPT_INTRO + placeholderContext }],
       },
       ...history.map((entry) => ({
         role: entry.role === 'assistant' ? 'model' : 'user',
@@ -362,6 +385,16 @@ exports.handler = async (event) => {
                 labId,
                 currentHtml: html,
                 currentCss: css,
+                availableAnalytes: placeholderCatalog?.analytes?.map(a => ({
+                  label: a.label,
+                  code: a.code,
+                  placeholders: {
+                    value: `{{ANALYTE_${a.code}_VALUE}}`,
+                    unit: `{{ANALYTE_${a.code}_UNIT}}`,
+                    reference: `{{ANALYTE_${a.code}_REFERENCE}}`,
+                    flag: `{{ANALYTE_${a.code}_FLAG}}`,
+                  }
+                })) || [],
               },
               null,
               2,

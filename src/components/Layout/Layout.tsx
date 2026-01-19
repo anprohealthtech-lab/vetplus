@@ -4,6 +4,7 @@ import Header from './Header';
 import BottomNavigation from './BottomNavigation';
 import MobileBottomNav from './MobileBottomNav';
 import { isNative } from '../../utils/platformHelper';
+import TATFloater from '../Orders/TATFloater';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -46,6 +47,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           <BottomNavigation />
         )}
       </div>
+
+      {/* TAT Floater - Shows TAT breach alerts */}
+      <TATFloater className={isMobile ? 'bottom-20' : ''} />
     </div>
   );
 };

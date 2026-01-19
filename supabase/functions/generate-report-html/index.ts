@@ -1621,6 +1621,44 @@ function generateReportExtrasHtml(extras: {
       }
       html += '</div>'
     }
+    
+    // Analyzer graphs from machine interface (stored in trend_graph_data.analyzer_graphs)
+    if (trendData.analyzer_graphs) {
+      const analyzerData = trendData.analyzer_graphs;
+      
+      // Render stored images (histograms, scatter plots, etc.)
+      if (analyzerData.images && analyzerData.images.length > 0) {
+        html += '<div class="analyzer-graphs-section" style="margin-top: 25px; page-break-inside: avoid;">'
+        html += '<h3 style="margin-bottom: 15px; color: #1e40af; border-bottom: 2px solid #3b82f6; padding-bottom: 8px;">Analyzer Graphs</h3>'
+        
+        html += '<div style="display: flex; flex-wrap: wrap; gap: 15px; justify-content: center;">'
+        for (const img of analyzerData.images) {
+          html += `<div style="text-align: center; max-width: 45%;">`
+          html += `<img src="${img.url}" alt="${img.name}" style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;" />`
+          html += `<p style="margin-top: 5px; font-size: 11px; color: #6b7280;">${img.name}</p>`
+          html += `</div>`
+        }
+        html += '</div>'
+        
+        // AI analysis of the graphs
+        if (analyzerData.ai_analysis && analyzerData.ai_analysis.length > 0) {
+          html += '<div style="margin-top: 15px; padding: 12px; background: #f0f9ff; border-radius: 6px; border-left: 4px solid #3b82f6;">'
+          html += '<p style="margin: 0 0 8px 0; font-weight: bold; color: #1e40af; font-size: 12px;">AI Graph Analysis:</p>'
+          for (const analysis of analyzerData.ai_analysis) {
+            if (analysis.description) {
+              html += `<p style="margin: 4px 0; font-size: 11px; color: #374151;">• <strong>${analysis.name || analysis.type}:</strong> ${analysis.description}</p>`
+            }
+          }
+          html += '</div>'
+        }
+        
+        if (analyzerData.instrument) {
+          html += `<p style="margin-top: 10px; font-size: 10px; color: #9ca3af; text-align: right;">Source: ${analyzerData.instrument}</p>`
+        }
+        
+        html += '</div>'
+      }
+    }
   }
   
   // Clinical summary from report_extras table

@@ -18,6 +18,7 @@ interface OrderTest {
   package_id?: string; // If this test is part of a package
   isPackageEntry?: boolean; // True if this is a package line item (📦)
   isTestInPackage?: boolean; // True if this is an individual test inside a package
+  outsourced_lab_id?: string | null; // If test is outsourced
 }
 
 type DiscountSource = 'manual' | 'doctor' | 'location' | 'account';
@@ -81,11 +82,36 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
         // Fallback to direct query if method doesn't exist
         supabase
           .from('order_tests')
-          .select('id, test_group_id, test_name, price, is_billed, invoice_id, package_id')
+          .select('id, test_group_id, test_name, price, is_billed, invoice_id, package_id, outsourced_lab_id')
           .eq('order_id', orderId)
           .eq('is_billed', false);
 
       if (testsError) throw testsError;
+
+      // Fetch location-specific prices if order has a location
+      let locationPricesMap: Record<string, number> = {};
+      if (orderData?.location_id) {
+        const testGroupIds = (orderTests || [])
+          .filter((t: any) => t.test_group_id)
+          .map((t: any) => t.test_group_id);
+
+        if (testGroupIds.length > 0) {
+          const { data: locPrices } = await supabase
+            .from('location_test_prices')
+            .select('test_group_id, patient_price')
+            .eq('location_id', orderData.location_id)
+            .eq('is_active', true)
+            .in('test_group_id', testGroupIds);
+
+          if (locPrices) {
+            locPrices.forEach((lp: any) => {
+              if (lp.patient_price !== null && lp.patient_price !== undefined) {
+                locationPricesMap[lp.test_group_id] = Number(lp.patient_price);
+              }
+            });
+          }
+        }
+      }
 
       // Normalize tests and handle package pricing
       // Tests that belong to a package (have package_id) but are NOT the package entry
@@ -94,11 +120,17 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
         const isPackageEntry = t.test_name?.startsWith('📦') || (t.package_id && !t.test_group_id);
         const isTestInPackage = t.package_id && t.test_group_id;
 
+        // Use location price if available, otherwise use stored price
+        let effectivePrice = toNum(t.price);
+        if (t.test_group_id && locationPricesMap[t.test_group_id] !== undefined) {
+          effectivePrice = locationPricesMap[t.test_group_id];
+        }
+
         return {
           ...t,
           // For tests inside a package, force price to 0 (included in package)
-          // Package entry keeps its price
-          price: isTestInPackage ? 0 : toNum(t.price),
+          // Package entry keeps its price (with location adjustment if applicable)
+          price: isTestInPackage ? 0 : effectivePrice,
           isPackageEntry,
           isTestInPackage,
         };
@@ -112,7 +144,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
       setSelectedTests(billableTests.map(t => t.id)); // Only select billable items
 
       // Default discounts (Account > Location > Doctor) — manual always wins when user applies
-      await applyDefaultDiscounts(orderData, orderTests || []);
+      await applyDefaultDiscounts(orderData, normalizedTests || []);
     } catch (error) {
       console.error('Error loading order details:', error);
     } finally {
@@ -278,9 +310,52 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
       if (invoiceError) throw invoiceError;
 
       // Items + mark billed
+      // First fetch location details if we have a location
+      let locationDetails: { collection_percentage?: number; receivable_type?: string } | null = null;
+      if (order.location_id) {
+        const { data: loc } = await (database as any).locations?.getById?.(order.location_id) || { data: null };
+        if (loc) {
+          locationDetails = {
+            collection_percentage: loc.collection_percentage,
+            receivable_type: loc.receivable_type
+          };
+        }
+      }
+      
       for (const test of rows) {
         const d = discounts[test.id];
         const lineTotal = calcLineTotal(test);
+
+        // Get outsourced cost if applicable
+        let outsourcedCost: number | null = null;
+        if (test.outsourced_lab_id) {
+          const { data: costData } = await database.outsourcedLabPrices.getCost(test.outsourced_lab_id, test.test_group_id);
+          outsourcedCost = costData?.cost || null;
+        }
+
+        // Calculate location_receivable if location is set
+        let locationReceivable: number | null = null;
+        if (order.location_id && locationDetails) {
+          // Check for test-specific lab_receivable in location_test_prices
+          const { data: locPrice } = await supabase
+            .from('location_test_prices')
+            .select('lab_receivable')
+            .eq('location_id', order.location_id)
+            .eq('test_group_id', test.test_group_id)
+            .eq('is_active', true)
+            .maybeSingle();
+          
+          if (locPrice?.lab_receivable !== null && locPrice?.lab_receivable !== undefined) {
+            // Use explicitly set test-wise price
+            locationReceivable = locPrice.lab_receivable;
+          } else if (locationDetails.receivable_type === 'own_center') {
+            // Own center: lab gets 100%
+            locationReceivable = toNum(test.price);
+          } else if (locationDetails.collection_percentage) {
+            // Calculate from percentage
+            locationReceivable = toNum(test.price) * (locationDetails.collection_percentage / 100);
+          }
+        }
 
         await supabase.from('invoice_items').insert({
           lab_id,
@@ -294,6 +369,10 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
           discount_value: d?.value || null,
           discount_amount: toNum(test.price) - lineTotal,
           discount_reason: d?.reason || null,
+          outsourced_lab_id: test.outsourced_lab_id || null,
+          outsourced_cost: outsourcedCost,
+          location_receivable: locationReceivable,
+          order_id: orderId,
         });
 
         await supabase

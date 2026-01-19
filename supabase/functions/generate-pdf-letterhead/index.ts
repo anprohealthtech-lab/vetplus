@@ -3,7 +3,7 @@
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4'
-import { fetchLetterheadBackground, fetchFrontBackPages } from './headerFooterHelper.ts'
+import { fetchLetterheadBackground, fetchLetterheadBackgroundForOrder, fetchFrontBackPages } from './headerFooterHelper.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -1917,6 +1917,44 @@ function generateReportExtrasHtml(extras: {
       }
       html += '</div>'
     }
+    
+    // Analyzer graphs from machine interface (stored in trend_graph_data.analyzer_graphs)
+    if (trendData.analyzer_graphs) {
+      const analyzerData = trendData.analyzer_graphs;
+      
+      // Render stored images (histograms, scatter plots, etc.)
+      if (analyzerData.images && analyzerData.images.length > 0) {
+        html += '<div class="analyzer-graphs-section" style="margin-top: 25px; page-break-inside: avoid;">'
+        html += '<h3 style="margin-bottom: 15px; color: #1e40af; border-bottom: 2px solid #3b82f6; padding-bottom: 8px;">Analyzer Graphs</h3>'
+        
+        html += '<div style="display: flex; flex-wrap: wrap; gap: 15px; justify-content: center;">'
+        for (const img of analyzerData.images) {
+          html += `<div style="text-align: center; max-width: 45%;">`
+          html += `<img src="${img.url}" alt="${img.name}" style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;" />`
+          html += `<p style="margin-top: 5px; font-size: 11px; color: #6b7280;">${img.name}</p>`
+          html += `</div>`
+        }
+        html += '</div>'
+        
+        // AI analysis of the graphs
+        if (analyzerData.ai_analysis && analyzerData.ai_analysis.length > 0) {
+          html += '<div style="margin-top: 15px; padding: 12px; background: #f0f9ff; border-radius: 6px; border-left: 4px solid #3b82f6;">'
+          html += '<p style="margin: 0 0 8px 0; font-weight: bold; color: #1e40af; font-size: 12px;">AI Graph Analysis:</p>'
+          for (const analysis of analyzerData.ai_analysis) {
+            if (analysis.description) {
+              html += `<p style="margin: 4px 0; font-size: 11px; color: #374151;">• <strong>${analysis.name || analysis.type}:</strong> ${analysis.description}</p>`
+            }
+          }
+          html += '</div>'
+        }
+        
+        if (analyzerData.instrument) {
+          html += `<p style="margin-top: 10px; font-size: 10px; color: #9ca3af; text-align: right;">Source: ${analyzerData.instrument}</p>`
+        }
+        
+        html += '</div>'
+      }
+    }
   }
   
   // Clinical summary from report_extras table
@@ -2210,7 +2248,15 @@ serve(async (req) => {
 
     // Inner try-catch for main logic
     try {
-      const { orderId, isDraft, htmlOverride, isManualDesign } = await req.json()
+      const requestBody = await req.json()
+      
+      // Support both direct calls (orderId) and webhook payloads (record.order_id)
+      // Webhook payloads from Supabase Database Webhooks include: { type, table, record, schema, old_record }
+      const orderId = requestBody.orderId || requestBody.record?.order_id
+      const isDraft = requestBody.isDraft
+      const htmlOverride = requestBody.htmlOverride
+      const isManualDesign = requestBody.isManualDesign
+      const isWebhook = !!requestBody.record
 
       console.log('═══════════════════════════════════════════════════════════')
       console.log('📄 PDF AUTO-GENERATION (SERVER-SIDE)')
@@ -2218,11 +2264,12 @@ serve(async (req) => {
       console.log('Order ID:', orderId)
       console.log('Is Draft:', !!isDraft)
       console.log('Is Manual Design:', !!isManualDesign)
+      console.log('Is Webhook Trigger:', isWebhook)
       console.log('PDF.co API Key:', PDFCO_API_KEY ? '✅ Present' : '❌ MISSING')
 
       if (!orderId) {
         return new Response(
-          JSON.stringify({ error: 'orderId is required' }),
+          JSON.stringify({ error: 'orderId is required (pass orderId directly or via webhook record.order_id)' }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
       }
@@ -2599,9 +2646,10 @@ serve(async (req) => {
       .single()
     
     // FETCH LETTERHEAD BACKGROUND IMAGE (Full-page background approach)
+    // Priority: B2B Account > Location > Lab
     console.log('  🖼️ Fetching letterhead background image...')
-    console.log('  📍 Lab ID:', job.lab_id)
-    const letterheadBackgroundUrl = await fetchLetterheadBackground(supabaseClient, job.lab_id)
+    console.log('  📍 Order ID:', orderId, '| Lab ID:', job.lab_id)
+    const letterheadBackgroundUrl = await fetchLetterheadBackgroundForOrder(supabaseClient, orderId, job.lab_id)
     
     console.log('  🎨 Letterhead Background URL:', letterheadBackgroundUrl || 'NOT FOUND')
     if (letterheadBackgroundUrl) {
@@ -3372,22 +3420,23 @@ serve(async (req) => {
     }
     
     // Inject report extras (trends, clinical summary, AI summaries)
+    // CRITICAL: Must inject INSIDE </main>, not before </body> - otherwise content appears outside letterhead layout table
     const extrasHtml = generateReportExtrasHtml(reportExtras)
     if (extrasHtml) {
-      bodyHtml = bodyHtml.replace('</body>', `${extrasHtml}</body>`)
-      console.log('✅ Report extras injected')
+      bodyHtml = bodyHtml.replace('</main>', `${extrasHtml}</main>`)
+      console.log('✅ Report extras injected inside main content')
     }
     
     // Inject attachments
     if (attachments && attachments.length > 0) {
       const attachmentsHtml = generateAttachmentsHtml(attachments)
       if (attachmentsHtml) {
-        bodyHtml = bodyHtml.replace('</body>', `${attachmentsHtml}</body>`)
+        bodyHtml = bodyHtml.replace('</main>', `${attachmentsHtml}</main>`)
         console.log('✅ Attachments injected:', attachments.length)
       }
     }
 
-    // Inject Last Page if available
+    // Inject Last Page if available (this one goes before </body> since it's a separate full page)
     if (lastPage) {
         bodyHtml = bodyHtml.replace('</body>', `<div class="report-last-page" style="page-break-before: always; width: 100vw; height: 100vh; margin: 0; padding: 0;">${lastPage}</div></body>`)
         console.log('✅ Last page injected')
@@ -3478,18 +3527,17 @@ serve(async (req) => {
       // Strip custom gjs_css from rawHtmlForPrint path (if it was included)
       printHtml = printHtml.replace(/<style id="lims-report-custom">[\s\S]*?<\/style>/gi, '')
       
-      // Inject report extras
+      // Inject report extras - INSIDE </main> not </body> for proper layout
       const printExtrasHtml = generateReportExtrasHtml(reportExtras)
       if (printExtrasHtml) {
-        printHtml = printHtml.replace('</body>', `${printExtrasHtml}</body>`)
+        printHtml = printHtml.replace('</main>', `${printExtrasHtml}</main>`)
       }
       
-      // Inject attachments
-      // Inject attachments
+      // Inject attachments - INSIDE </main> not </body>
       if (attachments && attachments.length > 0) {
         const printAttachmentsHtml = generateAttachmentsHtml(attachments)
         if (printAttachmentsHtml) {
-          printHtml = printHtml.replace('</body>', `${printAttachmentsHtml}</body>`)
+          printHtml = printHtml.replace('</main>', `${printAttachmentsHtml}</main>`)
         }
       }
 

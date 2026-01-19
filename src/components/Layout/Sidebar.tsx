@@ -30,6 +30,7 @@ import {
   ListOrdered,
   TrendingUp,
   Truck,
+  BarChart3,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -57,6 +58,7 @@ const navigation = [
   { name: 'Billing', href: '/billing', icon: Receipt, category: 'business' },
   { name: 'Cash Reconciliation', href: '/cash-reconciliation', icon: DollarSign, category: 'business' },
   { name: 'Financial Reports', href: '/financial-reports', icon: TrendingUp, category: 'business' },
+  { name: 'Analytics', href: '/analytics', icon: BarChart3, category: 'business' },
 
   // Communication
   { name: 'WhatsApp Integration', href: '/whatsapp', icon: MessageCircle, category: 'communication' },

@@ -151,28 +151,48 @@ Deno.serve(async (req: Request) => {
 
     // 2. Create default location for the lab
     console.log('[CREATE-LAB-WITH-ADMIN] Creating default location...');
-    const { error: locationError } = await supabaseAdmin
+    const { data: locationData, error: locationError } = await supabaseAdmin
       .from("locations")
       .insert({
         lab_id: labId,
         name: `${lab_name} - Main`,
         code: 'MAIN',
+        type: 'diagnostic_center',
         address: address || null,
         city: city || null,
         state: state || null,
         pincode: pincode || null,
-        contact_phone: phone || null,
-        contact_email: email || admin_email,
+        phone: phone || null,
+        email: email || admin_email,
         is_active: true,
-        is_collection_center: false,
+        is_collection_center: true,
+        is_processing_center: true,
+        can_receive_samples: true,
+        supports_cash_collection: true,
         is_main_lab: true,
-      });
+      })
+      .select('id')
+      .single();
 
     if (locationError) {
       console.warn('[CREATE-LAB-WITH-ADMIN] WARNING: Failed to create default location:', locationError.message);
       // Don't fail the entire operation
     } else {
-      console.log('[CREATE-LAB-WITH-ADMIN] Default location created');
+      console.log('[CREATE-LAB-WITH-ADMIN] Default location created with ID:', locationData?.id);
+      
+      // Update lab with default_processing_location_id
+      if (locationData?.id) {
+        const { error: updateLabError } = await supabaseAdmin
+          .from("labs")
+          .update({ default_processing_location_id: locationData.id })
+          .eq("id", labId);
+        
+        if (updateLabError) {
+          console.warn('[CREATE-LAB-WITH-ADMIN] WARNING: Failed to set default location on lab:', updateLabError.message);
+        } else {
+          console.log('[CREATE-LAB-WITH-ADMIN] Lab default location set');
+        }
+      }
     }
 
     // 3. Get admin role ID

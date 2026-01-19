@@ -10,6 +10,8 @@ export interface CreateOrderWithPaymentData {
   payment_method?: 'cash' | 'card' | 'upi' | 'online' | 'netbanking';
   amount_paid?: number;
   notes?: string;
+  // Outsourcing config: { test_id: outsourced_lab_id | 'inhouse' }
+  test_outsourcing?: Record<string, string>;
 }
 
 export interface OrderCreationResponse {

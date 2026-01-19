@@ -2206,12 +2206,13 @@ export const database = {
       }
 
       // Get lab-specific analytes for this test group
+      // Include 'code' field for proper placeholder generation matching backend RPC
       const { data, error } = await supabase
         .from('test_group_analytes')
         .select(
           `analyte_id,
            created_at,
-           analytes!inner ( id, name, unit, reference_range )`
+           analytes!inner ( id, name, code, unit, reference_range )`
         )
         .eq('test_group_id', testGroupId)
         .order('created_at', { ascending: true });
@@ -2222,7 +2223,7 @@ export const database = {
 
       // Get lab-specific overrides for these analytes
       const analyteIds = (data || []).map((row: any) => row.analyte_id).filter(Boolean);
-      
+
       let labAnalytesMap: Record<string, any> = {};
       if (analyteIds.length > 0) {
         const { data: labAnalytes } = await supabase
@@ -2241,7 +2242,7 @@ export const database = {
       const mapped = (data || []).map((row: any) => {
         const baseAnalyte = row.analytes || {};
         const labOverride = labAnalytesMap[row.analyte_id] || {};
-        
+
         // Prefer lab-specific values over base analyte values
         const label = (
           labOverride.lab_specific_name ||
@@ -2249,17 +2250,24 @@ export const database = {
           baseAnalyte.name ||
           'Unnamed Analyte'
         ).trim();
-        
-        const baseSlug = label
-          .replace(/[^a-zA-Z0-9]+/g, ' ')
-          .trim()
-          .replace(/\s+/g, '');
-        const finalSlug = baseSlug.replace(/^(\d+)/, 'n$1');
-        
+
+        // Generate placeholder code that matches backend RPC pattern:
+        // Use analyte.code if available, otherwise sanitize the parameter name
+        // Pattern: ANALYTE_[CODE]_VALUE (uppercase, alphanumeric only)
+        const analyteCode = baseAnalyte.code
+          ? baseAnalyte.code.replace(/[^A-Za-z0-9]+/g, '').toUpperCase()
+          : label.replace(/[^A-Za-z0-9]+/g, '').toUpperCase();
+
+        // Main placeholder is ANALYTE_[CODE] (value will be added as suffix in variations)
+        const placeholderBase = `ANALYTE_${analyteCode}`;
+
         return {
           id: baseAnalyte.id || row.analyte_id,
           label,
-          placeholder: `{{${finalSlug}}}`,
+          // Main placeholder for the VALUE
+          placeholder: `{{${placeholderBase}_VALUE}}`,
+          // Store the base for generating variations
+          placeholderBase,
           unit: labOverride.lab_specific_unit || labOverride.unit || baseAnalyte.unit || null,
           referenceRange: labOverride.lab_specific_reference_range || labOverride.reference_range || baseAnalyte.reference_range || null,
         };
@@ -3679,6 +3687,17 @@ export const database = {
             if (userData?.default_location_id) {
               location_id = userData.default_location_id;
             }
+          }
+        }
+        // If still no location, get lab's default location
+        if (!location_id && lab_id) {
+          const { data: labData } = await supabase
+            .from('labs')
+            .select('default_processing_location_id')
+            .eq('id', lab_id)
+            .single();
+          if (labData?.default_processing_location_id) {
+            location_id = labData.default_processing_location_id;
           }
         }
       }
@@ -5330,6 +5349,7 @@ export const database = {
           clinical_purpose: testGroupData.clinicalPurpose || 'Clinical assessment and diagnosis',
           price: testGroupData.price || 0,
           turnaround_time: testGroupData.turnaroundTime || '24 hours',
+          tat_hours: testGroupData.tat_hours || 3, // TAT in hours for breach calculation
           sample_type: testGroupData.sampleType || 'Serum',
           requires_fasting: testGroupData.requiresFasting || false,
           is_active: testGroupData.isActive !== false,
@@ -5408,6 +5428,7 @@ export const database = {
             clinical_purpose: updates.clinicalPurpose,
             price: updates.price,
             turnaround_time: updates.turnaroundTime,
+            tat_hours: updates.tat_hours, // TAT in hours for breach calculation
             sample_type: updates.sampleType,
             requires_fasting: updates.requiresFasting,
             is_active: updates.isActive,
@@ -11966,6 +11987,484 @@ const pricingHelper = {
   },
 };
 
+// =============================================
+// ANALYTICS NAMESPACE
+// =============================================
+
+export type AnalyticsDateRange = {
+  from: Date;
+  to: Date;
+};
+
+export type AnalyticsFilters = {
+  lab_id: string;
+  date_range?: AnalyticsDateRange;
+  location_id?: string;
+  department?: string;
+  account_id?: string;
+};
+
+export type KpiSummary = {
+  date: string;
+  total_orders: number;
+  total_revenue: number;
+  avg_order_value: number;
+  samples_collected: number;
+  reports_generated: number;
+  pending_reports: number;
+  critical_results: number;
+  tat_breaches: number;
+};
+
+export type RevenueDaily = {
+  date: string;
+  location_id: string | null;
+  location_name: string | null;
+  gross_revenue: number;
+  discounts: number;
+  net_revenue: number;
+  cash_collected: number;
+  card_collected: number;
+  upi_collected: number;
+  bank_transfer_collected: number;
+  credit_outstanding: number;
+  refunds: number;
+  invoice_count: number;
+  order_count: number;
+};
+
+export type DepartmentStats = {
+  date: string;
+  department: string;
+  order_count: number;
+  test_count: number;
+  revenue: number;
+  order_percentage: number;
+  revenue_percentage: number;
+};
+
+export type StatusDistribution = {
+  date: string;
+  status: string;
+  count: number;
+  percentage: number;
+};
+
+export type TestPopularity = {
+  test_group_id: string;
+  test_name: string;
+  department: string | null;
+  order_count: number;
+  revenue: number;
+  avg_price: number;
+  rank_by_volume: number;
+  rank_by_revenue: number;
+};
+
+export type TatSummary = {
+  date: string;
+  department: string | null;
+  test_name: string;
+  target_tat: number | null;
+  avg_tat_hours: number;
+  min_tat_hours: number;
+  max_tat_hours: number;
+  within_target: number;
+  breached: number;
+  total_tests: number;
+  breach_percentage: number;
+};
+
+export type LocationPerformance = {
+  location_id: string | null;
+  location_name: string | null;
+  date: string;
+  order_count: number;
+  patient_count: number;
+  test_count: number;
+  revenue: number;
+  collected: number;
+  collection_efficiency: number;
+  sample_collection_rate: number;
+  avg_processing_hours: number;
+};
+
+export type AccountPerformance = {
+  account_id: string;
+  account_name: string;
+  account_type: string | null;
+  date: string;
+  order_count: number;
+  patient_count: number;
+  revenue: number;
+  collected: number;
+  outstanding_amount: number;
+  avg_order_value: number;
+  avg_payment_days: number;
+};
+
+export type OutsourcedSummary = {
+  outsourced_lab_id: string;
+  outsourced_lab_name: string;
+  date: string;
+  test_count: number;
+  order_count: number;
+  cost: number;
+  revenue: number;
+  margin: number;
+  margin_percentage: number;
+  pending_results: number;
+  avg_tat_hours: number | null;
+};
+
+export type CriticalAlert = {
+  order_id: string;
+  patient_id: string;
+  patient_name: string;
+  patient_phone: string | null;
+  test_name: string;
+  analyte_name: string;
+  value: string;
+  unit: string | null;
+  reference_range: string | null;
+  flag: string;
+  result_date: string;
+  doctor_name: string | null;
+  doctor_phone: string | null;
+  hours_since_result: number;
+  is_notified: boolean;
+};
+
+export type PatientDemographic = {
+  date: string;
+  gender: string;
+  age_group: string;
+  patient_count: number;
+  order_count: number;
+  revenue: number;
+};
+
+export type HourlyDistribution = {
+  date: string;
+  hour: number;
+  order_count: number;
+  avg_order_value: number;
+};
+
+export type PaymentMethodStats = {
+  date: string;
+  payment_method: string;
+  transaction_count: number;
+  total_amount: number;
+  avg_amount: number;
+  percentage: number;
+};
+
+const analytics = {
+  /**
+   * Get KPI summary for analytics dashboard header
+   */
+  async getKpiSummary(filters: AnalyticsFilters): Promise<{ data: KpiSummary[] | null; error: any }> {
+    let query = supabase
+      .from('v_analytics_kpi_summary')
+      .select('*')
+      .eq('lab_id', filters.lab_id);
+
+    if (filters.date_range) {
+      query = query
+        .gte('date', filters.date_range.from.toISOString().split('T')[0])
+        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    const { data, error } = await query.order('date', { ascending: false });
+    return { data, error };
+  },
+
+  /**
+   * Get aggregated KPIs for a date range (single row totals)
+   */
+  async getKpiTotals(filters: AnalyticsFilters): Promise<{ data: KpiSummary | null; error: any }> {
+    const { data, error } = await this.getKpiSummary(filters);
+    if (error || !data || data.length === 0) return { data: null, error };
+
+    // Aggregate all days
+    const totals: KpiSummary = {
+      date: filters.date_range?.from.toISOString().split('T')[0] || new Date().toISOString().split('T')[0],
+      total_orders: data.reduce((sum, d) => sum + (d.total_orders || 0), 0),
+      total_revenue: data.reduce((sum, d) => sum + (d.total_revenue || 0), 0),
+      avg_order_value: 0,
+      samples_collected: data.reduce((sum, d) => sum + (d.samples_collected || 0), 0),
+      reports_generated: data.reduce((sum, d) => sum + (d.reports_generated || 0), 0),
+      pending_reports: data.reduce((sum, d) => sum + (d.pending_reports || 0), 0),
+      critical_results: data.reduce((sum, d) => sum + (d.critical_results || 0), 0),
+      tat_breaches: data.reduce((sum, d) => sum + (d.tat_breaches || 0), 0),
+    };
+    totals.avg_order_value = totals.total_orders > 0 
+      ? Math.round(totals.total_revenue / totals.total_orders) 
+      : 0;
+
+    return { data: totals, error: null };
+  },
+
+  /**
+   * Get daily revenue breakdown
+   */
+  async getRevenueDaily(filters: AnalyticsFilters): Promise<{ data: RevenueDaily[] | null; error: any }> {
+    let query = supabase
+      .from('v_analytics_revenue_daily')
+      .select('*')
+      .eq('lab_id', filters.lab_id);
+
+    if (filters.date_range) {
+      query = query
+        .gte('date', filters.date_range.from.toISOString().split('T')[0])
+        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    }
+
+    const { data, error } = await query.order('date', { ascending: false });
+    return { data, error };
+  },
+
+  /**
+   * Get orders breakdown by department
+   */
+  async getOrdersByDepartment(filters: AnalyticsFilters): Promise<{ data: DepartmentStats[] | null; error: any }> {
+    let query = supabase
+      .from('v_analytics_orders_by_department')
+      .select('*')
+      .eq('lab_id', filters.lab_id);
+
+    if (filters.date_range) {
+      query = query
+        .gte('date', filters.date_range.from.toISOString().split('T')[0])
+        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    if (filters.department) {
+      query = query.eq('department', filters.department);
+    }
+
+    const { data, error } = await query.order('date', { ascending: false });
+    return { data, error };
+  },
+
+  /**
+   * Get orders by status for funnel/donut chart
+   */
+  async getOrdersByStatus(filters: AnalyticsFilters): Promise<{ data: StatusDistribution[] | null; error: any }> {
+    let query = supabase
+      .from('v_analytics_orders_by_status')
+      .select('*')
+      .eq('lab_id', filters.lab_id);
+
+    if (filters.date_range) {
+      query = query
+        .gte('date', filters.date_range.from.toISOString().split('T')[0])
+        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    const { data, error } = await query.order('count', { ascending: false });
+    return { data, error };
+  },
+
+  /**
+   * Get top tests by volume and revenue
+   */
+  async getTestPopularity(filters: AnalyticsFilters, limit = 10): Promise<{ data: TestPopularity[] | null; error: any }> {
+    const { data, error } = await supabase
+      .from('v_analytics_test_popularity')
+      .select('*')
+      .eq('lab_id', filters.lab_id)
+      .lte('rank_by_volume', limit);
+
+    return { data, error };
+  },
+
+  /**
+   * Get TAT summary by department
+   */
+  async getTatSummary(filters: AnalyticsFilters): Promise<{ data: TatSummary[] | null; error: any }> {
+    let query = supabase
+      .from('v_analytics_tat_summary')
+      .select('*')
+      .eq('lab_id', filters.lab_id);
+
+    if (filters.date_range) {
+      query = query
+        .gte('date', filters.date_range.from.toISOString().split('T')[0])
+        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    if (filters.department) {
+      query = query.eq('department', filters.department);
+    }
+
+    const { data, error } = await query.order('breach_percentage', { ascending: false });
+    return { data, error };
+  },
+
+  /**
+   * Get location performance metrics
+   */
+  async getLocationPerformance(filters: AnalyticsFilters): Promise<{ data: LocationPerformance[] | null; error: any }> {
+    let query = supabase
+      .from('v_analytics_location_performance')
+      .select('*')
+      .eq('lab_id', filters.lab_id);
+
+    if (filters.date_range) {
+      query = query
+        .gte('date', filters.date_range.from.toISOString().split('T')[0])
+        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    }
+
+    const { data, error } = await query.order('revenue', { ascending: false });
+    return { data, error };
+  },
+
+  /**
+   * Get B2B account performance
+   */
+  async getAccountPerformance(filters: AnalyticsFilters): Promise<{ data: AccountPerformance[] | null; error: any }> {
+    let query = supabase
+      .from('v_analytics_account_performance')
+      .select('*')
+      .eq('lab_id', filters.lab_id);
+
+    if (filters.date_range) {
+      query = query
+        .gte('date', filters.date_range.from.toISOString().split('T')[0])
+        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    if (filters.account_id) {
+      query = query.eq('account_id', filters.account_id);
+    }
+
+    const { data, error } = await query.order('revenue', { ascending: false });
+    return { data, error };
+  },
+
+  /**
+   * Get outsourced lab metrics
+   */
+  async getOutsourcedSummary(filters: AnalyticsFilters): Promise<{ data: OutsourcedSummary[] | null; error: any }> {
+    let query = supabase
+      .from('v_analytics_outsourced_summary')
+      .select('*')
+      .eq('lab_id', filters.lab_id);
+
+    if (filters.date_range) {
+      query = query
+        .gte('date', filters.date_range.from.toISOString().split('T')[0])
+        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    const { data, error } = await query.order('revenue', { ascending: false });
+    return { data, error };
+  },
+
+  /**
+   * Get critical and abnormal alerts
+   */
+  async getCriticalAlerts(filters: AnalyticsFilters): Promise<{ data: CriticalAlert[] | null; error: any }> {
+    let query = supabase
+      .from('v_analytics_critical_alerts')
+      .select('*')
+      .eq('lab_id', filters.lab_id);
+
+    const { data, error } = await query
+      .order('flag', { ascending: true }) // C first, then H, then L
+      .order('hours_since_result', { ascending: false })
+      .limit(100);
+
+    return { data, error };
+  },
+
+  /**
+   * Get patient demographics
+   */
+  async getPatientDemographics(filters: AnalyticsFilters): Promise<{ data: PatientDemographic[] | null; error: any }> {
+    let query = supabase
+      .from('v_analytics_patient_demographics')
+      .select('*')
+      .eq('lab_id', filters.lab_id);
+
+    if (filters.date_range) {
+      query = query
+        .gte('date', filters.date_range.from.toISOString().split('T')[0])
+        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    const { data, error } = await query.order('patient_count', { ascending: false });
+    return { data, error };
+  },
+
+  /**
+   * Get hourly order distribution
+   */
+  async getHourlyDistribution(filters: AnalyticsFilters): Promise<{ data: HourlyDistribution[] | null; error: any }> {
+    let query = supabase
+      .from('v_analytics_hourly_distribution')
+      .select('*')
+      .eq('lab_id', filters.lab_id);
+
+    if (filters.date_range) {
+      query = query
+        .gte('date', filters.date_range.from.toISOString().split('T')[0])
+        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    const { data, error } = await query.order('hour', { ascending: true });
+    return { data, error };
+  },
+
+  /**
+   * Get payment method distribution
+   */
+  async getPaymentMethods(filters: AnalyticsFilters): Promise<{ data: PaymentMethodStats[] | null; error: any }> {
+    let query = supabase
+      .from('v_analytics_payment_methods')
+      .select('*')
+      .eq('lab_id', filters.lab_id);
+
+    if (filters.date_range) {
+      query = query
+        .gte('date', filters.date_range.from.toISOString().split('T')[0])
+        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    const { data, error } = await query.order('total_amount', { ascending: false });
+    return { data, error };
+  },
+
+  /**
+   * Get daily cash summary (from existing view)
+   */
+  async getDailyCashSummary(options: { lab_id: string; date: Date; location_id?: string }): Promise<{ data: any[] | null; error: any }> {
+    let query = supabase
+      .from('v_daily_cash_summary')
+      .select('*')
+      .eq('lab_id', options.lab_id)
+      .eq('summary_date', options.date.toISOString().split('T')[0]);
+
+    if (options.location_id) {
+      query = query.eq('location_id', options.location_id);
+    }
+
+    const { data, error } = await query;
+    return { data, error };
+  },
+};
+
 // Add pricing namespaces to database object
 Object.assign(database, {
   notificationSettings,
@@ -11976,5 +12475,6 @@ Object.assign(database, {
   accountPackagePrices,
   locationReceivables,
   pricingHelper,
+  analytics,
 });
 

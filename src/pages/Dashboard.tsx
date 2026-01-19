@@ -466,10 +466,10 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         priority: o.priority,
         order_date: o.order_date,
         expected_date: dynamicExpectedDate,
-        total_amount: o.total_amount,
+        total_amount: o.final_amount || o.total_amount,
         final_amount: !invoiceInfo?.invoice
-          ? (o.total_amount || o.final_amount || 0)
-          : ((invoiceInfo.invoice.total_after_discount ?? invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0) + Math.max(0, (o.total_amount || 0) - (invoiceInfo.invoice.subtotal ?? o.total_amount ?? 0))),
+          ? (o.final_amount || o.total_amount || 0)
+          : ((invoiceInfo.invoice.total_after_discount ?? invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0) + Math.max(0, (o.final_amount || o.total_amount || 0) - (invoiceInfo.invoice.subtotal ?? o.final_amount ?? o.total_amount ?? 0))),
         doctor: o.doctor,
         doctor_phone,
         doctor_email,
@@ -481,18 +481,20 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         sample_collected_at: o.sample_collected_at,
         sample_collected_by: o.sample_collected_by,
 
-        billing_status: (invoiceInfo?.invoice && ((o.total_amount || 0) - (invoiceInfo.invoice.subtotal || 0)) > 1) ? 'partial' : o.billing_status,
+        billing_status: (invoiceInfo?.invoice && ((o.final_amount || o.total_amount || 0) - (invoiceInfo.invoice.subtotal || 0)) > 1) ? 'partial' : o.billing_status,
         is_billed: o.is_billed,
         invoice_id: invoiceInfo?.invoice?.id || null,
         paid_amount: invoiceInfo?.paidAmount || 0,
         due_amount: !invoiceInfo?.invoice
-          ? Math.max(0, (o.total_amount || 0) - (invoiceInfo?.paidAmount || 0))
+          ? Math.max(0, (o.final_amount || o.total_amount || 0) - (invoiceInfo?.paidAmount || 0))
           : (() => {
             const invTotal = invoiceInfo.invoice.total_after_discount ?? invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0;
             const paid = invoiceInfo.paidAmount || 0;
-            const invDue = Math.max(0, invTotal - paid);
+            const refunded = invoiceInfo.invoice.total_refunded_amount || 0;
+            // Net due = total - paid - refunded (refund reduces what's owed)
+            const invDue = Math.max(0, invTotal - paid - refunded);
 
-            const orderTotal = o.total_amount || 0;
+            const orderTotal = o.final_amount || o.total_amount || 0;
             const invSubtotal = invoiceInfo.invoice.subtotal ?? orderTotal;
             const unbilled = Math.max(0, orderTotal - invSubtotal);
 
@@ -508,13 +510,16 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
           ? "unpaid"
           : (() => {
             const invTotal = invoiceInfo.invoice.total_after_discount ?? invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0;
-            const invSub = invoiceInfo.invoice.subtotal ?? o.total_amount ?? 0;
-            const ordTotal = o.total_amount || 0;
+            const invSub = invoiceInfo.invoice.subtotal ?? o.final_amount ?? o.total_amount ?? 0;
+            const ordTotal = o.final_amount || o.total_amount || 0;
             const unbilled = Math.max(0, ordTotal - invSub);
             const effTotal = invTotal + unbilled;
             const paid = invoiceInfo.paidAmount || 0;
+            const refunded = invoiceInfo.invoice.total_refunded_amount || 0;
+            // Net amount owed after refund
+            const netOwed = Math.max(0, effTotal - refunded);
             // Allow small float diff (1.0)
-            return paid > 0 && paid >= (effTotal - 1) ? "paid" : paid > 0 ? "partial" : "unpaid";
+            return paid > 0 && paid >= (netOwed - 1) ? "paid" : paid > 0 ? "partial" : "unpaid";
           })(),
 
         patient: {

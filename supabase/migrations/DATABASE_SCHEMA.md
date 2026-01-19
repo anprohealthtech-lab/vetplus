@@ -1,6 +1,24 @@
 -- WARNING: This schema is for context only and is not meant to be run.
 -- Table order and constraints may not be valid for execution.
 
+CREATE TABLE public.account_package_prices (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL,
+  package_id uuid NOT NULL,
+  price numeric NOT NULL CHECK (price >= 0::numeric),
+  effective_from date DEFAULT CURRENT_DATE,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  created_by uuid,
+  updated_by uuid,
+  notes text,
+  CONSTRAINT account_package_prices_pkey PRIMARY KEY (id),
+  CONSTRAINT account_package_prices_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id),
+  CONSTRAINT account_package_prices_package_id_fkey FOREIGN KEY (package_id) REFERENCES public.packages(id),
+  CONSTRAINT account_package_prices_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT account_package_prices_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
+);
 CREATE TABLE public.account_prices (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   account_id uuid NOT NULL,
@@ -8,9 +26,16 @@ CREATE TABLE public.account_prices (
   price numeric NOT NULL CHECK (price >= 0::numeric),
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
+  effective_from date DEFAULT CURRENT_DATE,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by uuid,
+  updated_by uuid,
+  notes text,
   CONSTRAINT account_prices_pkey PRIMARY KEY (id),
   CONSTRAINT account_prices_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id),
-  CONSTRAINT account_prices_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
+  CONSTRAINT account_prices_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT account_prices_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT account_prices_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.accounts (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -653,12 +678,16 @@ CREATE TABLE public.invoice_items (
   lab_id uuid NOT NULL,
   order_id uuid,
   package_id uuid,
+  outsourced_cost numeric CHECK (outsourced_cost >= 0::numeric),
+  outsourced_lab_id uuid,
+  location_receivable numeric CHECK (location_receivable >= 0::numeric),
   CONSTRAINT invoice_items_pkey PRIMARY KEY (id),
   CONSTRAINT invoice_items_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id),
   CONSTRAINT invoice_items_order_test_id_fkey FOREIGN KEY (order_test_id) REFERENCES public.order_tests(id),
   CONSTRAINT invoice_items_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
   CONSTRAINT invoice_items_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
-  CONSTRAINT invoice_items_package_id_fkey FOREIGN KEY (package_id) REFERENCES public.packages(id)
+  CONSTRAINT invoice_items_package_id_fkey FOREIGN KEY (package_id) REFERENCES public.packages(id),
+  CONSTRAINT invoice_items_outsourced_lab_id_fkey FOREIGN KEY (outsourced_lab_id) REFERENCES public.outsourced_labs(id)
 );
 CREATE TABLE public.invoice_templates (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1016,6 +1045,44 @@ CREATE TABLE public.labs (
   CONSTRAINT labs_pkey PRIMARY KEY (id),
   CONSTRAINT labs_default_processing_location_id_fkey FOREIGN KEY (default_processing_location_id) REFERENCES public.locations(id)
 );
+CREATE TABLE public.location_package_prices (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  location_id uuid NOT NULL,
+  package_id uuid NOT NULL,
+  patient_price numeric NOT NULL CHECK (patient_price >= 0::numeric),
+  lab_receivable numeric CHECK (lab_receivable >= 0::numeric),
+  effective_from date DEFAULT CURRENT_DATE,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  created_by uuid,
+  updated_by uuid,
+  notes text,
+  CONSTRAINT location_package_prices_pkey PRIMARY KEY (id),
+  CONSTRAINT location_package_prices_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id),
+  CONSTRAINT location_package_prices_package_id_fkey FOREIGN KEY (package_id) REFERENCES public.packages(id),
+  CONSTRAINT location_package_prices_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT location_package_prices_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.location_test_prices (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  location_id uuid NOT NULL,
+  test_group_id uuid NOT NULL,
+  patient_price numeric NOT NULL CHECK (patient_price >= 0::numeric),
+  lab_receivable numeric CHECK (lab_receivable >= 0::numeric),
+  effective_from date DEFAULT CURRENT_DATE,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  created_by uuid,
+  updated_by uuid,
+  notes text,
+  CONSTRAINT location_test_prices_pkey PRIMARY KEY (id),
+  CONSTRAINT location_test_prices_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id),
+  CONSTRAINT location_test_prices_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT location_test_prices_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT location_test_prices_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
+);
 CREATE TABLE public.locations (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   lab_id uuid NOT NULL,
@@ -1042,6 +1109,9 @@ CREATE TABLE public.locations (
   collection_percentage numeric,
   is_cash_collection_center boolean,
   notes text,
+  receivable_type text NOT NULL DEFAULT 'percentage'::text CHECK (receivable_type = ANY (ARRAY['percentage'::text, 'test_wise'::text, 'own_center'::text])),
+  upi_id text CHECK (upi_id IS NULL OR upi_id ~ '^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$'::text),
+  bank_details jsonb,
   CONSTRAINT locations_pkey PRIMARY KEY (id),
   CONSTRAINT locations_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
@@ -1221,6 +1291,26 @@ CREATE TABLE public.orders (
   CONSTRAINT orders_trend_graph_generated_by_fkey FOREIGN KEY (trend_graph_generated_by) REFERENCES public.users(id),
   CONSTRAINT orders_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.users(id),
   CONSTRAINT orders_collected_at_location_id_fkey FOREIGN KEY (collected_at_location_id) REFERENCES public.locations(id)
+);
+CREATE TABLE public.outsourced_lab_prices (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  outsourced_lab_id uuid NOT NULL,
+  test_group_id uuid NOT NULL,
+  cost numeric NOT NULL CHECK (cost >= 0::numeric),
+  effective_from date DEFAULT CURRENT_DATE,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  created_by uuid,
+  updated_by uuid,
+  notes text,
+  CONSTRAINT outsourced_lab_prices_pkey PRIMARY KEY (id),
+  CONSTRAINT outsourced_lab_prices_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT outsourced_lab_prices_outsourced_lab_id_fkey FOREIGN KEY (outsourced_lab_id) REFERENCES public.outsourced_labs(id),
+  CONSTRAINT outsourced_lab_prices_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT outsourced_lab_prices_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT outsourced_lab_prices_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.outsourced_labs (
   id uuid NOT NULL DEFAULT gen_random_uuid(),

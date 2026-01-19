@@ -1,8 +1,116 @@
 // Simplified Helper: Fetch Letterhead Background Image URL
 // Returns ImageKit URL for full-page letterhead background
+// Supports priority: B2B Account > Location > Lab
 
 /**
- * Fetch letterhead background image URL for a lab
+ * Fetch letterhead background image URL for an order
+ * Priority: B2B Account > Location > Lab
+ * Returns ImageKit URL to be used as full-page background
+ */
+export async function fetchLetterheadBackgroundForOrder(
+  supabase: any,
+  orderId: string,
+  labId: string
+): Promise<string | null> {
+  try {
+    console.log('[LETTERHEAD] Fetching letterhead for order:', orderId);
+
+    // 1. Get order details to determine priority (account_id, location_id)
+    const { data: order, error: orderError } = await supabase
+      .from('orders')
+      .select('account_id, location_id')
+      .eq('id', orderId)
+      .single();
+
+    if (orderError) {
+      console.log('[LETTERHEAD] Error fetching order:', orderError.message);
+      // Fall back to lab-level
+      return fetchLetterheadBackground(supabase, labId);
+    }
+
+    console.log('[LETTERHEAD] Order context:', {
+      orderId,
+      account_id: order?.account_id,
+      location_id: order?.location_id,
+      lab_id: labId
+    });
+
+    // 2. Priority 1: Try B2B account-specific header (using attachments table)
+    if (order?.account_id) {
+      const accountHeader = await getAttachmentImageUrl(
+        supabase,
+        'account',
+        order.account_id
+      );
+      
+      if (accountHeader) {
+        console.log('[LETTERHEAD] Using B2B account header');
+        return accountHeader;
+      }
+    }
+
+    // 3. Priority 2: Try location-specific header (using attachments table)
+    if (order?.location_id) {
+      const locationHeader = await getAttachmentImageUrl(
+        supabase,
+        'location',
+        order.location_id
+      );
+      
+      if (locationHeader) {
+        console.log('[LETTERHEAD] Using location header');
+        return locationHeader;
+      }
+    }
+
+    // 4. Priority 3: Fall back to lab-level (using lab_branding_assets)
+    console.log('[LETTERHEAD] Falling back to lab-level header');
+    return fetchLetterheadBackground(supabase, labId);
+
+  } catch (error) {
+    console.error('[LETTERHEAD] Error fetching letterhead for order:', error);
+    // Fall back to lab-level
+    return fetchLetterheadBackground(supabase, labId);
+  }
+}
+
+/**
+ * Get header image URL from ATTACHMENTS table (for location/account)
+ */
+async function getAttachmentImageUrl(
+  supabase: any,
+  entityType: string,
+  entityId: string
+): Promise<string | null> {
+  try {
+    const { data: attachment, error } = await supabase
+      .from('attachments')
+      .select('file_url, imagekit_url, mime_type')
+      .eq('entity_type', entityType)
+      .eq('entity_id', entityId)
+      .eq('attachment_type', 'header')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error || !attachment) {
+      console.log(`[LETTERHEAD] No ${entityType} header found`);
+      return null;
+    }
+
+    // Prefer ImageKit URL for better performance
+    const headerUrl = attachment.imagekit_url || attachment.file_url;
+    console.log(`[LETTERHEAD] Found ${entityType} header:`, headerUrl);
+    return headerUrl;
+
+  } catch (error) {
+    console.error(`[LETTERHEAD] Error getting ${entityType} attachment:`, error);
+    return null;
+  }
+}
+
+/**
+ * Fetch letterhead background image URL for a lab (fallback)
  * Returns ImageKit URL to be used as full-page background
  */
 export async function fetchLetterheadBackground(

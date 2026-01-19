@@ -4,6 +4,8 @@
 
 Static UPI QR codes have been implemented for both **thermal receipts** (58mm/80mm) and **A4 invoice PDFs**. No external payment gateway API is required - the QR codes use the standard UPI deep link format that works with all UPI apps (PhonePe, Google Pay, Paytm, BHIM, Amazon Pay, etc.).
 
+**Location-wise UPI Support**: Each collection center/location can have its own UPI ID. If set, invoices from that location will use the location's UPI ID; otherwise, it falls back to the lab's default UPI ID.
+
 ## How It Works
 
 ### UPI Deep Link Format
@@ -28,7 +30,7 @@ When a customer scans the QR code with any UPI app:
 
 ## Configuration
 
-### Step 1: Add UPI ID to Lab Settings
+### Step 1: Add UPI ID to Lab Settings (Default)
 
 Update your lab's UPI ID in the database:
 
@@ -42,6 +44,23 @@ Or via the Supabase dashboard:
 1. Go to Table Editor → `labs`
 2. Find your lab record
 3. Add/update the `upi_id` column with your UPI VPA
+
+### Step 2: Add Location-wise UPI IDs (Optional)
+
+For collection centers that need their own UPI ID:
+
+```sql
+UPDATE locations 
+SET upi_id = 'location1@ybl' 
+WHERE id = 'your-location-id';
+```
+
+Or via the **Location Master** UI:
+1. Go to Masters → Locations
+2. Edit the location
+3. Enter the UPI ID in the "UPI ID (for this location)" field
+
+**Priority Order**: Location UPI ID → Lab UPI ID → Template UPI ID
 
 ### Supported UPI ID Formats
 - `username@paytm`
@@ -64,11 +83,27 @@ For A4 invoices, add the `{{upi_qr_code}}` placeholder to your custom templates:
 
 ## New Template Placeholders
 
+### UPI & Payment Placeholders
 | Placeholder | Description |
 |-------------|-------------|
 | `{{upi_qr_code}}` | UPI payment QR code block (only shown if balance due) |
+| `{{lab_upi}}` | Effective UPI ID (location or lab fallback) |
+| `{{location_upi}}` | Location's UPI ID (if set) |
 | `{{payment_status}}` | "Paid" or "Payment Due" text |
 | `{{payment_status_badge}}` | Styled payment status badge |
+
+### Location Placeholders (Collection Center / Branch)
+| Placeholder | Description |
+|-------------|-------------|
+| `{{location_name}}` | Collection center / branch name |
+| `{{location_address}}` | Location's full address |
+| `{{location_phone}}` | Location's phone number |
+| `{{location_email}}` | Location's email address |
+| `{{location_contact}}` | Location's contact person name |
+
+### GST/Tax Placeholders
+| Placeholder | Description |
+|-------------|-------------|
 | `{{cgst}}` | CGST amount (9% of tax) |
 | `{{sgst}}` | SGST amount (9% of tax) |
 | `{{lab_gst}}` | Lab's GST number |
@@ -169,6 +204,7 @@ For GST-compliant B2B invoices:
 
 Potential additions:
 1. Payment status auto-update via UPI callback (requires payment gateway)
-2. Multiple UPI IDs per lab (different banks)
+2. ~~Multiple UPI IDs per lab (different banks)~~ ✅ **DONE** - Location-wise UPI IDs supported
 3. QR code with logo overlay
 4. Dynamic QR refresh for real-time balance updates
+5. PhonePe/Razorpay API integration for payment verification

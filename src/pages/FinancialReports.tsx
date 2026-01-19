@@ -44,10 +44,24 @@ interface LocationReceivableItem {
   location_id: string;
   location_name: string;
   receivable_type: string;
+  collection_percentage: number | null;
   order_count: number;
   total_revenue: number;
   total_receivable: number;
   collection_fee: number;
+  // Detail items
+  items: LocationItemDetail[];
+}
+
+interface LocationItemDetail {
+  invoice_id: string;
+  invoice_number: string;
+  invoice_date: string;
+  patient_name: string;
+  test_name: string;
+  price: number;
+  receivable: number;
+  fee: number;
 }
 
 const FinancialReports: React.FC = () => {
@@ -65,6 +79,7 @@ const FinancialReports: React.FC = () => {
 
   // Location receivables data
   const [receivablesData, setReceivablesData] = useState<LocationReceivableItem[]>([]);
+  const [expandedLocations, setExpandedLocations] = useState<Set<string>>(new Set());
 
   // Totals
   const [outsourcedTotals, setOutsourcedTotals] = useState({ revenue: 0, cost: 0, margin: 0 });
@@ -200,18 +215,23 @@ const FinancialReports: React.FC = () => {
       if (!labId) throw new Error('No lab context');
 
       // Get invoice items with location info
+      // Note: Must use explicit FK hint for locations due to multiple relationships
       const { data, error: fetchError } = await supabase
         .from('invoice_items')
         .select(`
           id,
           price,
+          test_name,
           location_receivable,
           invoice:invoices!inner(
+            id,
+            invoice_number,
             invoice_date, 
+            patient_name,
             lab_id,
             order:orders(
               location_id,
-              location:locations(id, name, receivable_type, collection_percentage)
+              location:locations!orders_location_id_fkey(id, name, receivable_type, collection_percentage)
             )
           )
         `)
@@ -230,17 +250,34 @@ const FinancialReports: React.FC = () => {
 
         const locationId = location.id;
         const revenue = item.price || 0;
-        const receivable = item.location_receivable || 0;
+        
+        // Use stored location_receivable - it should be populated at order creation time
+        // Only fall back if truly missing (for old data before this fix)
+        let receivable = item.location_receivable;
+        if (receivable === null || receivable === undefined) {
+          // Legacy fallback for old data without location_receivable
+          if (location.receivable_type === 'own_center') {
+            receivable = revenue; // Lab gets 100%
+          } else if (location.collection_percentage) {
+            receivable = revenue * (location.collection_percentage / 100);
+          } else {
+            receivable = 0; // Default if no config
+          }
+        }
+
+        const fee = revenue - receivable;
 
         if (!locationMap.has(locationId)) {
           locationMap.set(locationId, {
             location_id: locationId,
             location_name: location.name,
             receivable_type: location.receivable_type || 'percentage',
+            collection_percentage: location.collection_percentage,
             order_count: 0,
             total_revenue: 0,
             total_receivable: 0,
-            collection_fee: 0
+            collection_fee: 0,
+            items: []
           });
         }
 
@@ -249,9 +286,28 @@ const FinancialReports: React.FC = () => {
         loc.total_revenue += revenue;
         loc.total_receivable += receivable;
         loc.collection_fee = loc.total_revenue - loc.total_receivable;
+        
+        // Add detail item
+        loc.items.push({
+          invoice_id: item.invoice?.id || '',
+          invoice_number: item.invoice?.invoice_number || '',
+          invoice_date: item.invoice?.invoice_date || '',
+          patient_name: item.invoice?.patient_name || 'Unknown',
+          test_name: item.test_name || 'Unknown Test',
+          price: revenue,
+          receivable: receivable,
+          fee: fee
+        });
       });
 
       const receivables = Array.from(locationMap.values());
+
+      // Sort items within each location by invoice date (descending)
+      receivables.forEach(loc => {
+        loc.items.sort((a, b) =>
+          new Date(b.invoice_date).getTime() - new Date(a.invoice_date).getTime()
+        );
+      });
 
       // Calculate totals
       const totals = receivables.reduce((acc, loc) => ({
@@ -277,6 +333,18 @@ const FinancialReports: React.FC = () => {
         next.delete(labId);
       } else {
         next.add(labId);
+      }
+      return next;
+    });
+  };
+
+  const toggleLocationExpand = (locationId: string) => {
+    setExpandedLocations(prev => {
+      const next = new Set(prev);
+      if (next.has(locationId)) {
+        next.delete(locationId);
+      } else {
+        next.add(locationId);
       }
       return next;
     });
@@ -620,29 +688,41 @@ const FinancialReports: React.FC = () => {
               <p className="text-sm mt-2">Make sure to configure pricing in Location Master.</p>
             </div>
           ) : (
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Location</th>
-                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Type</th>
-                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Orders</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Revenue</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Lab Receivable</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Collection Fee</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {receivablesData.map(loc => (
-                  <tr key={loc.location_id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="h-8 w-8 bg-blue-100 rounded-full flex items-center justify-center">
-                          <MapPin className="h-4 w-4 text-blue-600" />
-                        </div>
-                        <span className="font-medium text-gray-900">{loc.location_name}</span>
+            <div className="divide-y divide-gray-200">
+              {/* Header */}
+              <div className="bg-gray-50 px-6 py-3 grid grid-cols-7 gap-4 text-xs font-medium text-gray-500 uppercase">
+                <div className="col-span-2">Location</div>
+                <div className="text-center">Type</div>
+                <div className="text-center">Orders</div>
+                <div className="text-right">Revenue</div>
+                <div className="text-right">Lab Receivable</div>
+                <div className="text-right">Collection Fee</div>
+              </div>
+              
+              {/* Location Rows */}
+              {receivablesData.map(loc => (
+                <div key={loc.location_id}>
+                  <button
+                    onClick={() => toggleLocationExpand(loc.location_id)}
+                    className="w-full px-6 py-4 grid grid-cols-7 gap-4 items-center hover:bg-gray-50 transition-colors text-left"
+                  >
+                    <div className="col-span-2 flex items-center gap-3">
+                      <div className="h-8 w-8 bg-blue-100 rounded-full flex items-center justify-center">
+                        <MapPin className="h-4 w-4 text-blue-600" />
                       </div>
-                    </td>
-                    <td className="px-6 py-4 text-center">
+                      <div>
+                        <span className="font-medium text-gray-900">{loc.location_name}</span>
+                        {loc.receivable_type === 'percentage' && loc.collection_percentage && (
+                          <span className="ml-2 text-xs text-gray-500">({loc.collection_percentage}% to lab)</span>
+                        )}
+                      </div>
+                      {expandedLocations.has(loc.location_id) ? (
+                        <ChevronUp className="w-4 h-4 text-gray-400" />
+                      ) : (
+                        <ChevronDown className="w-4 h-4 text-gray-400" />
+                      )}
+                    </div>
+                    <div className="text-center">
                       <span className={`inline-flex px-2 py-1 text-xs font-medium rounded ${
                         loc.receivable_type === 'own_center' 
                           ? 'bg-green-100 text-green-800'
@@ -653,24 +733,70 @@ const FinancialReports: React.FC = () => {
                         {loc.receivable_type === 'own_center' ? 'Own Center' : 
                          loc.receivable_type === 'test_wise' ? 'Test-wise' : 'Percentage'}
                       </span>
-                    </td>
-                    <td className="px-6 py-4 text-center text-gray-600">{loc.order_count}</td>
-                    <td className="px-6 py-4 text-right text-gray-900">₹{loc.total_revenue.toLocaleString()}</td>
-                    <td className="px-6 py-4 text-right text-blue-600 font-medium">₹{loc.total_receivable.toLocaleString()}</td>
-                    <td className="px-6 py-4 text-right text-orange-600">₹{loc.collection_fee.toLocaleString()}</td>
-                  </tr>
-                ))}
-                {/* Totals Row */}
-                <tr className="bg-gray-50 font-semibold">
-                  <td className="px-6 py-4 text-gray-900">Total</td>
-                  <td className="px-6 py-4"></td>
-                  <td className="px-6 py-4 text-center text-gray-900">{receivablesData.reduce((s, l) => s + l.order_count, 0)}</td>
-                  <td className="px-6 py-4 text-right text-gray-900">₹{receivableTotals.revenue.toLocaleString()}</td>
-                  <td className="px-6 py-4 text-right text-blue-600">₹{receivableTotals.receivable.toLocaleString()}</td>
-                  <td className="px-6 py-4 text-right text-orange-600">₹{receivableTotals.fee.toLocaleString()}</td>
-                </tr>
-              </tbody>
-            </table>
+                    </div>
+                    <div className="text-center text-gray-600">{loc.order_count}</div>
+                    <div className="text-right text-gray-900">₹{loc.total_revenue.toLocaleString()}</div>
+                    <div className="text-right text-blue-600 font-medium">₹{loc.total_receivable.toLocaleString()}</div>
+                    <div className="text-right text-orange-600">₹{loc.collection_fee.toLocaleString()}</div>
+                  </button>
+                  
+                  {/* Expanded Details */}
+                  {expandedLocations.has(loc.location_id) && (
+                    <div className="bg-gray-50 px-6 py-3 border-t border-gray-200">
+                      <div className="mb-2 text-sm text-gray-600">
+                        {loc.receivable_type === 'own_center' && (
+                          <span className="bg-green-50 px-2 py-1 rounded">💡 Own Center: Lab receives 100% of revenue</span>
+                        )}
+                        {loc.receivable_type === 'percentage' && (
+                          <span className="bg-orange-50 px-2 py-1 rounded">
+                            💡 Lab receives {loc.collection_percentage || 0}% of revenue, Location keeps {100 - (loc.collection_percentage || 0)}%
+                          </span>
+                        )}
+                        {loc.receivable_type === 'test_wise' && (
+                          <span className="bg-purple-50 px-2 py-1 rounded">💡 Receivable varies per test (configured in Location Test Prices)</span>
+                        )}
+                      </div>
+                      <table className="min-w-full">
+                        <thead>
+                          <tr className="text-xs text-gray-500 uppercase">
+                            <th className="text-left py-2">Date</th>
+                            <th className="text-left py-2">Invoice</th>
+                            <th className="text-left py-2">Patient</th>
+                            <th className="text-left py-2">Test</th>
+                            <th className="text-right py-2">Price</th>
+                            <th className="text-right py-2">Lab Gets</th>
+                            <th className="text-right py-2">Loc Gets</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200">
+                          {loc.items.map((item, idx) => (
+                            <tr key={idx} className="text-sm">
+                              <td className="py-2 text-gray-600">{item.invoice_date ? new Date(item.invoice_date).toLocaleDateString() : '-'}</td>
+                              <td className="py-2 text-gray-900 font-mono text-xs">{item.invoice_number}</td>
+                              <td className="py-2 text-gray-900">{item.patient_name}</td>
+                              <td className="py-2 text-gray-600">{item.test_name}</td>
+                              <td className="py-2 text-right text-gray-900">₹{item.price.toLocaleString()}</td>
+                              <td className="py-2 text-right text-blue-600">₹{item.receivable.toLocaleString()}</td>
+                              <td className="py-2 text-right text-orange-600">₹{item.fee.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ))}
+              
+              {/* Totals Row */}
+              <div className="bg-gray-100 px-6 py-4 grid grid-cols-7 gap-4 font-semibold">
+                <div className="col-span-2 text-gray-900">Total</div>
+                <div></div>
+                <div className="text-center text-gray-900">{receivablesData.reduce((s, l) => s + l.order_count, 0)}</div>
+                <div className="text-right text-gray-900">₹{receivableTotals.revenue.toLocaleString()}</div>
+                <div className="text-right text-blue-600">₹{receivableTotals.receivable.toLocaleString()}</div>
+                <div className="text-right text-orange-600">₹{receivableTotals.fee.toLocaleString()}</div>
+              </div>
+            </div>
           )}
         </div>
       )}

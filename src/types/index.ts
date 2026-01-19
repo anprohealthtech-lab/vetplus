@@ -109,7 +109,19 @@ export interface Location {
   payment_terms: number;
   is_active: boolean;
   is_cash_collection_center?: boolean;
+  is_collection_center?: boolean;
+  is_processing_center?: boolean;
+  can_receive_samples?: boolean;
+  is_main_lab?: boolean;
   notes?: string;
+  upi_id?: string;
+  bank_details?: {
+    account_name?: string;
+    account_number?: string;
+    ifsc?: string;
+    bank_name?: string;
+    upi_id?: string;
+  };
   created_at: string;
   updated_at: string;
 }

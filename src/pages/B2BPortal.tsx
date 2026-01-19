@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle } from 'lucide-react';
+import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle, X, Clock, User, Phone, Trash2 } from 'lucide-react';
 import { supabase } from '../utils/supabase';
 import { getCurrentB2BAccount } from '../utils/b2bAuth';
 import AccountInfoCard from '../components/B2B/AccountInfoCard';
 import B2BBookingModal from '../components/B2B/B2BBookingModal';
+import { format } from 'date-fns';
 
 interface Order {
     id: string;
@@ -36,6 +37,8 @@ const B2BPortal: React.FC = () => {
     const [statusFilter, setStatusFilter] = useState('All');
     const [dateRange, setDateRange] = useState({ from: '', to: '' });
     const [showBookingModal, setShowBookingModal] = useState(false);
+    const [pendingBookings, setPendingBookings] = useState<any[]>([]);
+    const [cancellingBooking, setCancellingBooking] = useState<string | null>(null);
 
     // Load account and orders
     useEffect(() => {
@@ -79,11 +82,45 @@ const B2BPortal: React.FC = () => {
             }
 
             setOrders(ordersData || []);
+
+            // Fetch pending bookings for this account
+            const { data: bookingsData, error: bookingsError } = await supabase
+                .from('bookings')
+                .select('*')
+                .eq('account_id', accountData.id)
+                .in('status', ['pending', 'quoted', 'confirmed'])
+                .order('created_at', { ascending: false });
+
+            if (!bookingsError && bookingsData) {
+                setPendingBookings(bookingsData);
+            }
         } catch (error) {
             console.error('Error loading data:', error);
             alert('An error occurred while loading data');
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleCancelBooking = async (bookingId: string) => {
+        if (!window.confirm('Are you sure you want to cancel this booking?')) return;
+        
+        try {
+            setCancellingBooking(bookingId);
+            const { error } = await supabase
+                .from('bookings')
+                .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+                .eq('id', bookingId);
+            
+            if (error) throw error;
+            
+            // Refresh bookings
+            setPendingBookings(prev => prev.filter(b => b.id !== bookingId));
+        } catch (error) {
+            console.error('Error cancelling booking:', error);
+            alert('Failed to cancel booking');
+        } finally {
+            setCancellingBooking(null);
         }
     };
 
@@ -201,6 +238,62 @@ const B2BPortal: React.FC = () => {
                 {account && (
                     <div className="mb-8">
                         <AccountInfoCard account={account} />
+                    </div>
+                )}
+
+                {/* Pending Bookings Section */}
+                {pendingBookings.length > 0 && (
+                    <div className="bg-yellow-50 rounded-lg shadow-md border border-yellow-200 mb-8">
+                        <div className="p-4 border-b border-yellow-200">
+                            <h2 className="text-lg font-bold text-yellow-800 flex items-center gap-2">
+                                <Clock className="h-5 w-5" />
+                                Pending Bookings ({pendingBookings.length})
+                            </h2>
+                            <p className="text-sm text-yellow-700 mt-1">
+                                These bookings are waiting to be processed by the lab.
+                            </p>
+                        </div>
+                        <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {pendingBookings.map((booking) => (
+                                <div key={booking.id} className="bg-white rounded-lg border border-yellow-200 p-4">
+                                    <div className="flex justify-between items-start mb-2">
+                                        <div>
+                                            <p className="font-medium text-gray-900 flex items-center gap-1">
+                                                <User className="h-3 w-3" />
+                                                {booking.patient_info?.name || 'N/A'}
+                                            </p>
+                                            <p className="text-sm text-gray-500 flex items-center gap-1">
+                                                <Phone className="h-3 w-3" />
+                                                {booking.patient_info?.phone || 'N/A'}
+                                            </p>
+                                        </div>
+                                        <span className="text-xs font-semibold px-2 py-1 rounded-full bg-yellow-100 text-yellow-800 uppercase">
+                                            {booking.status}
+                                        </span>
+                                    </div>
+                                    <div className="text-xs text-gray-500 mb-2">
+                                        {booking.scheduled_at && (
+                                            <p>Scheduled: {format(new Date(booking.scheduled_at), 'dd MMM yyyy, hh:mm a')}</p>
+                                        )}
+                                        <p>Tests: {booking.test_details?.length || 0}</p>
+                                    </div>
+                                    <button
+                                        onClick={() => handleCancelBooking(booking.id)}
+                                        disabled={cancellingBooking === booking.id}
+                                        className="w-full mt-2 px-3 py-1.5 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg flex items-center justify-center gap-1 disabled:opacity-50"
+                                    >
+                                        {cancellingBooking === booking.id ? (
+                                            'Cancelling...'
+                                        ) : (
+                                            <>
+                                                <Trash2 className="h-3 w-3" />
+                                                Cancel Booking
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 )}
 

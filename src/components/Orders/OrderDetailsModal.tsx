@@ -388,6 +388,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   const [selectedBatchForAI, setSelectedBatchForAI] = useState<any | null>(null);
   const [multiImageAIInstructions, setMultiImageAIInstructions] = useState<string>('');
   const [availableImagesForAI, setAvailableImagesForAI] = useState<any[]>([]);
+  // Selected images for AI analysis (allows user to choose which images to process)
+  const [selectedImagesForAI, setSelectedImagesForAI] = useState<Set<string>>(new Set());
 
   // Test-level attachment support
   const [uploadScope, setUploadScope] = useState<'order' | 'test'>('order');
@@ -670,6 +672,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           if (imagesToAnalyze.length > 1) {
             // Enable multi-image AI analysis
             setAvailableImagesForAI(imagesToAnalyze);
+            // By default, select all images for AI analysis
+            setSelectedImagesForAI(new Set(imagesToAnalyze.map((img: any) => img.id)));
             setSelectedBatchForAI({
               id: virtualBatchId,
               batchId: virtualBatchId,
@@ -1408,13 +1412,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       const targetTestGroupId = targetTestGroup?.test_group_id || null;
 
-      // Filter images for the selected test group ONLY
-      // If user selected a specific test group, only use images tagged for that test group
-      let imagesForThisTest = availableImagesForAI;
+      // Use user-selected images (if any selected), otherwise use all available
+      let imagesForThisTest = selectedImagesForAI.size > 0
+        ? availableImagesForAI.filter((img: any) => selectedImagesForAI.has(img.id))
+        : availableImagesForAI;
 
-      if (targetTestGroupId && availableImagesForAI.length > 1) {
+      // Further filter by test group if applicable
+      if (targetTestGroupId && imagesForThisTest.length > 1) {
         // Filter to only images assigned to this test group
-        const filteredImages = availableImagesForAI.filter((img: any) => {
+        const filteredImages = imagesForThisTest.filter((img: any) => {
           // Check if image has test_group_id metadata
           const imgTestGroupId = img.test_group_id || img.metadata?.test_group_id;
           // If no test group assigned to image, OR matches target test group
@@ -1656,6 +1662,40 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       aiMark("final", { status: "done" });
       setAiPhase("done");
       setAiProgress(100);
+
+      // Mark processed images as AI-analyzed in database
+      const processedImageIds = imagesForThisTest.map((img: any) => img.id).filter(Boolean);
+      if (processedImageIds.length > 0) {
+        await supabase
+          .from("attachments")
+          .update({
+            ai_processed: true,
+            ai_processed_at: new Date().toISOString(),
+            ai_metadata: {
+              processedAt: new Date().toISOString(),
+              matchedCount,
+              testGroupId: targetTestGroupId,
+              processingType,
+            }
+          })
+          .in("id", processedImageIds);
+        
+        // Update local state to reflect AI processing
+        setAttachments((prev) =>
+          prev.map((att) =>
+            processedImageIds.includes(att.id)
+              ? { ...att, ai_processed: true, ai_processed_at: new Date().toISOString() }
+              : att
+          )
+        );
+        setAvailableImagesForAI((prev) =>
+          prev.map((att) =>
+            processedImageIds.includes(att.id)
+              ? { ...att, ai_processed: true, ai_processed_at: new Date().toISOString() }
+              : att
+          )
+        );
+      }
 
       // Store batch context for persistence if multi-image processing
       if (imagesForThisTest.length > 1 && selectedBatchForAI) {
@@ -2642,12 +2682,23 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           <button
                             key={a.id}
                             onClick={() => setActiveAttachment(a)}
-                            className={`flex-shrink-0 w-32 p-2 rounded-lg border text-left snap-start transition-all ${activeAttachment?.id === a.id
+                            className={`flex-shrink-0 w-32 p-2 rounded-lg border text-left snap-start transition-all relative ${activeAttachment?.id === a.id
                               ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500"
                               : "border-gray-200 bg-white hover:border-gray-300"
                               }`}
                             title={a.original_filename}
                           >
+                            {/* AI Processed Badge */}
+                            {a.ai_processed && (
+                              <div className="absolute -top-1 -right-1 z-10">
+                                <span 
+                                  className="flex items-center justify-center h-5 w-5 rounded-full bg-green-500 text-white text-[10px] shadow-sm"
+                                  title={`AI analyzed ${a.ai_processed_at ? new Date(a.ai_processed_at).toLocaleString() : ''}`}
+                                >
+                                  ✓
+                                </span>
+                              </div>
+                            )}
                             <div className="h-20 bg-gray-100 rounded mb-2 overflow-hidden flex items-center justify-center">
                               {a.file_type?.startsWith("image/") ? (
                                 <img
@@ -3196,15 +3247,62 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           Preview Images
                         </button>
                       </div>
-                      <div className="text-sm text-blue-800 space-y-1">
-                        <p>Images available for AI analysis:</p>
+                      <div className="text-sm text-blue-800 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p>Select images for AI analysis:</p>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => setSelectedImagesForAI(new Set(availableImagesForAI.map((img: any) => img.id)))}
+                              className="text-xs px-2 py-0.5 text-blue-600 hover:text-blue-800 underline"
+                            >
+                              Select All
+                            </button>
+                            <button
+                              onClick={() => setSelectedImagesForAI(new Set())}
+                              className="text-xs px-2 py-0.5 text-blue-600 hover:text-blue-800 underline"
+                            >
+                              Clear
+                            </button>
+                          </div>
+                        </div>
                         <div className="flex flex-wrap gap-2">
                           {availableImagesForAI.map((img: any, idx: number) => (
-                            <span key={idx} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
-                              {img.image_label || `Image ${idx + 1}`}
-                            </span>
+                            <label 
+                              key={idx} 
+                              className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs cursor-pointer transition-colors ${
+                                selectedImagesForAI.has(img.id)
+                                  ? 'bg-blue-200 text-blue-900 border border-blue-400'
+                                  : 'bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedImagesForAI.has(img.id)}
+                                onChange={(e) => {
+                                  const newSet = new Set(selectedImagesForAI);
+                                  if (e.target.checked) {
+                                    newSet.add(img.id);
+                                  } else {
+                                    newSet.delete(img.id);
+                                  }
+                                  setSelectedImagesForAI(newSet);
+                                }}
+                                className="h-3 w-3 text-blue-600 rounded"
+                              />
+                              <span>{img.image_label || `Image ${idx + 1}`}</span>
+                              {img.ai_processed && (
+                                <span className="ml-1 text-green-600" title={`AI analyzed ${img.ai_processed_at ? new Date(img.ai_processed_at).toLocaleString() : ''}`}>
+                                  ✓
+                                </span>
+                              )}
+                            </label>
                           ))}
                         </div>
+                        {selectedImagesForAI.size > 0 && selectedImagesForAI.size < availableImagesForAI.length && (
+                          <p className="text-xs text-blue-600 mt-1">
+                            {selectedImagesForAI.size} of {availableImagesForAI.length} images selected
+                          </p>
+                        )}
                       </div>
 
                       {/* AI Instructions Preview */}
@@ -3226,18 +3324,24 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         <span className="text-sm text-slate-600">AI assistant</span>
                         {availableImagesForAI.length > 1 && (
                           <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded">
-                            Multi-Image Mode
+                            {selectedImagesForAI.size > 0 && selectedImagesForAI.size < availableImagesForAI.length
+                              ? `${selectedImagesForAI.size}/${availableImagesForAI.length} Selected`
+                              : `Multi-Image Mode`}
                           </span>
                         )}
                       </div>
                       <button
                         onClick={() => handleRunAIProcessing()}
-                        disabled={isOCRProcessing || (!attachmentId && availableImagesForAI.length === 0)}
+                        disabled={isOCRProcessing || (!attachmentId && availableImagesForAI.length === 0) || (availableImagesForAI.length > 1 && selectedImagesForAI.size === 0)}
                         className="inline-flex items-center px-3 py-1.5 rounded-md bg-gradient-to-r from-purple-600 to-blue-600 text-white
                                    disabled:from-gray-400 disabled:to-gray-400"
                       >
                         {isOCRProcessing ? "Analysing…" :
-                          availableImagesForAI.length > 1 ? "Analyze All Images" : "Process with AI"}
+                          availableImagesForAI.length > 1 
+                            ? (selectedImagesForAI.size === availableImagesForAI.length 
+                                ? "Analyze All Images" 
+                                : `Analyze ${selectedImagesForAI.size} Image${selectedImagesForAI.size !== 1 ? 's' : ''}`)
+                            : "Process with AI"}
                       </button>
                     </div>
                   </div>

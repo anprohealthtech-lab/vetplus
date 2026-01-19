@@ -17,6 +17,7 @@ import {
 import TemplateAIConsole from '../components/TemplateStudio/TemplateAIConsole';
 import TemplateAIAuditModal, { TemplateAuditResult } from '../components/TemplateStudio/TemplateAIAuditModal';
 import PlaceholderPicker, { PlaceholderOption } from '../components/TemplateStudio/PlaceholderPicker';
+import TemplateBuilderSidebar from '../components/TemplateStudio/TemplateBuilderSidebar';
 import { useAuth } from '../contexts/AuthContext';
 import { database, supabase, LabBrandingAsset, LabUserSignature } from '../utils/supabase';
 import { ensureReportRegions } from '../utils/reportTemplateRegions';
@@ -765,6 +766,7 @@ const TemplateStudioCKE: React.FC = () => {
   const [testGroupsLoading, setTestGroupsLoading] = useState(false);
   const [testGroupsError, setTestGroupsError] = useState<string | null>(null);
   const [isAiConsoleOpen, setIsAiConsoleOpen] = useState(false);
+  const [isBuilderSidebarOpen, setIsBuilderSidebarOpen] = useState(false);
   const [placeholderPickerOpen, setPlaceholderPickerOpen] = useState(false);
   const [placeholderOptions, setPlaceholderOptions] = useState<PlaceholderOption[]>([]);
   const [placeholderLoading, setPlaceholderLoading] = useState(false);
@@ -1142,21 +1144,26 @@ const TemplateStudioCKE: React.FC = () => {
           console.warn('Test group parameter fetch failed:', testError);
         } else if (testParams?.length) {
           console.log('Raw testParams from API:', testParams);
-          const mappedParams = testParams.flatMap((item) => {
+          const mappedParams = testParams.flatMap((item: any) => {
             const base = {
               ...item,
               group: 'test' as const,
             };
 
-            // Main value placeholder
+            // Main value placeholder (already includes _VALUE suffix from API)
             const mainOption = { ...base };
 
-            // Generate variations
-            const basePlaceholderName = base.placeholder.replace(/^{{|}}$/g, '');
+            // Use placeholderBase if available (new ANALYTE_CODE pattern), otherwise extract from placeholder
+            // The main placeholder is already {{ANALYTE_CODE_VALUE}}, so we need the base without _VALUE
+            const basePlaceholderName = item.placeholderBase
+              ? item.placeholderBase
+              : base.placeholder.replace(/^{{|_VALUE}}$|}}$/g, '');
 
+            // Generate variations matching backend RPC pattern:
+            // _UNIT, _REFERENCE (not _REF_RANGE), _FLAG, _NOTE
             const variations = [
               { suffix: '_UNIT', labelSuffix: 'Unit', sample: item.unit },
-              { suffix: '_REF_RANGE', labelSuffix: 'Reference Range', sample: item.referenceRange },
+              { suffix: '_REFERENCE', labelSuffix: 'Reference', sample: item.referenceRange },
               { suffix: '_FLAG', labelSuffix: 'Flag', sample: 'High/Low' },
               { suffix: '_NOTE', labelSuffix: 'Note', sample: 'Comments' },
             ];
@@ -1167,7 +1174,7 @@ const TemplateStudioCKE: React.FC = () => {
               label: `${base.label} (${v.labelSuffix})`,
               placeholder: `{{${basePlaceholderName}${v.suffix}}}`,
               unit: v.suffix === '_UNIT' ? item.unit : null,
-              referenceRange: v.suffix === '_REF_RANGE' ? item.referenceRange : null,
+              referenceRange: v.suffix === '_REFERENCE' ? item.referenceRange : null,
             }));
 
             return [mainOption, ...extras];
@@ -1232,22 +1239,22 @@ const TemplateStudioCKE: React.FC = () => {
   }, [DEFAULT_PLACEHOLDER_OPTIONS, fetchAvailablePlaceholderOptions]);
 
   useEffect(() => {
-    if (!placeholderPickerOpen) {
+    if (!placeholderPickerOpen && !isBuilderSidebarOpen) {
       return;
     }
     loadPlaceholderOptions().catch((err) => {
       console.warn('Placeholder loader rejected:', err);
     });
-  }, [loadPlaceholderOptions, placeholderPickerOpen]);
+  }, [loadPlaceholderOptions, placeholderPickerOpen, isBuilderSidebarOpen]);
 
   // Reload placeholder options when template or test_group_id changes
   useEffect(() => {
-    if (placeholderPickerOpen && templateMeta?.id) {
+    if ((placeholderPickerOpen || isBuilderSidebarOpen) && templateMeta?.id) {
       loadPlaceholderOptions().catch((err) => {
         console.warn('Placeholder reload on template change failed:', err);
       });
     }
-  }, [templateMeta?.test_group_id, templateMeta?.id, placeholderPickerOpen, loadPlaceholderOptions]);
+  }, [templateMeta?.test_group_id, templateMeta?.id, placeholderPickerOpen, isBuilderSidebarOpen, loadPlaceholderOptions]);
 
   useEffect(() => {
     const editor = editorInstanceRef.current;
@@ -2480,6 +2487,13 @@ const TemplateStudioCKE: React.FC = () => {
             </button>
             <button
               type="button"
+              onClick={() => setIsBuilderSidebarOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-blue-300 bg-blue-50 px-3 py-1.5 font-medium text-blue-700 transition hover:bg-blue-100"
+            >
+              <Sparkles className="h-3.5 w-3.5" /> Template Builder
+            </button>
+            <button
+              type="button"
               onClick={() => setPlaceholderPickerOpen(true)}
               className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 font-medium text-gray-700 transition hover:bg-gray-50"
             >
@@ -3546,6 +3560,18 @@ const TemplateStudioCKE: React.FC = () => {
         onRevert={handleRevertAuditImplementation}
         canRevert={!!auditRevertSnapshot}
         successMessage={auditSuccessMessage}
+      />
+
+      <TemplateBuilderSidebar
+        open={isBuilderSidebarOpen}
+        onClose={() => setIsBuilderSidebarOpen(false)}
+        editor={editorAdapter}
+        templateName={templateMeta?.template_name || 'Template'}
+        labId={labId || ''}
+        testGroupId={templateMeta?.test_group_id || undefined}
+        placeholderOptions={placeholderOptions}
+        onRefreshPlaceholders={loadPlaceholderOptions}
+        placeholderLoading={placeholderLoading}
       />
     </div >
   );

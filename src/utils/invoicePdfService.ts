@@ -308,7 +308,8 @@ async function fetchInvoiceData(invoiceId: string): Promise<Invoice | null> {
       lab:labs(name, address, phone, email, license_number, registration_number, upi_id, bank_details, gst_number),
       patient:patients(phone, email, address),
       account:accounts(name, billing_mode),
-      invoice_items(*)
+      invoice_items(*),
+      location:locations(id, name, address, phone, email, contact_person, upi_id, bank_details)
     `)
     .eq('id', invoiceId)
     .single();
@@ -380,15 +381,22 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
   const balanceDue = invoice.total - invoice.amount_paid;
   const isPaid = balanceDue <= 0;
 
-  // Generate UPI QR Code if lab has UPI ID and balance is due
+  // Generate UPI QR Code if location/lab has UPI ID and balance is due
   let upiQrHtml = '';
+  // Location-wise UPI: Check location first, then fall back to lab, then template
+  const locationUpiId = (invoice as any).location?.upi_id || (invoice as any).location?.bank_details?.upi_id;
   const labUpiId = (invoice.lab as any)?.upi_id || (invoice.lab as any)?.bank_details?.upi_id || template.bank_details?.upi_id;
+  const effectiveUpiId = locationUpiId || labUpiId;
   
-  if (labUpiId && isValidUPIId(labUpiId) && !isPaid && balanceDue > 0) {
+  if (effectiveUpiId && isValidUPIId(effectiveUpiId) && !isPaid && balanceDue > 0) {
     try {
+      // Use location name if location has UPI, else use lab name
+      const payeeName = locationUpiId 
+        ? ((invoice as any).location?.name || invoice.lab?.name || 'Lab') 
+        : (invoice.lab?.name || 'Lab');
       upiQrHtml = await generateUPIPaymentBlock({
-        upiId: labUpiId,
-        payeeName: invoice.lab?.name || 'Lab',
+        upiId: effectiveUpiId,
+        payeeName,
         amount: balanceDue,
         transactionNote: `INV-${invoice.invoice_number}`,
       }, {
@@ -406,6 +414,9 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
   const gstAmount = invoice.tax || 0;
   const cgst = gstAmount / 2;
   const sgst = gstAmount / 2;
+
+  // Get location data for placeholders
+  const location = (invoice as any).location;
 
   // Replace basic placeholders
   const placeholders: Record<string, string> = {
@@ -440,7 +451,14 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
     '{{lab_license}}': invoice.lab?.license_number || '',
     '{{lab_registration}}': invoice.lab?.registration_number || '',
     '{{lab_gst}}': (invoice.lab as any)?.gst_number || '',
-    '{{lab_upi}}': labUpiId || '',
+    '{{lab_upi}}': effectiveUpiId || '',
+    // Location placeholders (collection center / branch)
+    '{{location_name}}': location?.name || '',
+    '{{location_address}}': location?.address || '',
+    '{{location_phone}}': location?.phone || '',
+    '{{location_email}}': location?.email || '',
+    '{{location_upi}}': locationUpiId || '',
+    '{{location_contact}}': location?.contact_person || '',
     '{{notes}}': invoice.notes || '',
     '{{current_date}}': formatDate(new Date().toISOString()),
   };

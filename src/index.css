@@ -20,8 +20,18 @@
 /* Base mobile optimizations */
 * {
   -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation;
   box-sizing: border-box;
+}
+
+/* Apply touch-action only to interactive elements, not to body/html */
+button,
+a,
+input,
+select,
+textarea,
+[role="button"],
+.touch-target {
+  touch-action: manipulation;
 }
 
 html {
@@ -33,12 +43,15 @@ html {
 
 html,
 body {
-  overscroll-behavior: none;
+  overscroll-behavior-x: none; /* Only prevent horizontal overscroll */
   -webkit-overflow-scrolling: touch;
   width: 100%;
   overflow-x: hidden;
+  overflow-y: auto; /* Ensure vertical scroll is explicitly enabled */
   margin: 0;
   padding: 0;
+  /* Ensure scroll wheel events are captured properly */
+  scroll-behavior: smooth;
 }
 
 body {
@@ -50,7 +63,9 @@ body {
 
 #root {
   width: 100%;
+  min-height: 100%;
   overflow-x: hidden;
+  overflow-y: visible; /* Don't block vertical scrolling */
 }
 
 /* Custom utilities */

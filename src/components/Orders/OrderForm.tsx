@@ -48,6 +48,8 @@ interface Location {
   type: string; // 'hospital' | 'clinic' | 'diagnostic_center' | 'home_collection' | 'walk_in'
   credit_limit?: number | null;
   default_discount_percent?: number | null;
+  collection_percentage?: number | null;
+  receivable_type?: 'percentage' | 'test_wise' | 'own_center' | null;
 }
 
 interface Account {
@@ -220,6 +222,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
    * 3. Base price - fallback
    * 
    * Also returns lab_receivable for location pricing (what the lab receives from the location)
+   * - If test has explicit lab_receivable in location_test_prices → use that
+   * - Otherwise calculate from collection_percentage
    */
   const resolvePrice = React.useCallback((testId: string, basePrice: number): { price: number; source: 'account' | 'location' | 'base'; labReceivable?: number } => {
     // Priority 1: Account price (B2B billing)
@@ -227,19 +231,43 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       return { price: accountPrices[testId], source: 'account' };
     }
     
+    const location = selectedLocation ? locations.find(l => l.id === selectedLocation) : null;
+    
     // Priority 2: Location price (franchise/collection center pricing)
     if (selectedLocation && locationPrices[testId]) {
       const locPrice = locationPrices[testId];
+      
+      // Calculate labReceivable:
+      // 1. If explicitly set in location_test_prices, use it
+      // 2. Otherwise calculate from collection_percentage
+      let labReceivable = locPrice.lab_receivable;
+      if (labReceivable === null || labReceivable === undefined) {
+        if (location?.receivable_type === 'own_center') {
+          labReceivable = locPrice.patient_price; // Lab gets 100%
+        } else if (location?.collection_percentage) {
+          labReceivable = locPrice.patient_price * (location.collection_percentage / 100);
+        }
+      }
+      
       return { 
         price: locPrice.patient_price, 
         source: 'location',
-        labReceivable: locPrice.lab_receivable
+        labReceivable: labReceivable ?? undefined
       };
     }
     
-    // Priority 3: Base price
+    // Priority 3: Base price - but if location selected, calculate receivable from percentage
+    if (location && location.receivable_type !== 'own_center') {
+      let labReceivable: number | undefined = undefined;
+      if (location.collection_percentage) {
+        labReceivable = (basePrice ?? 0) * (location.collection_percentage / 100);
+      }
+      return { price: basePrice ?? 0, source: 'base', labReceivable };
+    }
+    
+    // No location or own_center = lab gets 100%
     return { price: basePrice ?? 0, source: 'base' };
-  }, [selectedAccount, accountPrices, selectedLocation, locationPrices]);
+  }, [selectedAccount, accountPrices, selectedLocation, locationPrices, locations]);
 
 
   // Handle TRF modal close and apply edited values
@@ -1256,9 +1284,18 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           }
 
           // Create invoice items (depends on invoice.id)
-          const invoiceItemsData = selectedTestDetails.map(t => {
+          // Need to fetch outsourced costs for each item
+          const invoiceItemsData = await Promise.all(selectedTestDetails.map(async t => {
             const { price, labReceivable } = resolvePrice(t.id, t.price);
             const outsourcedLabId = testOutsourcingConfig[t.id] === 'inhouse' ? null : testOutsourcingConfig[t.id] || null;
+            
+            // Fetch outsourced cost if applicable
+            let outsourcedCost: number | null = null;
+            if (outsourcedLabId) {
+              const { data: costData } = await database.outsourcedLabPrices.getCost(outsourcedLabId, t.id);
+              outsourcedCost = costData?.cost || null;
+            }
+            
             return {
               invoice_id: invoice.id,
               test_name: t.name,
@@ -1268,9 +1305,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               lab_id: labId,
               order_id: orderId,
               location_receivable: labReceivable || null,
-              outsourced_lab_id: outsourcedLabId || null
+              outsourced_lab_id: outsourcedLabId || null,
+              outsourced_cost: outsourcedCost
             };
-          });
+          }));
 
           // ✅ OPTIMIZED: Run invoice items and payment creation in parallel if applicable
           const parallelOps: Promise<any>[] = [];

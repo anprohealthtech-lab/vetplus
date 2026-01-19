@@ -17,6 +17,7 @@ interface LocationFormData {
   collection_percentage: number;
   is_cash_collection_center: boolean;
   notes: string;
+  upi_id: string;
 }
 
 const initialFormData: LocationFormData = {
@@ -30,7 +31,8 @@ const initialFormData: LocationFormData = {
   credit_limit: 0,
   collection_percentage: 0,
   is_cash_collection_center: false,
-  notes: ''
+  notes: '',
+  upi_id: ''
 };
 
 interface LocationWithBalance extends Location {
@@ -114,7 +116,8 @@ const LocationMaster: React.FC = () => {
       credit_limit: location.credit_limit || 0,
       collection_percentage: location.collection_percentage || 0,
       is_cash_collection_center: location.is_cash_collection_center || false,
-      notes: location.notes || ''
+      notes: location.notes || '',
+      upi_id: (location as any).upi_id || ''
     });
     setShowForm(true);
     setError(null);
@@ -495,6 +498,23 @@ const LocationMaster: React.FC = () => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     placeholder="10"
                   />
+                </div>
+
+                {/* UPI ID for this location */}
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    UPI ID (for this location)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.upi_id}
+                    onChange={(e) => setFormData({ ...formData, upi_id: e.target.value.toLowerCase() })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="location@ybl or business@paytm"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">
+                    If set, invoices from this location will show this UPI ID for payments. Leave empty to use lab's default UPI.
+                  </p>
                 </div>
 
                 {/* Is Cash Collection Center */}

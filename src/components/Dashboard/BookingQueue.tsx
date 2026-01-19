@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Calendar, Clock, User, Phone, ArrowRight, Home, Building2, Globe, FileText, Plus } from 'lucide-react';
+import { Calendar, Clock, User, Phone, ArrowRight, Home, Building2, Globe, FileText, Plus, X, Eye, Trash2 } from 'lucide-react';
 import { database } from '../../utils/supabase';
 import { Booking } from '../../types';
 import { format } from 'date-fns';
@@ -13,6 +13,8 @@ const BookingQueue: React.FC<BookingQueueProps> = ({ onProcessBooking }) => {
     const [bookings, setBookings] = useState<Booking[]>([]);
     const [loading, setLoading] = useState(true);
     const [showCreateModal, setShowCreateModal] = useState(false);
+    const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
+    const [cancelling, setCancelling] = useState<string | null>(null);
 
     useEffect(() => {
         loadBookings();
@@ -21,14 +23,38 @@ const BookingQueue: React.FC<BookingQueueProps> = ({ onProcessBooking }) => {
     const loadBookings = async () => {
         try {
             setLoading(true);
-            const { data, error } = await database.bookings.list();
+            // Only show pending, quoted, and confirmed bookings (not converted/cancelled)
+            const { data, error } = await database.bookings.list({ status: 'pending' });
             if (data) {
-                setBookings(data as Booking[]);
+                // Filter to exclude converted and cancelled
+                const activeBookings = (data as Booking[]).filter(
+                    b => !['converted', 'cancelled'].includes(b.status)
+                );
+                setBookings(activeBookings);
             }
         } catch (error) {
             console.error('Error loading bookings:', error);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleCancelBooking = async (bookingId: string) => {
+        if (!window.confirm('Are you sure you want to cancel this booking?')) return;
+        
+        try {
+            setCancelling(bookingId);
+            const { error } = await database.bookings.update(bookingId, {
+                status: 'cancelled',
+                updated_at: new Date().toISOString()
+            });
+            if (error) throw error;
+            await loadBookings();
+        } catch (error) {
+            console.error('Error cancelling booking:', error);
+            alert('Failed to cancel booking');
+        } finally {
+            setCancelling(null);
         }
     };
 
@@ -140,12 +166,33 @@ const BookingQueue: React.FC<BookingQueueProps> = ({ onProcessBooking }) => {
                                         <span className="font-medium text-gray-700">{booking.test_details?.length || 0}</span> tests requested
                                     </div>
 
-                                    <button
-                                        onClick={() => onProcessBooking?.(booking)}
-                                        className="text-xs font-medium text-primary-600 hover:text-primary-700 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                                    >
-                                        Process <ArrowRight className="w-3 h-3" />
-                                    </button>
+                                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <button
+                                            onClick={() => setSelectedBooking(booking)}
+                                            className="text-xs font-medium text-gray-500 hover:text-gray-700 flex items-center gap-1"
+                                            title="View Details"
+                                        >
+                                            <Eye className="w-3 h-3" />
+                                        </button>
+                                        <button
+                                            onClick={() => handleCancelBooking(booking.id)}
+                                            disabled={cancelling === booking.id}
+                                            className="text-xs font-medium text-red-500 hover:text-red-700 flex items-center gap-1 disabled:opacity-50"
+                                            title="Cancel Booking"
+                                        >
+                                            {cancelling === booking.id ? (
+                                                <span className="animate-spin">⏳</span>
+                                            ) : (
+                                                <Trash2 className="w-3 h-3" />
+                                            )}
+                                        </button>
+                                        <button
+                                            onClick={() => onProcessBooking?.(booking)}
+                                            className="text-xs font-medium text-primary-600 hover:text-primary-700 flex items-center gap-1"
+                                        >
+                                            Process <ArrowRight className="w-3 h-3" />
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         ))
@@ -167,6 +214,114 @@ const BookingQueue: React.FC<BookingQueueProps> = ({ onProcessBooking }) => {
                         loadBookings();
                     }}
                 />
+            )}
+
+            {/* Booking Details Modal */}
+            {selectedBooking && (
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
+                        <div className="flex items-center justify-between p-4 border-b border-gray-100 bg-gray-50">
+                            <h3 className="font-semibold text-gray-800 flex items-center gap-2">
+                                <FileText className="w-4 h-4 text-blue-600" />
+                                Booking Details
+                            </h3>
+                            <button onClick={() => setSelectedBooking(null)} className="p-1 hover:bg-gray-200 rounded-full">
+                                <X className="w-5 h-5 text-gray-500" />
+                            </button>
+                        </div>
+                        <div className="p-4 space-y-4">
+                            {/* Patient Info */}
+                            <div>
+                                <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">Patient</h4>
+                                <div className="bg-gray-50 rounded-lg p-3">
+                                    <p className="font-medium text-gray-900">{selectedBooking.patient_info?.name || 'N/A'}</p>
+                                    <p className="text-sm text-gray-600">{selectedBooking.patient_info?.phone || 'N/A'}</p>
+                                    {selectedBooking.patient_info?.email && (
+                                        <p className="text-sm text-gray-500">{selectedBooking.patient_info.email}</p>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Booking Info */}
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase mb-1">Source</h4>
+                                    <div className="flex items-center gap-1">
+                                        {getSourceIcon(selectedBooking.booking_source)}
+                                        <span className="text-sm capitalize">{selectedBooking.booking_source.replace('_', ' ')}</span>
+                                    </div>
+                                </div>
+                                <div>
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase mb-1">Status</h4>
+                                    <span className={`text-xs uppercase font-bold px-2 py-0.5 rounded-full ${getStatusColor(selectedBooking.status)}`}>
+                                        {selectedBooking.status}
+                                    </span>
+                                </div>
+                                <div>
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase mb-1">Collection</h4>
+                                    <span className="text-sm capitalize">{selectedBooking.collection_type?.replace('_', ' ') || 'Walk-in'}</span>
+                                </div>
+                                <div>
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase mb-1">Scheduled</h4>
+                                    <span className="text-sm">
+                                        {selectedBooking.scheduled_at 
+                                            ? format(new Date(selectedBooking.scheduled_at), 'dd MMM yyyy, hh:mm a')
+                                            : 'Not scheduled'}
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* Tests */}
+                            {selectedBooking.test_details && selectedBooking.test_details.length > 0 && (
+                                <div>
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">Requested Tests</h4>
+                                    <div className="bg-gray-50 rounded-lg p-3 space-y-1">
+                                        {selectedBooking.test_details.map((test, i) => (
+                                            <div key={i} className="flex justify-between text-sm">
+                                                <span>{test.name}</span>
+                                                {test.price && <span className="text-gray-500">₹{test.price}</span>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Home Collection Address */}
+                            {selectedBooking.collection_type === 'home_collection' && selectedBooking.home_collection_address && (
+                                <div>
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">Collection Address</h4>
+                                    <div className="bg-orange-50 rounded-lg p-3 text-sm text-orange-800">
+                                        {selectedBooking.home_collection_address.address}
+                                        {selectedBooking.home_collection_address.city && `, ${selectedBooking.home_collection_address.city}`}
+                                        {selectedBooking.home_collection_address.pincode && ` - ${selectedBooking.home_collection_address.pincode}`}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Actions */}
+                            <div className="flex gap-2 pt-2">
+                                <button
+                                    onClick={() => {
+                                        handleCancelBooking(selectedBooking.id);
+                                        setSelectedBooking(null);
+                                    }}
+                                    className="flex-1 px-4 py-2 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg"
+                                >
+                                    Cancel Booking
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        onProcessBooking?.(selectedBooking);
+                                        setSelectedBooking(null);
+                                    }}
+                                    className="flex-1 px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg"
+                                >
+                                    Process → Order
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             )}
         </>
     );
