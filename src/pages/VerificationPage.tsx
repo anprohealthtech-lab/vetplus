@@ -33,7 +33,6 @@ const VerificationPage: React.FC = () => {
               gender,
               age
             ),
-            referring_doctor,
             doctor
           `)
                     .or(`id.eq.${reportId},sample_id.eq.${reportId}`)
@@ -116,7 +115,7 @@ const VerificationPage: React.FC = () => {
                             </div>
                             <div className="flex justify-between pb-2">
                                 <span className="text-gray-500">Ref. Doctor</span>
-                                <span className="font-semibold text-gray-900">{data.doctor || data.referring_doctor || 'Self'}</span>
+                                <span className="font-semibold text-gray-900">{data.doctor || 'Self'}</span>
                             </div>
                         </div>
 
