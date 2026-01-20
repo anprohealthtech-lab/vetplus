@@ -9,6 +9,7 @@ import {
   Save,
   Sparkles,
   Trash2,
+  Upload,
   Wand2,
   ChevronLeft,
   ChevronRight,
@@ -18,6 +19,8 @@ import TemplateAIConsole from '../components/TemplateStudio/TemplateAIConsole';
 import TemplateAIAuditModal, { TemplateAuditResult } from '../components/TemplateStudio/TemplateAIAuditModal';
 import PlaceholderPicker, { PlaceholderOption } from '../components/TemplateStudio/PlaceholderPicker';
 import TemplateBuilderSidebar from '../components/TemplateStudio/TemplateBuilderSidebar';
+import ReportUploadModal from '../components/TemplateStudio/ReportUploadModal';
+import PDFPreviewModal from '../components/TemplateStudio/PDFPreviewModal';
 import { useAuth } from '../contexts/AuthContext';
 import { database, supabase, LabBrandingAsset, LabUserSignature } from '../utils/supabase';
 import { ensureReportRegions } from '../utils/reportTemplateRegions';
@@ -774,6 +777,7 @@ const TemplateStudioCKE: React.FC = () => {
   const [isSourcePreviewOpen, setIsSourcePreviewOpen] = useState(false);
   const [sourceCopyState, setSourceCopyState] = useState<'html' | 'css' | null>(null);
   const [isA4PreviewOpen, setIsA4PreviewOpen] = useState(false);
+  const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
@@ -793,6 +797,7 @@ const TemplateStudioCKE: React.FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
+  const [isReportUploadOpen, setIsReportUploadOpen] = useState(false);
 
   const PATIENT_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
     () => [
@@ -1481,6 +1486,29 @@ const TemplateStudioCKE: React.FC = () => {
     }
   }, [ckeditorInstance]);
 
+  // Handle HTML generated from report upload
+  const handleReportUploadGenerated = useCallback((html: string, matchedAnalytes: string[], notes: string) => {
+    const instance = ckeditorInstance || editorInstanceRef.current;
+    if (!instance) {
+      // Fallback: set directly to state
+      setHtmlContent(html);
+      setSaveMessage(`Template generated from report. ${matchedAnalytes.length} analytes matched.`);
+      return;
+    }
+
+    try {
+      // Set the HTML content in the editor
+      instance.setData(html);
+      setHtmlContent(html);
+      setSaveMessage(`Template generated from report. ${matchedAnalytes.length} analytes matched. Review and save when ready.`);
+    } catch (err) {
+      console.error('Failed to apply generated HTML:', err);
+      // Fallback: set directly to state
+      setHtmlContent(html);
+      setSaveMessage('Template generated. Review and save when ready.');
+    }
+  }, [ckeditorInstance, setHtmlContent]);
+
   const identityId = user?.id;
 
   useEffect(() => {
@@ -1642,7 +1670,7 @@ const TemplateStudioCKE: React.FC = () => {
       try {
         const { data, error } = await supabase
           .from('labs')
-          .select('name, address_line_1, phone_number, email, website')
+          .select('name, address, phone, email')
           .eq('id', labId)
           .single();
 
@@ -2494,6 +2522,14 @@ const TemplateStudioCKE: React.FC = () => {
             </button>
             <button
               type="button"
+              onClick={() => setIsReportUploadOpen(true)}
+              title="Upload a report image/PDF to generate template with AI"
+              className="inline-flex items-center gap-1 rounded-md border border-violet-300 bg-violet-50 px-3 py-1.5 font-medium text-violet-700 transition hover:bg-violet-100"
+            >
+              <Upload className="h-3.5 w-3.5" /> From Report
+            </button>
+            <button
+              type="button"
               onClick={() => setPlaceholderPickerOpen(true)}
               className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 font-medium text-gray-700 transition hover:bg-gray-50"
             >
@@ -2523,10 +2559,10 @@ const TemplateStudioCKE: React.FC = () => {
             </button>
             <button
               type="button"
-              onClick={() => setIsA4PreviewOpen(true)}
+              onClick={() => setIsPdfPreviewOpen(true)}
               className="inline-flex items-center gap-1 rounded-md border border-orange-200 bg-orange-50 px-3 py-1.5 font-medium text-orange-700 transition hover:bg-orange-100"
             >
-              <Eye className="h-3.5 w-3.5" /> A4 Full View
+              <Eye className="h-3.5 w-3.5" /> PDF Preview
             </button>
             <button
               type="button"
@@ -3113,8 +3149,8 @@ const TemplateStudioCKE: React.FC = () => {
 
                             // Lab Info for Header (Actual or Dummy)
                             labName: labDetails?.name || 'City Diagnostic Labs',
-                            labAddress: labDetails?.address_line_1 || '456 Healthcare Ave, Medical District, NY 10001',
-                            labPhone: labDetails?.phone_number || '(555) 123-4567',
+                            labAddress: labDetails?.address || '456 Healthcare Ave, Medical District, NY 10001',
+                            labPhone: labDetails?.phone || '(555) 123-4567',
                             labEmail: labDetails?.email || 'results@citydiagnostics.com',
                             labWebsite: labDetails?.website || 'www.citydiagnostics.com',
 
@@ -3572,6 +3608,21 @@ const TemplateStudioCKE: React.FC = () => {
         placeholderOptions={placeholderOptions}
         onRefreshPlaceholders={loadPlaceholderOptions}
         placeholderLoading={placeholderLoading}
+      />
+
+      <ReportUploadModal
+        open={isReportUploadOpen}
+        onClose={() => setIsReportUploadOpen(false)}
+        labId={labId || ''}
+        onHtmlGenerated={handleReportUploadGenerated}
+      />
+
+      <PDFPreviewModal
+        open={isPdfPreviewOpen}
+        onClose={() => setIsPdfPreviewOpen(false)}
+        htmlContent={htmlContent}
+        cssContent={cssContent}
+        labId={labId || ''}
       />
     </div >
   );

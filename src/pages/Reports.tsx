@@ -170,20 +170,23 @@ const Reports: React.FC = () => {
         return;
       }
 
-      // Fetch latest order details for summary and phone
+      // Fetch latest order details for summary and phone (join with doctors table for phone)
       const { data: orderData, error } = await supabase
         .from('orders')
-        .select('doctor, doctor_phone, ai_clinical_summary')
+        .select('doctor, ai_clinical_summary, referring_doctor:doctors(phone)')
         .eq('id', group.order_id)
         .single();
 
       if (error) throw error;
 
+      // Extract phone from the joined doctors table
+      const doctorPhone = (orderData.referring_doctor as { phone?: string } | null)?.phone || '';
+
       setSendReportModalData({
         orderId: group.order_id,
         patientName: group.patient_full_name,
         doctorName: orderData.doctor || 'Doctor',
-        doctorPhone: orderData.doctor_phone || '',
+        doctorPhone,
         clinicalSummary: orderData.ai_clinical_summary,
         reportUrl: convertToCustomDomain(reportUrl) || reportUrl
       });

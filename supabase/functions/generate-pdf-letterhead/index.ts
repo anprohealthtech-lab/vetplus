@@ -1022,7 +1022,8 @@ function buildPdfBodyDocumentV2(bodyHtml: string, customCss: string, letterheadB
     .report-container,
     .report-body,
     .report-region,
-    .report-region--body {
+    .report-region--body,
+    .report-header {
       background: transparent !important;
       background-color: transparent !important;
     }
@@ -2006,8 +2007,31 @@ function generateReportExtrasHtml(extras: {
         html += '</div>'
       }
       
-      // Normal Findings
-      if (patientSummary.normal_findings && patientSummary.normal_findings.length > 0) {
+      // Normal Findings - Support both detailed (new) and simple (legacy) formats
+      if (patientSummary.normal_findings_detailed && patientSummary.normal_findings_detailed.length > 0) {
+        // New detailed format with explanations
+        html += '<div style="margin-bottom: 15px;">'
+        html += `<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">✓ Normal Findings (${patientSummary.normal_findings_detailed.length} tests)</h3>`
+        for (const finding of patientSummary.normal_findings_detailed) {
+          html += '<div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 10px; margin-bottom: 8px;">'
+          html += `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">`
+          html += `<span style="font-weight: bold; color: #166534; font-size: 13px;">${finding.test_name || 'Test'}</span>`
+          html += `<span style="background: #dcfce7; color: #166534; padding: 2px 8px; border-radius: 10px; font-size: 11px;">✓ Normal</span>`
+          html += '</div>'
+          if (finding.value) {
+            html += `<p style="margin: 4px 0; font-size: 12px; color: #374151;"><strong>Value:</strong> ${finding.value}</p>`
+          }
+          if (finding.what_it_measures) {
+            html += `<p style="margin: 4px 0; font-size: 12px; color: #1d4ed8;"><strong>What it measures:</strong> ${finding.what_it_measures}</p>`
+          }
+          if (finding.your_result_means) {
+            html += `<p style="margin: 4px 0; font-size: 12px; color: #166534;"><strong>Your result:</strong> ${finding.your_result_means}</p>`
+          }
+          html += '</div>'
+        }
+        html += '</div>'
+      } else if (patientSummary.normal_findings && patientSummary.normal_findings.length > 0) {
+        // Legacy simple format (array of strings)
         html += '<div style="margin-bottom: 15px;">'
         html += '<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">✓ Normal Findings</h3>'
         html += '<ul style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; color: #1f2937;">'
@@ -2015,31 +2039,66 @@ function generateReportExtrasHtml(extras: {
           html += `<li>${finding}</li>`
         }
         html += '</ul></div>'
+      } else if (patientSummary.normal_findings_summary) {
+        // Summary text format
+        html += '<div style="margin-bottom: 15px;">'
+        html += '<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">✓ Normal Findings</h3>'
+        html += `<p style="margin: 0; font-size: 13px; line-height: 1.5; color: #1f2937;">${patientSummary.normal_findings_summary}</p>`
+        html += '</div>'
       }
       
-      // Abnormal Findings
+      // Abnormal Findings - Enhanced to support new fields
       if (patientSummary.abnormal_findings && patientSummary.abnormal_findings.length > 0) {
         html += '<div style="margin-bottom: 15px;">'
         html += '<h3 style="margin: 0 0 8px 0; color: #dc2626; font-size: 14px; font-weight: bold;">⚠ Areas Needing Attention</h3>'
-        html += '<ul style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; color: #1f2937;">'
         for (const finding of patientSummary.abnormal_findings) {
           // Handle both string and object formats for abnormal findings
-          // Object format may have: test_name, name, parameter, label for the test identifier
-          const findingName = typeof finding === 'string' 
-            ? finding 
-            : (finding.test_name || finding.name || finding.parameter || finding.label || 'Finding')
-          const explanation = typeof finding === 'string' ? '' : (finding.explanation || '')
-          const text = explanation ? `${findingName}: ${explanation}` : findingName
-          html += `<li>${text}</li>`
+          if (typeof finding === 'string') {
+            html += `<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; padding: 10px; margin-bottom: 8px;">`
+            html += `<p style="margin: 0; font-size: 13px; color: #1f2937;">${finding}</p>`
+            html += '</div>'
+          } else {
+            // Object format with detailed fields
+            const findingName = finding.test_name || finding.name || finding.parameter || finding.label || 'Finding'
+            const status = finding.status || 'abnormal'
+            const statusColor = status === 'critical' ? '#b91c1c' : status === 'high' ? '#dc2626' : status === 'low' ? '#1d4ed8' : '#d97706'
+            const statusBg = status === 'critical' ? '#fee2e2' : status === 'high' ? '#fee2e2' : status === 'low' ? '#dbeafe' : '#fef3c7'
+            const statusLabel = status === 'critical' ? '⚠️ Critical' : status === 'high' ? '↑ High' : status === 'low' ? '↓ Low' : 'Abnormal'
+            
+            html += `<div style="background: ${statusBg}; border: 1px solid ${status === 'critical' || status === 'high' ? '#fecaca' : status === 'low' ? '#bfdbfe' : '#fde68a'}; border-radius: 6px; padding: 10px; margin-bottom: 8px;">`
+            html += `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">`
+            html += `<span style="font-weight: bold; color: ${statusColor}; font-size: 13px;">${findingName}</span>`
+            html += `<span style="background: white; color: ${statusColor}; padding: 2px 8px; border-radius: 10px; font-size: 11px; border: 1px solid ${statusColor};">${statusLabel}</span>`
+            html += '</div>'
+            if (finding.value) {
+              html += `<p style="margin: 4px 0; font-size: 12px; color: #374151;"><strong>Value:</strong> ${finding.value}</p>`
+            }
+            if (finding.what_it_measures) {
+              html += `<p style="margin: 4px 0; font-size: 12px; color: #1d4ed8;"><strong>What it measures:</strong> ${finding.what_it_measures}</p>`
+            }
+            if (finding.explanation) {
+              html += `<p style="margin: 4px 0; font-size: 12px; color: #92400e;"><strong>What this means:</strong> ${finding.explanation}</p>`
+            }
+            if (finding.what_to_do) {
+              html += `<p style="margin: 4px 0; font-size: 12px; color: #7c3aed;"><strong>What to do:</strong> ${finding.what_to_do}</p>`
+            }
+            if (finding.trend) {
+              const trendEmoji = finding.trend === 'improving' ? '📈' : finding.trend === 'worsening' ? '📉' : finding.trend === 'stable' ? '➡️' : '🆕'
+              const trendColor = finding.trend === 'improving' ? '#16a34a' : finding.trend === 'worsening' ? '#dc2626' : '#6b7280'
+              html += `<p style="margin: 4px 0; font-size: 11px; color: ${trendColor};"><strong>Trend:</strong> ${trendEmoji} ${finding.trend.charAt(0).toUpperCase() + finding.trend.slice(1)}</p>`
+            }
+            html += '</div>'
+          }
         }
-        html += '</ul></div>'
+        html += '</div>'
       }
       
-      // Consultation Recommendation
-      if (patientSummary.consultation_recommendation) {
+      // Consultation Recommendation - Support both field names
+      const consultMessage = patientSummary.consultation_recommendation || patientSummary.consultation_message
+      if (consultMessage) {
         html += '<div style="margin-bottom: 15px; background: #fef2f2; padding: 12px; border-radius: 6px; border-left: 4px solid #dc2626;">'
-        html += '<h3 style="margin: 0 0 8px 0; color: #dc2626; font-size: 14px; font-weight: bold;">📋 Doctor Consultation</h3>'
-        html += `<p style="margin: 0; font-size: 13px; line-height: 1.5; color: #1f2937;">${patientSummary.consultation_recommendation}</p>`
+        html += `<h3 style="margin: 0 0 8px 0; color: #dc2626; font-size: 14px; font-weight: bold;">📋 ${patientSummary.needs_consultation ? 'Doctor Consultation Recommended' : 'Recommendation'}</h3>`
+        html += `<p style="margin: 0; font-size: 13px; line-height: 1.5; color: #1f2937;">${consultMessage}</p>`
         html += '</div>'
       }
       
@@ -2052,6 +2111,13 @@ function generateReportExtrasHtml(extras: {
           html += `<li>${tip}</li>`
         }
         html += '</ul></div>'
+      }
+      
+      // Summary Message (new field - warm closing note)
+      if (patientSummary.summary_message) {
+        html += '<div style="margin-bottom: 10px; background: linear-gradient(135deg, #fdf2f8 0%, #fce7f3 100%); padding: 12px; border-radius: 6px; border: 1px solid #fbcfe8;">'
+        html += `<p style="margin: 0; font-size: 13px; line-height: 1.5; color: #be185d; font-style: italic; text-align: center;">💖 ${patientSummary.summary_message}</p>`
+        html += '</div>'
       }
       
       html += '<p style="font-size: 11px; color: #6b7280; text-align: center; margin: 15px 0 0 0; font-style: italic;">This summary is for your understanding. Please consult your doctor for medical advice.</p>'
@@ -3491,8 +3557,37 @@ serve(async (req) => {
     let printHtmlPrepared: string | null = null
     if (generatePrintVersion) {
       let printHtml = ''
+      
       if (rawHtmlForPrint) {
-        printHtml = rawHtmlForPrint
+        // rawHtmlForPrint contains the full E-Copy HTML with letterhead styles and spacers
+        // For print version, we need to extract just the CONTENT and rebuild with null letterhead
+        
+        // Strategy: Extract the content inside <main class="limsv2-report-body...">...</main>
+        // and rebuild a clean HTML document without letterhead
+        const mainContentMatch = rawHtmlForPrint.match(/<main[^>]*class="[^"]*limsv2-report-body[^"]*"[^>]*>([\s\S]*?)<\/main>/i)
+        
+        if (mainContentMatch) {
+          const extractedContent = mainContentMatch[1]
+          console.log('✅ Extracted main content from rawHtmlForPrint, length:', extractedContent.length)
+          
+          // Rebuild clean HTML with NO letterhead (pass null for letterheadBackgroundUrl)
+          const verifyUrl = `https://app.limsapp.in/verify?id=${encodeURIComponent(context.sampleId || orderId || '')}`;
+          printHtml = buildPdfBodyDocumentV2(extractedContent, '', null, pdfSettings, verifyUrl)
+          console.log('✅ Rebuilt print HTML without letterhead')
+        } else {
+          // Fallback: Try to strip letterhead elements manually
+          console.log('⚠️ Could not extract main content, falling back to stripping approach')
+          printHtml = rawHtmlForPrint
+          
+          // Remove letterhead styles
+          printHtml = printHtml.replace(/<style id="lims-letterhead">[\s\S]*?<\/style>/gi, '')
+          
+          // Remove background div
+          printHtml = printHtml.replace(/<div id="page-bg"><\/div>/gi, '')
+          
+          // Fix QR code position
+          printHtml = printHtml.replace(/(<img[^>]*class="report-auth-qr"[^>]*style="[^"]*top:\s*)\d+px/gi, '$125px')
+        }
       } else {
         const printTemplateContext = {
           ...fullContext,
@@ -3665,7 +3760,7 @@ serve(async (req) => {
           {
             headerHtml: '',
             footerHtml: '',
-            margins: '180px 20px 150px 20px',
+            margins: '150px 20px 150px 20px',
             headerHeight: '0px',
             footerHeight: '0px',
             scale: pdfSettings?.scale ?? DEFAULT_PDF_SETTINGS.scale,

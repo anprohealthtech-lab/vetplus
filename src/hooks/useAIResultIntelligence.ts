@@ -103,25 +103,43 @@ export interface ClinicalSummaryResponse {
 export interface PatientSummaryResponse {
   /** Overall health status in simple terms */
   health_status: string;
-  /** Brief summary of normal findings */
-  normal_findings_summary: string;
+  /** Brief summary of normal findings (legacy - for backward compatibility) */
+  normal_findings_summary?: string;
+  /** Detailed explanation of each normal finding */
+  normal_findings_detailed?: Array<{
+    test_name: string; // In English (e.g., "Hemoglobin", "Blood Sugar")
+    value: string;
+    what_it_measures: string; // Simple explanation of what the test checks
+    your_result_means: string; // What normal result means for patient
+  }>;
   /** List of abnormal findings with simple explanations */
   abnormal_findings: Array<{
     test_name: string; // In English (e.g., "Hemoglobin", "LDL Cholesterol")
     value: string;
-    status: 'high' | 'low' | 'abnormal';
+    status: 'high' | 'low' | 'abnormal' | 'critical';
+    what_it_measures?: string; // Simple explanation of what the test checks
     explanation: string; // In selected language
+    what_to_do?: string; // Actionable advice
+    trend?: 'improving' | 'worsening' | 'stable' | 'new';
   }>;
   /** Whether any findings need doctor consultation */
   needs_consultation: boolean;
   /** Consultation recommendation message (in selected language) */
-  consultation_message: string;
+  consultation_message?: string;
+  /** Consultation recommendation (new field) */
+  consultation_recommendation?: string;
   /** Name of the referring doctor if available */
   referring_doctor_name?: string;
   /** General health tips based on results (in selected language) */
   health_tips: string[];
+  /** Warm closing message for the patient */
+  summary_message?: string;
   /** The language this summary was generated in */
   language: string;
+  /** Raw AI response for debugging/fallback display */
+  _raw_response?: Record<string, any>;
+  /** Any extra fields returned by AI that weren't explicitly parsed */
+  _extra_fields?: Record<string, any>;
   /** Flags for saved summaries loaded from database */
   _savedFromDb?: boolean;
   _generatedAt?: string;
@@ -386,13 +404,59 @@ export function useAIResultIntelligence() {
     referringDoctorName?: string,
     patient?: PatientContext
   ): Promise<PatientSummaryResponse> => {
-    return callAIFunction<PatientSummaryResponse>({
+    const rawResponse = await callAIFunction<Record<string, any>>({
       action: 'patient_summary',
       test_groups: testGroups,
       language,
       referring_doctor_name: referringDoctorName || 'your doctor',
       patient,
     });
+
+    // Known fields that we explicitly handle in UI
+    const knownFields = [
+      'health_status',
+      'normal_findings_summary',
+      'normal_findings_detailed',
+      'abnormal_findings',
+      'needs_consultation',
+      'consultation_message',
+      'consultation_recommendation',
+      'referring_doctor_name',
+      'health_tips',
+      'summary_message',
+      'language',
+      '_savedFromDb',
+      '_generatedAt',
+      '_raw_response',
+      '_extra_fields'
+    ];
+
+    // Extract any extra fields not in our known list
+    const extraFields: Record<string, any> = {};
+    for (const key of Object.keys(rawResponse)) {
+      if (!knownFields.includes(key)) {
+        extraFields[key] = rawResponse[key];
+      }
+    }
+
+    // Build the typed response with fallbacks
+    const typedResponse: PatientSummaryResponse = {
+      health_status: rawResponse.health_status || 'Unable to generate health status summary.',
+      normal_findings_summary: rawResponse.normal_findings_summary,
+      normal_findings_detailed: rawResponse.normal_findings_detailed,
+      abnormal_findings: rawResponse.abnormal_findings || [],
+      needs_consultation: rawResponse.needs_consultation ?? false,
+      consultation_message: rawResponse.consultation_message,
+      consultation_recommendation: rawResponse.consultation_recommendation,
+      referring_doctor_name: rawResponse.referring_doctor_name,
+      health_tips: rawResponse.health_tips || [],
+      summary_message: rawResponse.summary_message,
+      language: rawResponse.language || language,
+      _raw_response: rawResponse,
+      _extra_fields: Object.keys(extraFields).length > 0 ? extraFields : undefined,
+    };
+
+    return typedResponse;
   }, [callAIFunction]);
 
   return {

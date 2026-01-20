@@ -1254,7 +1254,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             lab_id: labId,
             subtotal: calculatedTotal,
             total_before_discount: calculatedTotal,
-            discount: discountValue > 0 ? discountValue : 0,
+            discount: discountAmount,
             total_discount: discountAmount,
             total_after_discount: finalAmount,
             total: finalAmount,

@@ -2,6 +2,16 @@
   command = "npm run build"
   publish = "dist"
 
+[functions]
+  # Default timeout for all functions (in seconds)
+  # Free tier: max 10s, Pro tier: max 26s, Business/Enterprise: max 900s
+  # For AI-heavy functions, we need extended timeout
+  node_bundler = "esbuild"
+
+# Extended timeout for AI report analysis (requires Pro plan or higher)
+[functions."report-to-template"]
+  timeout = 60
+
 # PDF Generation Worker - Disabled for dev (use on-demand trigger instead)
 # [[functions]]
 #   schedule = "*/30 * * * *"

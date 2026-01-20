@@ -32,7 +32,8 @@ interface ResultValue {
   value: string;
   unit: string;
   reference_range: string;
-  flag: 'H' | 'L' | 'C' | null;
+  // Flag can come in various formats - all should be handled
+  flag: 'H' | 'L' | 'C' | 'N' | 'high' | 'low' | 'critical' | 'normal' | null | string;
   interpretation?: string | null;
   ai_suggested_flag?: string | null;
   ai_suggested_interpretation?: string | null;
@@ -119,6 +120,29 @@ interface PatientSummaryRequest {
 }
 
 type AIRequest = GenerateInterpretationsRequest | VerifierSummaryRequest | ClinicalSummaryRequest | AnalyzeResultValuesRequest | PatientSummaryRequest;
+
+/**
+ * Helper function to determine if a flag indicates abnormality
+ * The flag field is the SOURCE OF TRUTH - we trust it completely
+ */
+function isAbnormalFlag(flag: string | null | undefined): boolean {
+  if (!flag) return false;
+  const normalizedFlag = flag.toLowerCase().trim();
+  // These indicate abnormal results
+  const abnormalFlags = ['h', 'l', 'c', 'high', 'low', 'critical', 'abnormal', 'critical_high', 'critical_low'];
+  return abnormalFlags.includes(normalizedFlag);
+}
+
+/**
+ * Helper function to determine if a flag indicates normal
+ */
+function isNormalFlag(flag: string | null | undefined): boolean {
+  if (!flag) return true; // No flag = normal
+  const normalizedFlag = flag.toLowerCase().trim();
+  // These indicate normal results
+  const normalFlags = ['n', 'normal', ''];
+  return normalFlags.includes(normalizedFlag);
+}
 
 /**
  * Generate interpretations for analytes missing them
@@ -353,7 +377,11 @@ function buildPatientSummaryPrompt(request: PatientSummaryRequest): string {
   const allResults = test_groups.flatMap(tg => 
     tg.result_values.map(r => ({ ...r, test_group: tg.name }))
   );
-  const abnormalResults = allResults.filter(r => r.flag);
+  
+  // CRITICAL: Use helper functions to determine abnormal vs normal
+  // The flag field is the source of truth - trust it!
+  const abnormalResults = allResults.filter(r => isAbnormalFlag(r.flag));
+  const normalResults = allResults.filter(r => isNormalFlag(r.flag));
   const resultsWithHistory = allResults.filter(r => r.historical_values && r.historical_values.length > 0);
   
   // Helper to format historical data for a result (simplified for patient understanding)
@@ -390,19 +418,28 @@ function buildPatientSummaryPrompt(request: PatientSummaryRequest): string {
     patient?.gender ? `Gender: ${patient.gender}` : 'Gender: Not specified'
   ].join('\n');
 
+  // Format results with clear status markers using helper function
   const testResultsSection = test_groups.map(tg => {
     const testName = `**${tg.name}**`;
     const results = tg.result_values.map(r => {
-      const flag = r.flag 
-        ? ` [${r.flag === 'H' ? 'HIGH ↑' : r.flag === 'L' ? 'LOW ↓' : 'CRITICAL ⚠️'}]` 
-        : ' [Normal ✓]';
-      return `  - ${r.analyte_name}: ${r.value} ${r.unit}${flag}${formatHistory(r)}`;
+      // Use helper function to determine if this result is abnormal
+      const abnormal = isAbnormalFlag(r.flag);
+      const flagLower = (r.flag || '').toString().toLowerCase();
+      const flagDisplay = abnormal
+        ? ` [${flagLower === 'h' || flagLower === 'high' ? 'HIGH ↑ ABNORMAL' : flagLower === 'l' || flagLower === 'low' ? 'LOW ↓ ABNORMAL' : flagLower === 'c' || flagLower === 'critical' || flagLower === 'critical_high' || flagLower === 'critical_low' ? 'CRITICAL ⚠️' : 'ABNORMAL'}]`
+        : ' [NORMAL ✓]';
+      return `  - ${r.analyte_name}: ${r.value} ${r.unit} (Ref: ${r.reference_range})${flagDisplay}${formatHistory(r)}`;
     }).join('\n');
     return `${testName}\n${results}`;
   }).join('\n\n');
 
+  // Pre-compute the list of actually abnormal findings to include in prompt
+  const abnormalFindingsForPrompt = abnormalResults.length > 0 
+    ? `\n\n⚠️ ACTUAL ABNORMAL FINDINGS TO EXPLAIN (only these ${abnormalResults.length} results are abnormal):\n${abnormalResults.map(r => `- ${r.analyte_name}: ${r.value} ${r.unit} [FLAG: ${r.flag}]`).join('\n')}`
+    : '\n\n✅ ALL RESULTS ARE NORMAL - No abnormal findings to report.';
+
   const historyNote = resultsWithHistory.length > 0 ? `
-IMPORTANT - HISTORICAL TREND DATA AVAILABLE:
+HISTORICAL TREND DATA AVAILABLE:
 ${resultsWithHistory.length} test(s) have previous results from past visits. 
 When explaining findings to the patient:
 - Compare current values with previous ones
@@ -415,6 +452,25 @@ When explaining findings to the patient:
 
 TARGET LANGUAGE: ${targetLanguage}
 
+═══════════════════════════════════════════════════════════════════
+🚨 CRITICAL INSTRUCTION - READ CAREFULLY 🚨
+═══════════════════════════════════════════════════════════════════
+
+The "flag" field in the input data is the AUTHORITATIVE SOURCE OF TRUTH.
+- If flag = "normal", "N", or null/empty → The result is NORMAL. Do NOT mark it as abnormal.
+- If flag = "H", "high" → The result is HIGH/ABNORMAL.
+- If flag = "L", "low" → The result is LOW/ABNORMAL.  
+- If flag = "C", "critical" → The result is CRITICAL.
+
+DO NOT re-evaluate or second-guess the flag values!
+DO NOT compare values against reference ranges yourself!
+TRUST the flag field completely - it has been validated by the laboratory system.
+
+If ALL results have flag = "normal" or no flag, then ALL results are normal.
+Only include results in "abnormal_findings" if they have flag = H, L, C, high, low, or critical.
+
+═══════════════════════════════════════════════════════════════════
+
 IMPORTANT LANGUAGE RULES:
 1. Write all explanations and descriptions in ${targetLanguage}
 2. ALWAYS keep medical/pathology terms in ENGLISH (e.g., CBC, Hemoglobin, LDL Cholesterol, Lipid Profile, Creatinine)
@@ -425,49 +481,91 @@ IMPORTANT LANGUAGE RULES:
 Patient Information:
 ${patientInfo}
 
-Test Results (with previous values if available):
+Test Results (FLAG IS THE SOURCE OF TRUTH):
 ${testResultsSection}
+${abnormalFindingsForPrompt}
 
-Summary:
+Summary Statistics (BASED ON FLAGS):
 - Total tests: ${allResults.length}
-- Normal results: ${allResults.length - abnormalResults.length}
-- Abnormal results: ${abnormalResults.length}
+- NORMAL results (flag = normal/N/null): ${normalResults.length}
+- ABNORMAL results (flag = H/L/C): ${abnormalResults.length}
 - Tests with previous results: ${resultsWithHistory.length}
 ${historyNote}
-Create a patient-friendly summary that:
-1. Gives an overall health status in simple terms
-2. Briefly mentions what is normal (reassurance)
-3. Clearly explains each abnormal finding in simple language the patient can understand
-4. If historical data available, mention if values are improving, stable, or need attention
-5. If ANY abnormal findings exist, recommend consulting ${doctorName}
-6. Provide 2-3 general health tips based on the results
+Create a DETAILED and DESCRIPTIVE patient-friendly summary following these rules:
+
+1. IF ALL RESULTS ARE NORMAL (abnormal count = 0):
+   - Give a positive, reassuring message explaining the good news
+   - "abnormal_findings" array MUST be empty []
+   - "needs_consultation" should be false
+   - STILL provide detailed explanations of EACH test in "normal_findings_detailed"
+   - Provide personalized health maintenance tips
+
+2. IF THERE ARE ABNORMAL RESULTS (abnormal count > 0):
+   - Only explain the ACTUALLY abnormal results (those with flag = H/L/C) in "abnormal_findings"
+   - Do NOT include normal results in the abnormal_findings array
+   - Be honest but gentle about concerning findings
+   - "needs_consultation" should be true
+   - Recommend consulting ${doctorName}
+   - STILL explain all normal results in "normal_findings_detailed"
+
+3. For EVERY test result (normal or abnormal):
+   - Explain what the test measures in simple terms
+   - What does a normal value mean for the patient's health
+   - Why this test is important for overall health
+
+4. For historical data (if available):
+   - Mention if values are improving, stable, or need attention
+   - Compare current values with previous ones using simple terms
 
 The tone should be:
-- Warm and reassuring (not alarming)
+- Warm, reassuring, and EDUCATIONAL
 - Easy to understand for someone without medical background
-- Empowering the patient to take action if needed
+- Help the patient understand what each test means for their body
+- Empowering the patient with knowledge about their health
+- Honest about abnormal findings without causing panic
 
 Respond with a JSON object (all text content in ${targetLanguage} except medical terms in English):
 {
-  "health_status": "Brief 1-2 sentence overall health status in ${targetLanguage}...",
-  "normal_findings_summary": "Brief summary of normal findings in ${targetLanguage}...",
-  "abnormal_findings": [
+  "health_status": "2-3 sentence overall health status. Be descriptive and reassuring. Mention the overall picture of health based on these results. In ${targetLanguage}...",
+  "normal_findings_detailed": [
+    // IMPORTANT: Include a detailed entry for EACH normal test result
+    // This helps patients understand what their tests mean
     {
       "test_name": "Medical term in ENGLISH (e.g., Hemoglobin)",
       "value": "actual value with unit",
-      "status": "high|low|abnormal",
-      "explanation": "Simple explanation in ${targetLanguage} what this means and why it matters...",
+      "what_it_measures": "Simple 1-sentence explanation in ${targetLanguage} of what this test checks in the body...",
+      "your_result_means": "Simple explanation in ${targetLanguage} of what having a normal result means for the patient's health and body function..."
+    }
+  ],
+  "abnormal_findings": [
+    // ONLY include results where flag = H, L, C, high, low, critical
+    // If all results are normal, this array MUST be empty []
+    {
+      "test_name": "Medical term in ENGLISH (e.g., Hemoglobin)",
+      "value": "actual value with unit",
+      "status": "high|low|critical",
+      "what_it_measures": "Simple explanation in ${targetLanguage} of what this test checks...",
+      "explanation": "Simple explanation in ${targetLanguage} what the abnormal result means for the patient's health...",
+      "what_to_do": "Simple actionable advice in ${targetLanguage}...",
       "trend": "improving|worsening|stable|new (only if historical data exists)"
     }
   ],
-  "needs_consultation": true/false,
-  "consultation_message": "Message in ${targetLanguage} recommending consultation with ${doctorName} if needed, or reassurance if all is well...",
+  "needs_consultation": ${abnormalResults.length > 0 ? 'true' : 'false'},
+  "consultation_recommendation": "Message in ${targetLanguage}. If abnormal findings exist, recommend consulting ${doctorName} with specific reason. If all normal, provide reassurance and mention routine checkup recommendations...",
   "health_tips": [
-    "Health tip 1 in ${targetLanguage}...",
-    "Health tip 2 in ${targetLanguage}..."
+    // Provide 3-5 SPECIFIC and PERSONALIZED health tips based on the actual tests performed
+    "Specific health tip 1 in ${targetLanguage} relevant to maintaining good results for the tests done...",
+    "Specific health tip 2 in ${targetLanguage}...",
+    "Specific health tip 3 in ${targetLanguage}...",
+    "Specific health tip 4 in ${targetLanguage} (optional but encouraged)...",
+    "Specific health tip 5 in ${targetLanguage} (optional)..."
   ],
+  "summary_message": "A warm, encouraging 2-3 sentence closing message in ${targetLanguage}. Thank them for taking care of their health. If all normal, celebrate that. If some abnormal, reassure them that with proper care things can improve...",
   "language": "${language}"
 }
+
+FINAL REMINDER: Only put results in "abnormal_findings" if their flag indicates abnormality (H/L/C/high/low/critical).
+If all results are flagged as "normal" or have no flag, return an EMPTY abnormal_findings array: []
 
 Return ONLY the JSON object, no additional text.`;
 }
