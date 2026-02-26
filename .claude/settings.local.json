@@ -5,7 +5,11 @@
       "Bash(npm run build:*)",
       "Bash(grep:*)",
       "Bash(dir:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(npx vite build:*)",
+      "Bash(ls -la \"d:\\\\LIMS version 2\\\\project\\\\src\\\\components\\\\Inventory\"\" 2>&1 || echo \"Directory not found \")"
     ]
   }
 }
