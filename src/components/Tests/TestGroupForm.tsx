@@ -189,33 +189,46 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 
   const handleAddNewAnalyte = async (analyteData: any) => {
     try {
-      // Create analyte in database as lab-specific analyte (not global)
-      const { data, error } = await supabase
-        .from('analytes')
-        .insert([{
-          name: analyteData.name,
-          unit: analyteData.unit,
-          reference_range: analyteData.referenceRange,
-          low_critical: analyteData.lowCritical,
-          high_critical: analyteData.highCritical,
-          interpretation_low: analyteData.interpretation.low,
-          interpretation_normal: analyteData.interpretation.normal,
-          interpretation_high: analyteData.interpretation.high,
-          category: analyteData.category,
-          is_active: analyteData.isActive,
-          is_global: false, // Default to lab-specific (owner will promote manually)
-          to_be_copied: false, // Default to not template
-          ai_processing_type: analyteData.aiProcessingType,
-          ai_prompt_override: analyteData.aiPromptOverride,
-          group_ai_mode: analyteData.groupAiMode,
-        }])
-        .select()
-        .single();
+      // Use database.analytes.create() — this also creates the lab_analytes row
+      // so the analyte becomes visible in the Analytes list immediately
+      const { data, error } = await database.analytes.create({
+        name: analyteData.name,
+        unit: analyteData.unit,
+        reference_range: analyteData.referenceRange,
+        low_critical: analyteData.lowCritical,
+        high_critical: analyteData.highCritical,
+        interpretation_low: analyteData.interpretation?.low,
+        interpretation_normal: analyteData.interpretation?.normal,
+        interpretation_high: analyteData.interpretation?.high,
+        category: analyteData.category,
+        is_active: analyteData.isActive ?? true,
+        is_global: false,
+        ai_processing_type: analyteData.aiProcessingType,
+        ai_prompt_override: analyteData.aiPromptOverride,
+        group_ai_mode: analyteData.groupAiMode || 'individual',
+        is_calculated: analyteData.isCalculated || false,
+        formula: analyteData.isCalculated ? (analyteData.formula || null) : null,
+        formula_variables: analyteData.isCalculated && analyteData.formulaVariables?.length
+          ? analyteData.formulaVariables
+          : [],
+        formula_description: analyteData.isCalculated ? (analyteData.formulaDescription || null) : null,
+      });
 
       if (error) {
         console.error('Error creating analyte:', error);
         alert('Failed to create analyte. Please try again.');
         return;
+      }
+
+      // Save analyte_dependencies if source analytes were selected
+      if (analyteData.isCalculated && analyteData.sourceDependencies?.length > 0) {
+        const { error: depError } = await database.analyteDependencies.setDependencies(
+          data.id,
+          analyteData.sourceDependencies
+        );
+        if (depError) {
+          console.error('Error creating dependencies:', depError);
+        }
       }
 
       // Refresh analytes list
@@ -1181,6 +1194,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         {editingAttachedAnalyte && (
             <SimpleAnalyteEditor
                 analyte={editingAttachedAnalyte}
+                availableAnalytes={analytes
+                  .filter(a => !a.is_calculated && a.id !== editingAttachedAnalyte.id)
+                  .map(a => ({ id: a.id, name: a.name, unit: a.unit || '', category: a.category }))}
                 onSave={handleUpdateAttachedAnalyte}
                 onCancel={() => setEditingAttachedAnalyte(null)}
             />

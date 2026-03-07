@@ -180,9 +180,23 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     { value: '', label: 'Normal' },
     { value: 'H', label: 'High' },
     { value: 'L', label: 'Low' },
+    { value: 'critical_h', label: 'Critical High' },
+    { value: 'critical_l', label: 'Critical Low' },
     { value: 'A', label: 'Abnormal' },
     { value: 'C', label: 'Critical' },
   ]);
+
+  const getNormalizedFlag = (flag: string | null | undefined) => {
+    if (!flag) return '';
+    const f = flag.toLowerCase();
+    if (f === 'normal' || f === 'n') return '';
+    if (f === 'high') return 'H';
+    if (f === 'low') return 'L';
+    if (f === 'abnormal') return 'A';
+    if (f === 'critical_high') return 'critical_h';
+    if (f === 'critical_low') return 'critical_l';
+    return flag;
+  };
 
   const aiIntelligence = useAIResultIntelligence();
 
@@ -2015,16 +2029,16 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                           <td className="px-4 py-4 hidden sm:table-cell">
                                             <div className="flex flex-col gap-1">
                                               <select
-                                                value={analyte.flag || ''}
+                                                value={getNormalizedFlag(analyte.flag)}
                                                 onChange={(e) => handleFlagChange(panel.result_id, analyte.id, e.target.value)}
                                                 className={`px-2 py-1 border rounded text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                                  analyte.flag === 'H' || analyte.flag === 'high' || analyte.flag === 'critical_high'
+                                                  ['H', 'high', 'critical_h', 'critical_high'].includes(getNormalizedFlag(analyte.flag) || '')
                                                     ? 'bg-red-100 text-red-800 border-red-300'
-                                                    : analyte.flag === 'L' || analyte.flag === 'low' || analyte.flag === 'critical_low'
+                                                    : ['L', 'low', 'critical_l', 'critical_low'].includes(getNormalizedFlag(analyte.flag) || '')
                                                       ? 'bg-blue-100 text-blue-800 border-blue-300'
-                                                      : analyte.flag === 'A' || analyte.flag === 'abnormal'
+                                                      : ['A', 'abnormal'].includes(getNormalizedFlag(analyte.flag) || '')
                                                         ? 'bg-amber-100 text-amber-800 border-amber-300'
-                                                        : analyte.flag === 'C'
+                                                        : ['C', 'critical'].includes(getNormalizedFlag(analyte.flag) || '')
                                                           ? 'bg-red-200 text-red-900 border-red-400'
                                                           : 'bg-gray-50 text-gray-600 border-gray-300'
                                                 }`}

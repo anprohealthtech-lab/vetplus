@@ -44,7 +44,10 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
   // Check if lab is active - only 'active' and 'trial' statuses are allowed
   const isLabActive = labStatus === 'active' || labStatus === 'trial';
 
-  if (!isLabActive) {
+  // Allow /subscription even for inactive/expired labs so they can subscribe
+  const isSubscriptionPage = location.pathname === '/subscription';
+
+  if (!isLabActive && !isSubscriptionPage) {
     // Show inactive lab page instead of redirecting
     return <InactiveLab />;
   }

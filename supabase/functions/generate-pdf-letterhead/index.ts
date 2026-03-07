@@ -1244,6 +1244,79 @@ function generateDynamicCss(settings: any): string {
   return css;
 }
 
+// ── Configurable Patient Info Section Builder ──
+interface PatientInfoConfig {
+  layout: 'table' | 'inline';
+  fields: string[];
+}
+
+const PATIENT_INFO_FIELD_MAP: Record<string, { label: string; placeholder: string }> = {
+  patientName:          { label: 'Patient Name',     placeholder: '{{patientName}}' },
+  patientId:            { label: 'Patient ID',       placeholder: '{{patientId}}' },
+  age:                  { label: 'Age',              placeholder: '{{patientAge}}' },
+  gender:               { label: 'Gender',           placeholder: '{{patientGender}}' },
+  collectionDate:       { label: 'Collected On',     placeholder: '{{collectionDate}}' },
+  sampleId:             { label: 'Sample ID',        placeholder: '{{sampleId}}' },
+  referringDoctorName:  { label: 'Ref. Doctor',      placeholder: '{{referringDoctorName}}' },
+  approvedAt:           { label: 'Approved On',      placeholder: '{{approvedAt}}' },
+  phone:                { label: 'Phone',            placeholder: '{{patientPhone}}' },
+  sampleCollectedBy:    { label: 'Collected By',     placeholder: '{{sampleCollectedBy}}' },
+};
+
+function buildPatientInfoHtml(
+  config: PatientInfoConfig,
+  accentColor = '#5a7f3a',
+): string {
+  const fields = config.fields
+    .map(key => PATIENT_INFO_FIELD_MAP[key])
+    .filter(Boolean);
+
+  if (fields.length === 0) return '';
+
+  if (config.layout === 'table') {
+    // Table layout — 2 columns of label/value pairs per row
+    const rows: string[] = [];
+    for (let i = 0; i < fields.length; i += 2) {
+      const f1 = fields[i];
+      const f2 = fields[i + 1];
+      rows.push(`<tr>
+        <td style="padding: 8px 12px; border: 1px solid #e5e7eb; background: #f9fafb; width: 25%; font-weight: 500;">${f1.label}</td>
+        <td style="padding: 8px 12px; border: 1px solid #e5e7eb; width: 25%;">${f1.placeholder}</td>
+        ${f2 ? `<td style="padding: 8px 12px; border: 1px solid #e5e7eb; background: #f9fafb; width: 25%; font-weight: 500;">${f2.label}</td>
+        <td style="padding: 8px 12px; border: 1px solid #e5e7eb; width: 25%;">${f2.placeholder}</td>` : `<td colspan="2" style="border: 1px solid #e5e7eb;"></td>`}
+      </tr>`);
+    }
+    return `
+    <div class="patient-info" style="page-break-inside: avoid;">
+      <h3 style="font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px;">Patient Information</h3>
+      <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+        <tbody>${rows.join('')}</tbody>
+      </table>
+    </div>`;
+  }
+
+  // Inline layout — flex row of spans (beautiful style)
+  // First field (usually patientName) gets prominent heading treatment
+  const firstField = fields[0];
+  const restFields = fields.slice(1);
+  const spans = restFields.map(f => `<span><strong>${f.label}:</strong> ${f.placeholder}</span>`).join('\n        ');
+
+  return `
+    <div class="patient-info" style="margin-bottom: 16px; padding: 12px 16px; background: #ffffff; border: 1px solid #d1d5db; border-radius: 4px; page-break-inside: avoid;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;">
+        <div style="font-size: 16px; font-weight: 700; color: ${accentColor};">
+          ${firstField.placeholder}
+        </div>
+        <div style="font-size: 11px; color: #6b7280;">
+          {{approvedAtFormatted}}
+        </div>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: #374151;">
+        ${spans}
+      </div>
+    </div>`;
+}
+
 /**
  * Classic default template - plain table with flag text styling.
  * This is the original default template before the 3-band color matrix was added.
@@ -1257,12 +1330,15 @@ function generateClassicDefaultTemplateHtml(
   includeSections = true,
   showMethodology = true,
   showInterpretation = false,
+  patientInfoConfig?: PatientInfoConfig | null,
 ): string {
   const normalizedSectionContent =
     sectionContent && typeof sectionContent === "object" ? sectionContent : {};
 
   // Patient Information Section
-  const patientInfoHtml = `
+  const patientInfoHtml = patientInfoConfig
+    ? buildPatientInfoHtml(patientInfoConfig)
+    : `
     <div class="patient-info" style="page-break-inside: avoid;">
       <h3 style="font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px;">Patient Information</h3>
       <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
@@ -1367,7 +1443,7 @@ function generateClassicDefaultTemplateHtml(
       testResultsHtml += `
             <tr style="background: ${rowBg};">
               <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">
-                ${parameterName}
+                ${parameterName}${(analyte.is_auto_calculated || analyte.is_calculated) ? '<sup style="font-size:8px;color:#6b7280;margin-left:2px;font-style:italic;">*calc</sup>' : ''}
                 ${showMethodology && analyte.method ? `<div style="font-size: 9px; color: #9ca3af; margin-top: 2px;">${analyte.method}</div>` : ""}
               </td>
               <td class="${flagClass}" style="padding: 8px 12px; border: 1px solid #e5e7eb; ${flagStyle}">${value}</td>
@@ -1402,6 +1478,7 @@ function generateClassicDefaultTemplateHtml(
     testResultsHtml += `
           </tbody>
         </table>
+        ${context.analytes.some((a: any) => a.is_auto_calculated || a.is_calculated) ? '<p style="font-size:9px;color:#9ca3af;margin:2px 0 8px;font-style:italic;">*calc \u2013 Calculated parameter</p>' : ''}
       </div>
     `;
   }
@@ -1487,12 +1564,14 @@ function generateDefaultTemplateHtml(
   templateStyle: 'beautiful' | 'classic' = 'beautiful',
   showMethodology = true,
   showInterpretation = false,
+  patientInfoConfig?: PatientInfoConfig | null,
 ): string {
   // Branch to classic template if requested
   if (templateStyle === 'classic') {
     return generateClassicDefaultTemplateHtml(
       context, testGroupNames, analytesByGroup, signatoryInfo,
       sectionContent, includeSections, showMethodology, showInterpretation,
+      patientInfoConfig,
     );
   }
 
@@ -1646,7 +1725,9 @@ function generateDefaultTemplateHtml(
   }
 
   // ── Patient Information Section ──
-  const patientInfoHtml = `
+  const patientInfoHtml = patientInfoConfig
+    ? buildPatientInfoHtml(patientInfoConfig, THEME.accent)
+    : `
     <div class="patient-info" style="margin-bottom: 16px; padding: 12px 16px; background: #ffffff; border: 1px solid #d1d5db; border-radius: 4px; page-break-inside: avoid;">
       <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;">
         <div style="font-size: 16px; font-weight: 700; color: ${THEME.accent};">
@@ -1747,7 +1828,7 @@ function generateDefaultTemplateHtml(
         testResultsHtml += `
             <tr style="page-break-inside: avoid;">
               <td style="font-weight: 600; padding: 10px 12px; border: 1px solid #d1d5db; color: #1f2937; width: 180px;">
-                ${paramName}
+                ${paramName}${(analyte.is_auto_calculated || analyte.is_calculated) ? '<sup style="font-size:8px;color:#6b7280;margin-left:2px;font-style:italic;">*calc</sup>' : ''}
                 ${showMethodology && method ? `<div style="font-size: 9px; color: #9ca3af; margin-top: 2px;">${method}</div>` : ""}
               </td>
               ${buildColorCell(1, ref1)}
@@ -1782,10 +1863,11 @@ function generateDefaultTemplateHtml(
       testResultsHtml += `
           </tbody>
         </table>
+        ${colorMatrixAnalytes.some((a: any) => a.is_auto_calculated || a.is_calculated) ? '<p style="font-size:9px;color:#9ca3af;margin:2px 0 8px;font-style:italic;">*calc – Calculated parameter</p>' : ''}
       `;
     }
 
-    // ── Flat Table with Flag Badges (for non-structured results) ──
+    // ── Flat Table (for numeric analytes without structured ranges, or non-numeric) ──
     if (flatTableAnalytes.length > 0) {
       testResultsHtml += `
         <table class="report-table" style="width: 100%; border-collapse: collapse; font-size: 13px; background: #ffffff; margin-bottom: 12px;">
@@ -1814,7 +1896,7 @@ function generateDefaultTemplateHtml(
         testResultsHtml += `
             <tr style="page-break-inside: avoid;">
               <td style="padding: 8px 12px; border: 1px solid #d1d5db; font-weight: 600; color: #1f2937;">
-                ${paramName}
+                ${paramName}${(analyte.is_auto_calculated || analyte.is_calculated) ? '<sup style="font-size:8px;color:#6b7280;margin-left:2px;font-style:italic;">*calc</sup>' : ''}
                 ${showMethodology && method ? `<div style="font-size: 9px; color: #9ca3af;">${method}</div>` : ""}
               </td>
               <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center; font-weight: 700; color: ${isAbnormal ? badge.bg : "#374151"};">${value}</td>
@@ -1852,6 +1934,7 @@ function generateDefaultTemplateHtml(
       testResultsHtml += `
           </tbody>
         </table>
+        ${flatTableAnalytes.some((a: any) => a.is_auto_calculated || a.is_calculated) ? '<p style="font-size:9px;color:#9ca3af;margin:2px 0 8px;font-style:italic;">*calc \u2013 Calculated parameter</p>' : ''}
       `;
     }
 
@@ -2201,8 +2284,8 @@ ${wrappedBody}
   console.log("  - letterheadStyles included?:", !!letterheadStyles);
   console.log("  - wrappedBody type:", typeof wrappedBody);
   console.log(
-    "  - Final HTML includes page-background?:",
-    finalHtml.includes("page-background"),
+    "  - Final HTML includes page-bg div?:",
+    finalHtml.includes("page-bg"),
   );
 
   return finalHtml;
@@ -4520,6 +4603,7 @@ serve(async (req) => {
           name: t.template_name,
           testGroupId: t.test_group_id || "none",
           isDefault: t.is_default,
+          isInterpretationOnly: !!t.is_interpretation_only,
         })),
       );
 
@@ -4550,7 +4634,8 @@ serve(async (req) => {
         watermark_rotation,
         default_template_style,
         show_methodology,
-        show_interpretation
+        show_interpretation,
+        report_patient_info_config
       `)
         .eq("id", job.lab_id)
         .single();
@@ -5309,10 +5394,63 @@ serve(async (req) => {
       }
 
       // Helper: Select appropriate template
+      const layoutTemplatesWithHtml = templatesWithHtml.filter((t: any) =>
+        !t?.is_interpretation_only
+      );
+      const interpretationTemplatesWithHtml = templatesWithHtml.filter((
+        t: any,
+      ) => !!t?.is_interpretation_only);
+
+      const extractBodyContent = (html: string) => {
+        if (!html) return "";
+        const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+        return bodyMatch ? bodyMatch[1] : html;
+      };
+
+      const getInterpretationTemplatesForGroup = (testGroupId?: string) => {
+        return interpretationTemplatesWithHtml.filter((t: any) => {
+          if (!testGroupId) {
+            return !t.test_group_id;
+          }
+          return t.test_group_id === testGroupId || !t.test_group_id;
+        });
+      };
+
+      const renderInterpretationBlocks = (
+        interpretationTemplates: any[],
+        renderContext: any,
+      ) => {
+        if (!interpretationTemplates.length) {
+          return { html: "", css: "" };
+        }
+
+        const html = interpretationTemplates.map((tpl: any) => {
+          const rendered = renderTemplate(tpl.gjs_html || "", renderContext);
+          return `\n<div class="limsv2-interpretation-block" data-template-id="${tpl.id}">${extractBodyContent(rendered)}</div>`;
+        }).join("\n");
+
+        const css = interpretationTemplates
+          .map((tpl: any) => tpl.gjs_css || "")
+          .filter(Boolean)
+          .join("\n");
+
+        return { html, css };
+      };
+
+      console.log("📌 Template split summary:", {
+        layoutTemplates: layoutTemplatesWithHtml.length,
+        interpretationTemplates: interpretationTemplatesWithHtml.length,
+      });
+
       const selectTemplate = (ctx: any) => {
         const testGroupId = ctx.testGroupIds?.[0];
-        if (!testGroupId) return null;
-        return templatesWithHtml.find((t: any) => t.test_group_id === testGroupId) || null;
+        if (!testGroupId) {
+          return null;
+        }
+
+        // Strict match only: if no exact template for this test group,
+        // caller must use built-in default template (beautiful/classic).
+        return layoutTemplatesWithHtml.find((t: any) => t.test_group_id === testGroupId) || null;
       };
 
       // Helper: Prepare full context with all extras
@@ -5361,6 +5499,7 @@ serve(async (req) => {
             baseContext.meta?.orderDate || "",
           collectionDate: baseContext.order?.sampleCollectedAtFormatted ||
             baseContext.order?.sampleCollectedAt || "",
+          sampleCollectedBy: baseContext.order?.sampleCollectedBy || "",
           referringDoctorName: baseContext.order?.referringDoctorName || "",
           approvedAt: baseContext.order?.approvedAtFormatted ||
             baseContext.order?.approved_at || baseContext.meta?.approvedAt ||
@@ -5420,7 +5559,12 @@ serve(async (req) => {
         template = selectTemplate(context);
         fullContext = prepareFullContext(context);
         const dynamicCss = generateDynamicCss(pdfSettings);
+        const singleGroupId = context.testGroupIds?.[0];
+        const singleInterpretationTemplates = getInterpretationTemplatesForGroup(
+          singleGroupId,
+        );
         let renderedHtml = "";
+        let interpretationCss = "";
 
         if (!template) {
           // No custom template found - use default template
@@ -5437,6 +5581,7 @@ serve(async (req) => {
             labSettings?.default_template_style || 'beautiful',
             labSettings?.show_methodology ?? true,
             labSettings?.show_interpretation ?? false,
+            labSettings?.report_patient_info_config,
           );
           renderedHtml = renderTemplate(renderedHtml, fullContext); // Process placeholders
 
@@ -5473,6 +5618,21 @@ serve(async (req) => {
           renderedHtml = injectQrCode(renderedHtml, singleVerifyUrl);
         }
 
+        if (singleInterpretationTemplates.length > 0) {
+          const renderedInterpretation = renderInterpretationBlocks(
+            singleInterpretationTemplates,
+            fullContext,
+          );
+          if (renderedInterpretation.html) {
+            renderedHtml += renderedInterpretation.html;
+            interpretationCss = renderedInterpretation.css;
+            console.log(
+              "✅ Appended interpretation-only templates (single group):",
+              singleInterpretationTemplates.map((t: any) => t.template_name),
+            );
+          }
+        }
+
         console.log(
           "🔧 About to call buildPdfBodyDocumentV2 with letterhead:",
           letterheadUrl || "NONE",
@@ -5481,10 +5641,14 @@ serve(async (req) => {
         const verifyUrl = `https://app.limsapp.in/verify?id=${
           encodeURIComponent(context.sampleId || orderId || "")
         }`;
-        const templateCss = template?.gjs_css || "";
+        const templateCss = [
+          template?.gjs_css || "",
+          interpretationCss,
+          dynamicCss,
+        ].filter(Boolean).join("\n");
         bodyHtml = buildPdfBodyDocumentV2(
           renderedHtml,
-          templateCss + "\n" + dynamicCss,
+          templateCss,
           letterheadUrl,
           pdfSettings,
           verifyUrl,
@@ -5495,7 +5659,7 @@ serve(async (req) => {
         );
         console.log(
           "🔍 Checking if letterhead is in returned HTML:",
-          bodyHtml.includes("page-background") ? "YES" : "NO",
+          bodyHtml.includes("page-bg") ? "YES (page-bg div found)" : "NO",
         );
         // CRITICAL: Do NOT save bodyHtml to rawHtmlForPrint if we are using V2/letterhead logic.
         // We want the print version to RE-RENDER cleanly without the letterhead structure.
@@ -5505,6 +5669,7 @@ serve(async (req) => {
         console.log("🔀 Multi-test group rendering...");
         const renderedSections: string[] = [];
         let firstGroupTemplate = null;
+        const multiInterpretationCssChunks: string[] = [];
 
         // Set base context for print version (even if not perfect for all groups)
         fullContext = prepareFullContext(context);
@@ -5552,6 +5717,9 @@ serve(async (req) => {
           let groupTemplate = templatesWithHtml.find((t: any) =>
             t.test_group_id === testGroupId
           );
+          if (groupTemplate?.is_interpretation_only) {
+            groupTemplate = null;
+          }
           let useGenericTemplate = false;
 
           if (!groupTemplate) {
@@ -5620,6 +5788,7 @@ serve(async (req) => {
               labSettings?.default_template_style || 'beautiful',
               labSettings?.show_methodology ?? true,
               labSettings?.show_interpretation ?? false,
+              labSettings?.report_patient_info_config,
             );
             renderedHtml = renderTemplate(renderedHtml, groupFullContext);
 
@@ -5631,6 +5800,25 @@ serve(async (req) => {
             renderedHtml = injectQrCode(renderedHtml, groupDefaultVerifyUrl);
 
             bodyContent = renderedHtml;
+          }
+
+          const groupInterpretationTemplates =
+            getInterpretationTemplatesForGroup(testGroupId);
+          if (groupInterpretationTemplates.length > 0) {
+            const renderedInterpretation = renderInterpretationBlocks(
+              groupInterpretationTemplates,
+              groupFullContext,
+            );
+            if (renderedInterpretation.html) {
+              bodyContent += renderedInterpretation.html;
+            }
+            if (renderedInterpretation.css) {
+              multiInterpretationCssChunks.push(renderedInterpretation.css);
+            }
+            console.log(
+              `✅ Appended interpretation-only templates for ${testGroupId}:`,
+              groupInterpretationTemplates.map((t: any) => t.template_name),
+            );
           }
 
           // Add separator
@@ -5671,6 +5859,7 @@ serve(async (req) => {
             labSettings?.default_template_style || 'beautiful',
             labSettings?.show_methodology ?? true,
             labSettings?.show_interpretation ?? false,
+            labSettings?.report_patient_info_config,
           );
           let renderedDefaultHtml = renderTemplate(defaultHtml, fullContext);
 
@@ -5687,11 +5876,15 @@ serve(async (req) => {
           renderedSections.push(renderedDefaultHtml);
         }
 
-        // Use first group's template for outer shell (if available)
-        template = firstGroupTemplate || selectTemplate(context);
+        // Use first group's exact layout template for outer shell (if available).
+        // Do not fall back to unrelated lab template; generic/default sections already rendered.
+        template = firstGroupTemplate || null;
 
         // template can be null if using default template - that's OK now
-        const templateCss = template?.gjs_css || "";
+        const templateCss = [
+          template?.gjs_css || "",
+          multiInterpretationCssChunks.join("\n"),
+        ].filter(Boolean).join("\n");
         console.log(
           "✅ Merged multiple templates" + (template
             ? ` using base: ${template.template_name}`
@@ -5719,7 +5912,7 @@ serve(async (req) => {
         );
         console.log(
           "🔍 Checking if letterhead is in returned HTML:",
-          bodyHtml.includes("page-background") ? "YES" : "NO",
+          bodyHtml.includes("page-bg") ? "YES (page-bg div found)" : "NO",
         );
         rawHtmlForPrint = bodyHtml; // Save for print version
       }
@@ -5819,11 +6012,10 @@ serve(async (req) => {
       let margins = DEFAULT_PDF_SETTINGS.margins;
 
       if (letterheadUrl) {
-        // Letterhead Mode: 0px vertical margins (background full bleed), preserve side margins
-        const sideMargin = pdfSettings?.margins?.left || 20;
-        margins = `0px ${sideMargin}px 0px ${sideMargin}px`;
+        // Letterhead Mode: 0px all margins (background full bleed), side padding handled by CSS
+        margins = `0px 0px 0px 0px`;
         console.log(
-          "📄 Letterhead detected: Forcing 0px vertical margins for API, using CSS padding for content.",
+          "📄 Letterhead detected: Forcing 0px all margins for API, using CSS padding for content.",
         );
       } else if (pdfSettings?.margins) {
         // Standard Mode: Use saved margins
@@ -5918,6 +6110,13 @@ serve(async (req) => {
             showWatermark: false,
           };
           let printRenderedHtml = "";
+          const printInterpretationTemplates = getInterpretationTemplatesForGroup(
+            context.testGroupIds?.[0],
+          );
+          const renderedPrintInterpretation = renderInterpretationBlocks(
+            printInterpretationTemplates,
+            printTemplateContext,
+          );
 
           if (template?.gjs_html) {
             // Use custom template
@@ -5944,6 +6143,10 @@ serve(async (req) => {
               printRenderedHtml,
               printVerifyUrlForQr,
             );
+
+            if (renderedPrintInterpretation.html) {
+              printRenderedHtml += renderedPrintInterpretation.html;
+            }
           } else {
             // No custom template - use default template
             console.log("⚠️ Using default template for print version");
@@ -5957,6 +6160,7 @@ serve(async (req) => {
               labSettings?.default_template_style || 'beautiful',
               labSettings?.show_methodology ?? true,
               labSettings?.show_interpretation ?? false,
+              labSettings?.report_patient_info_config,
             );
             printRenderedHtml = renderTemplate(
               printRenderedHtml,
@@ -5971,6 +6175,10 @@ serve(async (req) => {
               printRenderedHtml,
               printDefaultVerifyUrl,
             );
+
+            if (renderedPrintInterpretation.html) {
+              printRenderedHtml += renderedPrintInterpretation.html;
+            }
           }
 
           // AUTO-FIX: Apply flag classes (so we can style them bold in print CSS)
@@ -5981,7 +6189,7 @@ serve(async (req) => {
           // Print version: Include QR code for verification (positioned at top since no letterhead spacer)
           printHtml = buildPdfBodyDocumentV2(
             printRenderedHtml,
-            "",
+            renderedPrintInterpretation.css || "",
             null,
             pdfSettings,
             printVerifyUrl,
@@ -6118,7 +6326,7 @@ serve(async (req) => {
       } else {
         console.log(
           "  🔍 Checking for letterhead in HTML:",
-          processedBody.includes("page-background") ? "✅ FOUND" : "❌ NOT FOUND",
+          processedBody.includes("page-bg") ? "✅ FOUND (page-bg)" : "❌ NOT FOUND",
         );
         console.log(
           "  🔍 Checking for letterhead URL in HTML:",
@@ -6438,6 +6646,57 @@ serve(async (req) => {
           ) {
             console.log("📲 Auto-send enabled, fetching recipient details...");
 
+            const parseMinutes = (
+              timeStr: string | null | undefined,
+              fallback: string,
+            ) => {
+              const [h, m] = (timeStr || fallback).split(":").map(Number);
+              return (h * 60) + m;
+            };
+
+            // Edge functions run in UTC. Send window times are in IST (UTC+5:30).
+            const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+            const utcNow = Date.now();
+            const istDate = new Date(utcNow + IST_OFFSET_MS);
+            const currentMinutes = istDate.getUTCHours() * 60 + istDate.getUTCMinutes();
+            console.log(`⏰ Time check: UTC=${new Date(utcNow).toISOString()}, IST=${istDate.toISOString()}, currentMinutes=${currentMinutes}`);
+            const startMinutes = parseMinutes(notifSettings.send_window_start, "09:00:00");
+            const endMinutes = parseMinutes(notifSettings.send_window_end, "21:00:00");
+            const withinWindow = startMinutes <= endMinutes
+              ? (currentMinutes >= startMinutes && currentMinutes <= endMinutes)
+              : (currentMinutes >= startMinutes || currentMinutes <= endMinutes);
+            console.log(`⏰ Window: ${startMinutes}-${endMinutes}, current=${currentMinutes}, within=${withinWindow}`);
+
+            const requiredStatus =
+              String(notifSettings.send_report_on_status || "Completed").toLowerCase();
+            const { data: reportForStatus } = await supabaseClient
+              .from("reports")
+              .select("status, report_status")
+              .eq("id", reportIdForNotif)
+              .maybeSingle();
+            const currentStatus =
+              String(reportForStatus?.report_status || reportForStatus?.status || "")
+                .toLowerCase();
+            const statusMatches = currentStatus === requiredStatus;
+            console.log(`📋 Status check: required=${requiredStatus}, current=${currentStatus}, matches=${statusMatches}`);
+
+            // Calculate next window start in IST, convert to UTC for scheduled_for
+            const [startHour, startMinute] =
+              (notifSettings.send_window_start || "09:00:00").split(":").map(Number);
+            const nextIst = new Date(utcNow + IST_OFFSET_MS);
+            nextIst.setUTCHours(startHour, startMinute, 0, 0);
+            if (nextIst.getTime() <= utcNow + IST_OFFSET_MS) {
+              nextIst.setUTCDate(nextIst.getUTCDate() + 1);
+            }
+            const nextWindowStart = new Date(nextIst.getTime() - IST_OFFSET_MS);
+
+            const canAttemptImmediate = withinWindow && statusMatches;
+            console.log(`🚦 canAttemptImmediate=${canAttemptImmediate} (window=${withinWindow}, status=${statusMatches})`);
+            const shouldQueueOutsideWindow = notifSettings.queue_outside_window !== false;
+            const deferredScheduledFor = withinWindow
+              ? new Date().toISOString()
+              : nextWindowStart.toISOString();
+
             // Fetch patient and doctor phone numbers, plus clinical summary fields
             const { data: order } = await supabaseClient
               .from("orders")
@@ -6464,7 +6723,7 @@ serve(async (req) => {
               // Fetch lab details once for use throughout WhatsApp notification section
               const { data: lab } = await supabaseClient
                 .from("labs")
-                .select("name, whatsapp_user_id, country_code")
+                .select("name, whatsapp_user_id, country_code, block_send_on_due")
                 .eq("id", job.lab_id)
                 .single();
 
@@ -6717,12 +6976,28 @@ serve(async (req) => {
                   patientMessage += "\n\nThank you.";
                 }
 
-                const sent = await sendWhatsApp(
-                  order.patients.phone,
-                  patientMessage,
-                  storageUrl,
-                  order.patient_name,
-                );
+                // Check per-order due block
+                let blockedByDue = false;
+                if (lab?.block_send_on_due) {
+                  const { data: dueStatus } = await supabaseClient
+                    .from("order_due_status")
+                    .select("has_due")
+                    .eq("order_id", orderId)
+                    .maybeSingle();
+                  if (dueStatus?.has_due) {
+                    console.log("⛔ Auto-send blocked — order has outstanding balance:", orderId);
+                    blockedByDue = true;
+                  }
+                }
+
+                const sent = !blockedByDue && canAttemptImmediate
+                  ? await sendWhatsApp(
+                    order.patients.phone,
+                    patientMessage,
+                    storageUrl,
+                    order.patient_name,
+                  )
+                  : false;
 
                 if (sent) {
                   await supabaseClient
@@ -6739,24 +7014,34 @@ serve(async (req) => {
                   );
                 } else {
                   // Queue for retry
-                  await supabaseClient
-                    .from("notification_queue")
-                    .insert({
-                      lab_id: job.lab_id,
-                      recipient_type: "patient",
-                      recipient_phone: order.patients.phone,
-                      recipient_name: order.patient_name,
-                      recipient_id: order.patients.id,
-                      trigger_type: "report_ready",
-                      order_id: orderId,
-                      report_id: reportIdForNotif,
-                      message_content: patientMessage,
-                      attachment_url: storageUrl,
-                      attachment_type: "report",
-                      status: "pending",
-                      last_error: "Initial send failed",
-                    });
-                  console.log("📥 Patient notification queued for retry");
+                  const shouldQueue = statusMatches || shouldQueueOutsideWindow;
+                  if (shouldQueue) {
+                    await supabaseClient
+                      .from("notification_queue")
+                      .insert({
+                        lab_id: job.lab_id,
+                        recipient_type: "patient",
+                        recipient_phone: order.patients.phone,
+                        recipient_name: order.patient_name,
+                        recipient_id: order.patients.id,
+                        trigger_type: "report_ready",
+                        order_id: orderId,
+                        report_id: reportIdForNotif,
+                        message_content: patientMessage,
+                        attachment_url: storageUrl,
+                        attachment_type: "report",
+                        status: "pending",
+                        scheduled_for: deferredScheduledFor,
+                        last_error: !statusMatches
+                          ? `Waiting for report status ${notifSettings.send_report_on_status || "Completed"}`
+                          : (withinWindow ? "Initial send failed" : "Outside send window"),
+                      });
+                    console.log("📥 Patient notification queued for retry");
+                  } else {
+                    console.log(
+                      "⏭️ Skipping patient notification: outside send window and queue disabled",
+                    );
+                  }
                 }
               }
 
@@ -6788,12 +7073,14 @@ serve(async (req) => {
                     lab?.name || "Lab"
                   }`;
 
-                const sent = await sendWhatsApp(
-                  order.doctors.phone,
-                  doctorMessage,
-                  storageUrl,
-                  order.patient_name,
-                );
+                const sent = !blockedByDue && canAttemptImmediate
+                  ? await sendWhatsApp(
+                    order.doctors.phone,
+                    doctorMessage,
+                    storageUrl,
+                    order.patient_name,
+                  )
+                  : false;
 
                 if (sent) {
                   await supabaseClient
@@ -6809,24 +7096,34 @@ serve(async (req) => {
                   );
                 } else {
                   // Queue for retry
-                  await supabaseClient
-                    .from("notification_queue")
-                    .insert({
-                      lab_id: job.lab_id,
-                      recipient_type: "doctor",
-                      recipient_phone: order.doctors.phone,
-                      recipient_name: order.doctors.name,
-                      recipient_id: order.doctors.id,
-                      trigger_type: "report_ready",
-                      order_id: orderId,
-                      report_id: reportIdForNotif,
-                      message_content: doctorMessage,
-                      attachment_url: storageUrl,
-                      attachment_type: "report",
-                      status: "pending",
-                      last_error: "Initial send failed",
-                    });
-                  console.log("📥 Doctor notification queued for retry");
+                  const shouldQueue = statusMatches || shouldQueueOutsideWindow;
+                  if (shouldQueue) {
+                    await supabaseClient
+                      .from("notification_queue")
+                      .insert({
+                        lab_id: job.lab_id,
+                        recipient_type: "doctor",
+                        recipient_phone: order.doctors.phone,
+                        recipient_name: order.doctors.name,
+                        recipient_id: order.doctors.id,
+                        trigger_type: "report_ready",
+                        order_id: orderId,
+                        report_id: reportIdForNotif,
+                        message_content: doctorMessage,
+                        attachment_url: storageUrl,
+                        attachment_type: "report",
+                        status: "pending",
+                        scheduled_for: deferredScheduledFor,
+                        last_error: !statusMatches
+                          ? `Waiting for report status ${notifSettings.send_report_on_status || "Completed"}`
+                          : (withinWindow ? "Initial send failed" : "Outside send window"),
+                      });
+                    console.log("📥 Doctor notification queued for retry");
+                  } else {
+                    console.log(
+                      "⏭️ Skipping doctor notification: outside send window and queue disabled",
+                    );
+                  }
                 }
               }
             }

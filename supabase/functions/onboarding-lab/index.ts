@@ -57,14 +57,18 @@ serve(async (req) => {
         lab_id: lab_id,
         analyte_id: ga.id,
         is_active: true,
-        visible: true // visible in catalog
+        visible: true
       }));
-      // On Conflict: Do nothing or Update? Upsert ensures they exist.
-      const { error: laError } = await supabaseClient
-        .from('lab_analytes')
-        .upsert(labAnalytesPayload, { onConflict: 'lab_id,analyte_id', ignoreDuplicates: true });
-      
-      if (laError) console.error('Error hydrating analytes:', laError);
+
+      // Chunk into 500 rows to stay well under Supabase's 1000-row limit
+      const ANALYTE_CHUNK = 500;
+      for (let i = 0; i < labAnalytesPayload.length; i += ANALYTE_CHUNK) {
+        const { error: laError } = await supabaseClient
+          .from('lab_analytes')
+          .upsert(labAnalytesPayload.slice(i, i + ANALYTE_CHUNK), { onConflict: 'lab_id,analyte_id', ignoreDuplicates: true });
+        if (laError) console.error(`Error hydrating analytes (chunk ${i}):`, laError);
+      }
+      console.log(`   ✅ Upserted ${labAnalytesPayload.length} analytes into lab_analytes`);
     }
 
     // --- B. Handle RESET Mode - Delete ALL test groups first ---
@@ -120,221 +124,230 @@ serve(async (req) => {
       }
     }
 
-    // --- C. Hydrate Test Groups (Check First) ---
+    // --- C. Hydrate Test Groups (BULK approach to avoid timeouts) ---
     console.log('...Hydrating Test Groups');
     const { data: globalTestGroups } = await supabaseClient.from('global_test_catalog').select('*');
 
-    if (globalTestGroups) {
+    if (globalTestGroups && globalTestGroups.length > 0) {
       console.log(`   Found ${globalTestGroups.length} global test groups.`);
-      
-      // First, detect and remove duplicates by NAME (keep the one matching global code if possible)
+
+      // --- BULK PRE-FETCH: Load all existing test groups for this lab in ONE query ---
+      const { data: existingLabGroups } = await supabaseClient
+        .from('test_groups')
+        .select('id, code, name, default_ai_processing_type')
+        .eq('lab_id', lab_id);
+
+      // Build lookup Maps for O(1) access
+      const existingByCode = new Map<string, { id: string; code: string; name: string; default_ai_processing_type: string }>();
+      const existingByName = new Map<string, { id: string; code: string; name: string; default_ai_processing_type: string }>();
+      for (const eg of (existingLabGroups || [])) {
+        existingByCode.set(eg.code, eg);
+        existingByName.set(eg.name, eg);
+      }
+
+      // --- BULK DUPLICATE REMOVAL (non-reset only): find groups with same name, different code ---
       if (!isReset) {
-        console.log('...Checking for duplicate test groups by name...');
-        
-        for (const gtg of globalTestGroups) {
-          // Find all test groups with this name (should be just one)
-          const { data: sameNameGroups } = await supabaseClient
-            .from('test_groups')
-            .select('id, code, name, created_at')
-            .eq('lab_id', lab_id)
-            .eq('name', gtg.name)
-            .order('created_at', { ascending: true });
-          
-          if (sameNameGroups && sameNameGroups.length > 1) {
-            console.log(`   ⚠️ Found ${sameNameGroups.length} duplicates for "${gtg.name}"`);
-            
-            // Keep the one with matching code, or the oldest one
-            const matchingCode = sameNameGroups.find(g => g.code === gtg.code);
-            const keepId = matchingCode?.id || sameNameGroups[0].id;
-            
-            // Delete the duplicates (all except the one we're keeping)
-            for (const duplicate of sameNameGroups) {
-              if (duplicate.id !== keepId) {
-                // Delete related records first
-                await supabaseClient.from('test_group_analytes').delete().eq('test_group_id', duplicate.id);
-                await supabaseClient.from('lab_templates').delete().eq('test_group_id', duplicate.id);
-                await supabaseClient.from('package_test_groups').delete().eq('test_group_id', duplicate.id);
-                await supabaseClient.from('test_workflow_map').delete().eq('test_group_id', duplicate.id);
-                
-                // Delete the duplicate test group
-                const { error: delError } = await supabaseClient
-                  .from('test_groups')
-                  .delete()
-                  .eq('id', duplicate.id);
-                
-                if (!delError) {
-                  stats.duplicatesRemoved++;
-                  console.log(`   🗑️ Removed duplicate: ${duplicate.name} (code: ${duplicate.code})`);
-                }
+        const nameCounts = new Map<string, { id: string; code: string; name: string }[]>();
+        for (const eg of (existingLabGroups || [])) {
+          if (!nameCounts.has(eg.name)) nameCounts.set(eg.name, []);
+          nameCounts.get(eg.name)!.push(eg);
+        }
+        const duplicateIds: string[] = [];
+        for (const [, matches] of nameCounts) {
+          if (matches.length > 1) {
+            const globalMatch = matches.find(m => existingByCode.has(m.code));
+            const keepId = globalMatch?.id || matches[0].id;
+            for (const m of matches) {
+              if (m.id !== keepId) {
+                duplicateIds.push(m.id);
+                stats.duplicatesRemoved++;
               }
             }
           }
         }
-        
-        if (stats.duplicatesRemoved > 0) {
-          console.log(`   ✅ Removed ${stats.duplicatesRemoved} duplicate test groups`);
+        if (duplicateIds.length > 0) {
+          console.log(`   ⚠️ Removing ${duplicateIds.length} duplicate test groups...`);
+          await supabaseClient.from('test_group_analytes').delete().in('test_group_id', duplicateIds);
+          await supabaseClient.from('lab_templates').delete().in('test_group_id', duplicateIds);
+          await supabaseClient.from('package_test_groups').delete().in('test_group_id', duplicateIds);
+          await supabaseClient.from('test_workflow_map').delete().in('test_group_id', duplicateIds);
+          await supabaseClient.from('test_groups').delete().in('id', duplicateIds);
+          // Remove from maps
+          for (const id of duplicateIds) {
+            for (const [k, v] of existingByCode) { if (v.id === id) existingByCode.delete(k); }
+            for (const [k, v] of existingByName) { if (v.id === id) existingByName.delete(k); }
+          }
         }
       }
-      
+
+      // --- Separate globals into: needs create vs needs update vs skip ---
+      const toCreate: typeof globalTestGroups = [];
+      const toUpdate: { gtg: typeof globalTestGroups[0]; existingId: string }[] = [];
+      const toSkip: typeof globalTestGroups = [];
+
       for (const gtg of globalTestGroups) {
-        // 1. Check Existence by BOTH code AND name (to catch all duplicates)
-        const { data: existingByCode } = await supabaseClient
-            .from('test_groups')
-            .select('id, default_ai_processing_type, code, name')
-            .eq('lab_id', lab_id)
-            .eq('code', gtg.code)
-            .maybeSingle();
-        
-        // Also check by name if code match failed (handles case where code was modified)
-        let existingTg = existingByCode;
-        if (!existingTg) {
-          const { data: existingByName } = await supabaseClient
-            .from('test_groups')
-            .select('id, default_ai_processing_type, code, name')
-            .eq('lab_id', lab_id)
-            .eq('name', gtg.name)
-            .maybeSingle();
-          existingTg = existingByName;
-        }
-
-        let testGroupId = existingTg?.id;
-
-        if (!existingTg) {
-           // Create test group with AI configuration from global catalog
-           const { data: newTg, error: tgError } = await supabaseClient
-            .from('test_groups')
-            .insert({
-              lab_id: lab_id,
-              name: gtg.name,
-              code: gtg.code,
-              category: gtg.department_default || gtg.category || 'General',
-              clinical_purpose: gtg.description || gtg.name,
-              price: gtg.default_price || 0,
-              turnaround_time: '24 Hours',
-              sample_type: gtg.specimen_type_default || 'EDTA Blood', // Use specimen from global catalog
-              is_active: true,
-              to_be_copied: false,
-              // AI Configuration from global catalog
-              default_ai_processing_type: gtg.default_ai_processing_type || 'ocr_report',
-              group_level_prompt: gtg.group_level_prompt || null,
-              ai_config: gtg.ai_config || {}
-            })
-            .select('id')
-            .single();
-
-           if (tgError) {
-             console.error(`Failed to create test group ${gtg.code}:`, tgError);
-             continue;
-           }
-           testGroupId = newTg.id;
-           stats.testsCreated++;
-           const aiType = gtg.default_ai_processing_type || 'ocr_report';
-           console.log(`   ✅ Created Test Group: ${gtg.code} (AI: ${aiType}, Specimen: ${gtg.specimen_type_default || 'EDTA Blood'})`);
-
-           // Link Analytes (Only for NEW tests)
-           const analyteIds = gtg.analytes; 
-           if (Array.isArray(analyteIds) && analyteIds.length > 0) {
-             const linksPayload = analyteIds.map((aid: string) => ({
-               test_group_id: testGroupId,
-               analyte_id: aid,
-               is_visible: true
-             }));
-             await supabaseClient.from('test_group_analytes').insert(linksPayload);
-           }
-         } else if (isSync || isReset) {
-           // In sync/reset mode, update existing test groups with AI config and ensure code matches global
-           const needsUpdate = !existingTg.default_ai_processing_type || 
-                               existingTg.default_ai_processing_type !== gtg.default_ai_processing_type ||
-                               existingTg.code !== gtg.code; // Also update if code doesn't match global
-           
-           if (needsUpdate) {
-             const { error: updateError } = await supabaseClient
-               .from('test_groups')
-               .update({
-                 code: gtg.code, // Ensure code matches global catalog
-                 default_ai_processing_type: gtg.default_ai_processing_type,
-                 group_level_prompt: gtg.group_level_prompt || null,
-                 ai_config: gtg.ai_config || {},
-                 sample_type: gtg.specimen_type_default || 'EDTA Blood',
-                 category: gtg.department_default || 'General'
-               })
-               .eq('id', existingTg.id);
-             
-             if (updateError) {
-               console.error(`Failed to update test group ${gtg.code}:`, updateError);
-             } else {
-               stats.testsUpdated++;
-               console.log(`   🔄 Updated Test Group: ${gtg.code} (AI: ${gtg.default_ai_processing_type})`);
-             }
-           } else {
-             stats.testsSkipped++;
-           }
-           
-           // 🔧 FIX: Re-sync analytes for existing test groups in sync/reset mode
-           if (isSync || isReset) {
-             const analyteIds = gtg.analytes;
-             if (Array.isArray(analyteIds) && analyteIds.length > 0) {
-               // Delete existing analyte links
-               await supabaseClient
-                 .from('test_group_analytes')
-                 .delete()
-                 .eq('test_group_id', existingTg.id);
-               
-               // Re-insert fresh analyte links from global catalog
-               const linksPayload = analyteIds.map((aid: string) => ({
-                 test_group_id: existingTg.id,
-                 analyte_id: aid,
-                 is_visible: true
-               }));
-               
-               const { error: linkError } = await supabaseClient
-                 .from('test_group_analytes')
-                 .insert(linksPayload);
-               
-               if (linkError) {
-                 console.error(`Failed to sync analytes for ${gtg.code}:`, linkError);
-               } else {
-                 console.log(`   🔗 Re-synced ${analyteIds.length} analytes for ${gtg.code}`);
-               }
-             }
-           }
+        const existing = existingByCode.get(gtg.code) || existingByName.get(gtg.name);
+        if (!existing) {
+          toCreate.push(gtg);
+        } else if (isSync || isReset) {
+          toUpdate.push({ gtg, existingId: existing.id });
         } else {
-           stats.testsSkipped++;
-           // console.log(`   ⏩ Skipped existing Test Group: ${gtg.code}`);
+          toSkip.push(gtg);
+          stats.testsSkipped++;
+        }
+      }
+
+      console.log(`   📊 To create: ${toCreate.length}, update: ${toUpdate.length}, skip: ${toSkip.length}`);
+
+      // --- BATCH CREATE new test groups in chunks of 50 ---
+      const CHUNK = 50;
+      const createdMap = new Map<string, string>(); // global code → new lab test_group_id
+
+      for (let i = 0; i < toCreate.length; i += CHUNK) {
+        const chunk = toCreate.slice(i, i + CHUNK);
+        const { data: newGroups, error: batchErr } = await supabaseClient
+          .from('test_groups')
+          .insert(chunk.map(gtg => ({
+            lab_id: lab_id,
+            name: gtg.name,
+            code: gtg.code,
+            category: gtg.department_default || gtg.category || 'General',
+            clinical_purpose: gtg.description || gtg.name,
+            price: gtg.default_price || 0,
+            turnaround_time: '24 Hours',
+            sample_type: gtg.specimen_type_default || 'EDTA Blood',
+            is_active: true,
+            to_be_copied: false,
+            default_ai_processing_type: gtg.default_ai_processing_type || 'ocr_report',
+            group_level_prompt: gtg.group_level_prompt || null,
+            ai_config: gtg.ai_config || {}
+          })))
+          .select('id, code');
+
+        if (batchErr) {
+          console.error(`Batch insert error (chunk ${i}):`, batchErr);
+          continue;
+        }
+        for (const ng of (newGroups || [])) {
+          createdMap.set(ng.code, ng.id);
+        }
+        stats.testsCreated += (newGroups || []).length;
+        console.log(`   ✅ Created batch ${Math.floor(i/CHUNK)+1}: ${(newGroups||[]).length} test groups`);
+      }
+
+      // --- BATCH INSERT analyte links for newly created groups ---
+      const analyteLinksPayload: { test_group_id: string; analyte_id: string; is_visible: boolean }[] = [];
+      for (const gtg of toCreate) {
+        const newId = createdMap.get(gtg.code);
+        if (!newId) continue;
+        const analyteIds = gtg.analytes;
+        if (Array.isArray(analyteIds) && analyteIds.length > 0) {
+          for (const aid of analyteIds) {
+            analyteLinksPayload.push({ test_group_id: newId, analyte_id: aid, is_visible: true });
+          }
+        }
+      }
+      if (analyteLinksPayload.length > 0) {
+        for (let i = 0; i < analyteLinksPayload.length; i += 500) {
+          const { error: laErr } = await supabaseClient
+            .from('test_group_analytes')
+            .insert(analyteLinksPayload.slice(i, i + 500));
+          if (laErr) console.error(`Analyte link batch error (chunk ${i}):`, laErr);
+        }
+        console.log(`   🔗 Linked ${analyteLinksPayload.length} analyte associations`);
+      }
+
+      // --- UPDATE existing test groups in sync/reset mode (batched per-row updates) ---
+      for (const { gtg, existingId } of toUpdate) {
+        const { error: updateError } = await supabaseClient
+          .from('test_groups')
+          .update({
+            code: gtg.code,
+            default_ai_processing_type: gtg.default_ai_processing_type,
+            group_level_prompt: gtg.group_level_prompt || null,
+            ai_config: gtg.ai_config || {},
+            sample_type: gtg.specimen_type_default || 'EDTA Blood',
+            category: gtg.department_default || 'General'
+          })
+          .eq('id', existingId);
+        if (updateError) {
+          console.error(`Failed to update test group ${gtg.code}:`, updateError);
+        } else {
+          stats.testsUpdated++;
+        }
+      }
+      if (stats.testsUpdated > 0) console.log(`   🔄 Updated ${stats.testsUpdated} test groups`);
+
+      // Re-sync analyte links for updated groups in sync/reset mode
+      if ((isSync || isReset) && toUpdate.length > 0) {
+        const updatedIds = toUpdate.map(u => u.existingId);
+        await supabaseClient.from('test_group_analytes').delete().in('test_group_id', updatedIds);
+        const resyncPayload: { test_group_id: string; analyte_id: string; is_visible: boolean }[] = [];
+        for (const { gtg, existingId } of toUpdate) {
+          const analyteIds = gtg.analytes;
+          if (Array.isArray(analyteIds) && analyteIds.length > 0) {
+            for (const aid of analyteIds) {
+              resyncPayload.push({ test_group_id: existingId, analyte_id: aid, is_visible: true });
+            }
+          }
+        }
+        if (resyncPayload.length > 0) {
+          for (let i = 0; i < resyncPayload.length; i += 500) {
+            await supabaseClient.from('test_group_analytes').insert(resyncPayload.slice(i, i + 500));
+          }
+          console.log(`   🔗 Re-synced ${resyncPayload.length} analyte links for updated groups`);
+        }
+      }
+
+      // --- BULK TEMPLATE CLONING: pre-fetch all existing lab_templates in ONE query ---
+      const groupsNeedingTemplates = globalTestGroups.filter(gtg => gtg.default_template_id);
+      if (groupsNeedingTemplates.length > 0) {
+        // Get all lab_template test_group_ids for this lab in one query
+        const { data: existingTemplates } = await supabaseClient
+          .from('lab_templates')
+          .select('test_group_id')
+          .eq('lab_id', lab_id);
+        const existingTemplateGroupIds = new Set((existingTemplates || []).map(t => t.test_group_id));
+
+        // Collect unique global template IDs needed
+        const globalTemplateIds = [...new Set(groupsNeedingTemplates.map(g => g.default_template_id).filter(Boolean))];
+        const { data: globalTemplates } = await supabaseClient
+          .from('global_template_catalog')
+          .select('*')
+          .in('id', globalTemplateIds);
+        const globalTemplateMap = new Map((globalTemplates || []).map(t => [t.id, t]));
+
+        // Build list of templates to insert
+        const templatesToInsert: object[] = [];
+        for (const gtg of groupsNeedingTemplates) {
+          const labGroupId = createdMap.get(gtg.code)
+            || existingByCode.get(gtg.code)?.id
+            || existingByName.get(gtg.name)?.id;
+          if (!labGroupId) continue;
+          if (existingTemplateGroupIds.has(labGroupId)) continue; // already has one
+          const globalTmpl = globalTemplateMap.get(gtg.default_template_id);
+          if (!globalTmpl) continue;
+          templatesToInsert.push({
+            lab_id: lab_id,
+            test_group_id: labGroupId,
+            template_name: `Report - ${gtg.name}`,
+            category: 'report',
+            gjs_html: globalTmpl.html_content,
+            gjs_css: globalTmpl.css_content,
+            is_default: false,
+            is_active: true
+          });
         }
 
-        // 2. Clone Template (Link if exists or create)
-        if (gtg.default_template_id && testGroupId) {
-             // Check if lab_template exists for this test_group
-             const { data: existingTmpl } = await supabaseClient
-                .from('lab_templates')
-                .select('id')
-                .eq('lab_id', lab_id)
-                .eq('test_group_id', testGroupId)
-                .maybeSingle();
-             
-             if (!existingTmpl) {
-                 const { data: globalTmpl } = await supabaseClient
-                    .from('global_template_catalog')
-                    .select('*')
-                    .eq('id', gtg.default_template_id)
-                    .single();
-                 
-                 if (globalTmpl) {
-                     await supabaseClient.from('lab_templates').insert({
-                         lab_id: lab_id,
-                         test_group_id: testGroupId,
-                         template_name: `Report - ${gtg.name}`,
-                         category: 'report',
-                         gjs_html: globalTmpl.html_content,
-                         gjs_css: globalTmpl.css_content,
-                         is_default: false, // Critical to avoid Constraint Error
-                         is_active: true
-                     });
-                     stats.templatesCloned++;
-                     console.log(`   📄 Cloned Template for ${gtg.code}`);
-                 }
-             }
+        if (templatesToInsert.length > 0) {
+          for (let i = 0; i < templatesToInsert.length; i += 50) {
+            const { error: tmplErr } = await supabaseClient
+              .from('lab_templates')
+              .insert(templatesToInsert.slice(i, i + 50));
+            if (tmplErr) console.error(`Template batch error (chunk ${i}):`, tmplErr);
+          }
+          stats.templatesCloned = templatesToInsert.length;
+          console.log(`   📄 Cloned ${templatesToInsert.length} report templates`);
         }
       }
     }

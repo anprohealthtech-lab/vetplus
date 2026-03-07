@@ -23,6 +23,7 @@ interface CreateLabPayload {
   city?: string;
   state?: string;
   pincode?: string;
+  country_code?: string;
   phone?: string;
   email?: string;
   gstin?: string;
@@ -77,6 +78,7 @@ Deno.serve(async (req: Request) => {
       city,
       state,
       pincode,
+      country_code,
       phone,
       email,
       gstin,
@@ -85,6 +87,9 @@ Deno.serve(async (req: Request) => {
       admin_password,
     } = body;
 
+    // Build full phone with country code
+    const fullPhone = phone ? `${country_code || '+91'}${phone.replace(/^(\+\d+)/, '')}` : null;
+
     console.log('[CREATE-LAB-WITH-ADMIN] Request:', { lab_name, admin_email });
 
     // Validate required fields
@@ -92,15 +97,49 @@ Deno.serve(async (req: Request) => {
     if (!admin_name) return bad("admin_name is required");
     if (!admin_email) return bad("admin_email is required");
 
-    // Check if admin email already exists
+    // Validate email format (basic check)
+    if (!admin_email.includes('@') || !admin_email.includes('.')) {
+      return bad("admin_email must be a valid email address (e.g., user@example.com)");
+    }
+
+    // Check if admin email already exists in public.users
     const { data: existingUsers } = await supabaseAdmin
       .from("users")
-      .select("id")
+      .select("id, lab_id")
       .eq("email", admin_email)
       .limit(1);
 
     if (existingUsers && existingUsers.length > 0) {
       return bad("A user with this email already exists", 409);
+    }
+
+    // Check for orphaned auth.users record (from previous failed attempts)
+    // GoTrue may have created the auth user but the trigger/subsequent step failed
+    console.log('[CREATE-LAB-WITH-ADMIN] Checking for orphaned auth user...');
+    try {
+      const { data: authListResult } = await supabaseAdmin.auth.admin.listUsers({
+        page: 1,
+        perPage: 1000,
+      });
+      const orphanedAuthUser = authListResult?.users?.find(
+        (u: { email?: string }) => u.email?.toLowerCase() === admin_email.toLowerCase()
+      );
+      if (orphanedAuthUser) {
+        console.warn('[CREATE-LAB-WITH-ADMIN] Found orphaned auth user, cleaning up:', orphanedAuthUser.id);
+        // Delete the orphaned auth user so we can recreate cleanly
+        const { error: deleteOrphanError } = await supabaseAdmin.auth.admin.deleteUser(orphanedAuthUser.id);
+        if (deleteOrphanError) {
+          console.error('[CREATE-LAB-WITH-ADMIN] Failed to delete orphaned auth user:', deleteOrphanError);
+          return bad("An orphaned auth account exists for this email. Please contact support.", 409);
+        }
+        // Also clean up any partial public.users record
+        await supabaseAdmin.from("users").delete().eq("id", orphanedAuthUser.id);
+        // Clean up any labs/locations created by previous failed attempts for this email
+        console.log('[CREATE-LAB-WITH-ADMIN] Orphaned auth user cleaned up successfully');
+      }
+    } catch (listErr) {
+      console.warn('[CREATE-LAB-WITH-ADMIN] Could not check for orphaned auth users:', listErr);
+      // Continue anyway
     }
 
     // 1. Create the lab with inactive status
@@ -120,12 +159,13 @@ Deno.serve(async (req: Request) => {
         city: city || null,
         state: state || null,
         pincode: pincode || null,
-        phone: phone || null,
+        phone: fullPhone || null,
         email: email || admin_email,
         gstin: gstin || null,
         is_active: true,
-        plan_status: 'inactive', // New labs start as inactive
+        plan_status: 'trial', // New labs start with 5-day trial
         plan_started_at: new Date().toISOString(),
+        active_upto: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(), // 5 days from now
         // Default PDF settings
         pdf_layout_settings: {
           headerTextColor: 'white',
@@ -162,7 +202,7 @@ Deno.serve(async (req: Request) => {
         city: city || null,
         state: state || null,
         pincode: pincode || null,
-        phone: phone || null,
+        phone: fullPhone || null,
         email: email || admin_email,
         is_active: true,
         is_collection_center: true,
@@ -216,7 +256,8 @@ Deno.serve(async (req: Request) => {
       user_metadata: {
         lab_id: labId,
         name: admin_name,
-        role: 'admin',
+        role: 'Admin',
+        role_id: adminRoleId || null,
         created_at: new Date().toISOString(),
       },
       app_metadata: { providers: ["email"], provider: "email" },
@@ -224,7 +265,10 @@ Deno.serve(async (req: Request) => {
 
     if (authError) {
       console.error('[CREATE-LAB-WITH-ADMIN] ERROR: Failed to create auth user:', authError);
-      // Rollback: Delete the lab
+      // Rollback: Delete the lab and location
+      if (locationData?.id) {
+        await supabaseAdmin.from("locations").delete().eq("id", locationData.id);
+      }
       await supabaseAdmin.from("labs").delete().eq("id", labId);
       throw new Error(`Failed to create admin user: ${authError.message}`);
     }
@@ -232,10 +276,10 @@ Deno.serve(async (req: Request) => {
     const adminUserId = authData.user?.id;
     console.log('[CREATE-LAB-WITH-ADMIN] Auth user created with ID:', adminUserId);
 
-    // 5. Create public.users record
+    // 5. Upsert public.users record (trigger may have already created a row)
     const { error: userError } = await supabaseAdmin
       .from("users")
-      .insert({
+      .upsert({
         id: adminUserId,
         name: admin_name,
         email: admin_email,
@@ -247,7 +291,7 @@ Deno.serve(async (req: Request) => {
         join_date: new Date().toISOString().split("T")[0],
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-      });
+      }, { onConflict: 'id' });
 
     if (userError) {
       console.error('[CREATE-LAB-WITH-ADMIN] ERROR: Failed to create public user:', userError);
@@ -259,51 +303,28 @@ Deno.serve(async (req: Request) => {
 
     console.log('[CREATE-LAB-WITH-ADMIN] Public user created');
 
-    // 6. Trigger onboarding-lab function to set up test groups, templates, etc.
-    console.log('[CREATE-LAB-WITH-ADMIN] Triggering onboarding function...');
+    // 6. Run lab onboarding (populate test groups, analytes, packages, invoice templates)
+    console.log('[CREATE-LAB-WITH-ADMIN] Running lab onboarding (populating catalog data)...');
     try {
       const supabaseUrl = Deno.env.get("SUPABASE_URL");
-      const response = await fetch(`${supabaseUrl}/functions/v1/onboarding-lab`, {
+      const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+      const onboardingResponse = await fetch(`${supabaseUrl}/functions/v1/onboarding-lab`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+          'Authorization': `Bearer ${serviceRoleKey}`,
         },
         body: JSON.stringify({ lab_id: labId }),
       });
-
-      if (response.ok) {
-        console.log('[CREATE-LAB-WITH-ADMIN] Onboarding function completed');
+      if (onboardingResponse.ok) {
+        const onboardingResult = await onboardingResponse.json();
+        console.log('[CREATE-LAB-WITH-ADMIN] Onboarding complete. Stats:', JSON.stringify(onboardingResult.stats));
       } else {
-        console.warn('[CREATE-LAB-WITH-ADMIN] WARNING: Onboarding function returned:', response.status);
+        const errText = await onboardingResponse.text();
+        console.warn(`[CREATE-LAB-WITH-ADMIN] WARNING: onboarding-lab returned ${onboardingResponse.status}: ${errText}`);
       }
-    } catch (onboardError) {
-      console.warn('[CREATE-LAB-WITH-ADMIN] WARNING: Onboarding function failed:', onboardError);
-      // Don't fail - can be run manually later
-    }
-
-    // 7. Sync user to WhatsApp backend
-    console.log('[CREATE-LAB-WITH-ADMIN] Syncing user to WhatsApp backend...');
-    try {
-      const supabaseUrl = Deno.env.get("SUPABASE_URL");
-      const syncResponse = await fetch(`${supabaseUrl}/functions/v1/sync-user-to-whatsapp`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-        },
-        body: JSON.stringify({ userId: adminUserId, labId }),
-      });
-
-      if (syncResponse.ok) {
-        console.log('[CREATE-LAB-WITH-ADMIN] User synced to WhatsApp backend');
-      } else {
-        const errorText = await syncResponse.text();
-        console.warn('[CREATE-LAB-WITH-ADMIN] WARNING: WhatsApp sync failed:', errorText);
-      }
-    } catch (syncError) {
-      console.warn('[CREATE-LAB-WITH-ADMIN] WARNING: WhatsApp sync failed:', syncError);
-      // Don't fail - can be run manually later
+    } catch (onboardingErr) {
+      console.warn('[CREATE-LAB-WITH-ADMIN] WARNING: onboarding-lab call failed (non-critical):', onboardingErr);
     }
 
     console.log('[CREATE-LAB-WITH-ADMIN] SUCCESS: Lab and admin created');
@@ -313,7 +334,8 @@ Deno.serve(async (req: Request) => {
       lab: {
         id: labId,
         name: lab_name,
-        status: 'inactive',
+        status: 'trial',
+        trial_ends_at: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(),
       },
       admin: {
         id: adminUserId,
@@ -321,7 +343,7 @@ Deno.serve(async (req: Request) => {
         name: admin_name,
         temporary_password: admin_password ? undefined : finalPassword,
       },
-      message: "Lab created successfully. Status is 'inactive' - contact admin to activate.",
+      message: "Lab created successfully with a 5-day free trial. Subscribe to continue after trial ends.",
     });
 
   } catch (e) {

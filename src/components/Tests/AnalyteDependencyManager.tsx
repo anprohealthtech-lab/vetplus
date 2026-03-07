@@ -177,9 +177,9 @@ const AnalyteDependencyManager: React.FC<AnalyteDependencyManagerProps> = ({
   }
 
   return (
-    <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-start md:items-center justify-center z-50 p-4 overflow-y-auto">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl my-8 md:my-0">
-        <div className="flex items-center justify-between p-6 border-b border-gray-200">
+    <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl flex flex-col max-h-[90vh]">
+        <div className="flex items-center justify-between p-6 border-b border-gray-200 flex-shrink-0">
           <div>
             <h2 className="text-xl font-semibold text-gray-900 flex items-center">
               <Link2 className="h-6 w-6 mr-2 text-amber-600" />
@@ -197,7 +197,7 @@ const AnalyteDependencyManager: React.FC<AnalyteDependencyManagerProps> = ({
           </button>
         </div>
 
-        <div className="p-6 space-y-6">
+        <div className="p-6 space-y-6 overflow-y-auto flex-1">
           {/* Formula Display */}
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
             <h3 className="text-sm font-medium text-amber-900 mb-2">Formula</h3>
@@ -364,7 +364,7 @@ const AnalyteDependencyManager: React.FC<AnalyteDependencyManagerProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200 bg-gray-50">
+        <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200 bg-gray-50 flex-shrink-0">
           <button
             onClick={onClose}
             className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-100 transition-colors"

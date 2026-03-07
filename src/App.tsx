@@ -60,6 +60,7 @@ import OutsourcedLabsSettings from './pages/OutsourcedLabsSettings';
 import IntraLabTransitQueue from './pages/IntraLabTransitQueue';
 import ManageReportSections from './pages/settings/ManageReportSections';
 import LabOnboarding from './pages/LabOnboarding';
+import Subscription from './pages/Subscription';
 import VerificationPage from './pages/VerificationPage';
 import FinancialReports from './pages/FinancialReports';
 import Analytics from './pages/Analytics';
@@ -201,6 +202,7 @@ const AppRoutes: React.FC = () => {
                 {/* Dev workflow demo route (no DB changes) */}
                 <Route path="/workflow-demo/peripheral-smear" element={<PeripheralSmearDemo />} />
                 <Route path="/billing" element={<Billing />} />
+                <Route path="/subscription" element={<Subscription />} />
                 <Route path="/cash-reconciliation" element={<CashReconciliation />} />
                 <Route path="/financial-reports" element={<FinancialReports />} />
                 <Route path="/analytics" element={<Analytics />} />

@@ -347,7 +347,7 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
     }
 
     return (
-      <div className="space-y-2 max-h-[400px] overflow-y-auto">
+      <div className="space-y-2">
         {analyteGroups.map((analyte) => {
           const isExpanded = expandedAnalytes.has(analyte.baseName);
           return (
@@ -479,7 +479,7 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
     ];
 
     return (
-      <div className="space-y-4 max-h-[400px] overflow-y-auto">
+      <div className="space-y-4">
         {otherGroups.map(({ key, title, empty }) => {
           const items = grouped[key];
           if (items.length === 0) return null;
@@ -528,58 +528,58 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
   };
 
   return (
-    <div className={`fixed ${isCollapsed ? 'bottom-4 right-4' : 'inset-0'} z-40 flex items-center justify-center ${isCollapsed ? '' : 'bg-black/40 px-4'}`}>
-      <div className={`${isCollapsed ? 'w-auto' : 'w-full max-w-xl'} rounded-lg border border-gray-200 bg-white shadow-xl`}>
-        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+    <div className={`fixed z-40 ${isCollapsed ? 'bottom-4 right-4' : 'right-4 top-14 bottom-4 flex flex-col'}`}>
+      <div className={`${isCollapsed ? 'w-auto' : 'w-[400px] flex flex-col h-full'} rounded-lg border border-gray-200 bg-white shadow-2xl`}>
+        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2.5 flex-shrink-0">
           <div className={isCollapsed ? 'hidden' : ''}>
             <h2 className="text-sm font-semibold text-gray-900">Insert Placeholder</h2>
-            <p className="text-[11px] text-gray-500">Click any button to insert, right-click to copy</p>
+            <p className="text-[10px] text-gray-400">Click in editor cell → click button to insert → click next cell</p>
           </div>
           {isCollapsed && (
             <span className="text-sm font-semibold text-gray-900">Placeholders</span>
           )}
-          <div className="flex gap-2">
+          <div className="flex gap-1.5">
             <button
               onClick={() => setIsCollapsed(!isCollapsed)}
-              className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-600 hover:bg-gray-100"
+              className="rounded border border-gray-300 bg-white px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100"
               title={isCollapsed ? 'Expand' : 'Minimize'}
             >
-              {isCollapsed ? 'Expand' : 'Minimize'}
+              {isCollapsed ? '↗ Expand' : '↙ Min'}
             </button>
             {onRefresh && !isCollapsed && (
               <button
                 onClick={onRefresh}
                 disabled={loading}
-                className="rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-xs text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded border border-blue-300 bg-blue-50 px-2 py-0.5 text-xs text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
                 title="Refresh placeholder data"
               >
-                {loading ? 'Loading...' : 'Refresh'}
+                {loading ? '...' : '↺'}
               </button>
             )}
             <button
               onClick={onClose}
-              className="rounded-md border border-red-300 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-100"
+              className="rounded border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700 hover:bg-red-100"
               title="Close placeholder picker"
             >
-              Close
+              ✕
             </button>
           </div>
         </div>
         {!isCollapsed && (
-          <>
+          <div className="flex flex-col flex-1 min-h-0">
             {loading && (
-              <div className="border-b border-dashed border-gray-200 bg-gray-50 px-4 py-2 text-[11px] text-gray-500">
+              <div className="border-b border-dashed border-gray-200 bg-gray-50 px-4 py-2 text-[11px] text-gray-500 flex-shrink-0">
                 Loading lab and test placeholders…
               </div>
             )}
             {errorMessage && (
-              <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-[11px] text-red-600">
+              <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-[11px] text-red-600 flex-shrink-0">
                 {errorMessage}
               </div>
             )}
 
             {/* Tab navigation */}
-            <div className="flex border-b border-gray-200">
+            <div className="flex border-b border-gray-200 flex-shrink-0">
               <button
                 type="button"
                 onClick={() => setActiveTab('test')}
@@ -609,17 +609,22 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
               </button>
             </div>
 
-            {/* Tab content */}
-            <div className="px-4 py-4">
+            {/* Tab content — scrollable fill */}
+            <div className="px-4 py-3 flex-1 overflow-y-auto min-h-0">
               {activeTab === 'test' ? renderAnalyteCentricView() : renderOtherPlaceholders()}
             </div>
 
             {/* Help text footer */}
-            <div className="border-t border-gray-200 bg-gray-50 px-4 py-3">
-              <div className="flex items-center gap-4 text-[11px] text-gray-500">
+            <div className="border-t border-gray-200 bg-gray-50 px-4 py-2 flex-shrink-0">
+              {lastAction && (
+                <div className="mb-1.5 text-[10px] font-medium text-green-700 bg-green-50 border border-green-200 rounded px-2 py-1">
+                  ✓ {lastAction.type === 'insert' ? 'Inserted' : 'Copied'}: <code className="font-mono">{lastAction.placeholder}</code>
+                </div>
+              )}
+              <div className="flex items-center gap-3 text-[10px] text-gray-500">
                 <span className="flex items-center gap-1">
                   <span className="inline-block w-2 h-2 rounded-full bg-blue-400"></span>
-                  Click = Insert
+                  Click = Insert (stays open)
                 </span>
                 <span className="flex items-center gap-1">
                   <span className="inline-block w-2 h-2 rounded-full bg-purple-400"></span>
@@ -627,11 +632,11 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
                 </span>
                 <span className="flex items-center gap-1">
                   <span className="inline-block w-2 h-2 rounded-full bg-gray-400"></span>
-                  Click arrow to expand details
+                  ▶ = expand
                 </span>
               </div>
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>

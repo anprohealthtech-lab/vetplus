@@ -2367,7 +2367,8 @@ serve(async (req) => {
     console.log('📋 Available templates:', templatesWithHtml.map((t: any) => ({
       name: t.template_name,
       testGroupId: t.test_group_id || 'none',
-      isDefault: t.is_default
+      isDefault: t.is_default,
+      isInterpretationOnly: !!t.is_interpretation_only
     })))
 
     await updateProgress(supabaseClient, job.id, 'Fetching lab settings...', 25)
@@ -2388,7 +2389,10 @@ serve(async (req) => {
         watermark_opacity,
         watermark_position,
         watermark_size,
-        watermark_rotation
+        watermark_rotation,
+        default_template_style,
+        show_methodology,
+        show_interpretation
       `)
       .eq('id', job.lab_id)
       .single()
@@ -2914,14 +2918,128 @@ serve(async (req) => {
     // Section content map for placeholders (populated from database above)
     const sectionContent: Record<string, string> = { ...sectionContentFromDb }
 
+    const layoutTemplatesWithHtml = templatesWithHtml.filter((t: any) => !t?.is_interpretation_only)
+    const interpretationTemplatesWithHtml = templatesWithHtml.filter((t: any) => !!t?.is_interpretation_only)
+
+    const extractBodyContent = (html: string) => {
+      if (!html) return ''
+      const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i)
+      return bodyMatch ? bodyMatch[1] : html
+    }
+
+    const getInterpretationTemplatesForGroup = (testGroupId?: string) => {
+      return interpretationTemplatesWithHtml.filter((t: any) => {
+        if (!testGroupId) return !t.test_group_id
+        return t.test_group_id === testGroupId || !t.test_group_id
+      })
+    }
+
+    const renderInterpretationBlocks = (interpretationTemplates: any[], renderContext: any) => {
+      if (!interpretationTemplates.length) {
+        return { html: '', css: '' }
+      }
+
+      const html = interpretationTemplates
+        .map((tpl: any) => {
+          const rendered = renderTemplate(tpl.gjs_html || '', renderContext)
+          return `\n<div class="limsv2-interpretation-block" data-template-id="${tpl.id}">${extractBodyContent(rendered)}</div>`
+        })
+        .join('\n')
+
+      const css = interpretationTemplates
+        .map((tpl: any) => tpl.gjs_css || '')
+        .filter(Boolean)
+        .join('\n')
+
+      return { html, css }
+    }
+
+    const renderBuiltinDefaultTemplate = (ctx: any, showPatientInfo = true) => {
+      const analytes = ctx?.analytes || []
+      const rows = analytes.map((analyte: any) => {
+        const flag = (analyte.flag || '').toString()
+        const flagUpper = flag.toUpperCase()
+        const isHigh = ['H', 'HIGH', 'H*', 'HH', 'CRITICAL_H', 'CRITICAL_HIGH'].includes(flagUpper)
+        const isLow = ['L', 'LOW', 'L*', 'LL', 'CRITICAL_L', 'CRITICAL_LOW'].includes(flagUpper)
+        const isBeautiful = (labSettings?.default_template_style || 'beautiful') === 'beautiful'
+        const flagClass = isHigh ? 'value-high' : isLow ? 'value-borderline' : isBeautiful ? 'value-optimal' : ''
+        const methodRow = labSettings?.show_methodology && analyte?.method
+          ? `<div style="font-size:11px;color:#64748b;">Method: ${analyte.method}</div>`
+          : ''
+        const interpretationText = isHigh
+          ? (analyte?.interpretation_high || analyte?.ai_interpretation || '')
+          : isLow
+            ? (analyte?.interpretation_low || analyte?.ai_interpretation || '')
+            : (analyte?.interpretation_normal || '')
+        const interpretationRow = labSettings?.show_interpretation && interpretationText
+          ? `<div style="font-size:11px;color:#475569;">${interpretationText}</div>`
+          : ''
+
+        return `
+          <tr>
+            <td class="param-name">${analyte.parameter || analyte.name || ''}${methodRow}${interpretationRow}</td>
+            <td class="${flagClass}">${analyte.value || ''}</td>
+            <td>${analyte.unit || ''}</td>
+            <td>${analyte.reference_range || ''}</td>
+            <td class="${flagClass}">${flag}</td>
+          </tr>
+        `
+      }).join('')
+
+      const patientBlock = showPatientInfo
+        ? `
+          <table class="patient-info" style="margin-bottom:12px;">
+            <tr>
+              <td class="label">Patient Name</td><td class="value">${ctx?.patient?.name || ''}</td>
+              <td class="label">Patient ID</td><td class="value">${ctx?.patient?.displayId || ctx?.patient?.id || ''}</td>
+            </tr>
+            <tr>
+              <td class="label">Age / Gender</td><td class="value">${ctx?.patient?.age || ''} / ${ctx?.patient?.gender || ''}</td>
+              <td class="label">Sample ID</td><td class="value">${ctx?.order?.sampleId || ''}</td>
+            </tr>
+            <tr>
+              <td class="label">Ref. Doctor</td><td class="value">${ctx?.order?.referringDoctorName || ''}</td>
+              <td class="label">Date</td><td class="value">${ctx?.meta?.createdAtFormatted || ''}</td>
+            </tr>
+          </table>
+        `
+        : ''
+
+      const styleTag = (labSettings?.default_template_style || 'beautiful') === 'classic'
+        ? ''
+        : `<style>
+            .report-table thead th { background:#0b4aa2 !important; color:#fff !important; }
+            .param-name { font-weight:700; }
+            .value-high { color:#b42318; font-weight:700; }
+            .value-borderline { color:#b54708; font-weight:700; }
+            .value-optimal { color:#027a48; font-weight:700; }
+          </style>`
+
+      return `
+        ${styleTag}
+        <div class="report-body">
+          ${patientBlock}
+          <table class="report-table">
+            <thead>
+              <tr>
+                <th>Test Parameter</th>
+                <th>Result</th>
+                <th>Unit</th>
+                <th>Ref. Range</th>
+                <th>Flag</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `
+    }
+
     // Helper: Select appropriate template
     const selectTemplate = (ctx: any) => {
       const testGroupId = ctx.testGroupIds?.[0]
-      if (testGroupId) {
-        const specific = templatesWithHtml.find((t: any) => t.test_group_id === testGroupId)
-        if (specific) return specific
-      }
-      return templatesWithHtml.find((t: any) => t.is_default) || templatesWithHtml[0]
+      if (!testGroupId) return null
+      return layoutTemplatesWithHtml.find((t: any) => t.test_group_id === testGroupId) || null
     }
 
     // Helper: Prepare full context with all extras
@@ -3004,27 +3122,36 @@ serve(async (req) => {
     if (effectiveGroupCount <= 1) {
       // Single Group Logic
       template = selectTemplate(context)
-      if (!template) {
-        console.error('❌ No template found for lab')
-        await failJob(supabaseClient, job.id, 'No lab template found')
-        return new Response(
-          JSON.stringify({ error: 'No lab template found' }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        )
-      }
-      
-      console.log('✅ Using single template:', template.template_name)
       fullContext = prepareFullContext(context)
       const dynamicCss = generateDynamicCss(pdfSettings)
-      let renderedHtml = renderTemplate(template.gjs_html, fullContext)
+      const singleInterpretationTemplates = getInterpretationTemplatesForGroup(context.testGroupIds?.[0])
+      let interpretationCss = ''
+      let renderedHtml = ''
+
+      if (template?.gjs_html) {
+        console.log('✅ Using single template:', template.template_name)
+        renderedHtml = renderTemplate(template.gjs_html, fullContext)
+      } else {
+        console.log('⚠️ No exact layout template found, using built-in default style:', labSettings?.default_template_style || 'beautiful')
+        renderedHtml = renderBuiltinDefaultTemplate(fullContext, true)
+      }
       
       // Inject signature image if template doesn't have one
       if (signatoryInfo.signatoryImageUrl) {
         renderedHtml = injectSignatureImage(renderedHtml, signatoryInfo.signatoryImageUrl, signatoryInfo.signatoryName, signatoryInfo.signatoryDesignation)
       }
+
+      if (singleInterpretationTemplates.length > 0) {
+        const renderedInterpretation = renderInterpretationBlocks(singleInterpretationTemplates, fullContext)
+        if (renderedInterpretation.html) {
+          renderedHtml += renderedInterpretation.html
+          interpretationCss = renderedInterpretation.css
+          console.log('✅ Appended interpretation-only templates:', singleInterpretationTemplates.map((t: any) => t.template_name))
+        }
+      }
       
       console.log('🔧 About to call buildPdfBodyDocument with letterhead:', letterheadBackgroundUrl || 'NONE');
-      bodyHtml = buildPdfBodyDocument(renderedHtml, (template.gjs_css || '') + '\n' + dynamicCss, letterheadBackgroundUrl)
+      bodyHtml = buildPdfBodyDocument(renderedHtml, (template?.gjs_css || '') + '\n' + interpretationCss + '\n' + dynamicCss, letterheadBackgroundUrl)
       console.log('✅ buildPdfBodyDocument returned, HTML length:', bodyHtml.length);
       console.log('🔍 Checking if letterhead is in returned HTML:', bodyHtml.includes('page-background') ? 'YES' : 'NO');
       rawHtmlForPrint = bodyHtml // Save for print version
@@ -3033,6 +3160,7 @@ serve(async (req) => {
       console.log('🔀 Multi-test group rendering...')
       const renderedSections: string[] = []
       let firstGroupTemplate = null
+      const multiInterpretationCssChunks: string[] = []
       
       // Set base context for print version (even if not perfect for all groups)
       fullContext = prepareFullContext(context)
@@ -3069,20 +3197,16 @@ serve(async (req) => {
           analytes: groupAnalytes,
           testGroupIds: [testGroupId]
         }
+        const groupFullContext = prepareFullContext(groupContext)
         
         // Find specific template for this group
-        let groupTemplate = templatesWithHtml.find((t: any) => t.test_group_id === testGroupId)
-        if (!groupTemplate) {
-          console.log(`⚠️ No specific template for ${testGroupId}, using fallback`)
-          groupTemplate = selectTemplate(groupContext)
-        } else {
-          console.log(`✅ Found specific template for ${testGroupId}: ${groupTemplate.template_name}`)
-        }
-        
+        let groupTemplate = layoutTemplatesWithHtml.find((t: any) => t.test_group_id === testGroupId)
+        let bodyContent = ''
+
         if (groupTemplate?.gjs_html) {
+          console.log(`✅ Found specific template for ${testGroupId}: ${groupTemplate.template_name}`)
           if (!firstGroupTemplate) firstGroupTemplate = groupTemplate
-          
-          const groupFullContext = prepareFullContext(groupContext)
+
           let renderedHtml = renderTemplate(groupTemplate.gjs_html, groupFullContext)
           
           // Inject signature image if template doesn't have one
@@ -3092,51 +3216,51 @@ serve(async (req) => {
           
           // Extract body content
           const bodyMatch = renderedHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i)
-          const bodyContent = bodyMatch ? bodyMatch[1] : renderedHtml
-          
-          // Add separator
-          const testName = groupAnalytes[0]?.test_name || groupTemplate.template_name || `Test Group ${renderedSections.length + 1}`
-          const sectionHtml = `
-            <div class="test-group-section" data-test-group-id="${testGroupId}">
-              ${renderedSections.length > 0 ? `
-                <div class="test-group-separator" style="page-break-before: always; margin: 40px 0 20px; padding-top: 20px; border-top: 2px solid #2563eb;">
-                  <h2 style="color: #2563eb; font-size: 18px; margin: 0;">${testName}</h2>
-                </div>
-              ` : ''}
-              ${bodyContent}
-            </div>
-          `
-          renderedSections.push(sectionHtml)
-          console.log(`✅ Rendered section for ${testGroupId}`)
+          bodyContent = bodyMatch ? bodyMatch[1] : renderedHtml
         } else {
-          console.log(`⚠️ No template with HTML found for test group: ${testGroupId}`)
+          console.log(`⚠️ No specific layout template for ${testGroupId}, using built-in default`)
+          bodyContent = renderBuiltinDefaultTemplate(groupFullContext, renderedSections.length === 0)
         }
+
+        const groupInterpretationTemplates = getInterpretationTemplatesForGroup(testGroupId)
+        if (groupInterpretationTemplates.length > 0) {
+          const renderedInterpretation = renderInterpretationBlocks(groupInterpretationTemplates, groupFullContext)
+          if (renderedInterpretation.html) {
+            bodyContent += renderedInterpretation.html
+          }
+          if (renderedInterpretation.css) {
+            multiInterpretationCssChunks.push(renderedInterpretation.css)
+          }
+          console.log(`✅ Appended interpretation-only templates for ${testGroupId}:`, groupInterpretationTemplates.map((t: any) => t.template_name))
+        }
+
+        const testName = groupAnalytes[0]?.test_name || groupTemplate?.template_name || `Test Group ${renderedSections.length + 1}`
+        const sectionHtml = `
+          <div class="test-group-section" data-test-group-id="${testGroupId}">
+            ${renderedSections.length > 0 ? `
+              <div class="test-group-separator" style="page-break-before: always; margin: 40px 0 20px; padding-top: 20px; border-top: 2px solid #2563eb;">
+                <h2 style="color: #2563eb; font-size: 18px; margin: 0;">${testName}</h2>
+              </div>
+            ` : ''}
+            ${bodyContent}
+          </div>
+        `
+        renderedSections.push(sectionHtml)
+        console.log(`✅ Rendered section for ${testGroupId}`)
       }
       
       if (renderedSections.length === 0) {
-        console.error('❌ Failed to render any test group templates')
-        await failJob(supabaseClient, job.id, 'Failed to render any test group templates')
-        return new Response(
-          JSON.stringify({ error: 'Failed to render any test group templates' }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        )
+        console.log('⚠️ No sections rendered from templates, using built-in default for full context')
+        renderedSections.push(renderBuiltinDefaultTemplate(fullContext, true))
       }
       
-      // Use first group's template for outer shell
-      template = firstGroupTemplate || selectTemplate(context)
-      if (!template) {
-        console.error('❌ No template found for lab')
-        await failJob(supabaseClient, job.id, 'No lab template found')
-        return new Response(
-          JSON.stringify({ error: 'No lab template found' }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        )
-      }
+      // Use first exact group layout template for shared CSS only.
+      template = firstGroupTemplate || null
       
-      console.log('✅ Merged multiple templates using base:', template.template_name)
+      console.log('✅ Merged multiple templates', template?.template_name ? `using base: ${template.template_name}` : 'using built-in default')
       const dynamicCss = generateDynamicCss(pdfSettings)
       console.log('🔧 About to call buildPdfBodyDocument (multi-template) with letterhead:', letterheadBackgroundUrl || 'NONE');
-      bodyHtml = buildPdfBodyDocument(renderedSections.join('\n'), (template.gjs_css || '') + '\n' + dynamicCss, letterheadBackgroundUrl)
+      bodyHtml = buildPdfBodyDocument(renderedSections.join('\n'), (template?.gjs_css || '') + '\n' + multiInterpretationCssChunks.join('\n') + '\n' + dynamicCss, letterheadBackgroundUrl)
       console.log('✅ buildPdfBodyDocument returned, HTML length:', bodyHtml.length);
       console.log('🔍 Checking if letterhead is in returned HTML:', bodyHtml.includes('page-background') ? 'YES' : 'NO');
       rawHtmlForPrint = bodyHtml // Save for print version
@@ -3235,7 +3359,9 @@ serve(async (req) => {
           watermarkText: '',
           showWatermark: false
         }
-        const printRenderedHtml = renderTemplate(template.gjs_html, printTemplateContext)
+        const printRenderedHtml = template?.gjs_html
+          ? renderTemplate(template.gjs_html, printTemplateContext)
+          : renderBuiltinDefaultTemplate(printTemplateContext, true)
         // Build print HTML WITHOUT gjs_css - pass empty string for clean print output
         printHtml = buildPdfBodyDocument(printRenderedHtml, '', letterheadBackgroundUrl)
         console.log('✅ Built print HTML without gjs_css (clean print mode)')
@@ -3592,6 +3718,48 @@ serve(async (req) => {
         
         if (notifSettings?.auto_send_report_to_patient || notifSettings?.auto_send_report_to_doctor) {
           console.log('📲 Auto-send enabled, fetching recipient details...')
+
+          const parseMinutes = (timeStr: string | null | undefined, fallback: string) => {
+            const [h, m] = (timeStr || fallback).split(':').map(Number)
+            return (h * 60) + m
+          }
+
+          // Edge functions run in UTC. Send window times are in IST (UTC+5:30).
+          const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000
+          const utcNow = Date.now()
+          const istDate = new Date(utcNow + IST_OFFSET_MS)
+          const currentMinutes = istDate.getUTCHours() * 60 + istDate.getUTCMinutes()
+          console.log(`⏰ Time check: UTC=${new Date(utcNow).toISOString()}, IST HH:MM=${istDate.getUTCHours()}:${istDate.getUTCMinutes()}, currentMinutes=${currentMinutes}`)
+          const startMinutes = parseMinutes(notifSettings.send_window_start, '09:00:00')
+          const endMinutes = parseMinutes(notifSettings.send_window_end, '21:00:00')
+          const withinWindow = startMinutes <= endMinutes
+            ? (currentMinutes >= startMinutes && currentMinutes <= endMinutes)
+            : (currentMinutes >= startMinutes || currentMinutes <= endMinutes)
+          console.log(`⏰ Window: ${startMinutes}-${endMinutes}, current=${currentMinutes}, within=${withinWindow}`)
+
+          const requiredStatus = (notifSettings.send_report_on_status || 'Completed').toLowerCase()
+          const { data: reportForStatus } = await supabaseClient
+            .from('reports')
+            .select('status, report_status')
+            .eq('id', reportIdForNotif)
+            .maybeSingle()
+          const currentStatus = (reportForStatus?.report_status || reportForStatus?.status || '').toLowerCase()
+          const statusMatches = currentStatus === requiredStatus
+          console.log(`📋 Status: required=${requiredStatus}, current=${currentStatus}, matches=${statusMatches}`)
+
+          // Calculate next window start in IST, convert to UTC for scheduled_for
+          const [startHour, startMinute] = (notifSettings.send_window_start || '09:00:00').split(':').map(Number)
+          const nextIst = new Date(utcNow + IST_OFFSET_MS)
+          nextIst.setUTCHours(startHour, startMinute, 0, 0)
+          if (nextIst.getTime() <= utcNow + IST_OFFSET_MS) {
+            nextIst.setUTCDate(nextIst.getUTCDate() + 1)
+          }
+          const nextWindowStart = new Date(nextIst.getTime() - IST_OFFSET_MS)
+
+          const canAttemptImmediate = withinWindow && statusMatches
+          console.log(`🚦 canAttemptImmediate=${canAttemptImmediate}`)
+          const shouldQueueOutsideWindow = notifSettings.queue_outside_window !== false
+          const deferredScheduledFor = withinWindow ? new Date().toISOString() : nextWindowStart.toISOString()
           
           // Fetch patient and doctor phone numbers, plus clinical summary fields
           const { data: order } = await supabaseClient
@@ -3763,7 +3931,9 @@ serve(async (req) => {
                 patientMessage += '\n\nThank you.'
               }
               
-              const sent = await sendWhatsApp(order.patients.phone, patientMessage, storageUrl, order.patient_name)
+              const sent = canAttemptImmediate
+                ? await sendWhatsApp(order.patients.phone, patientMessage, storageUrl, order.patient_name)
+                : false
               
               if (sent) {
                 await supabaseClient
@@ -3777,24 +3947,32 @@ serve(async (req) => {
                 console.log('✅ WhatsApp sent to patient:', order.patients.phone)
               } else {
                 // Queue for retry
-                await supabaseClient
-                  .from('notification_queue')
-                  .insert({
-                    lab_id: job.lab_id,
-                    recipient_type: 'patient',
-                    recipient_phone: order.patients.phone,
-                    recipient_name: order.patient_name,
-                    recipient_id: order.patients.id,
-                    trigger_type: 'report_ready',
-                    order_id: orderId,
-                    report_id: reportIdForNotif,
-                    message_content: patientMessage,
-                    attachment_url: storageUrl,
-                    attachment_type: 'report',
-                    status: 'pending',
-                    last_error: 'Initial send failed'
-                  })
-                console.log('📥 Patient notification queued for retry')
+                const shouldQueue = statusMatches || shouldQueueOutsideWindow
+                if (shouldQueue) {
+                  await supabaseClient
+                    .from('notification_queue')
+                    .insert({
+                      lab_id: job.lab_id,
+                      recipient_type: 'patient',
+                      recipient_phone: order.patients.phone,
+                      recipient_name: order.patient_name,
+                      recipient_id: order.patients.id,
+                      trigger_type: 'report_ready',
+                      order_id: orderId,
+                      report_id: reportIdForNotif,
+                      message_content: patientMessage,
+                      attachment_url: storageUrl,
+                      attachment_type: 'report',
+                      status: 'pending',
+                      scheduled_for: deferredScheduledFor,
+                      last_error: !statusMatches
+                        ? `Waiting for report status ${notifSettings.send_report_on_status || 'Completed'}`
+                        : (withinWindow ? 'Initial send failed' : 'Outside send window')
+                    })
+                  console.log('📥 Patient notification queued for retry')
+                } else {
+                  console.log('⏭️ Skipping patient notification: outside send window and queue disabled')
+                }
               }
             }
             
@@ -3814,7 +3992,9 @@ serve(async (req) => {
               
               doctorMessage += `\n\nPlease find the attached report.\n\nThank you,\n${lab?.name || 'Lab'}`
               
-              const sent = await sendWhatsApp(order.doctors.phone, doctorMessage, storageUrl, order.patient_name)
+              const sent = canAttemptImmediate
+                ? await sendWhatsApp(order.doctors.phone, doctorMessage, storageUrl, order.patient_name)
+                : false
               
               if (sent) {
                 await supabaseClient
@@ -3827,24 +4007,32 @@ serve(async (req) => {
                 console.log('✅ WhatsApp sent to doctor:', order.doctors.phone)
               } else {
                 // Queue for retry
-                await supabaseClient
-                  .from('notification_queue')
-                  .insert({
-                    lab_id: job.lab_id,
-                    recipient_type: 'doctor',
-                    recipient_phone: order.doctors.phone,
-                    recipient_name: order.doctors.name,
-                    recipient_id: order.doctors.id,
-                    trigger_type: 'report_ready',
-                    order_id: orderId,
-                    report_id: reportIdForNotif,
-                    message_content: doctorMessage,
-                    attachment_url: storageUrl,
-                    attachment_type: 'report',
-                    status: 'pending',
-                    last_error: 'Initial send failed'
-                  })
-                console.log('📥 Doctor notification queued for retry')
+                const shouldQueue = statusMatches || shouldQueueOutsideWindow
+                if (shouldQueue) {
+                  await supabaseClient
+                    .from('notification_queue')
+                    .insert({
+                      lab_id: job.lab_id,
+                      recipient_type: 'doctor',
+                      recipient_phone: order.doctors.phone,
+                      recipient_name: order.doctors.name,
+                      recipient_id: order.doctors.id,
+                      trigger_type: 'report_ready',
+                      order_id: orderId,
+                      report_id: reportIdForNotif,
+                      message_content: doctorMessage,
+                      attachment_url: storageUrl,
+                      attachment_type: 'report',
+                      status: 'pending',
+                      scheduled_for: deferredScheduledFor,
+                      last_error: !statusMatches
+                        ? `Waiting for report status ${notifSettings.send_report_on_status || 'Completed'}`
+                        : (withinWindow ? 'Initial send failed' : 'Outside send window')
+                    })
+                  console.log('📥 Doctor notification queued for retry')
+                } else {
+                  console.log('⏭️ Skipping doctor notification: outside send window and queue disabled')
+                }
               }
             }
           }

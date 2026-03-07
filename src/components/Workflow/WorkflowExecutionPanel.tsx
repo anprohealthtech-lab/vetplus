@@ -36,7 +36,6 @@ interface WorkflowInstance {
   workflow_version_id: string;
   status: 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
   current_step_id: string | null;
-  total_steps: number | null;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -115,7 +114,6 @@ export const WorkflowExecutionPanel: React.FC<WorkflowExecutionPanelProps> = ({
           workflow_version_id,
           status,
           current_step_id,
-          total_steps,
           started_at,
           completed_at,
           created_at,
@@ -390,11 +388,6 @@ export const WorkflowExecutionPanel: React.FC<WorkflowExecutionPanelProps> = ({
                     <div className="text-sm font-medium text-gray-900">{workflowName}</div>
                     <div className="text-xs text-gray-500">
                       {formatDateTime(instance.started_at || instance.created_at)}
-                      {instance.total_steps && (
-                        <span className="ml-2">
-                          • {instance.current_step_id || '0'}/{instance.total_steps} steps
-                        </span>
-                      )}
                     </div>
                   </div>
                 </div>

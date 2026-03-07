@@ -11,6 +11,9 @@ import {
   Search,
   FileText,
   User,
+  UserPlus,
+  Stethoscope,
+  Receipt,
   TestTube,
   Building,
   CreditCard,
@@ -45,6 +48,9 @@ interface WhatsAppTemplate {
 
 const CATEGORY_LABELS: Record<string, { label: string; icon: any; color: string }> = {
   report_ready: { label: 'Report Ready', icon: FileText, color: 'blue' },
+  registration_confirmation: { label: 'Registration', icon: UserPlus, color: 'teal' },
+  doctor_report_ready: { label: 'Doctor Report', icon: Stethoscope, color: 'cyan' },
+  invoice_generated: { label: 'Invoice', icon: Receipt, color: 'orange' },
   appointment_reminder: { label: 'Appointment', icon: Calendar, color: 'purple' },
   test_results: { label: 'Test Results', icon: TestTube, color: 'green' },
   doctor_notification: { label: 'Doctor Notification', icon: User, color: 'indigo' },

@@ -2,6 +2,9 @@
   command = "npm run build"
   publish = "dist"
 
+[build.environment]
+  NODE_OPTIONS = "--max-old-space-size=4096"
+
 [functions]
   # Default timeout for all functions (in seconds)
   # Free tier: max 10s, Pro tier: max 26s, Business/Enterprise: max 900s

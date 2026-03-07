@@ -94,14 +94,17 @@ const DoctorCommissionReport: React.FC = () => {
                 if (!doctor) continue;
 
                 // Get sharing settings for this doctor
-                const { data: settings } = await supabase
+                const { data: settings, error: settingsError } = await supabase
                     .from('doctor_sharing')
                     .select('*')
                     .eq('doctor_id', doctorId)
                     .single();
 
+                console.debug('[Commission] doctor_sharing lookup:', { doctorId, settings, settingsError });
+
                 if (!settings) {
                     // No settings configured, skip
+                    console.warn('[Commission] No sharing settings for doctor, skipping:', doctorId);
                     continue;
                 }
 
@@ -144,26 +147,30 @@ const DoctorCommissionReport: React.FC = () => {
                     .from('orders')
                     .select(`
                         id,
-                        order_id,
+                        order_display,
+                        sample_id,
                         created_at,
                         total_amount,
-                        discount,
-                        patients(first_name, last_name),
-                        order_items(
+                        final_amount,
+                        patients(name),
+                        order_tests(
                             test_group_id,
                             package_id,
                             price,
-                            test_groups(name, is_outsourced, outsource_cost, is_package),
-                            packages(id, price)
-                        )
+                            test_groups(name, is_outsourced),
+                            packages!order_tests_package_id_fkey(id, price)
+                        ),
+                        invoices(discount_source)
                     `)
                     .eq('lab_id', labId)
-                    .eq('doctor_id', doctorId)
+                    .eq('referring_doctor_id', doctorId)
                     .gte('created_at', dateFrom)
                     .lte('created_at', dateTo + 'T23:59:59')
-                    .eq('status', 'completed');
+                    .eq('billing_status', 'billed');
 
                 if (ordersError) throw ordersError;
+
+                console.debug('[Commission] orders fetched:', { doctorId, count: orders?.length, orders });
 
                 let totalRevenue = 0;
                 let totalCommission = 0;
@@ -171,16 +178,19 @@ const DoctorCommissionReport: React.FC = () => {
 
                 for (const order of (orders || [])) {
                     const patient = order.patients as any;
-                    const patientName = patient 
-                        ? `${patient.first_name || ''} ${patient.last_name || ''}`.trim()
-                        : 'Unknown';
+                    const patientName = patient?.name || 'Unknown';
+                    const totalDiscount = Math.max(0, (order.total_amount || 0) - (order.final_amount ?? order.total_amount ?? 0));
+                    // Only doctor-attributed discounts affect commission; lab discounts are absorbed by lab
+                    const invoiceList = (order as any).invoices as Array<{ discount_source?: string }> | null;
+                    const discountSource = invoiceList?.[0]?.discount_source ?? null;
+                    const discount = discountSource === 'doctor' ? totalDiscount : 0;
 
                     let orderCommission = 0;
                     let grossAmount = 0;
                     let totalDeductFromCommission = 0;
                     const adjustments: CommissionDetail['adjustments'] = {};
 
-                    for (const item of (order.order_items || [])) {
+                    for (const item of (order.order_tests || [])) {
                         const testGroup = item.test_groups as any;
                         const packageInfo = item.packages as any;
                         const itemPrice = item.price || 0;
@@ -233,22 +243,18 @@ const DoctorCommissionReport: React.FC = () => {
                     }
 
                     // Handle Doctor Discount based on mode
-                    if (order.discount > 0) {
+                    if (discount > 0) {
                         if (settings.dr_discount_mode === 'exclude_from_base') {
-                            // Already should have been proportionally reduced in loop - but discount is order-level
-                            // Recalculate: reduce gross proportionally
-                            const discountRatio = order.discount / grossAmount;
+                            const discountRatio = discount / grossAmount;
                             const commissionReduction = orderCommission * discountRatio;
                             totalDeductFromCommission += commissionReduction;
-                            adjustments.dr_discount = order.discount;
+                            adjustments.dr_discount = discount;
                         } else if (settings.dr_discount_mode === 'deduct_from_commission') {
-                            // Full discount deducted from doctor's commission
-                            totalDeductFromCommission += order.discount;
-                            adjustments.dr_discount = order.discount;
+                            totalDeductFromCommission += discount;
+                            adjustments.dr_discount = discount;
                         } else if (settings.dr_discount_mode === 'split_50_50') {
-                            // 50-50 split: doctor bears half of discount
-                            totalDeductFromCommission += order.discount / 2;
-                            adjustments.dr_discount = order.discount / 2;
+                            totalDeductFromCommission += discount / 2;
+                            adjustments.dr_discount = discount / 2;
                         }
                     }
 
@@ -259,7 +265,7 @@ const DoctorCommissionReport: React.FC = () => {
                     totalCommission += finalOrderCommission;
 
                     details.push({
-                        order_id: order.order_id,
+                        order_id: order.order_display || order.sample_id || order.id,
                         patient_name: patientName,
                         date: order.created_at,
                         gross_amount: grossAmount,

@@ -640,6 +640,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   const [activeAttachment, setActiveAttachment] = React.useState<any | null>(null);
   const [progressRows, setProgressRows] = useState<any[]>([]);
   const [readonlyByTG, setReadonlyByTG] = useState<Record<string, any[]>>({});
+  const [calcDeps, setCalcDeps] = useState<{ calculated_analyte_id: string; source_analyte_id: string; variable_name: string }[]>([]);
 
   // =========================================================
   // #endregion State
@@ -838,6 +839,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 analytes(
                   id,
                   name,
+                  code,
                   unit,
                   reference_range,
                   ai_processing_type,
@@ -867,6 +869,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 analytes(
                   id,
                   name,
+                  code,
                   unit,
                   reference_range,
                   ai_processing_type,
@@ -923,7 +926,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           analytes:
             otg.test_groups.test_group_analytes?.map((tga: any) => ({
               ...tga.analytes,
-              code: otg.test_groups.code,
+              code: tga.analytes.code || otg.test_groups.code,
               units: tga.analytes.unit,
               existing_result:
                 data.results
@@ -945,7 +948,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             analytes:
               ot.test_groups.test_group_analytes?.map((tga: any) => ({
                 ...tga.analytes,
-                code: ot.test_groups.code,
+                code: tga.analytes.code || ot.test_groups.code,
                 units: tga.analytes.unit,
                 existing_result:
                   data.results
@@ -1031,6 +1034,19 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             return analyte;
           });
         }
+      }
+
+      // Fetch analyte_dependencies for all calculated analytes (for debug display)
+      const calcAnalyteIds = flatAnalytes
+        .filter((a: any) => a.is_calculated)
+        .map((a: any) => a.id)
+        .filter(Boolean);
+      if (calcAnalyteIds.length > 0) {
+        const { data: depsData } = await supabase
+          .from('analyte_dependencies')
+          .select('calculated_analyte_id, source_analyte_id, variable_name')
+          .in('calculated_analyte_id', calcAnalyteIds);
+        setCalcDeps((depsData || []) as typeof calcDeps);
       }
 
       setOrderAnalytes(flatAnalytes);
@@ -2115,13 +2131,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               const rawEp = rawExtractedParams.find(
                 (r: any) => r.parameter === ep.parameter
               ) || {};
-              const matchedTo = (rawEp.matched_to || '').toLowerCase();
-              const epNameLower = ep.parameter.toLowerCase();
+              const matchedTo = (rawEp.matched_to || '').toLowerCase().trim();
+              const epNameLower = ep.parameter.toLowerCase().trim();
               const epAnalyteId = ep.analyte_id || rawEp.analyte_id;
 
               // Try multiple matching strategies
               const idx = updated.findIndex((v) => {
-                const vNameLower = v.parameter.toLowerCase();
+                const vNameLower = v.parameter.toLowerCase().trim();
 
                 // 1. Match by analyte_id (most accurate)
                 if (v.analyte_id && epAnalyteId && v.analyte_id === epAnalyteId) {
@@ -2181,7 +2197,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 console.log(`  ✅ Matched: ${ep.parameter} (${ep.value}) → ${updated[idx].parameter}`);
                 updated[idx] = { ...updated[idx], value: ep.value, flag: ep.flag };
                 currentMatchedCount++;
-              } else {
+              } else if (idx === -1) {
                 const normalizedEpName = ep.parameter?.toLowerCase().trim();
                 const canAppendUnknown =
                   strictTargetSet.size === 0 ||
@@ -2331,14 +2347,19 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           STAT: "bg-red-100 text-red-800",
         } as any
       )[p] || "bg-gray-100 text-gray-800",
-    flag: (f?: string) =>
-      f === "H" || f === "High"
-        ? "text-red-600 bg-red-100"
-        : f === "L" || f === "Low"
-          ? "text-blue-600 bg-blue-100"
-          : f === "C" || f === "Critical"
-            ? "text-orange-600 bg-orange-100"
-            : "",
+    flag: (f?: string) => {
+      const normalizedFlag = (f || "").trim().toLowerCase();
+      if (["h", "high", "critical_h", "critical_high", "h*", "hh"].includes(normalizedFlag)) {
+        return "text-red-600 bg-red-100";
+      }
+      if (["l", "low", "critical_l", "critical_low", "l*", "ll"].includes(normalizedFlag)) {
+        return "text-blue-600 bg-blue-100";
+      }
+      if (["c", "critical"].includes(normalizedFlag)) {
+        return "text-orange-600 bg-orange-100";
+      }
+      return "";
+    },
     confidence: (c: number) =>
       c >= 0.95
         ? "text-green-600 bg-green-100"
@@ -2358,6 +2379,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     { value: "", label: "Normal" },
     { value: "H", label: "High" },
     { value: "L", label: "Low" },
+    { value: "critical_h", label: "Critical High" },
+    { value: "critical_l", label: "Critical Low" },
     { value: "A", label: "Abnormal" },
     { value: "C", label: "Critical" },
   ];
@@ -2555,7 +2578,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 const target = finalResults.find(v => v.parameter === r.name);
                 if (target) {
                   target.reference = r.used_reference_range;
-                  if (r.flag && ['H', 'L', 'C', 'LL', 'HH'].includes(r.flag)) target.flag = r.flag;
+                  if (r.flag && ['H', 'L', 'C', 'LL', 'HH', 'H*', 'L*', 'high', 'low', 'critical_h', 'critical_l', 'critical_high', 'critical_low'].includes(r.flag)) target.flag = r.flag;
                 }
               }
             });
@@ -2680,7 +2703,39 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         }
       };
 
-      const evaluateCalculatedValue = (analyte: TestGroupResult["analytes"][number], valueLookup: Map<string, number>): string => {
+      // ── Future-proof calculated parameter evaluation ──────────────────────
+      // Fetch analyte_dependencies for ALL calculated analytes across all test
+      // groups in one query.  Each row maps:
+      //   calculated_analyte_id  → the analyte whose value we compute
+      //   source_analyte_id      → the UUID of the input analyte
+      //   variable_name          → the token used in the formula  (e.g. "TG")
+      //
+      // This means any new calculated parameter only needs a row here – no
+      // code/naming convention in the analyte record is required.
+      const allCalcAnalyteIds = targetTestGroupsForSave
+        .flatMap((tg) => tg.analytes.filter((a) => a.is_calculated).map((a) => a.id))
+        .filter(Boolean) as string[];
+
+      type DepRow = { calculated_analyte_id: string; source_analyte_id: string; variable_name: string };
+      let allDeps: DepRow[] = [];
+      if (allCalcAnalyteIds.length > 0) {
+        const { data: depsData } = await supabase
+          .from('analyte_dependencies')
+          .select('calculated_analyte_id, source_analyte_id, variable_name')
+          .in('calculated_analyte_id', allCalcAnalyteIds);
+        allDeps = (depsData || []) as DepRow[];
+      }
+
+      // evaluateCalculatedValue now receives the deps slice for this analyte.
+      // Resolution order:
+      //   1. source_analyte_id key in valueLookup  (UUID — always unique)
+      //   2. variable_name key  (lowercased)        (dep-based fallback)
+      //   3. analyte name / code keys               (legacy / no-dep fallback)
+      const evaluateCalculatedValue = (
+        analyte: TestGroupResult["analytes"][number],
+        valueLookup: Map<string, number>,
+        deps: DepRow[]
+      ): string => {
         const formula = analyte.formula?.trim();
         if (!formula) return "";
 
@@ -2691,13 +2746,28 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         for (const variable of variables) {
           const variableKey = String(variable || "").trim().toLowerCase();
           if (!variableKey) return "";
-          let variableValue = valueLookup.get(variableKey);
+
+          // 1. UUID-based lookup via analyte_dependencies
+          const dep = deps.find(
+            (d) => d.variable_name.toLowerCase() === variableKey
+          );
+          let variableValue: number | undefined =
+            dep ? valueLookup.get(dep.source_analyte_id) : undefined;
+
+          // 2. Direct key match (name / code / variable_name already in map)
+          if (variableValue === undefined)
+            variableValue = valueLookup.get(variableKey);
+
+          // 3. Substring fallback (legacy)
           if (variableValue === undefined) {
-            const fallbackMatch = Array.from(valueLookup.entries()).find(([key]) =>
-              key === variableKey || key.includes(variableKey) || variableKey.includes(key)
+            const fallbackMatch = Array.from(valueLookup.entries()).find(
+              ([key]) =>
+                typeof key === 'string' && key.length <= 20 && // avoid UUID substring matches
+                (key === variableKey || key.includes(variableKey) || variableKey.includes(key))
             );
             variableValue = fallbackMatch?.[1];
           }
+
           if (variableValue === undefined) return "";
           const escapedVar = String(variable).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
           resolved = resolved.replace(new RegExp(`\\b${escapedVar}\\b`, "g"), String(variableValue));
@@ -2722,7 +2792,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         for (const analyte of testGroup.analytes) {
           const manual = manualValues.find((v) => v.analyte_id === analyte.id) || manualValues.find((v) => v.parameter === analyte.name);
           const aiOrManual = testGroupResults.find((v) => v.analyte_id === analyte.id) || testGroupResults.find((v) => v.parameter === analyte.name);
-          addLookupAliases(valueLookup, analyte.name, analyte.code, aiOrManual?.value ?? manual?.value ?? analyte.existing_result?.value);
+          const val = aiOrManual?.value ?? manual?.value ?? analyte.existing_result?.value;
+          // Store by UUID (primary key — always unique, no naming convention needed)
+          if (analyte.id) {
+            const num = toNumber(val);
+            if (num !== null) valueLookup.set(analyte.id, num);
+          }
+          addLookupAliases(valueLookup, analyte.name, analyte.code, val);
         }
 
         // Always derive calculated rows from analyte definitions so they are persisted even if hidden in manualValues
@@ -2730,7 +2806,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           .filter((a) => !!a.is_calculated)
           .map((a) => {
             const manual = manualValues.find((v) => v.analyte_id === a.id) || manualValues.find((v) => v.parameter === a.name);
-            const calculatedValue = evaluateCalculatedValue(a, valueLookup);
+            // Pass only deps for this specific calculated analyte
+            const analyteDepSlice = allDeps.filter((d) => d.calculated_analyte_id === a.id);
+            const calculatedValue = evaluateCalculatedValue(a, valueLookup, analyteDepSlice);
             return {
               analyte_id: a.id,
               parameter: a.name,
@@ -3315,6 +3393,36 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           {value.verify_note}
                         </div>
                       )}
+                      {value.is_calculated && (() => {
+                        const analyteObj = testGroup.analytes.find((a: any) => a.id === value.analyte_id);
+                        const deps = calcDeps.filter(d => d.calculated_analyte_id === value.analyte_id);
+                        if (!analyteObj?.formula) return null;
+                        return (
+                          <div className="mt-1.5 text-xs bg-blue-50 border border-blue-100 rounded p-1.5 space-y-0.5">
+                            <div className="font-mono text-blue-700 mb-1 truncate" title={analyteObj.formula}>
+                              f: {analyteObj.formula}
+                            </div>
+                            {deps.length === 0 ? (
+                              <div className="text-amber-600 font-medium">No dependencies saved — open Dependency Manager</div>
+                            ) : (
+                              deps.map(dep => {
+                                const sourceManual = manualValues.find(mv => mv.analyte_id === dep.source_analyte_id);
+                                const sourceName = orderAnalytes.find((a: any) => a.id === dep.source_analyte_id)?.name || dep.source_analyte_id.slice(0, 8);
+                                const hasValue = sourceManual?.value && String(sourceManual.value).trim();
+                                return (
+                                  <div key={dep.variable_name} className={`flex items-center gap-1 ${hasValue ? 'text-green-700' : 'text-red-600'}`}>
+                                    <span>{hasValue ? '✓' : '✗'}</span>
+                                    <span className="font-mono font-medium">{dep.variable_name}</span>
+                                    <span className="text-gray-500">→ {sourceName}</span>
+                                    {hasValue && <span className="font-semibold">= {sourceManual?.value}</span>}
+                                    {!hasValue && <span className="italic">(no value yet)</span>}
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
 
                     {/* ✅ Value Input - Dropdown if expected_normal_values, else Pop-out */}

@@ -11,6 +11,42 @@ const corsHeaders = {
 
 const WHATSAPP_API_BASE = Deno.env.get('WHATSAPP_API_BASE_URL') || 'https://app.limsapp.in/whatsapp'
 
+// Edge functions run in UTC. Send window times are configured in IST (UTC+5:30).
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000
+
+function isWithinWindow(sendWindowStart?: string, sendWindowEnd?: string): boolean {
+  const utcNow = Date.now()
+  const istDate = new Date(utcNow + IST_OFFSET_MS)
+  const currentMinutes = istDate.getUTCHours() * 60 + istDate.getUTCMinutes()
+
+  const [startHour, startMinute] = (sendWindowStart || '09:00:00').split(':').map(Number)
+  const [endHour, endMinute] = (sendWindowEnd || '21:00:00').split(':').map(Number)
+  const startMinutes = (startHour * 60) + startMinute
+  const endMinutes = (endHour * 60) + endMinute
+
+  console.log(`⏰ Window check: IST ${istDate.getUTCHours()}:${String(istDate.getUTCMinutes()).padStart(2,'0')}, minutes=${currentMinutes}, window=${startMinutes}-${endMinutes}`)
+
+  if (startMinutes <= endMinutes) {
+    return currentMinutes >= startMinutes && currentMinutes <= endMinutes
+  }
+
+  return currentMinutes >= startMinutes || currentMinutes <= endMinutes
+}
+
+function nextWindowStartIso(sendWindowStart?: string): string {
+  const utcNow = Date.now()
+  const [startHour, startMinute] = (sendWindowStart || '09:00:00').split(':').map(Number)
+  // Calculate next window start in IST, then convert to UTC
+  const nextIst = new Date(utcNow + IST_OFFSET_MS)
+  nextIst.setUTCHours(startHour, startMinute, 0, 0)
+  if (nextIst.getTime() <= utcNow + IST_OFFSET_MS) {
+    nextIst.setUTCDate(nextIst.getUTCDate() + 1)
+  }
+  const nextUtc = new Date(nextIst.getTime() - IST_OFFSET_MS)
+
+  return nextUtc.toISOString()
+}
+
 serve(async (req: Request) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -76,6 +112,7 @@ serve(async (req: Request) => {
 
     // Use existing Netlify function for sending reports
     const NETLIFY_SEND_REPORT_URL = 'https://app.limsapp.in/.netlify/functions/send-report-url'
+    const NETLIFY_SEND_MESSAGE_URL = 'https://app.limsapp.in/.netlify/functions/whatsapp-send-message'
 
     // Helper function to send WhatsApp via Netlify function
     const sendWhatsApp = async (item: any): Promise<boolean> => {
@@ -169,10 +206,36 @@ serve(async (req: Request) => {
           }
           return true
         } else {
-          // For text-only messages, we don't have a Netlify function yet
-          // This case is rare - most notifications include reports
-          console.warn('⚠️ Text-only messages not implemented via Netlify function')
-          return false
+          // Send text message via Netlify function
+          const requestBody = {
+            userId: whatsappUserId,
+            phoneNumber: formattedPhone,
+            message: item.message_content || '',
+            templateData: {
+              PatientName: item.recipient_name || 'Patient'
+            }
+          }
+
+          const response = await fetch(NETLIFY_SEND_MESSAGE_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+          })
+
+          const responseText = await response.text()
+          if (!response.ok) {
+            console.error(`❌ Netlify text function error: ${response.status} ${response.statusText}`)
+            console.error(`   Response: ${responseText}`)
+            return false
+          }
+
+          try {
+            const result = JSON.parse(responseText)
+            console.log(`✅ Text WhatsApp sent successfully:`, result)
+          } catch {
+            console.log(`✅ Text WhatsApp sent (raw response): ${responseText}`)
+          }
+          return true
         }
       } catch (error) {
         console.error(`❌ WhatsApp send exception:`, error)
@@ -185,6 +248,59 @@ serve(async (req: Request) => {
 
     for (const item of items) {
       console.log(`\n📤 Processing: ${item.id} (${item.trigger_type} → ${item.recipient_type})`)
+
+      const { data: settings } = await supabaseClient
+        .from('lab_notification_settings')
+        .select('send_window_start, send_window_end, queue_outside_window, send_report_on_status')
+        .eq('lab_id', item.lab_id)
+        .maybeSingle()
+
+      if (settings && !isWithinWindow(settings.send_window_start, settings.send_window_end)) {
+        if (settings.queue_outside_window === false) {
+          await supabaseClient
+            .from('notification_queue')
+            .update({
+              status: 'skipped',
+              last_error: 'Outside send window and queue disabled',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', item.id)
+          continue
+        }
+
+        await supabaseClient
+          .from('notification_queue')
+          .update({
+            scheduled_for: nextWindowStartIso(settings.send_window_start),
+            last_error: 'Deferred to next send window',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', item.id)
+        continue
+      }
+
+      if (item.trigger_type === 'report_ready' && item.report_id && settings?.send_report_on_status) {
+        const { data: report } = await supabaseClient
+          .from('reports')
+          .select('status, report_status')
+          .eq('id', item.report_id)
+          .maybeSingle()
+
+        const currentStatus = (report?.report_status || report?.status || '').toLowerCase()
+        const requiredStatus = String(settings.send_report_on_status).toLowerCase()
+
+        if (currentStatus !== requiredStatus) {
+          await supabaseClient
+            .from('notification_queue')
+            .update({
+              scheduled_for: new Date(Date.now() + (30 * 60 * 1000)).toISOString(),
+              last_error: `Waiting for report status ${settings.send_report_on_status}`,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', item.id)
+          continue
+        }
+      }
 
       // Mark as sending
       await supabaseClient

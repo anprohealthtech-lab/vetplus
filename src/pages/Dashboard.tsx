@@ -223,6 +223,7 @@ type CardOrder = {
   transit_status?: string | null;
   collected_at_location_id?: string | null;
   collected_by?: string | null;
+  tatStarted?: boolean;
 };
 
 
@@ -232,7 +233,7 @@ type CardOrder = {
 =========================== */
 
 const Dashboard: React.FC = () => {
-  const { user } = useAuth();
+  const { user, blockSendOnDue } = useAuth();
 
   const [orders, setOrders] = useState<CardOrder[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -441,10 +442,12 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       const invoiceInfo = invoiceMap.get(o.id);
       const reportInfo = reportMap.get(o.id);
 
-      // Calculate dynamic expected date based on TAT
+      // Calculate dynamic expected date based on TAT (only when sample has been received)
       let calculatedExpectedDateMs = 0;
+      let hasTatStartTime = false;
       rows.forEach((r) => {
         if (r.tat_hours && r.tat_start_time) {
+          hasTatStartTime = true;
           const start = new Date(r.tat_start_time).getTime();
           const duration = Number(r.tat_hours) * 3600 * 1000;
           const end = start + duration;
@@ -452,7 +455,9 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         }
       });
 
+      // TAT only starts after sample receipt — no fallback calculation before that
       const dynamicExpectedDate = calculatedExpectedDateMs > 0 ? new Date(calculatedExpectedDateMs).toISOString() : o.expected_date;
+      const tatStarted = hasTatStartTime;
 
       const panels: Panel[] = rows.map((r) => ({
         name: r.test_group_name || "Test",
@@ -489,6 +494,7 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         priority: o.priority,
         order_date: o.order_date,
         expected_date: dynamicExpectedDate,
+        tatStarted,
         total_amount: o.final_amount || o.total_amount,
         // Use totalInvoiced from aggregated invoices, fallback to order amount
         final_amount: invoiceInfo?.totalInvoiced 
@@ -621,7 +627,9 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
 
     const s = sorted.reduce(
       (acc, o) => {
-        if (o.status === "Completed" || o.status === "Delivered") acc.allDone++;
+        // All Done: explicit Completed/Delivered status OR all expected analytes are approved/verified
+        if (o.status === "Completed" || o.status === "Delivered" ||
+            (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal)) acc.allDone++;
         else if (o.status === "Pending Approval") acc.awaitingApproval++;
         else if (o.enteredTotal > 0 && o.enteredTotal >= o.expectedTotal * 0.75) acc.mostlyDone++;
         else acc.pending++;
@@ -1061,6 +1069,14 @@ id,
       setIsSendingReport(order.id);
 
       if (type === "whatsapp") {
+        // Block send if lab policy is active, order has a balance, and user is not Admin
+        const isAdmin = String(user?.user_metadata?.role || '').toLowerCase() === 'admin';
+        if (blockSendOnDue && (order.due_amount ?? 0) > 0 && !isAdmin) {
+          alert('Report cannot be sent\u2014this order has an outstanding balance. Please collect payment first or contact the Admin.');
+          setIsSendingReport(null);
+          return;
+        }
+
         let phone = order.patient_phone || "";
         if (!phone && order.patient_id) {
           const { data: patientData } = await supabase.from("patients").select("phone").eq("id", order.patient_id).single();
@@ -2162,14 +2178,20 @@ id,
                                   <div className="flex items-center justify-end gap-2 text-sm text-gray-600">
                                     <span>Ordered: {new Date(o.order_date).toLocaleDateString()}</span>
                                     {(() => {
+                                      // If TAT hasn't started yet (no sample received), show message instead of time
+                                      if (!o.tatStarted) {
+                                        return (
+                                          <span className="text-amber-600 font-medium text-xs">
+                                            ⏳ TAT starts after collection
+                                          </span>
+                                        );
+                                      }
+
                                       const now = new Date();
                                       const exp = new Date(o.expected_date);
-                                      // Check if time is effectively midnight (Start of Day)
-                                      // 00:00 (Local/UTC) or 05:30 (IST interpretation of UTC midnight)
                                       const isStartOfDay = (exp.getHours() === 0 && exp.getMinutes() === 0) ||
                                         (exp.getHours() === 5 && exp.getMinutes() === 30);
 
-                                      // If start of day, treat deadline as end of day
                                       const cutoff = new Date(exp);
                                       if (isStartOfDay) {
                                         cutoff.setHours(23, 59, 59, 999);
@@ -2191,7 +2213,7 @@ id,
                               </div>
 
                               {/* Additional Info */}
-                              <div className="mt-3 hidden sm:flex flex-wrap items-center gap-x-4 gap-y-1 px-3 text-sm text-gray-600">
+                              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 px-3 text-sm text-gray-600">
                                 {o.collected_by && (
                                   <div className="flex items-center gap-1">
                                     <span className="font-medium text-gray-700">Collected by:</span>

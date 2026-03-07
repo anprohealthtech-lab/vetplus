@@ -45,11 +45,31 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
     const loadPdf = async () => {
         setLoading(true);
         try {
-            // Use quickViewPDF to get the Blob URL directly
-            const url = await quickViewPDF(orderId, { openInNewTab: false });
-            setPdfUrl(url);
+            // Check if there's already a generated PDF stored for this order
+            const { data: reportData } = await supabase
+                .from('reports')
+                .select('pdf_url')
+                .eq('order_id', orderId)
+                .eq('report_type', 'final')
+                .not('pdf_url', 'is', null)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+            if (reportData?.pdf_url) {
+                // Use the already-generated PDF directly — matches what was actually sent
+                setPdfUrl(reportData.pdf_url);
+                setFinalReportUrl(reportData.pdf_url);
+            } else {
+                // Fall back to on-the-fly jsPDF generation
+                const url = await quickViewPDF(orderId, { openInNewTab: false });
+                setPdfUrl(url);
+            }
         } catch (e) {
             console.error("Failed to load PDF preview:", e);
+            // Last resort fallback
+            const url = await quickViewPDF(orderId, { openInNewTab: false }).catch(() => null);
+            setPdfUrl(url);
         } finally {
             setLoading(false);
         }

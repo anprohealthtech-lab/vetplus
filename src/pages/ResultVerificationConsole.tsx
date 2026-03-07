@@ -806,7 +806,8 @@ const ResultVerificationConsole: React.FC = () => {
     }
   };
 
-  // Edit rejected analyte value inline
+  // Edit analyte value inline — works for all statuses (pending / approved / rejected)
+  const [recalculating, setRecalculating] = useState<Record<string, boolean>>({});
   const [editingAnalyteId, setEditingAnalyteId] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<{
     value: string;
@@ -875,8 +876,6 @@ const ResultVerificationConsole: React.FC = () => {
         return next;
       });
       setEditingAnalyteId(null);
-      await loadPanels();
-      alert("Analyte value updated and reset to pending");
     }
   };
 
@@ -969,6 +968,133 @@ const ResultVerificationConsole: React.FC = () => {
       await loadPanels();
     }
     setBusyFor(row.result_id, false);
+  };
+
+  /* Recalculate all auto-calculated analytes in a panel from saved source values */
+  const recalculatePanel = async (row: PanelRow) => {
+    const allRows = rowsByResult[row.result_id] || [];
+    const calcRows = allRows.filter(a => a.is_auto_calculated && a.analyte_id);
+    const srcRows  = allRows.filter(a => !a.is_auto_calculated && a.value !== null && a.value !== '');
+    if (calcRows.length === 0) {
+      alert('No calculated parameters found in this panel.');
+      return;
+    }
+
+    setRecalculating(prev => ({ ...prev, [row.result_id]: true }));
+    try {
+      const calcIds = calcRows.map(a => a.analyte_id);
+      const srcIds  = srcRows.map(a => a.analyte_id).filter(Boolean) as string[];
+
+      const [{ data: formulas }, { data: deps }, { data: srcAnalytesData }] = await Promise.all([
+        supabase.from('analytes').select('id, formula, formula_variables').in('id', calcIds),
+        supabase.from('analyte_dependencies')
+          .select('calculated_analyte_id, source_analyte_id, variable_name')
+          .in('calculated_analyte_id', calcIds),
+        srcIds.length > 0
+          ? supabase.from('analytes').select('id, name, code').in('id', srcIds)
+          : Promise.resolve({ data: [] as any[] }),
+      ]);
+
+      // Build lookup: analyte_id / param name / code → numeric value
+      const valueLookup = new Map<string, number>();
+      for (const r of srcRows) {
+        if (!r.value) continue;
+        const num = parseFloat(r.value);
+        if (isNaN(num)) continue;
+        if (r.analyte_id) valueLookup.set(r.analyte_id, num);
+        valueLookup.set(r.parameter.toLowerCase(), num);
+        const sa = (srcAnalytesData || []).find((s: any) => s.id === r.analyte_id);
+        if (sa?.code) valueLookup.set((sa.code as string).toLowerCase(), num);
+        if (sa?.name) valueLookup.set((sa.name as string).toLowerCase(), num);
+      }
+
+      const parseVars = (raw: any): string[] => {
+        if (!raw) return [];
+        if (Array.isArray(raw)) return raw.filter(Boolean);
+        try { const p = JSON.parse(raw); return Array.isArray(p) ? p.filter(Boolean) : []; }
+        catch { return []; }
+      };
+
+      const updates: Array<{ id: string; value: string; inputs: Record<string, number> }> = [];
+
+      for (const calcRow of calcRows) {
+        const fi = (formulas || []).find((f: any) => f.id === calcRow.analyte_id);
+        if (!fi?.formula) continue;
+
+        const rowDeps = (deps || []).filter((d: any) => d.calculated_analyte_id === calcRow.analyte_id);
+        const scope: Record<string, number> = {};
+        let allFound = true;
+
+        if (rowDeps.length > 0) {
+          for (const dep of rowDeps) {
+            const val = valueLookup.get(dep.source_analyte_id) ??
+                        valueLookup.get((dep.variable_name as string).toLowerCase());
+            if (val === undefined) { allFound = false; break; }
+            scope[dep.variable_name] = val;
+          }
+        } else {
+          // Fallback: use formula_variables
+          for (const v of parseVars(fi.formula_variables)) {
+            const val = valueLookup.get(v.toLowerCase()) ?? valueLookup.get(v);
+            if (val === undefined) { allFound = false; break; }
+            scope[v] = val;
+          }
+        }
+
+        if (!allFound || Object.keys(scope).length === 0) continue;
+
+        let resolved = (fi.formula as string).trim();
+        for (const [k, v] of Object.entries(scope)) {
+          const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          resolved = resolved.replace(new RegExp(`\\b${esc}\\b`, 'g'), String(v));
+        }
+        if (!/^[0-9+\-*/().\s]+$/.test(resolved)) continue;
+        try {
+          const computed = Function('"use strict"; return (' + resolved + ');')();
+          if (!Number.isFinite(computed)) continue;
+          updates.push({ id: calcRow.id, value: String(Math.round(Number(computed) * 100) / 100), inputs: { ...scope } });
+        } catch { continue; }
+      }
+
+      if (updates.length === 0) {
+        alert('Could not recalculate — make sure all source values (e.g. TG, TC, HDL, LDL) are saved first.');
+        return;
+      }
+
+      await Promise.all(updates.map(upd =>
+        supabase.from('result_values').update({
+          value: upd.value,
+          calculation_inputs: upd.inputs,
+          calculated_at: new Date().toISOString(),
+          is_auto_calculated: true,
+          verify_status: 'pending',
+          verify_note: 'Recalculated by verifier',
+          verified_at: null,
+          verified_by: null,
+        }).eq('id', upd.id)
+      ));
+
+      setRowsByResult(s => ({
+        ...s,
+        [row.result_id]: (s[row.result_id] || []).map(a => {
+          const upd = updates.find(u => u.id === a.id);
+          if (!upd) return a;
+          return {
+            ...a,
+            value: upd.value,
+            calculation_inputs: upd.inputs,
+            calculated_at: new Date().toISOString(),
+            is_auto_calculated: true,
+            verify_status: 'pending' as const,
+            verify_note: 'Recalculated by verifier',
+            verified_at: null,
+            verified_by: null,
+          };
+        }),
+      }));
+    } finally {
+      setRecalculating(prev => ({ ...prev, [row.result_id]: false }));
+    }
   };
 
   const bulkApproveSelected = async () => {
@@ -1136,11 +1262,21 @@ const ResultVerificationConsole: React.FC = () => {
               )}
               {a.is_auto_calculated && (
                 <span
-                  className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200"
-                  title={a.calculation_inputs ? `Calculated from: ${Object.entries(a.calculation_inputs).map(([k, v]) => `${k}=${v}`).join(', ')}` : 'Auto-calculated value'}
+                  className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
+                    a.value
+                      ? 'bg-amber-100 text-amber-800 border-amber-200'
+                      : 'bg-red-100 text-red-800 border-red-200'
+                  }`}
+                  title={
+                    a.calculation_inputs && Object.keys(a.calculation_inputs).length > 0
+                      ? `Calculated from: ${Object.entries(a.calculation_inputs).map(([k, v]) => `${k}=${v}`).join(', ')}`
+                      : a.value
+                        ? 'Auto-calculated (inputs not recorded)'
+                        : 'Calculation failed — source values may be missing. Click Recalculate.'
+                  }
                 >
                   <Calculator className="h-3 w-3 mr-1" />
-                  Calc
+                  {a.value ? 'Calc' : 'Calc (failed)'}
                 </span>
               )}
               <button
@@ -1173,7 +1309,22 @@ const ResultVerificationConsole: React.FC = () => {
                 {a.verify_note}
               </div>
             )}
-            {a.value && !isRerunRequest && (
+            {a.is_auto_calculated && !a.value && (
+              <div className="mt-1 text-xs text-red-600 bg-red-50 px-2 py-1 rounded border border-red-200">
+                Missing source values — enter all required analytes then click Recalculate
+                {a.calculation_inputs && Object.keys(a.calculation_inputs).length > 0 && (
+                  <span className="ml-1 text-gray-500">
+                    (found: {Object.keys(a.calculation_inputs).join(', ')})
+                  </span>
+                )}
+              </div>
+            )}
+            {a.is_auto_calculated && a.value && a.calculation_inputs && Object.keys(a.calculation_inputs).length > 0 && (
+              <div className="mt-1 text-xs text-amber-700">
+                Inputs: {Object.entries(a.calculation_inputs).map(([k, v]) => `${k}=${v}`).join(' · ')}
+              </div>
+            )}
+            {a.value && !isRerunRequest && !a.is_auto_calculated && (
               <div className="text-sm text-gray-600 mt-1">
                 Last updated: {a.verified_at ? new Date(a.verified_at).toLocaleString() : 'Never'}
               </div>
@@ -1265,12 +1416,23 @@ const ResultVerificationConsole: React.FC = () => {
                     <CheckSquare className="h-4 w-4 mr-2" />
                     Approved
                   </span>
+                  <button
+                    disabled={isBusy}
+                    onClick={() => startEditAnalyte(a)}
+                    className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-blue-100 to-indigo-100 text-blue-700 hover:from-blue-200 hover:to-indigo-200 transition-all duration-200 shadow-sm disabled:opacity-50"
+                    title="Edit value — resets to pending for re-verification"
+                  >
+                    <svg className="h-3.5 w-3.5 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    Edit
+                  </button>
                   {isAdmin && (
                     <button
                       disabled={isBusy}
                       onClick={() => unapproveAnalyte(a.id)}
                       className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-orange-100 to-amber-100 text-orange-700 hover:from-orange-200 hover:to-amber-200 transition-all duration-200 shadow-sm disabled:opacity-50"
-                      title="Admin: Revert to pending for re-verification"
+                      title="Admin: Revert to pending without editing"
                     >
                       <Undo2 className="h-3.5 w-3.5 mr-1" />
                       Unapprove
@@ -1310,8 +1472,8 @@ const ResultVerificationConsole: React.FC = () => {
                   </div>
                 </div>
               ) : (
-                // Pending state - show Approve and Reject
-                <div className="flex items-center space-x-2">
+                // Pending state - show Edit / Approve / Reject
+                <div className="flex items-center flex-wrap gap-2">
                   <button
                     disabled={isBusy}
                     onClick={() => approveAnalyte(a.id)}
@@ -1332,6 +1494,18 @@ const ResultVerificationConsole: React.FC = () => {
                   >
                     <XCircle className="h-4 w-4 mr-2" />
                     Reject
+                  </button>
+
+                  <button
+                    disabled={isBusy}
+                    onClick={() => startEditAnalyte(a)}
+                    className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-gray-100 to-slate-100 text-gray-600 hover:from-gray-200 hover:to-slate-200 transition-all duration-200 shadow-sm disabled:opacity-50"
+                    title="Edit value"
+                  >
+                    <svg className="h-3.5 w-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    Edit
                   </button>
                 </div>
               )}
@@ -1550,6 +1724,19 @@ const ResultVerificationConsole: React.FC = () => {
                   <span className="hidden sm:inline">Email</span>
                 </button>
                 <button
+                  disabled={busy[row.result_id] || recalculating[row.result_id]}
+                  onClick={() => recalculatePanel(row)}
+                  className="inline-flex items-center px-3 py-2 sm:px-4 sm:py-2 bg-gradient-to-r from-amber-500 to-yellow-500 text-white rounded-lg sm:rounded-xl hover:from-amber-600 hover:to-yellow-600 transition-all duration-200 shadow-sm font-semibold disabled:opacity-50 text-xs sm:text-sm"
+                  title="Recalculate all calculated parameters (VLDL, TC/HDL ratio, etc.)"
+                >
+                  {recalculating[row.result_id] ? (
+                    <Loader2 className="h-4 w-4 sm:mr-2 animate-spin" />
+                  ) : (
+                    <Calculator className="h-4 w-4 sm:mr-2" />
+                  )}
+                  <span className="hidden sm:inline">Recalculate</span>
+                </button>
+                <button
                   disabled={busy[row.result_id]}
                   onClick={() => approveAllInPanel(row)}
                   className="inline-flex items-center px-3 py-2 sm:px-4 sm:py-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg sm:rounded-xl hover:from-green-700 hover:to-emerald-700 transition-all duration-200 shadow-sm font-semibold disabled:opacity-50 text-xs sm:text-sm"
@@ -1703,6 +1890,19 @@ const ResultVerificationConsole: React.FC = () => {
                 {/* AI Flag & Range Analysis Button - Hidden (now done in backend automatically) */}
                 {/* AI Verifier Summary Button - Hidden (now done in backend automatically) */}
 
+                <button
+                  disabled={busy[row.result_id] || recalculating[row.result_id]}
+                  onClick={() => recalculatePanel(row)}
+                  className="inline-flex items-center px-5 py-3 bg-gradient-to-r from-amber-500 to-yellow-500 text-white rounded-xl hover:from-amber-600 hover:to-yellow-600 transition-all duration-200 shadow-lg font-semibold disabled:opacity-50"
+                  title="Recalculate all calculated parameters from current source values"
+                >
+                  {recalculating[row.result_id] ? (
+                    <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                  ) : (
+                    <Calculator className="h-5 w-5 mr-2" />
+                  )}
+                  Recalculate
+                </button>
                 <button
                   disabled={busy[row.result_id]}
                   onClick={() => approveAllInPanel(row)}

@@ -17,6 +17,29 @@ interface DocumentPreviewProps {
   onEdit: (data: any[]) => void;
 }
 
+const getFlagDisplay = (flag?: string) => {
+  const rawFlag = flag || '';
+  const normalizedFlag = rawFlag.trim().toLowerCase();
+
+  if (['critical_h', 'critical high', 'critical_high', 'ch', 'h*', 'hh'].includes(normalizedFlag)) {
+    return { label: 'Critical High', className: 'bg-red-100 text-red-800' };
+  }
+
+  if (['critical_l', 'critical low', 'critical_low', 'cl', 'l*', 'll'].includes(normalizedFlag)) {
+    return { label: 'Critical Low', className: 'bg-blue-100 text-blue-800' };
+  }
+
+  if (normalizedFlag === 'h' || normalizedFlag === 'high') {
+    return { label: 'High', className: 'bg-red-100 text-red-800' };
+  }
+
+  if (normalizedFlag === 'l' || normalizedFlag === 'low') {
+    return { label: 'Low', className: 'bg-blue-100 text-blue-800' };
+  }
+
+  return { label: rawFlag, className: 'bg-orange-100 text-orange-800' };
+};
+
 const DocumentPreview: React.FC<DocumentPreviewProps> = ({
   attachment,
   extractedData,
@@ -144,13 +167,14 @@ const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                   </div>
                   {param.flag && (
                     <div className="mt-2">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                        param.flag === 'H' ? 'bg-red-100 text-red-800' :
-                        param.flag === 'L' ? 'bg-blue-100 text-blue-800' :
-                        'bg-orange-100 text-orange-800'
-                      }`}>
-                        {param.flag}
-                      </span>
+                      {(() => {
+                        const flagDisplay = getFlagDisplay(param.flag);
+                        return (
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${flagDisplay.className}`}>
+                            {flagDisplay.label}
+                          </span>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>

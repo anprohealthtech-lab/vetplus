@@ -1,0 +1,1 @@
+ALTER TABLE lab_templates ADD COLUMN IF NOT EXISTS is_interpretation_only BOOLEAN DEFAULT false;

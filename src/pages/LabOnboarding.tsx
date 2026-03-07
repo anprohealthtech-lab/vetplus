@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Building2, User, Phone, Mail, Lock, CheckCircle, AlertCircle, Loader2, Globe } from 'lucide-react';
 import { supabase } from '../utils/supabase';
+import { whatsappUserSync } from '../utils/whatsappUserSync';
 
 interface FormData {
     // Lab Info
@@ -42,6 +43,7 @@ const LabOnboarding: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<{ labId: string; adminEmail: string; tempPassword?: string } | null>(null);
+    const [autoSignedIn, setAutoSignedIn] = useState(false);
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value } = e.target;
@@ -70,17 +72,23 @@ const LabOnboarding: React.FC = () => {
             setError('Admin email is required');
             return false;
         }
-        if (!formData.admin_email.includes('@')) {
-            setError('Please enter a valid email address');
+        // Proper email validation — must have local@domain.tld
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+        if (!emailRegex.test(formData.admin_email)) {
+            setError('Please enter a valid email address (e.g., user@example.com)');
             return false;
         }
-        if (formData.admin_password && formData.admin_password.length < 6) {
-            setError('Password must be at least 6 characters');
-            return false;
-        }
-        if (formData.admin_password !== formData.confirm_password) {
-            setError('Passwords do not match');
-            return false;
+        if (formData.admin_password) {
+            // Supabase GoTrue requires: 8+ chars, uppercase, lowercase, number, special char
+            const pwdRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]).{8,}$/;
+            if (!pwdRegex.test(formData.admin_password)) {
+                setError('Password must be at least 8 characters and include uppercase, lowercase, a number, and a special character (e.g., Abcd@1234)');
+                return false;
+            }
+            if (formData.admin_password !== formData.confirm_password) {
+                setError('Passwords do not match');
+                return false;
+            }
         }
         return true;
     };
@@ -121,18 +129,42 @@ const LabOnboarding: React.FC = () => {
                 },
             });
 
-            if (fnError) throw fnError;
-
+            // data contains the parsed JSON body even on error responses;
+            // fnError.message is generic "Edge Function returned a non-2xx status code"
             if (data?.error) {
                 throw new Error(data.error);
             }
 
+            if (fnError) throw fnError;
+
+            const tempPassword = data.admin?.temporary_password;
+            const finalPassword = formData.admin_password || tempPassword;
+
             setSuccess({
                 labId: data.lab?.id,
                 adminEmail: data.admin?.email,
-                tempPassword: data.admin?.temporary_password,
+                tempPassword,
             });
             setStep(3);
+
+            // Silently sign in the new admin and sync to WhatsApp (background)
+            if (finalPassword) {
+                (async () => {
+                    try {
+                        const { error: signInError } = await supabase.auth.signInWithPassword({
+                            email: data.admin.email,
+                            password: finalPassword,
+                        });
+                        if (!signInError) {
+                            setAutoSignedIn(true);
+                            // Fire-and-forget WhatsApp sync
+                            whatsappUserSync.syncUserToWhatsApp(data.admin.id).catch(() => {});
+                        }
+                    } catch {
+                        // Non-critical — user can sign in manually
+                    }
+                })();
+            }
         } catch (err: any) {
             console.error('Error creating lab:', err);
             setError(err.message || 'Failed to create lab. Please try again.');
@@ -409,10 +441,11 @@ const LabOnboarding: React.FC = () => {
                                             name="admin_password"
                                             value={formData.admin_password}
                                             onChange={handleChange}
-                                            placeholder="Choose a password (optional - auto-generated if empty)"
+                                            placeholder="Choose a password (e.g., Abcd@1234)"
                                             className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                         />
                                     </div>
+                                    <p className="text-xs text-gray-500 mt-1">Min 8 chars · uppercase · lowercase · number · special char (e.g., Abcd@1234) · leave empty to auto-generate</p>
                                 </div>
 
                                 {formData.admin_password && (
@@ -508,16 +541,16 @@ const LabOnboarding: React.FC = () => {
 
                             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
                                 <p className="text-blue-800">
-                                    <strong>Next Steps:</strong><br />
-                                    Contact the administrator at <a href="mailto:support@limsapp.in" className="underline">support@limsapp.in</a> to activate your subscription.
+                                    <strong>5-Day Free Trial Active!</strong><br />
+                                    Your lab is ready to use. Explore all features during your trial period.
                                 </p>
                             </div>
 
                             <a
-                                href="/login"
+                                href={autoSignedIn ? '/' : '/login'}
                                 className="inline-block px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors"
                             >
-                                Go to Login
+                                {autoSignedIn ? 'Go to Dashboard' : 'Go to Login'}
                             </a>
                         </div>
                     )}

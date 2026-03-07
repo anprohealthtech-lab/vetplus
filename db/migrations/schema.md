@@ -1337,6 +1337,7 @@ CREATE TABLE public.lab_templates (
   ai_verification_summary text,
   ai_verification_details jsonb,
   ai_verification_checked_at timestamp with time zone,
+  is_interpretation_only boolean DEFAULT false,
   CONSTRAINT lab_templates_pkey PRIMARY KEY (id),
   CONSTRAINT lab_templates_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT lab_templates_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
@@ -1428,9 +1429,14 @@ CREATE TABLE public.labs (
   bank_details jsonb,
   method_options jsonb DEFAULT '["Manual", "Automated", "Semi-Automated", "Spectrophotometry", "Flow Cytometry", "Immunoassay", "ELISA", "Chemiluminescence", "PCR", "Microscopy", "Culture", "Electrophoresis", "Chromatography", "Mass Spectrometry"]'::jsonb,
   default_template_style text DEFAULT 'beautiful'::text,
+  flag_options jsonb DEFAULT '[{"label": "Normal", "value": ""}, {"label": "High", "value": "H"}, {"label": "Low", "value": "L"}, {"label": "Abnormal", "value": "A"}, {"label": "Critical", "value": "C"}]'::jsonb,
   show_methodology boolean DEFAULT true,
   show_interpretation boolean DEFAULT false,
-  flag_options jsonb DEFAULT '[{"label": "Normal", "value": ""}, {"label": "High", "value": "H"}, {"label": "Low", "value": "L"}, {"label": "Abnormal", "value": "A"}, {"label": "Critical", "value": "C"}]'::jsonb,
+  pdf_letterhead_mode text NOT NULL DEFAULT 'background'::text CHECK (pdf_letterhead_mode = ANY (ARRAY['background'::text, 'header_footer'::text])),
+  loyalty_enabled boolean NOT NULL DEFAULT false,
+  loyalty_conversion_rate numeric NOT NULL DEFAULT 0.1,
+  loyalty_min_redeem_points integer NOT NULL DEFAULT 100,
+  loyalty_point_value numeric NOT NULL DEFAULT 1.0,
   CONSTRAINT labs_pkey PRIMARY KEY (id),
   CONSTRAINT labs_default_processing_location_id_fkey FOREIGN KEY (default_processing_location_id) REFERENCES public.locations(id)
 );
@@ -1504,6 +1510,23 @@ CREATE TABLE public.locations (
   is_main_lab boolean DEFAULT false,
   CONSTRAINT locations_pkey PRIMARY KEY (id),
   CONSTRAINT locations_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
+CREATE TABLE public.loyalty_transactions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  patient_id uuid NOT NULL,
+  lab_id uuid NOT NULL,
+  order_id uuid,
+  type text NOT NULL CHECK (type = ANY (ARRAY['earned'::text, 'redeemed'::text, 'adjusted'::text, 'expired'::text])),
+  points integer NOT NULL,
+  balance_after integer NOT NULL DEFAULT 0,
+  description text,
+  created_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT loyalty_transactions_pkey PRIMARY KEY (id),
+  CONSTRAINT loyalty_transactions_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
+  CONSTRAINT loyalty_transactions_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT loyalty_transactions_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT loyalty_transactions_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.notification_queue (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1675,6 +1698,8 @@ CREATE TABLE public.orders (
   smart_report_url text,
   smart_report_generated_at timestamp with time zone,
   send_clinical_summary_to_doctor boolean DEFAULT false,
+  loyalty_points_redeemed integer DEFAULT 0,
+  loyalty_discount_amount numeric DEFAULT 0,
   CONSTRAINT orders_pkey PRIMARY KEY (id),
   CONSTRAINT orders_sample_collector_id_fkey FOREIGN KEY (sample_collector_id) REFERENCES public.users(id),
   CONSTRAINT orders_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
@@ -1792,6 +1817,19 @@ CREATE TABLE public.patient_activity_log (
   CONSTRAINT patient_activity_log_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
   CONSTRAINT patient_activity_log_performed_by_fkey FOREIGN KEY (performed_by) REFERENCES public.users(id),
   CONSTRAINT patient_activity_log_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
+CREATE TABLE public.patient_loyalty_points (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  patient_id uuid NOT NULL,
+  lab_id uuid NOT NULL,
+  total_earned integer NOT NULL DEFAULT 0,
+  total_redeemed integer NOT NULL DEFAULT 0,
+  current_balance integer NOT NULL DEFAULT 0,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT patient_loyalty_points_pkey PRIMARY KEY (id),
+  CONSTRAINT patient_loyalty_points_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
+  CONSTRAINT patient_loyalty_points_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
 CREATE TABLE public.patients (
   id uuid NOT NULL DEFAULT gen_random_uuid(),

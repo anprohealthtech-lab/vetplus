@@ -89,18 +89,20 @@ SELECT
 
     (EXTRACT(EPOCH FROM (now() - o.created_at)) / 3600)::numeric AS hours_since_order,
 
-    -- New TAT Start Time Logic
-    COALESCE(o.sample_received_at, o.sample_collected_at) AS tat_start_time,
+    -- TAT Start Time: starts only when sample is received at the lab
+    -- For same-location: sample_received_at is set when sample is collected/received
+    -- For transit: sample_received_at is set when lab acknowledges receipt
+    o.sample_received_at AS tat_start_time,
 
     CASE
-        WHEN tg.tat_hours IS NOT NULL AND COALESCE(o.sample_received_at, o.sample_collected_at) IS NOT NULL
-            THEN tg.tat_hours - (EXTRACT(EPOCH FROM (now() - COALESCE(o.sample_received_at, o.sample_collected_at))) / 3600)::numeric
+        WHEN tg.tat_hours IS NOT NULL AND o.sample_received_at IS NOT NULL
+            THEN tg.tat_hours - (EXTRACT(EPOCH FROM (now() - o.sample_received_at)) / 3600)::numeric
         ELSE NULL
     END AS hours_until_tat_breach,
 
     CASE
-        WHEN tg.tat_hours IS NOT NULL AND COALESCE(o.sample_received_at, o.sample_collected_at) IS NOT NULL
-            AND (now() > (COALESCE(o.sample_received_at, o.sample_collected_at) + (tg.tat_hours || ' hours')::interval))
+        WHEN tg.tat_hours IS NOT NULL AND o.sample_received_at IS NOT NULL
+            AND (now() > (o.sample_received_at + (tg.tat_hours || ' hours')::interval))
             THEN true
         ELSE false
     END AS is_tat_breached

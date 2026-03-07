@@ -71,6 +71,44 @@ interface VerificationStats {
   avg_verification_time_hours: number;
 }
 
+const getFlagDisplay = (flag?: string) => {
+  const rawFlag = flag || '';
+  const normalizedFlag = rawFlag.trim().toLowerCase();
+
+  if (normalizedFlag === 'critical_h' || normalizedFlag === 'critical high' || normalizedFlag === 'ch') {
+    return {
+      label: 'Critical High',
+      className: 'text-red-700 bg-red-100'
+    };
+  }
+
+  if (normalizedFlag === 'critical_l' || normalizedFlag === 'critical low' || normalizedFlag === 'cl') {
+    return {
+      label: 'Critical Low',
+      className: 'text-blue-700 bg-blue-100'
+    };
+  }
+
+  if (normalizedFlag === 'h' || normalizedFlag === 'high') {
+    return {
+      label: 'High',
+      className: 'text-red-600 bg-red-50'
+    };
+  }
+
+  if (normalizedFlag === 'l' || normalizedFlag === 'low') {
+    return {
+      label: 'Low',
+      className: 'text-blue-600 bg-blue-50'
+    };
+  }
+
+  return {
+    label: rawFlag,
+    className: 'text-gray-600 bg-gray-50'
+  };
+};
+
 export default function ResultsVerification() {
   const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
   const [verificationStats, setVerificationStats] = useState<VerificationStats | null>(null);
@@ -604,15 +642,14 @@ export default function ResultsVerification() {
                               </div>
                               
                               <div className="flex items-center space-x-2">
-                                {value.flag && (
-                                  <span className={`px-2 py-1 text-xs font-medium rounded ${
-                                    value.flag === 'H' ? 'text-red-600 bg-red-50' :
-                                    value.flag === 'L' ? 'text-blue-600 bg-blue-50' :
-                                    'text-gray-600 bg-gray-50'
-                                  }`}>
-                                    {value.flag}
-                                  </span>
-                                )}
+                                {value.flag && (() => {
+                                  const flagDisplay = getFlagDisplay(value.flag);
+                                  return (
+                                    <span className={`px-2 py-1 text-xs font-medium rounded ${flagDisplay.className}`}>
+                                      {flagDisplay.label}
+                                    </span>
+                                  );
+                                })()}
                                 
                                 <div className="flex space-x-1">
                                   <button

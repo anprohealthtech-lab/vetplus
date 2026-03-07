@@ -121,6 +121,11 @@ interface LabSettings {
   loyalty_conversion_rate?: number;
   loyalty_min_redeem_points?: number;
   loyalty_point_value?: number;
+  block_send_on_due?: boolean;
+  report_patient_info_config?: {
+    layout: 'table' | 'inline';
+    fields: string[];
+  } | null;
 }
 
 // Define UserForm component outside of Settings
@@ -584,6 +589,8 @@ const Settings: React.FC = () => {
             loyalty_conversion_rate: (labData as any).loyalty_conversion_rate ?? 0.1,
             loyalty_min_redeem_points: (labData as any).loyalty_min_redeem_points ?? 100,
             loyalty_point_value: (labData as any).loyalty_point_value ?? 1.0,
+            block_send_on_due: (labData as any).block_send_on_due ?? false,
+            report_patient_info_config: (labData as any).report_patient_info_config ?? null,
           });
         }
 
@@ -821,6 +828,8 @@ const Settings: React.FC = () => {
         loyalty_conversion_rate: labSettings.loyalty_conversion_rate ?? 0.1,
         loyalty_min_redeem_points: labSettings.loyalty_min_redeem_points ?? 100,
         loyalty_point_value: labSettings.loyalty_point_value ?? 1.0,
+        block_send_on_due: labSettings.block_send_on_due ?? false,
+        report_patient_info_config: labSettings.report_patient_info_config ?? null,
       } as any);
 
       if (updateError) throw updateError;
@@ -1713,7 +1722,111 @@ const Settings: React.FC = () => {
                         </label>
                       </div>
                     </div>
+
+                    {/* Patient Info Section Configuration */}
+                    <div className="mt-6 pt-4 border-t border-gray-200">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-2">Patient Information Section</h4>
+                      <p className="text-xs text-gray-500 mb-3">
+                        Customize which fields appear in the patient info area of the default report template, and choose the layout style.
+                        This only applies to default templates — custom CKEditor templates control their own layout.
+                      </p>
+
+                      {/* Layout toggle */}
+                      <div className="flex items-center gap-4 mb-4">
+                        <span className="text-sm text-gray-600 font-medium">Layout:</span>
+                        {(['inline', 'table'] as const).map(layout => (
+                          <label key={layout} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border-2 cursor-pointer text-sm transition-all ${
+                            (labSettings.report_patient_info_config?.layout || (labSettings.default_template_style === 'classic' ? 'table' : 'inline')) === layout
+                              ? 'border-indigo-500 bg-indigo-50 text-indigo-700 font-medium'
+                              : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                          }`}>
+                            <input
+                              type="radio"
+                              name="patient_info_layout"
+                              value={layout}
+                              checked={(labSettings.report_patient_info_config?.layout || (labSettings.default_template_style === 'classic' ? 'table' : 'inline')) === layout}
+                              onChange={() => {
+                                const current = labSettings.report_patient_info_config;
+                                setLabSettings(prev => prev ? { ...prev, report_patient_info_config: { layout, fields: current?.fields || ['patientName','patientId','age','gender','collectionDate','sampleId','referringDoctorName','approvedAt'] } } : prev);
+                              }}
+                              className="sr-only"
+                            />
+                            {layout === 'inline' ? '📋 Inline (rows)' : '📊 Table (grid)'}
+                          </label>
+                        ))}
+                        {labSettings.report_patient_info_config && (
+                          <button
+                            type="button"
+                            onClick={() => setLabSettings(prev => prev ? { ...prev, report_patient_info_config: null } : prev)}
+                            className="text-xs text-gray-400 hover:text-red-500 ml-auto"
+                          >
+                            Reset to default
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Field selection */}
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                        {[
+                          { key: 'patientName', label: 'Patient Name' },
+                          { key: 'patientId', label: 'Patient ID' },
+                          { key: 'age', label: 'Age' },
+                          { key: 'gender', label: 'Gender' },
+                          { key: 'collectionDate', label: 'Collection Date/Time' },
+                          { key: 'sampleId', label: 'Sample ID' },
+                          { key: 'referringDoctorName', label: 'Ref. Doctor' },
+                          { key: 'approvedAt', label: 'Approved On' },
+                          { key: 'phone', label: 'Phone' },
+                          { key: 'sampleCollectedBy', label: 'Collected By' },
+                        ].map(field => {
+                          const currentFields = labSettings.report_patient_info_config?.fields || ['patientName','patientId','age','gender','collectionDate','sampleId','referringDoctorName','approvedAt'];
+                          const isChecked = currentFields.includes(field.key);
+                          return (
+                            <label key={field.key} className="flex items-center gap-2 text-sm cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  const newFields = e.target.checked
+                                    ? [...currentFields, field.key]
+                                    : currentFields.filter(f => f !== field.key);
+                                  const currentLayout = labSettings.report_patient_info_config?.layout || (labSettings.default_template_style === 'classic' ? 'table' : 'inline');
+                                  setLabSettings(prev => prev ? { ...prev, report_patient_info_config: { layout: currentLayout, fields: newFields } } : prev);
+                                }}
+                                className="h-3.5 w-3.5 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                              />
+                              <span className="text-gray-700">{field.label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
+
+                  {/* Block Report Send on Outstanding Dues (Admin only) */}
+                  {authUser?.user_metadata?.role === 'Admin' && (
+                    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                      <h3 className="text-lg font-semibold text-gray-900 mb-2 flex items-center">
+                        <span className="mr-2">🔒</span>
+                        Report Sending — Outstanding Dues Policy
+                      </h3>
+                      <p className="text-sm text-gray-600 mb-4">
+                        When enabled, report auto-send (after PDF generation) and manual WhatsApp send are blocked for any order that has an outstanding invoice balance. Admins can still send manually. Turn this OFF if your lab sends reports regardless of payment status.
+                      </p>
+                      <label className="flex items-center cursor-pointer gap-3">
+                        <input
+                          type="checkbox"
+                          checked={labSettings.block_send_on_due ?? false}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, block_send_on_due: e.target.checked } : prev)}
+                          className="h-4 w-4 text-red-600 focus:ring-red-500 border-gray-300 rounded"
+                        />
+                        <div>
+                          <span className="text-sm font-medium text-gray-800">Block report send when payment is due</span>
+                          <p className="text-xs text-gray-400 mt-0.5">Auto-send is skipped and non-admin users cannot manually send WhatsApp for orders with a balance.</p>
+                        </div>
+                      </label>
+                    </div>
+                  )}
 
                   {/* Patient Loyalty Points Program */}
                   <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">

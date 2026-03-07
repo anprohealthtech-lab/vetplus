@@ -18,6 +18,29 @@ interface AIToolsModalProps {
   onAIResultGenerated: (aiData: any) => void;
 }
 
+const getFlagDisplay = (flag?: string) => {
+  const rawFlag = flag || '';
+  const normalizedFlag = rawFlag.trim().toLowerCase();
+
+  if (['critical_h', 'critical high', 'critical_high', 'ch', 'h*', 'hh'].includes(normalizedFlag)) {
+    return { label: 'Critical High', className: 'bg-red-100 text-red-800' };
+  }
+
+  if (['critical_l', 'critical low', 'critical_low', 'cl', 'l*', 'll'].includes(normalizedFlag)) {
+    return { label: 'Critical Low', className: 'bg-blue-100 text-blue-800' };
+  }
+
+  if (normalizedFlag === 'h' || normalizedFlag === 'high') {
+    return { label: 'High', className: 'bg-red-100 text-red-800' };
+  }
+
+  if (normalizedFlag === 'l' || normalizedFlag === 'low') {
+    return { label: 'Low', className: 'bg-blue-100 text-blue-800' };
+  }
+
+  return { label: rawFlag, className: 'bg-yellow-100 text-yellow-800' };
+};
+
 const AIToolsModal: React.FC<AIToolsModalProps> = ({ 
   isOpen, 
   onClose, 
@@ -341,15 +364,14 @@ const AIToolsModal: React.FC<AIToolsModalProps> = ({
                         <span className="text-gray-700">{value.parameter}:</span>
                         <div className="flex items-center space-x-2">
                           <span className="font-medium">{value.value} {value.unit}</span>
-                          {value.flag && (
-                            <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                              value.flag === 'H' ? 'bg-red-100 text-red-800' : 
-                              value.flag === 'L' ? 'bg-blue-100 text-blue-800' : 
-                              'bg-yellow-100 text-yellow-800'
-                            }`}>
-                              {value.flag}
-                            </span>
-                          )}
+                          {value.flag && (() => {
+                            const flagDisplay = getFlagDisplay(value.flag);
+                            return (
+                              <span className={`px-2 py-0.5 rounded text-xs font-medium ${flagDisplay.className}`}>
+                                {flagDisplay.label}
+                              </span>
+                            );
+                          })()}
                         </div>
                       </div>
                     ))}

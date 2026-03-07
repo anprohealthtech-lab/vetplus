@@ -88,6 +88,7 @@ interface TestGroup {
   clinicalPurpose?: string | null;
   sampleType?: string | null;
   turnaroundTime?: string | null;
+  tat_hours?: number | null;
   requiresFasting?: boolean | null;
   type?: 'test' | 'package';
   is_outsourced?: boolean;
@@ -132,8 +133,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [loadingTests, setLoadingTests] = useState<boolean>(false);
 
   // Selecteds / data
+  const SELF_DOCTOR_ID = 'SELF';
+
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
-  const [selectedDoctor, setSelectedDoctor] = useState<string>('');
+  const [selectedDoctor, setSelectedDoctor] = useState<string>('SELF');
   const [selectedLocation, setSelectedLocation] = useState<string>('');
   const [selectedAccount, setSelectedAccount] = useState<string>(''); // bill-to account
   const [paymentType, setPaymentType] = useState<PaymentType>('self');
@@ -183,7 +186,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
   // Searches / dropdown visibility
   const [patientSearch, setPatientSearch] = useState<string>('');
-  const [doctorSearch, setDoctorSearch] = useState<string>('');
+  const [doctorSearch, setDoctorSearch] = useState<string>('Self / Walk-in');
   const [locationSearch, setLocationSearch] = useState<string>('');
   const [accountSearch, setAccountSearch] = useState<string>('');
 
@@ -213,6 +216,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   // Discount & Payment
   const [discountType, setDiscountType] = useState<'percentage' | 'fixed'>('percentage');
   const [discountValue, setDiscountValue] = useState<number>(0);
+  const [discountBy, setDiscountBy] = useState<'lab' | 'doctor'>('lab');
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'upi' | 'online'>('cash');
   const [amountPaid, setAmountPaid] = useState<number>(0);
   const [takeFullPayment, setTakeFullPayment] = useState<boolean>(false);
@@ -658,7 +662,13 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         if (error) throw error;
         if (data) {
           setSelectedPatient(data as Patient);
-          if (data.default_doctor_id) setSelectedDoctor(data.default_doctor_id);
+          if (data.default_doctor_id) {
+            setSelectedDoctor(data.default_doctor_id);
+            setDoctorSearch(data.referring_doctor_name || data.default_doctor?.name || '');
+          } else {
+            setSelectedDoctor('SELF');
+            setDoctorSearch('Self / Walk-in');
+          }
           if (data.default_location_id) setSelectedLocation(data.default_location_id);
           if (data.default_payment_type) setPaymentType(data.default_payment_type);
         }
@@ -877,7 +887,13 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     setSelectedPatient(p);
     setShowPatientDropdown(false);
     // Prefill defaults
-    if (p.default_doctor_id) setSelectedDoctor(p.default_doctor_id);
+    if (p.default_doctor_id) {
+      setSelectedDoctor(p.default_doctor_id);
+      setDoctorSearch(doctors.find(d => d.id === p.default_doctor_id)?.name || '');
+    } else {
+      setSelectedDoctor('SELF');
+      setDoctorSearch('Self / Walk-in');
+    }
     if (p.default_location_id) setSelectedLocation(p.default_location_id);
     if (p.default_payment_type) setPaymentType(p.default_payment_type);
   };
@@ -1118,9 +1134,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       errors.push('❌ Patient: Please select a patient');
     }
 
-    if (!selectedDoctor) {
-      errors.push('❌ Referring Doctor: Please select or enter a referring doctor');
-    }
+    // Doctor is optional — 'SELF' means self-referred / walk-in
 
     if (selectedTests.length === 0) {
       errors.push('❌ Tests: Please select at least one test');
@@ -1193,22 +1207,21 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         return sum + price;
       }, 0);
 
-      // Calculate default expected date (24 hours from now/order date)
+      // Store date-only expected date at creation (TAT clock starts after sample receipt, not registration)
       const orderDateObj = customOrderDate ? new Date(customOrderDate) : new Date();
-      const expectedDateObj = new Date(orderDateObj.getTime() + 24 * 60 * 60 * 1000);
-      const computedExpectedDate = expectedDateObj.toISOString();
+      const computedExpectedDate = orderDateObj.toISOString().split('T')[0];
 
       const orderData: any = {
         patient_id: selectedPatient!.id,
         patient_name: selectedPatient!.name,
-        referring_doctor_id: selectedDoctor || null,
+        referring_doctor_id: (selectedDoctor && selectedDoctor !== SELF_DOCTOR_ID) ? selectedDoctor : null,
         location_id: selectedLocation || null, // collection/origin
         collected_at_location_id: selectedLocation || null, // for intra-lab transit tracking
         account_id: selectedAccount || null, // B2B bill-to
         payment_type: paymentType,
         priority,
         expected_date: computedExpectedDate,
-        doctor: doctors.find((d) => d.id === selectedDoctor)?.name || null,
+        doctor: (selectedDoctor && selectedDoctor !== SELF_DOCTOR_ID) ? (doctors.find((d) => d.id === selectedDoctor)?.name || 'Self') : 'Self',
         notes: notes || null,
         total_amount: calculatedTotal, // Subtotal before discount
         final_amount: finalAmount, // Total after discount
@@ -1280,6 +1293,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
             status: amountPaid >= finalAmount ? 'Paid' : (amountPaid > 0 ? 'Partial' : 'Draft'),
             invoice_number: (result as any)?.order_number ? `INV-${(result as any).order_number}` : `INV-${Date.now().toString().slice(-6)}`,
+            ...(discountAmount > 0 ? { discount_source: discountBy } : {}),
           };
 
           // ✅ OPTIMIZED: Run invoice creation and order update in parallel
@@ -2205,32 +2219,48 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               </div>
 
               {/* Referring Doctor */}
-              <div className="md:col-span-3 relative" style={{ minHeight: showDoctorDropdown && filteredDoctors.length > 0 ? '230px' : 'auto' }}>
+              <div className="md:col-span-3 relative" style={{ minHeight: showDoctorDropdown ? '230px' : 'auto' }}>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Referring Doctor <span className="text-red-500 text-lg" title="Required field">*</span>
+                  Referring Doctor
+                  <span className="ml-1 text-xs text-gray-400 font-normal">(optional)</span>
                 </label>
                 <div className="relative">
                   <input
                     type="text"
-                    placeholder="Search doctor…"
+                    placeholder="Search doctor or leave as Self…"
                     value={doctorSearch}
                     onChange={(e) => {
                       setDoctorSearch(e.target.value);
                       setShowDoctorDropdown(true);
-                      // Clear doctor error when user starts typing
-                      if (validationErrors.some(e => e.includes('Referring Doctor'))) {
-                        setValidationErrors(prev => prev.filter(e => !e.includes('Referring Doctor')));
-                      }
                     }}
-                    onFocus={() => setShowDoctorDropdown(true)}
-                    onBlur={() => setTimeout(() => setShowDoctorDropdown(false), 200)}
-                    className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 transition-colors ${validationErrors.some(e => e.includes('Referring Doctor'))
-                      ? 'border-red-400 bg-red-50 focus:ring-red-200 focus:border-red-500'
-                      : 'border-gray-300 focus:ring-blue-500'
-                      }`}
+                    onFocus={(e) => { e.target.select(); setShowDoctorDropdown(true); }}
+                    onBlur={() => setTimeout(() => {
+                      setShowDoctorDropdown(false);
+                      // If field is empty on blur and no real doctor selected, reset to Self
+                      if (!doctorSearch.trim() || selectedDoctor === 'SELF') {
+                        setSelectedDoctor('SELF');
+                        setDoctorSearch('Self / Walk-in');
+                      }
+                    }, 200)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
                   />
-                  {showDoctorDropdown && filteredDoctors.length > 0 && (
+                  {showDoctorDropdown && (
                     <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-2xl max-h-48 overflow-y-auto">
+                      {/* Self / Walk-in always as first option */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedDoctor('SELF');
+                          setDoctorSearch('Self / Walk-in');
+                          setShowDoctorDropdown(false);
+                        }}
+                        className={`w-full px-4 py-2 text-left transition-colors border-b border-gray-100 ${
+                          selectedDoctor === 'SELF' ? 'bg-blue-50' : 'hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="font-medium text-gray-700">Self / Walk-in</div>
+                        <div className="text-xs text-gray-400">No referring doctor</div>
+                      </button>
                       {filteredDoctors.map((doctor) => (
                         <button
                           key={doctor.id}
@@ -2240,7 +2270,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                             setDoctorSearch(doctor.name);
                             setShowDoctorDropdown(false);
                           }}
-                          className="w-full px-4 py-2 text-left hover:bg-blue-50 transition-colors"
+                          className={`w-full px-4 py-2 text-left transition-colors ${
+                            selectedDoctor === doctor.id ? 'bg-blue-50' : 'hover:bg-blue-50'
+                          }`}
                         >
                           <div className="font-medium text-gray-900">{doctor.name}</div>
                           {doctor.specialization && (
@@ -2251,6 +2283,15 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     </div>
                   )}
                 </div>
+                {selectedDoctor !== 'SELF' && selectedDoctor && (
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedDoctor('SELF'); setDoctorSearch('Self / Walk-in'); }}
+                    className="mt-1 text-xs text-gray-400 hover:text-gray-600 underline"
+                  >
+                    Clear (set to Self)
+                  </button>
+                )}
               </div>
 
               {/* Location (collection/origin) */}
@@ -2446,6 +2487,31 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     />
                   </div>
                 </div>
+                {/* Discount By — determines if discount should affect doctor commission */}
+                {discountValue > 0 && (
+                  <div className="flex items-center gap-3">
+                    <label className="text-sm font-medium text-gray-700 min-w-[80px]">Given by</label>
+                    <div className="flex rounded-md border border-gray-300 overflow-hidden text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setDiscountBy('lab')}
+                        className={`px-3 py-1.5 ${discountBy === 'lab' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                      >
+                        Lab
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDiscountBy('doctor')}
+                        className={`px-3 py-1.5 border-l border-gray-300 ${discountBy === 'doctor' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                      >
+                        Doctor
+                      </button>
+                    </div>
+                    <span className="text-xs text-gray-500">
+                      {discountBy === 'doctor' ? 'Deducted from doctor commission' : 'Absorbed by lab'}
+                    </span>
+                  </div>
+                )}
 
                 {discountAmount > 0 && (
                   <div className="flex justify-between text-sm text-green-600">
@@ -2668,7 +2734,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     total_tests: 0,
                     is_active: true,
                     referring_doctor: null,
-                    default_doctor_id: selectedDoctor || null,
+                    default_doctor_id: (selectedDoctor && selectedDoctor !== SELF_DOCTOR_ID) ? selectedDoctor : null,
                     default_location_id: selectedLocation || null,
                     default_payment_type: paymentType || 'self'
                   };

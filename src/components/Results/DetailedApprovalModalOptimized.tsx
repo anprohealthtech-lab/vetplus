@@ -50,6 +50,29 @@ interface DetailedApprovalModalProps {
   onRequestClarification: (resultId: string, notes: string) => void;
 }
 
+const getFlagDisplay = (flag?: string) => {
+  const rawFlag = flag || '';
+  const normalizedFlag = rawFlag.trim().toLowerCase();
+
+  if (['critical_h', 'critical high', 'critical_high', 'ch', 'h*', 'hh'].includes(normalizedFlag)) {
+    return { label: 'Critical High', className: 'bg-red-100 text-red-800' };
+  }
+
+  if (['critical_l', 'critical low', 'critical_low', 'cl', 'l*', 'll'].includes(normalizedFlag)) {
+    return { label: 'Critical Low', className: 'bg-blue-100 text-blue-800' };
+  }
+
+  if (normalizedFlag === 'h' || normalizedFlag === 'high') {
+    return { label: 'High', className: 'bg-red-100 text-red-800' };
+  }
+
+  if (normalizedFlag === 'l' || normalizedFlag === 'low') {
+    return { label: 'Low', className: 'bg-yellow-100 text-yellow-800' };
+  }
+
+  return { label: rawFlag, className: 'bg-gray-100 text-gray-800' };
+};
+
 export default function DetailedApprovalModal({
   isOpen,
   onClose,
@@ -291,16 +314,17 @@ export default function DetailedApprovalModal({
                           </div>
                           <div className="text-sm text-gray-600">{analyte.reference_range}</div>
                           <div>
-                            {analyte.flag && (
-                              <span className={`
-                                px-2 py-1 rounded text-xs font-medium
-                                ${analyte.flag === 'H' ? 'bg-red-100 text-red-800' : 
-                                  analyte.flag === 'L' ? 'bg-yellow-100 text-yellow-800' : 
-                                  'bg-gray-100 text-gray-800'}
-                              `}>
-                                {analyte.flag}
-                              </span>
-                            )}
+                            {analyte.flag && (() => {
+                              const flagDisplay = getFlagDisplay(analyte.flag);
+                              return (
+                                <span className={`
+                                  px-2 py-1 rounded text-xs font-medium
+                                  ${flagDisplay.className}
+                                `}>
+                                  {flagDisplay.label}
+                                </span>
+                              );
+                            })()}
                           </div>
                         </div>
                       ))}

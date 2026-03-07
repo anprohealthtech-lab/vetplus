@@ -1,12 +1,16 @@
-import { createClient } from '@supabase/supabase-js';
-import { generateOrderSampleId, getOrderAssignedColor, generateOrderQRCodeData } from './colorAssignment';
-import { notificationTriggerService } from './notificationTriggerService';
+import { createClient } from "@supabase/supabase-js";
+import {
+  generateOrderQRCodeData,
+  generateOrderSampleId,
+  getOrderAssignedColor,
+} from "./colorAssignment";
+import { notificationTriggerService } from "./notificationTriggerService";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables');
+  throw new Error("Missing Supabase environment variables");
 }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
@@ -63,6 +67,8 @@ export interface ReportTemplateAnalyteRow {
   test_group_id?: string;
   value_type?: string;
   expected_normal_values?: string[];
+  is_auto_calculated?: boolean;
+  is_calculated?: boolean;
 }
 
 export interface ReportTemplateContext {
@@ -89,7 +95,7 @@ export interface ReportTemplateLabBranding {
 export interface LabBrandingAsset {
   id: string;
   lab_id: string;
-  asset_type: 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead';
+  asset_type: "header" | "footer" | "watermark" | "logo" | "letterhead";
   asset_name: string;
   file_url: string;
   file_path: string;
@@ -113,7 +119,7 @@ export interface LabUserSignature {
   id: string;
   lab_id: string;
   user_id: string;
-  signature_type: 'digital' | 'handwritten' | 'stamp' | 'text';
+  signature_type: "digital" | "handwritten" | "stamp" | "text";
   signature_name: string;
   file_url?: string;
   file_path?: string;
@@ -154,28 +160,41 @@ interface LabContactRecord {
   license_number: string | null;
 }
 
-type BrandingAssetSnippet = Pick<LabBrandingAsset, 'asset_type' | 'asset_name' | 'description' | 'file_url' | 'imagekit_url' | 'variants'>;
+type BrandingAssetSnippet = Pick<
+  LabBrandingAsset,
+  | "asset_type"
+  | "asset_name"
+  | "description"
+  | "file_url"
+  | "imagekit_url"
+  | "variants"
+>;
 
 const escapeHtml = (value: string): string => {
   const map: Record<string, string> = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;',
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
   };
 
   return value.replace(/[&<>\"']/g, (char) => map[char] ?? char);
 };
 
-const joinDisplayParts = (parts: Array<string | null | undefined>, separator: string): string => {
+const joinDisplayParts = (
+  parts: Array<string | null | undefined>,
+  separator: string,
+): string => {
   return parts
-    .map((part) => (typeof part === 'string' ? part.trim() : ''))
+    .map((part) => (typeof part === "string" ? part.trim() : ""))
     .filter((part) => part.length > 0)
     .join(separator);
 };
 
-const pickAssetPrimaryUrl = (asset?: BrandingAssetSnippet | null): string | null => {
+const pickAssetPrimaryUrl = (
+  asset?: BrandingAssetSnippet | null,
+): string | null => {
   if (!asset) {
     return null;
   }
@@ -184,18 +203,26 @@ const pickAssetPrimaryUrl = (asset?: BrandingAssetSnippet | null): string | null
     return asset.imagekit_url.trim();
   }
 
-  const variants = asset.variants && typeof asset.variants === 'object' ? asset.variants : null;
+  const variants = asset.variants && typeof asset.variants === "object"
+    ? asset.variants
+    : null;
   if (variants) {
-    const variantKeys = ['optimized', 'optimized_url', 'optimizedUrl', 'default', 'original'];
+    const variantKeys = [
+      "optimized",
+      "optimized_url",
+      "optimizedUrl",
+      "default",
+      "original",
+    ];
     for (const key of variantKeys) {
       const candidate = (variants as Record<string, unknown>)[key];
-      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+      if (typeof candidate === "string" && candidate.trim().length > 0) {
         return candidate.trim();
       }
     }
 
     for (const value of Object.values(variants)) {
-      if (typeof value === 'string' && value.trim().length > 0) {
+      if (typeof value === "string" && value.trim().length > 0) {
         return value.trim();
       }
     }
@@ -208,38 +235,53 @@ const pickAssetPrimaryUrl = (asset?: BrandingAssetSnippet | null): string | null
   return null;
 };
 
-const composeHeaderHtml = (lab: LabContactRecord, asset?: BrandingAssetSnippet | null): string => {
+const composeHeaderHtml = (
+  lab: LabContactRecord,
+  asset?: BrandingAssetSnippet | null,
+): string => {
   const logoUrl = pickAssetPrimaryUrl(asset);
-  
+
   // If asset is explicitly a 'header' type, usually it's a full-width banner
   // Return simple full-width image container
-  if (asset?.asset_type === 'header' && logoUrl) {
-    return `<div class="lab-header-branding" style="width:100%;"><img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(asset.asset_name)}" style="max-width:100%;height:auto;object-fit:contain;"></div>`;
+  if (asset?.asset_type === "header" && logoUrl) {
+    return `<div class="lab-header-branding" style="width:100%;"><img src="${
+      escapeHtml(logoUrl)
+    }" alt="${
+      escapeHtml(asset.asset_name)
+    }" style="max-width:100%;height:auto;object-fit:contain;"></div>`;
   }
 
-  const displayName = escapeHtml(lab.name ?? asset?.asset_name ?? 'Laboratory');
+  const displayName = escapeHtml(lab.name ?? asset?.asset_name ?? "Laboratory");
   const addressLine = joinDisplayParts(
     [lab.address, lab.city, lab.state, lab.pincode],
-    ', '
+    ", ",
   );
-  const contactLine = joinDisplayParts([lab.phone, lab.email], ' • ');
-  const descriptionLine = asset?.description ? escapeHtml(asset.description) : '';
+  const contactLine = joinDisplayParts([lab.phone, lab.email], " • ");
+  const descriptionLine = asset?.description
+    ? escapeHtml(asset.description)
+    : "";
 
   const addressHtml = addressLine
-    ? `<div style="font-size:12px;color:#4b5563;">${escapeHtml(addressLine)}</div>`
-    : '';
+    ? `<div style="font-size:12px;color:#4b5563;">${
+      escapeHtml(addressLine)
+    }</div>`
+    : "";
   const contactHtml = contactLine
-    ? `<div style="font-size:12px;color:#4b5563;margin-top:2px;">${escapeHtml(contactLine)}</div>`
-    : '';
+    ? `<div style="font-size:12px;color:#4b5563;margin-top:2px;">${
+      escapeHtml(contactLine)
+    }</div>`
+    : "";
   const descriptionHtml = descriptionLine
     ? `<div style="font-size:11px;color:#6b7280;margin-top:6px;">${descriptionLine}</div>`
-    : '';
+    : "";
 
   const logoHtml = logoUrl
     ? `<div style="flex:0 0 auto;max-width:220px;display:flex;align-items:center;justify-content:flex-start;">
-        <img src="${escapeHtml(logoUrl)}" alt="${displayName} branding" style="max-height:80px;width:auto;object-fit:contain;" />
+        <img src="${
+      escapeHtml(logoUrl)
+    }" alt="${displayName} branding" style="max-height:80px;width:auto;object-fit:contain;" />
       </div>`
-    : '';
+    : "";
 
   return `
     <div style="width:100%;display:flex;align-items:flex-start;justify-content:space-between;gap:18px;font-family:'Inter','Helvetica Neue',Arial,sans-serif;">
@@ -254,39 +296,54 @@ const composeHeaderHtml = (lab: LabContactRecord, asset?: BrandingAssetSnippet |
   `.trim();
 };
 
-const composeFooterHtml = (lab: LabContactRecord, asset?: BrandingAssetSnippet | null): string => {
+const composeFooterHtml = (
+  lab: LabContactRecord,
+  asset?: BrandingAssetSnippet | null,
+): string => {
   const logoUrl = pickAssetPrimaryUrl(asset);
 
   // If asset is explicitly a 'footer' type, treat as full-width banner
-  if (asset?.asset_type === 'footer' && logoUrl) {
-    return `<div class="lab-footer-branding" style="width:100%;"><img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(asset.asset_name)}" style="max-width:100%;height:auto;object-fit:contain;"></div>`;
+  if (asset?.asset_type === "footer" && logoUrl) {
+    return `<div class="lab-footer-branding" style="width:100%;"><img src="${
+      escapeHtml(logoUrl)
+    }" alt="${
+      escapeHtml(asset.asset_name)
+    }" style="max-width:100%;height:auto;object-fit:contain;"></div>`;
   }
 
-  const accentName = escapeHtml(lab.name ?? asset?.asset_name ?? 'Laboratory');
+  const accentName = escapeHtml(lab.name ?? asset?.asset_name ?? "Laboratory");
   const addressLine = joinDisplayParts(
     [lab.address, lab.city, lab.state, lab.pincode],
-    ', '
+    ", ",
   );
-  const contactLine = joinDisplayParts([lab.phone, lab.email], ' • ');
-  const licenseLine = lab.license_number ? `License: ${escapeHtml(lab.license_number)}` : '';
-  const descriptionLine = asset?.description ? escapeHtml(asset.description) : '';
+  const contactLine = joinDisplayParts([lab.phone, lab.email], " • ");
+  const licenseLine = lab.license_number
+    ? `License: ${escapeHtml(lab.license_number)}`
+    : "";
+  const descriptionLine = asset?.description
+    ? escapeHtml(asset.description)
+    : "";
 
   const addressHtml = addressLine
     ? `<div style="margin-top:6px;">${escapeHtml(addressLine)}</div>`
-    : '';
+    : "";
   const contactHtml = contactLine
     ? `<div style="margin-top:4px;">${escapeHtml(contactLine)}</div>`
-    : '';
-  const licenseHtml = licenseLine ? `<div style="margin-top:4px;color:#6b7280;">${licenseLine}</div>` : '';
+    : "";
+  const licenseHtml = licenseLine
+    ? `<div style="margin-top:4px;color:#6b7280;">${licenseLine}</div>`
+    : "";
   const descriptionHtml = descriptionLine
     ? `<div style="margin-top:6px;color:#6b7280;">${descriptionLine}</div>`
-    : '';
+    : "";
 
   const logoHtml = logoUrl
     ? `<div style="flex:0 0 auto;max-width:180px;display:flex;justify-content:flex-end;">
-        <img src="${escapeHtml(logoUrl)}" alt="${accentName} seal" style="max-height:70px;width:auto;object-fit:contain;" />
+        <img src="${
+      escapeHtml(logoUrl)
+    }" alt="${accentName} seal" style="max-height:70px;width:auto;object-fit:contain;" />
       </div>`
-    : '';
+    : "";
 
   return `
     <div style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:18px;font-family:'Inter','Helvetica Neue',Arial,sans-serif;font-size:12px;color:#4b5563;">
@@ -302,18 +359,17 @@ const composeFooterHtml = (lab: LabContactRecord, asset?: BrandingAssetSnippet |
   `.trim();
 };
 
-
 // File upload utilities
 export const uploadFile = async (
-  file: File, 
-  filePath: string, 
-  options?: { upsert?: boolean }
+  file: File,
+  filePath: string,
+  options?: { upsert?: boolean },
 ) => {
   const { data, error } = await supabase.storage
-    .from('attachments')
+    .from("attachments")
     .upload(filePath, file, {
       upsert: options?.upsert || false,
-      contentType: file.type
+      contentType: file.type,
     });
 
   if (error) {
@@ -322,13 +378,13 @@ export const uploadFile = async (
 
   // Get public URL
   const { data: publicUrlData } = supabase.storage
-    .from('attachments')
+    .from("attachments")
     .getPublicUrl(data.path);
 
   return {
     path: data.path,
     publicUrl: publicUrlData.publicUrl,
-    fullPath: data.fullPath
+    fullPath: data.fullPath,
   };
 };
 
@@ -337,11 +393,11 @@ export const generateFilePath = (
   fileName: string,
   patientId?: string,
   labId?: string,
-  category: string = 'general'
+  category: string = "general",
 ): string => {
   const timestamp = Date.now();
-  const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
-  
+  const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
+
   if (labId && patientId) {
     return `${category}/${labId}/${patientId}_${timestamp}_${sanitizedFileName}`;
   } else if (patientId) {
@@ -354,11 +410,11 @@ export const generateFilePath = (
 // Generate branding asset file path
 export const generateBrandingFilePath = (
   labId: string,
-  assetType: 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead',
-  fileName: string
+  assetType: "header" | "footer" | "watermark" | "logo" | "letterhead",
+  fileName: string,
 ): string => {
   const timestamp = Date.now();
-  const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
   return `attachments/labs/${labId}/branding/${assetType}/${timestamp}_${sanitizedFileName}`;
 };
 
@@ -366,10 +422,10 @@ export const generateBrandingFilePath = (
 export const generateSignatureFilePath = (
   labId: string,
   userId: string,
-  fileName: string
+  fileName: string,
 ): string => {
   const timestamp = Date.now();
-  const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
   return `attachments/labs/${labId}/users/${userId}/signature/${timestamp}_${sanitizedFileName}`;
 };
 
@@ -380,8 +436,8 @@ export const auth = {
       email,
       password,
       options: {
-        data: userData
-      }
+        data: userData,
+      },
     });
     return { data, error };
   },
@@ -389,7 +445,7 @@ export const auth = {
   signIn: async (email: string, password: string) => {
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
-      password
+      password,
     });
     return { data, error };
   },
@@ -407,7 +463,7 @@ export const auth = {
   getSession: async () => {
     const { data: { session }, error } = await supabase.auth.getSession();
     return { session, error };
-  }
+  },
 };
 
 // ============================================================================
@@ -425,7 +481,7 @@ const USER_CACHE_TTL_MS = 60000; // Cache user for 60 seconds
 
 // Clear cache on auth state change
 supabase.auth.onAuthStateChange((event) => {
-  if (event === 'SIGNED_OUT' || event === 'USER_UPDATED') {
+  if (event === "SIGNED_OUT" || event === "USER_UPDATED") {
     _cachedLabId = null;
     _cachedLabIdUserId = null;
     _cachedUser = null;
@@ -434,38 +490,38 @@ supabase.auth.onAuthStateChange((event) => {
 });
 
 // Database helper functions for patients
-export const database = { 
+export const database = {
   // Expose supabase client for direct queries when needed
   supabase,
-  
+
   // Clear lab ID cache (call when switching labs or on logout)
   clearLabIdCache: () => {
     _cachedLabId = null;
     _cachedLabIdUserId = null;
   },
-  
+
   // Helper to get current user's lab ID (with caching)
   getCurrentUserLabId: async () => {
     const { data: { user }, error } = await supabase.auth.getUser();
-    
+
     // Return cached value if still valid for the same user
     if (_cachedLabId && _cachedLabIdUserId === user?.id) {
       return _cachedLabId;
     }
     if (error || !user) {
-      console.error('Error fetching user:', error);
+      console.error("Error fetching user:", error);
       return null;
     }
-    
+
     // Primary: Check users table for lab_id (most reliable)
     try {
       const { data: userData, error: userDataError } = await supabase
-        .from('users')
-        .select('lab_id')
-        .eq('email', user.email) // Match by email since auth.users.id might be different from public.users.id
-        .eq('status', 'Active')
+        .from("users")
+        .select("lab_id")
+        .eq("email", user.email) // Match by email since auth.users.id might be different from public.users.id
+        .eq("status", "Active")
         .maybeSingle();
-      
+
       if (!userDataError && userData?.lab_id) {
         // Cache the result
         _cachedLabId = userData.lab_id;
@@ -473,28 +529,34 @@ export const database = {
         return userData.lab_id;
       }
     } catch (err) {
-      console.warn('Could not fetch lab_id from users table:', err);
+      console.warn("Could not fetch lab_id from users table:", err);
     }
-    
+
     if (user?.user_metadata?.lab_id) {
-      console.warn('Using lab_id from user metadata (consider updating users table):', user.user_metadata.lab_id);
+      console.warn(
+        "Using lab_id from user metadata (consider updating users table):",
+        user.user_metadata.lab_id,
+      );
       // Cache the result
       _cachedLabId = user.user_metadata.lab_id;
       _cachedLabIdUserId = user.id;
       return user.user_metadata.lab_id;
     }
-    
+
     // Tertiary: Check user_labs table for user-lab assignment (if exists)
     try {
       const { data: userLab, error: userLabError } = await supabase
-        .from('user_labs')
-        .select('lab_id')
-        .eq('user_id', user.id)
-        .eq('is_active', true)
+        .from("user_labs")
+        .select("lab_id")
+        .eq("user_id", user.id)
+        .eq("is_active", true)
         .single();
-      
+
       if (!userLabError && userLab?.lab_id) {
-        console.warn('Using lab_id from user_labs table (consider updating users table):', userLab.lab_id);
+        console.warn(
+          "Using lab_id from user_labs table (consider updating users table):",
+          userLab.lab_id,
+        );
         // Cache the result
         _cachedLabId = userLab.lab_id;
         _cachedLabIdUserId = user.id;
@@ -503,28 +565,34 @@ export const database = {
     } catch (err) {
       // user_labs table might not exist, which is fine
     }
-    
+
     // Final fallback: For development/demo purposes, get first available lab
     try {
       const { data: labs, error: labError } = await supabase
-        .from('labs')
-        .select('id')
-        .eq('is_active', true)
+        .from("labs")
+        .select("id")
+        .eq("is_active", true)
         .limit(1);
-      
+
       if (!labError && labs && labs.length > 0) {
-        console.warn('Lab ID not found for user. Using first available lab for demo:', labs[0].id);
-        console.warn('Please update the users table with proper lab_id for user:', user.email);
+        console.warn(
+          "Lab ID not found for user. Using first available lab for demo:",
+          labs[0].id,
+        );
+        console.warn(
+          "Please update the users table with proper lab_id for user:",
+          user.email,
+        );
         // Cache the result
         _cachedLabId = labs[0].id;
         _cachedLabIdUserId = user.id;
         return labs[0].id;
       }
     } catch (err) {
-      console.warn('Could not fetch default lab:', err);
+      console.warn("Could not fetch default lab:", err);
     }
-    
-    console.error('No lab_id found for user and no default lab available');
+
+    console.error("No lab_id found for user and no default lab available");
     return null;
   },
 
@@ -532,27 +600,27 @@ export const database = {
   getCurrentUserLocationIds: async (): Promise<string[]> => {
     const { data: { user }, error } = await supabase.auth.getUser();
     if (error || !user) return [];
-    
+
     try {
       // Get user's id from users table
       const { data: userData } = await supabase
-        .from('users')
-        .select('id')
-        .eq('email', user.email)
-        .eq('status', 'Active')
+        .from("users")
+        .select("id")
+        .eq("email", user.email)
+        .eq("status", "Active")
         .maybeSingle();
-      
+
       if (!userData?.id) return [];
-      
+
       // Get assigned locations from user_centers
       const { data: centers } = await supabase
-        .from('user_centers')
-        .select('location_id')
-        .eq('user_id', userData.id);
-      
-      return centers?.map(c => c.location_id).filter(Boolean) || [];
+        .from("user_centers")
+        .select("location_id")
+        .eq("user_id", userData.id);
+
+      return centers?.map((c) => c.location_id).filter(Boolean) || [];
     } catch (err) {
-      console.warn('Could not fetch user locations:', err);
+      console.warn("Could not fetch user locations:", err);
       return [];
     }
   },
@@ -561,55 +629,61 @@ export const database = {
   getCurrentUserPrimaryLocation: async (): Promise<string | null> => {
     const { data: { user }, error } = await supabase.auth.getUser();
     if (error || !user) return null;
-    
+
     try {
       const { data: userData } = await supabase
-        .from('users')
-        .select('id')
-        .eq('email', user.email)
-        .eq('status', 'Active')
+        .from("users")
+        .select("id")
+        .eq("email", user.email)
+        .eq("status", "Active")
         .maybeSingle();
-      
+
       if (!userData?.id) return null;
-      
+
       // Use .maybeSingle() instead of .single() to handle case where no primary location exists
       const { data: center } = await supabase
-        .from('user_centers')
-        .select('location_id')
-        .eq('user_id', userData.id)
-        .eq('is_primary', true)
+        .from("user_centers")
+        .select("location_id")
+        .eq("user_id", userData.id)
+        .eq("is_primary", true)
         .maybeSingle();
-      
+
       return center?.location_id || null;
     } catch (err) {
-      console.warn('Could not fetch user primary location:', err);
+      console.warn("Could not fetch user primary location:", err);
       return null;
     }
   },
 
   // Helper to check if current user should have location filtering applied
-  shouldFilterByLocation: async (): Promise<{ shouldFilter: boolean; locationIds: string[]; canViewAll: boolean }> => {
+  shouldFilterByLocation: async (): Promise<
+    { shouldFilter: boolean; locationIds: string[]; canViewAll: boolean }
+  > => {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { shouldFilter: false, locationIds: [], canViewAll: true };
-    
+    if (!labId) {
+      return { shouldFilter: false, locationIds: [], canViewAll: true };
+    }
+
     try {
       // Check if lab enforces location restrictions
       const { data: lab } = await supabase
-        .from('labs')
-        .select('enforce_location_restrictions')
-        .eq('id', labId)
+        .from("labs")
+        .select("enforce_location_restrictions")
+        .eq("id", labId)
         .maybeSingle();
-      
+
       if (!lab?.enforce_location_restrictions) {
         return { shouldFilter: false, locationIds: [], canViewAll: true };
       }
-      
+
       // Get user info
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return { shouldFilter: false, locationIds: [], canViewAll: true };
-      
+      if (!user) {
+        return { shouldFilter: false, locationIds: [], canViewAll: true };
+      }
+
       const { data: userData } = await supabase
-        .from('users')
+        .from("users")
         .select(`
           id, 
           role,
@@ -617,60 +691,81 @@ export const database = {
             role_name
           )
         `)
-        .eq('email', user.email)
-        .eq('status', 'Active')
+        .eq("email", user.email)
+        .eq("status", "Active")
         .maybeSingle();
-      
-      if (!userData?.id) return { shouldFilter: false, locationIds: [], canViewAll: true };
 
-      // Admins bypass location restrictions
-      const userRole = (userData.role || '').toLowerCase();
-      // Safe access to nested role name
-      const joinRoleName = (userData.user_roles as any)?.role_name?.toLowerCase() || '';
-      
-      if (['admin', 'administrator', 'super_admin', 'super admin'].includes(userRole) || 
-          ['admin', 'administrator', 'super_admin', 'super admin'].includes(joinRoleName)) {
+      if (!userData?.id) {
         return { shouldFilter: false, locationIds: [], canViewAll: true };
       }
-      
+
+      // Admins bypass location restrictions
+      const userRole = (userData.role || "").toLowerCase();
+      // Safe access to nested role name
+      const joinRoleName =
+        (userData.user_roles as any)?.role_name?.toLowerCase() || "";
+
+      if (
+        ["admin", "administrator", "super_admin", "super admin"].includes(
+          userRole,
+        ) ||
+        ["admin", "administrator", "super_admin", "super admin"].includes(
+          joinRoleName,
+        )
+      ) {
+        return { shouldFilter: false, locationIds: [], canViewAll: true };
+      }
+
       // Check user's location assignments and override flag
       const { data: centers } = await supabase
-        .from('user_centers')
-        .select('location_id, can_view_all_locations')
-        .eq('user_id', userData.id);
-      
+        .from("user_centers")
+        .select("location_id, can_view_all_locations")
+        .eq("user_id", userData.id);
+
       // If user has can_view_all_locations flag, no filtering
-      const canViewAll = centers?.some(c => c.can_view_all_locations) || false;
+      const canViewAll = centers?.some((c) => c.can_view_all_locations) ||
+        false;
       if (canViewAll) {
         return { shouldFilter: false, locationIds: [], canViewAll: true };
       }
-      
-      const locationIds = centers?.map(c => c.location_id).filter(Boolean) || [];
-      
+
+      const locationIds = centers?.map((c) => c.location_id).filter(Boolean) ||
+        [];
+
       // If user has no assigned locations, FAIL CLOSED (show nothing)
       if (locationIds.length === 0) {
-        return { shouldFilter: true, locationIds: ['00000000-0000-0000-0000-000000000000'], canViewAll: false };
+        return {
+          shouldFilter: true,
+          locationIds: ["00000000-0000-0000-0000-000000000000"],
+          canViewAll: false,
+        };
       }
-      
+
       return { shouldFilter: true, locationIds, canViewAll: false };
     } catch (err) {
-      console.warn('Error checking location filter:', err);
+      console.warn("Error checking location filter:", err);
       return { shouldFilter: false, locationIds: [], canViewAll: true };
     }
   },
 
-
   labs: {
-    getBrandingDefaults: async (): Promise<{ data: LabReportBrandingDefaults | null; error: Error | null }> => {
+    getBrandingDefaults: async (): Promise<
+      { data: LabReportBrandingDefaults | null; error: Error | null }
+    > => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('labs')
-        .select('id, name, default_report_header_html, default_report_footer_html')
-        .eq('id', labId)
+        .from("labs")
+        .select(
+          "id, name, default_report_header_html, default_report_footer_html",
+        )
+        .eq("id", labId)
         .maybeSingle();
 
       if (error) {
@@ -693,18 +788,23 @@ export const database = {
 
     updateBrandingHtmlDefaults: async (
       input: { headerHtml?: string | null; footerHtml?: string | null },
-      labIdOverride?: string
-    ): Promise<{ data: LabReportBrandingDefaults | null; error: Error | null }> => {
+      labIdOverride?: string,
+    ): Promise<
+      { data: LabReportBrandingDefaults | null; error: Error | null }
+    > => {
       const labId = labIdOverride || (await database.getCurrentUserLabId());
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const updatePayload: Record<string, string | null> = {};
-      if (Object.prototype.hasOwnProperty.call(input, 'headerHtml')) {
+      if (Object.prototype.hasOwnProperty.call(input, "headerHtml")) {
         updatePayload.default_report_header_html = input.headerHtml ?? null;
       }
-      if (Object.prototype.hasOwnProperty.call(input, 'footerHtml')) {
+      if (Object.prototype.hasOwnProperty.call(input, "footerHtml")) {
         updatePayload.default_report_footer_html = input.footerHtml ?? null;
       }
 
@@ -715,10 +815,12 @@ export const database = {
       updatePayload.updated_at = new Date().toISOString();
 
       const { data, error } = await supabase
-        .from('labs')
+        .from("labs")
         .update(updatePayload)
-        .eq('id', labId)
-        .select('id, name, default_report_header_html, default_report_footer_html')
+        .eq("id", labId)
+        .select(
+          "id, name, default_report_header_html, default_report_footer_html",
+        )
         .maybeSingle();
 
       if (error) {
@@ -740,38 +842,43 @@ export const database = {
       };
     },
 
-    getDefaultApprovalSignature: async (labId: string): Promise<string | null> => {
+    getDefaultApprovalSignature: async (
+      labId: string,
+    ): Promise<string | null> => {
       try {
         // First try to get from lab's default branding
         const { data: brandingData, error: brandingError } = await supabase
-          .from('lab_branding_assets')
-          .select('file_url, imagekit_url, processed_url')
-          .eq('lab_id', labId)
-          .eq('asset_type', 'signature')
-          .eq('is_default', true)
+          .from("lab_branding_assets")
+          .select("file_url, imagekit_url, processed_url")
+          .eq("lab_id", labId)
+          .eq("asset_type", "signature")
+          .eq("is_default", true)
           .single();
 
         if (!brandingError && brandingData) {
-          return brandingData.imagekit_url || brandingData.processed_url || brandingData.file_url;
+          return brandingData.imagekit_url || brandingData.processed_url ||
+            brandingData.file_url;
         }
 
         // Fallback: Get any signature from users in this lab
         const { data: userSignature, error: userError } = await supabase
-          .from('lab_user_signatures')
-          .select('signature_url, processed_signature_url, imagekit_url')
-          .eq('lab_id', labId)
-          .eq('is_active', true)
-          .order('created_at', { ascending: false })
+          .from("lab_user_signatures")
+          .select("signature_url, processed_signature_url, imagekit_url")
+          .eq("lab_id", labId)
+          .eq("is_active", true)
+          .order("created_at", { ascending: false })
           .limit(1)
           .single();
 
         if (!userError && userSignature) {
-          return userSignature.imagekit_url || userSignature.processed_signature_url || userSignature.signature_url;
+          return userSignature.imagekit_url ||
+            userSignature.processed_signature_url ||
+            userSignature.signature_url;
         }
 
         return null;
       } catch (error) {
-        console.error('Error fetching default approval signature:', error);
+        console.error("Error fetching default approval signature:", error);
         return null;
       }
     },
@@ -780,18 +887,18 @@ export const database = {
       try {
         const id = labId || await database.getCurrentUserLabId();
         if (!id) {
-          return { data: null, error: new Error('No lab_id found') };
+          return { data: null, error: new Error("No lab_id found") };
         }
 
         const { data, error } = await supabase
-          .from('labs')
-          .select('*')
-          .eq('id', id)
+          .from("labs")
+          .select("*")
+          .eq("id", id)
           .single();
 
         return { data, error };
       } catch (error) {
-        console.error('Error fetching lab:', error);
+        console.error("Error fetching lab:", error);
         return { data: null, error };
       }
     },
@@ -815,7 +922,7 @@ export const database = {
       watermark_rotation?: number;
       preferred_language?: string;
       method_options?: string[];
-      pdf_letterhead_mode?: 'background' | 'header_footer';
+      pdf_letterhead_mode?: "background" | "header_footer";
       loyalty_enabled?: boolean;
       loyalty_conversion_rate?: number;
       loyalty_min_redeem_points?: number;
@@ -823,18 +930,18 @@ export const database = {
     }): Promise<{ data: any; error: any }> => {
       try {
         const { data, error } = await supabase
-          .from('labs')
+          .from("labs")
           .update({ ...updates, updated_at: new Date().toISOString() })
-          .eq('id', labId)
+          .eq("id", labId)
           .select()
           .single();
 
         return { data, error };
       } catch (error) {
-        console.error('Error updating lab:', error);
+        console.error("Error updating lab:", error);
         return { data: null, error };
       }
-    }
+    },
   },
 
   auth: {
@@ -846,18 +953,21 @@ export const database = {
         }
         return { data: { user }, error: null };
       } catch (error) {
-        console.error('Error fetching current user:', error);
+        console.error("Error fetching current user:", error);
         return { data: null, error };
       }
     },
 
     getCurrentUserWithLab: async (): Promise<{ data: any; error: any }> => {
       try {
-        const { data: authData, error: authError } = await supabase.auth.getUser();
-        if (authError || !authData.user) return { data: null, error: authError };
+        const { data: authData, error: authError } = await supabase.auth
+          .getUser();
+        if (authError || !authData.user) {
+          return { data: null, error: authError };
+        }
 
         const { data: userData, error: userError } = await supabase
-          .from('users')
+          .from("users")
           .select(`
             id,
             email,
@@ -865,23 +975,25 @@ export const database = {
             raw_user_meta_data,
             labs(id, name, code)
           `)
-          .eq('email', authData.user.email)
-          .eq('status', 'Active')
+          .eq("email", authData.user.email)
+          .eq("status", "Active")
           .single();
 
         return { data: userData, error: userError };
       } catch (error) {
-        console.error('Error fetching current user with lab:', error);
+        console.error("Error fetching current user with lab:", error);
         return { data: null, error };
       }
-    }
+    },
   },
 
   users: {
-    getLabUsers: async (labId: string): Promise<{ data: any[]; error: any }> => {
+    getLabUsers: async (
+      labId: string,
+    ): Promise<{ data: any[]; error: any }> => {
       try {
         const { data, error } = await supabase
-          .from('users')
+          .from("users")
           .select(`
             id,
             name,
@@ -903,34 +1015,36 @@ export const database = {
               is_default
             )
           `)
-          .eq('lab_id', labId)
-          .order('created_at', { ascending: false });
+          .eq("lab_id", labId)
+          .order("created_at", { ascending: false });
 
         return { data: data || [], error };
       } catch (error) {
-        console.error('Error fetching lab users:', error);
+        console.error("Error fetching lab users:", error);
         return { data: [], error };
       }
     },
 
-    getPhlebotomists: async (labId?: string): Promise<{ data: any[]; error: any }> => {
+    getPhlebotomists: async (
+      labId?: string,
+    ): Promise<{ data: any[]; error: any }> => {
       try {
         const lab_id = labId || await database.getCurrentUserLabId();
         if (!lab_id) {
-          return { data: [], error: new Error('No lab_id found') };
+          return { data: [], error: new Error("No lab_id found") };
         }
 
         const { data, error } = await supabase
-          .from('users')
-          .select('id, name, email, role, phone, is_phlebotomist')
-          .eq('lab_id', lab_id)
-          .eq('status', 'Active')
-          .eq('is_phlebotomist', true)
-          .order('name');
+          .from("users")
+          .select("id, name, email, role, phone, is_phlebotomist")
+          .eq("lab_id", lab_id)
+          .eq("status", "Active")
+          .eq("is_phlebotomist", true)
+          .order("name");
 
         return { data: data || [], error };
       } catch (error) {
-        console.error('Error fetching phlebotomists:', error);
+        console.error("Error fetching phlebotomists:", error);
         return { data: [], error };
       }
     },
@@ -940,33 +1054,39 @@ export const database = {
       return database.users.getPhlebotomists(labId);
     },
 
-    updatePhlebotomistStatus: async (userId: string, isPhlebotomist: boolean) => {
+    updatePhlebotomistStatus: async (
+      userId: string,
+      isPhlebotomist: boolean,
+    ) => {
       try {
         const { data, error } = await supabase
-          .from('users')
+          .from("users")
           .update({ is_phlebotomist: isPhlebotomist })
-          .eq('id', userId)
+          .eq("id", userId)
           .select()
           .single();
 
         return { data, error };
       } catch (error) {
-        console.error('Error updating phlebotomist status:', error);
+        console.error("Error updating phlebotomist status:", error);
         return { data: null, error };
       }
     },
 
-    getSignatureByUserId: async (userId: string, labId?: string): Promise<string | null> => {
+    getSignatureByUserId: async (
+      userId: string,
+      labId?: string,
+    ): Promise<string | null> => {
       try {
         let query = supabase
-          .from('lab_user_signatures')
-          .select('signature_url, processed_signature_url, imagekit_url')
-          .eq('user_id', userId)
-          .eq('is_active', true);
+          .from("lab_user_signatures")
+          .select("signature_url, processed_signature_url, imagekit_url")
+          .eq("user_id", userId)
+          .eq("is_active", true);
 
         // If labId is provided, filter by it for additional security
         if (labId) {
-          query = query.eq('lab_id', labId);
+          query = query.eq("lab_id", labId);
         }
 
         const { data, error } = await query.single();
@@ -974,12 +1094,13 @@ export const database = {
         if (error || !data) return null;
 
         // Prefer processed/imagekit URL, fallback to original
-        return data.imagekit_url || data.processed_signature_url || data.signature_url;
+        return data.imagekit_url || data.processed_signature_url ||
+          data.signature_url;
       } catch (error) {
-        console.error('Error fetching user signature:', error);
+        console.error("Error fetching user signature:", error);
         return null;
       }
-    }
+    },
   },
 
   locations: {
@@ -987,26 +1108,32 @@ export const database = {
       try {
         const lab_id = await database.getCurrentUserLabId();
         if (!lab_id) {
-          return { data: [], error: new Error('No lab_id found for current user') };
+          return {
+            data: [],
+            error: new Error("No lab_id found for current user"),
+          };
         }
 
         const filterCheck = await database.shouldFilterByLocation();
 
         let query = supabase
-          .from('locations')
-          .select('*')
-          .eq('lab_id', lab_id)
-          .eq('is_active', true)
-          .order('name');
+          .from("locations")
+          .select("*")
+          .eq("lab_id", lab_id)
+          .eq("is_active", true)
+          .order("name");
 
-        if (filterCheck.shouldFilter && !filterCheck.canViewAll && filterCheck.locationIds.length > 0) {
-          query = query.in('id', filterCheck.locationIds);
+        if (
+          filterCheck.shouldFilter && !filterCheck.canViewAll &&
+          filterCheck.locationIds.length > 0
+        ) {
+          query = query.in("id", filterCheck.locationIds);
         }
 
         const { data, error } = await query;
         return { data: data || [], error };
       } catch (error) {
-        console.error('Error fetching locations:', error);
+        console.error("Error fetching locations:", error);
         return { data: [], error };
       }
     },
@@ -1014,14 +1141,14 @@ export const database = {
     getById: async (id: string): Promise<{ data: any; error: any }> => {
       try {
         const { data, error } = await supabase
-          .from('locations')
-          .select('*')
-          .eq('id', id)
+          .from("locations")
+          .select("*")
+          .eq("id", id)
           .single();
 
         return { data, error };
       } catch (error) {
-        console.error('Error fetching location:', error);
+        console.error("Error fetching location:", error);
         return { data: null, error };
       }
     },
@@ -1029,7 +1156,12 @@ export const database = {
     create: async (locationData: {
       name: string;
       code?: string;
-      type?: 'hospital' | 'clinic' | 'diagnostic_center' | 'home_collection' | 'walk_in';
+      type?:
+        | "hospital"
+        | "clinic"
+        | "diagnostic_center"
+        | "home_collection"
+        | "walk_in";
       address?: string;
       phone?: string;
       email?: string;
@@ -1042,25 +1174,29 @@ export const database = {
       try {
         const lab_id = await database.getCurrentUserLabId();
         if (!lab_id) {
-          return { data: null, error: new Error('No lab_id found for current user') };
+          return {
+            data: null,
+            error: new Error("No lab_id found for current user"),
+          };
         }
 
         const { data, error } = await supabase
-          .from('locations')
+          .from("locations")
           .insert([{
             ...locationData,
-            type: locationData.type || 'diagnostic_center',
+            type: locationData.type || "diagnostic_center",
             lab_id,
             is_active: true,
-            supports_cash_collection: locationData.is_cash_collection_center || false,
-            payment_terms: 0
+            supports_cash_collection: locationData.is_cash_collection_center ||
+              false,
+            payment_terms: 0,
           }])
           .select()
           .single();
 
         return { data, error };
       } catch (error) {
-        console.error('Error creating location:', error);
+        console.error("Error creating location:", error);
         return { data: null, error };
       }
     },
@@ -1068,7 +1204,12 @@ export const database = {
     update: async (id: string, locationData: {
       name?: string;
       code?: string;
-      type?: 'hospital' | 'clinic' | 'diagnostic_center' | 'home_collection' | 'walk_in';
+      type?:
+        | "hospital"
+        | "clinic"
+        | "diagnostic_center"
+        | "home_collection"
+        | "walk_in";
       address?: string;
       phone?: string;
       email?: string;
@@ -1081,18 +1222,18 @@ export const database = {
     }): Promise<{ data: any; error: any }> => {
       try {
         const { data, error } = await supabase
-          .from('locations')
+          .from("locations")
           .update({
             ...locationData,
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
           })
-          .eq('id', id)
+          .eq("id", id)
           .select()
           .single();
 
         return { data, error };
       } catch (error) {
-        console.error('Error updating location:', error);
+        console.error("Error updating location:", error);
         return { data: null, error };
       }
     },
@@ -1100,41 +1241,46 @@ export const database = {
     delete: async (id: string): Promise<{ error: any }> => {
       try {
         const { error } = await supabase
-          .from('locations')
+          .from("locations")
           .delete()
-          .eq('id', id);
+          .eq("id", id);
 
         return { error };
       } catch (error) {
-        console.error('Error deleting location:', error);
+        console.error("Error deleting location:", error);
         return { error };
       }
-    }
+    },
   },
 
   creditTransactions: {
-    getByLocation: async (locationId: string, limit: number = 50): Promise<{ data: any[]; error: any }> => {
+    getByLocation: async (
+      locationId: string,
+      limit: number = 50,
+    ): Promise<{ data: any[]; error: any }> => {
       try {
         const { data, error } = await supabase
-          .from('credit_transactions')
-          .select('*')
-          .eq('location_id', locationId)
-          .order('created_at', { ascending: false })
+          .from("credit_transactions")
+          .select("*")
+          .eq("location_id", locationId)
+          .order("created_at", { ascending: false })
           .limit(limit);
 
         return { data: data || [], error };
       } catch (error) {
-        console.error('Error fetching credit transactions:', error);
+        console.error("Error fetching credit transactions:", error);
         return { data: [], error };
       }
     },
 
-    getCreditSummaryByLocation: async (locationId: string): Promise<{ data: { current_balance: number } | null; error: any }> => {
+    getCreditSummaryByLocation: async (
+      locationId: string,
+    ): Promise<{ data: { current_balance: number } | null; error: any }> => {
       try {
         const { data, error } = await supabase
-          .from('credit_transactions')
-          .select('amount, transaction_type')
-          .eq('location_id', locationId);
+          .from("credit_transactions")
+          .select("amount, transaction_type")
+          .eq("location_id", locationId);
 
         if (error) {
           return { data: null, error };
@@ -1143,7 +1289,7 @@ export const database = {
         // Calculate current balance: credits - (payments + adjustments)
         let balance = 0;
         (data || []).forEach((tx: any) => {
-          if (tx.transaction_type === 'credit') {
+          if (tx.transaction_type === "credit") {
             balance += Number(tx.amount) || 0;
           } else {
             balance -= Number(tx.amount) || 0;
@@ -1152,7 +1298,7 @@ export const database = {
 
         return { data: { current_balance: balance }, error: null };
       } catch (error) {
-        console.error('Error fetching credit summary:', error);
+        console.error("Error fetching credit summary:", error);
         return { data: null, error };
       }
     },
@@ -1160,7 +1306,7 @@ export const database = {
     create: async (transactionData: {
       location_id: string;
       amount: number;
-      type: 'credit' | 'debit';
+      type: "credit" | "debit";
       description?: string;
       reference_type?: string;
       reference_id?: string;
@@ -1168,39 +1314,47 @@ export const database = {
       try {
         const lab_id = await database.getCurrentUserLabId();
         if (!lab_id) {
-          return { data: null, error: new Error('No lab_id found for current user') };
+          return {
+            data: null,
+            error: new Error("No lab_id found for current user"),
+          };
         }
 
         const { data, error } = await supabase
-          .from('credit_transactions')
+          .from("credit_transactions")
           .insert([{
             location_id: transactionData.location_id,
             amount: transactionData.amount,
-            transaction_type: transactionData.type === 'credit' ? 'credit' : 'payment',
+            transaction_type: transactionData.type === "credit"
+              ? "credit"
+              : "payment",
             notes: transactionData.description,
             reference_number: transactionData.reference_id,
             lab_id,
-            created_at: new Date().toISOString()
+            created_at: new Date().toISOString(),
           }])
           .select()
           .single();
 
         return { data, error };
       } catch (error) {
-        console.error('Error creating credit transaction:', error);
+        console.error("Error creating credit transaction:", error);
         return { data: null, error };
       }
-    }
+    },
   },
 
   bookings: {
     create: async (payload: any) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
       const { data, error } = await supabase
-        .from('bookings')
+        .from("bookings")
         .insert({
           ...payload,
           lab_id,
@@ -1214,12 +1368,12 @@ export const database = {
 
     update: async (id: string, updates: any) => {
       const { data, error } = await supabase
-        .from('bookings')
+        .from("bookings")
         .update({
           ...updates,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
@@ -1227,19 +1381,19 @@ export const database = {
 
     list: async (filters?: { status?: string; source?: string }) => {
       const lab_id = await database.getCurrentUserLabId();
-      if (!lab_id) return { data: [], error: new Error('No lab_id') };
+      if (!lab_id) return { data: [], error: new Error("No lab_id") };
 
       let query = supabase
-        .from('bookings')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .order('created_at', { ascending: false });
+        .from("bookings")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .order("created_at", { ascending: false });
 
       if (filters?.status) {
-        query = query.eq('status', filters.status);
+        query = query.eq("status", filters.status);
       }
       if (filters?.source) {
-        query = query.eq('booking_source', filters.source);
+        query = query.eq("booking_source", filters.source);
       }
 
       const { data, error } = await query;
@@ -1248,9 +1402,9 @@ export const database = {
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-        .from('bookings')
-        .select('*')
-        .eq('id', id)
+        .from("bookings")
+        .select("*")
+        .eq("id", id)
         .single();
       return { data, error };
     },
@@ -1268,11 +1422,11 @@ export const database = {
       result_mapping?: Record<string, unknown>;
     }) => {
       const { data, error } = await supabase
-        .from('ai_protocols')
+        .from("ai_protocols")
         .insert({
           ...payload,
           created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
         .select()
         .single();
@@ -1282,12 +1436,12 @@ export const database = {
 
     update: async (protocolId: string, updates: Record<string, unknown>) => {
       const { data, error } = await supabase
-        .from('ai_protocols')
+        .from("ai_protocols")
         .update({
           ...updates,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', protocolId)
+        .eq("id", protocolId)
         .select()
         .single();
 
@@ -1296,192 +1450,206 @@ export const database = {
 
     getById: async (protocolId: string) => {
       const { data, error } = await supabase
-        .from('ai_protocols')
-        .select('*')
-        .eq('id', protocolId)
+        .from("ai_protocols")
+        .select("*")
+        .eq("id", protocolId)
         .single();
 
       return { data, error };
-    }
+    },
   },
 
   aiAnalysis: {
     saveDoctorSummary: async (orderId: string, summary: string) => {
       try {
         const labId = await database.getCurrentUserLabId();
-        if (!labId) return { error: new Error('No lab_id found for current user') };
+        if (!labId) {
+          return { error: new Error("No lab_id found for current user") };
+        }
 
         // Check if report exists
         const { data: existingReport } = await supabase
-          .from('reports')
-          .select('id')
-          .eq('order_id', orderId)
+          .from("reports")
+          .select("id")
+          .eq("order_id", orderId)
           .maybeSingle();
 
         if (existingReport) {
           const { error } = await supabase
-            .from('reports')
+            .from("reports")
             .update({
               ai_doctor_summary: summary,
-              ai_summary_generated_at: new Date().toISOString()
+              ai_summary_generated_at: new Date().toISOString(),
             })
-            .eq('id', existingReport.id);
+            .eq("id", existingReport.id);
           return { error };
         } else {
           // Create new report record if it doesn't exist
           const { error } = await supabase
-            .from('reports')
+            .from("reports")
             .insert({
               lab_id: labId,
               order_id: orderId,
               ai_doctor_summary: summary,
               ai_summary_generated_at: new Date().toISOString(),
-              status: 'Draft',
-              generated_date: new Date().toISOString()
+              status: "Draft",
+              generated_date: new Date().toISOString(),
             });
           return { error };
         }
       } catch (error) {
-        console.error('Error saving doctor summary:', error);
+        console.error("Error saving doctor summary:", error);
         return { error };
       }
-    }
+    },
   },
-
-
 
   whatsappTemplates: {
     getDefault: async (category: string, labId?: string) => {
       try {
         const id = labId || await database.getCurrentUserLabId();
-        if (!id) return { data: null, error: new Error('No lab_id found') };
+        if (!id) return { data: null, error: new Error("No lab_id found") };
 
         const { data, error } = await supabase
-          .from('whatsapp_message_templates')
-          .select('*')
-          .eq('lab_id', id)
-          .eq('category', category)
-          .eq('is_default', true)
+          .from("whatsapp_message_templates")
+          .select("*")
+          .eq("lab_id", id)
+          .eq("category", category)
+          .eq("is_default", true)
           .maybeSingle();
 
         return { data, error };
       } catch (error) {
-        console.error('Error fetching default WhatsApp template:', error);
+        console.error("Error fetching default WhatsApp template:", error);
         return { data: null, error };
       }
-    }
+    },
   },
 
   invoiceTemplates: {
     getAll: async () => {
       try {
         const labId = await database.getCurrentUserLabId();
-        if (!labId) return { data: [], error: new Error('No lab_id found') };
+        if (!labId) return { data: [], error: new Error("No lab_id found") };
 
         const { data, error } = await supabase
-          .from('invoice_templates')
-          .select('*')
-          .eq('lab_id', labId)
-          .order('is_default', { ascending: false });
+          .from("invoice_templates")
+          .select("*")
+          .eq("lab_id", labId)
+          .order("is_default", { ascending: false });
 
         return { data: data || [], error };
       } catch (error) {
-        console.error('Error fetching invoice templates:', error);
+        console.error("Error fetching invoice templates:", error);
         return { data: [], error };
       }
-    }
+    },
   },
 
   patients: {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       const { data, error } = await supabase
-        .from('patients')
-        .select('*')
-        .eq('is_active', true)
-        .eq('lab_id', lab_id)
-        .order('created_at', { ascending: false });
+        .from("patients")
+        .select("*")
+        .eq("is_active", true)
+        .eq("lab_id", lab_id)
+        .order("created_at", { ascending: false });
       return { data, error };
     },
 
     getAllWithTestCounts: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       const { data, error } = await supabase
-        .from('patients')
+        .from("patients")
         .select(`
           *,
           orders!inner(count)
         `)
-        .eq('is_active', true)
-        .eq('lab_id', lab_id)
-        .order('created_at', { ascending: false });
+        .eq("is_active", true)
+        .eq("lab_id", lab_id)
+        .order("created_at", { ascending: false });
       // Optionally, transform data here if needed
       return { data, error };
     },
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-        .from('patients')
-        .select('*')
-        .eq('id', id)
+        .from("patients")
+        .select("*")
+        .eq("id", id)
         .single();
       return { data, error };
     },
 
     create: async (patientData: any) => {
-      const { requestedTests, referring_doctor, referring_doctor_id, ...patientDetails } = patientData;
-      
+      const {
+        requestedTests,
+        referring_doctor,
+        referring_doctor_id,
+        ...patientDetails
+      } = patientData;
+
       // Get current user's lab_id
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       // Get today's date in DD-Mon-YYYY format
       const today = new Date();
-      const day = today.getDate().toString().padStart(2, '0');
-      const month = today.toLocaleString('en-US', { month: 'short' });
+      const day = today.getDate().toString().padStart(2, "0");
+      const month = today.toLocaleString("en-US", { month: "short" });
       const year = today.getFullYear();
       const dateFormatted = `${day}-${month}-${year}`;
-      
+
       // Count patients registered today to determine sequential number
       const { count: todayCount, error: countError } = await supabase
-        .from('patients')
-        .select('id', { count: 'exact', head: true })
-        .eq('lab_id', lab_id)
-        .gte('created_at', today.toISOString().split('T')[0]);
-      
+        .from("patients")
+        .select("id", { count: "exact", head: true })
+        .eq("lab_id", lab_id)
+        .gte("created_at", today.toISOString().split("T")[0]);
+
       if (countError) {
-        console.error('Error counting today\'s patients:', countError);
+        console.error("Error counting today's patients:", countError);
         return { data: null, error: countError };
       }
-      
+
       // Calculate sequential number (1-indexed)
       const sequentialNumber = (todayCount || 0) + 1;
-      
+
       // Generate display_id in format DD-Mon-YYYY-SeqNum
       const display_id = `${dateFormatted}-${sequentialNumber}`;
-      
+
       // Create patient with display_id and lab_id
       const { data, error } = await supabase
-        .from('patients')
+        .from("patients")
         .insert([{
           ...patientDetails,
           referring_doctor,
           display_id,
-          lab_id
+          lab_id,
         }])
         .select()
         .single();
-      
+
       if (error || !data) {
         return { data, error };
       }
@@ -1492,22 +1660,22 @@ export const database = {
         try {
           // Get test groups from database to match test names
           const { data: testGroups, error: testGroupsError } = await supabase
-            .from('test_groups')
-            .select('*');
-          
+            .from("test_groups")
+            .select("*");
+
           if (testGroupsError) {
-            console.error('Error fetching test groups:', testGroupsError);
+            console.error("Error fetching test groups:", testGroupsError);
           } else {
             // Match requested tests to test groups
             const matchedTests: string[] = [];
             let totalAmount = 0;
-            
+
             requestedTests.forEach((testName: string) => {
-              const matchedGroup = testGroups?.find(group => 
+              const matchedGroup = testGroups?.find((group) =>
                 group.name.toLowerCase().includes(testName.toLowerCase()) ||
                 testName.toLowerCase().includes(group.name.toLowerCase())
               );
-              
+
               if (matchedGroup) {
                 matchedTests.push(matchedGroup.name);
                 totalAmount += matchedGroup.price;
@@ -1517,28 +1685,31 @@ export const database = {
                 totalAmount += 500; // Default price for unmatched tests
               }
             });
-            
+
             if (matchedTests.length > 0) {
               // Create order for the new patient
               const orderData = {
                 patient_name: data.name,
                 patient_id: data.id,
                 tests: matchedTests,
-                status: 'Sample Collection',
-                priority: 'Normal',
-                order_date: new Date().toISOString().split('T')[0],
-                expected_date: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 2 days from now
+                status: "Sample Collection",
+                priority: "Normal",
+                order_date: new Date().toISOString().split("T")[0],
+                expected_date:
+                  new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString()
+                    .split("T")[0], // 2 days from now
                 total_amount: totalAmount,
-                doctor: referring_doctor || 'Self',
+                doctor: referring_doctor || "Self",
                 referring_doctor_id: referring_doctor_id || null,
               };
-              
-              const { data: orderResult, error: orderError } = await database.orders.create(orderData);
+
+              const { data: orderResult, error: orderError } = await database
+                .orders.create(orderData);
 
               if (orderError) {
-                console.error('Order creation failed:', orderError);
+                console.error("Order creation failed:", orderError);
               } else {
-                console.log('Order created successfully:', orderResult?.id);
+                console.log("Order created successfully:", orderResult?.id);
                 return {
                   data: {
                     ...data,
@@ -1553,20 +1724,20 @@ export const database = {
             }
           }
         } catch (orderCreationError) {
-          console.error('Error in order creation process:', orderCreationError);
+          console.error("Error in order creation process:", orderCreationError);
           // Don't fail patient creation if order creation fails
         }
       }
-      
+
       // Patient created successfully
       return { data: data, error: null };
     },
 
     update: async (id: string, patientData: any) => {
       const { data, error } = await supabase
-        .from('patients')
+        .from("patients")
         .update(patientData)
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
@@ -1574,21 +1745,21 @@ export const database = {
 
     delete: async (id: string) => {
       const { error } = await supabase
-        .from('patients')
+        .from("patients")
         .update({ is_active: false })
-        .eq('id', id);
+        .eq("id", id);
       return { error };
-    }
+    },
   },
-  
+
   // Get today's patient count for color assignment
   getTodaysPatientsCount: async () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Date().toISOString().split("T")[0];
     const { count, error } = await supabase
-      .from('patients')
-      .select('id', { count: 'exact', head: true })
-      .gte('created_at', today);
-    
+      .from("patients")
+      .select("id", { count: "exact", head: true })
+      .gte("created_at", today);
+
     return { count: count || 0, error };
   },
 
@@ -1599,33 +1770,42 @@ export const database = {
     /**
      * Get patient's loyalty balance for the current lab
      */
-    getBalance: async (patientId: string): Promise<{ data: any; error: any }> => {
+    getBalance: async (
+      patientId: string,
+    ): Promise<{ data: any; error: any }> => {
       const lab_id = await database.getCurrentUserLabId();
-      if (!lab_id) return { data: null, error: new Error('No lab_id found') };
+      if (!lab_id) return { data: null, error: new Error("No lab_id found") };
 
       const { data, error } = await supabase
-        .from('patient_loyalty_points')
-        .select('*')
-        .eq('patient_id', patientId)
-        .eq('lab_id', lab_id)
+        .from("patient_loyalty_points")
+        .select("*")
+        .eq("patient_id", patientId)
+        .eq("lab_id", lab_id)
         .maybeSingle();
 
-      return { data: data || { current_balance: 0, total_earned: 0, total_redeemed: 0 }, error };
+      return {
+        data: data ||
+          { current_balance: 0, total_earned: 0, total_redeemed: 0 },
+        error,
+      };
     },
 
     /**
      * Get transaction history for a patient
      */
-    getTransactions: async (patientId: string, limit = 50): Promise<{ data: any[]; error: any }> => {
+    getTransactions: async (
+      patientId: string,
+      limit = 50,
+    ): Promise<{ data: any[]; error: any }> => {
       const lab_id = await database.getCurrentUserLabId();
-      if (!lab_id) return { data: [], error: new Error('No lab_id found') };
+      if (!lab_id) return { data: [], error: new Error("No lab_id found") };
 
       const { data, error } = await supabase
-        .from('loyalty_transactions')
-        .select('*, orders(sample_id, patient_name)')
-        .eq('patient_id', patientId)
-        .eq('lab_id', lab_id)
-        .order('created_at', { ascending: false })
+        .from("loyalty_transactions")
+        .select("*, orders(sample_id, patient_name)")
+        .eq("patient_id", patientId)
+        .eq("lab_id", lab_id)
+        .order("created_at", { ascending: false })
         .limit(limit);
 
       return { data: data || [], error };
@@ -1635,15 +1815,19 @@ export const database = {
      * Earn points from an order (called after order creation/payment)
      * amount = the billable amount on which points are calculated
      */
-    earnPoints: async (patientId: string, orderId: string, amount: number): Promise<{ data: any; error: any }> => {
+    earnPoints: async (
+      patientId: string,
+      orderId: string,
+      amount: number,
+    ): Promise<{ data: any; error: any }> => {
       const lab_id = await database.getCurrentUserLabId();
-      if (!lab_id) return { data: null, error: new Error('No lab_id found') };
+      if (!lab_id) return { data: null, error: new Error("No lab_id found") };
 
       // Fetch lab loyalty settings
       const { data: lab } = await supabase
-        .from('labs')
-        .select('loyalty_enabled, loyalty_conversion_rate')
-        .eq('id', lab_id)
+        .from("labs")
+        .select("loyalty_enabled, loyalty_conversion_rate")
+        .eq("id", lab_id)
         .single();
 
       if (!lab?.loyalty_enabled) return { data: null, error: null }; // silently skip
@@ -1654,10 +1838,10 @@ export const database = {
 
       // Upsert patient balance
       const { data: existing } = await supabase
-        .from('patient_loyalty_points')
-        .select('id, current_balance, total_earned')
-        .eq('patient_id', patientId)
-        .eq('lab_id', lab_id)
+        .from("patient_loyalty_points")
+        .select("id, current_balance, total_earned")
+        .eq("patient_id", patientId)
+        .eq("lab_id", lab_id)
         .maybeSingle();
 
       let newBalance: number;
@@ -1667,28 +1851,38 @@ export const database = {
         newBalance = (existing.current_balance || 0) + pointsEarned;
         newTotalEarned = (existing.total_earned || 0) + pointsEarned;
         await supabase
-          .from('patient_loyalty_points')
-          .update({ current_balance: newBalance, total_earned: newTotalEarned, updated_at: new Date().toISOString() })
-          .eq('id', existing.id);
+          .from("patient_loyalty_points")
+          .update({
+            current_balance: newBalance,
+            total_earned: newTotalEarned,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", existing.id);
       } else {
         newBalance = pointsEarned;
         newTotalEarned = pointsEarned;
         await supabase
-          .from('patient_loyalty_points')
-          .insert({ patient_id: patientId, lab_id, current_balance: newBalance, total_earned: newTotalEarned });
+          .from("patient_loyalty_points")
+          .insert({
+            patient_id: patientId,
+            lab_id,
+            current_balance: newBalance,
+            total_earned: newTotalEarned,
+          });
       }
 
       // Record transaction
       const { data: txn, error: txnError } = await supabase
-        .from('loyalty_transactions')
+        .from("loyalty_transactions")
         .insert({
           patient_id: patientId,
           lab_id,
           order_id: orderId,
-          type: 'earned',
+          type: "earned",
           points: pointsEarned,
           balance_after: newBalance,
-          description: `Earned ${pointsEarned} pts on order (₹${amount.toLocaleString()})`,
+          description:
+            `Earned ${pointsEarned} pts on order (₹${amount.toLocaleString()})`,
         })
         .select()
         .single();
@@ -1699,35 +1893,52 @@ export const database = {
     /**
      * Redeem points on an order — returns the discount amount
      */
-    redeemPoints: async (patientId: string, orderId: string, pointsToRedeem: number): Promise<{ data: any; error: any }> => {
+    redeemPoints: async (
+      patientId: string,
+      orderId: string,
+      pointsToRedeem: number,
+    ): Promise<{ data: any; error: any }> => {
       const lab_id = await database.getCurrentUserLabId();
-      if (!lab_id) return { data: null, error: new Error('No lab_id found') };
+      if (!lab_id) return { data: null, error: new Error("No lab_id found") };
 
-      if (pointsToRedeem <= 0) return { data: null, error: new Error('Points must be positive') };
+      if (pointsToRedeem <= 0) {
+        return { data: null, error: new Error("Points must be positive") };
+      }
 
       // Fetch lab settings
       const { data: lab } = await supabase
-        .from('labs')
-        .select('loyalty_enabled, loyalty_point_value, loyalty_min_redeem_points')
-        .eq('id', lab_id)
+        .from("labs")
+        .select(
+          "loyalty_enabled, loyalty_point_value, loyalty_min_redeem_points",
+        )
+        .eq("id", lab_id)
         .single();
 
-      if (!lab?.loyalty_enabled) return { data: null, error: new Error('Loyalty program not enabled') };
+      if (!lab?.loyalty_enabled) {
+        return { data: null, error: new Error("Loyalty program not enabled") };
+      }
 
       // Check balance
       const { data: balance } = await supabase
-        .from('patient_loyalty_points')
-        .select('id, current_balance, total_redeemed')
-        .eq('patient_id', patientId)
-        .eq('lab_id', lab_id)
+        .from("patient_loyalty_points")
+        .select("id, current_balance, total_redeemed")
+        .eq("patient_id", patientId)
+        .eq("lab_id", lab_id)
         .maybeSingle();
 
       if (!balance || balance.current_balance < pointsToRedeem) {
-        return { data: null, error: new Error('Insufficient points balance') };
+        return { data: null, error: new Error("Insufficient points balance") };
       }
 
       if (balance.current_balance < (lab.loyalty_min_redeem_points || 100)) {
-        return { data: null, error: new Error(`Minimum ${lab.loyalty_min_redeem_points || 100} points required to redeem`) };
+        return {
+          data: null,
+          error: new Error(
+            `Minimum ${
+              lab.loyalty_min_redeem_points || 100
+            } points required to redeem`,
+          ),
+        };
       }
 
       const pointValue = lab.loyalty_point_value || 1.0;
@@ -1737,66 +1948,97 @@ export const database = {
 
       // Update balance
       await supabase
-        .from('patient_loyalty_points')
-        .update({ current_balance: newBalance, total_redeemed: newTotalRedeemed, updated_at: new Date().toISOString() })
-        .eq('id', balance.id);
+        .from("patient_loyalty_points")
+        .update({
+          current_balance: newBalance,
+          total_redeemed: newTotalRedeemed,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", balance.id);
 
       // Record transaction
       await supabase
-        .from('loyalty_transactions')
+        .from("loyalty_transactions")
         .insert({
           patient_id: patientId,
           lab_id,
           order_id: orderId,
-          type: 'redeemed',
+          type: "redeemed",
           points: -pointsToRedeem,
           balance_after: newBalance,
-          description: `Redeemed ${pointsToRedeem} pts for ₹${discountAmount.toFixed(2)} discount`,
+          description: `Redeemed ${pointsToRedeem} pts for ₹${
+            discountAmount.toFixed(2)
+          } discount`,
         });
 
       // Update order with loyalty info
       await supabase
-        .from('orders')
-        .update({ loyalty_points_redeemed: pointsToRedeem, loyalty_discount_amount: discountAmount })
-        .eq('id', orderId);
+        .from("orders")
+        .update({
+          loyalty_points_redeemed: pointsToRedeem,
+          loyalty_discount_amount: discountAmount,
+        })
+        .eq("id", orderId);
 
-      return { data: { discountAmount, pointsRedeemed: pointsToRedeem, newBalance }, error: null };
+      return {
+        data: { discountAmount, pointsRedeemed: pointsToRedeem, newBalance },
+        error: null,
+      };
     },
 
     /**
      * Manually adjust points (admin action)
      */
-    adjustPoints: async (patientId: string, points: number, reason: string): Promise<{ data: any; error: any }> => {
+    adjustPoints: async (
+      patientId: string,
+      points: number,
+      reason: string,
+    ): Promise<{ data: any; error: any }> => {
       const lab_id = await database.getCurrentUserLabId();
-      if (!lab_id) return { data: null, error: new Error('No lab_id found') };
+      if (!lab_id) return { data: null, error: new Error("No lab_id found") };
 
       const { data: { user } } = await supabase.auth.getUser();
 
       const { data: existing } = await supabase
-        .from('patient_loyalty_points')
-        .select('id, current_balance, total_earned, total_redeemed')
-        .eq('patient_id', patientId)
-        .eq('lab_id', lab_id)
+        .from("patient_loyalty_points")
+        .select("id, current_balance, total_earned, total_redeemed")
+        .eq("patient_id", patientId)
+        .eq("lab_id", lab_id)
         .maybeSingle();
 
       const currentBalance = existing?.current_balance || 0;
       const newBalance = Math.max(0, currentBalance + points);
 
       if (existing?.id) {
-        const updates: any = { current_balance: newBalance, updated_at: new Date().toISOString() };
-        if (points > 0) updates.total_earned = (existing.total_earned || 0) + points;
-        await supabase.from('patient_loyalty_points').update(updates).eq('id', existing.id);
+        const updates: any = {
+          current_balance: newBalance,
+          updated_at: new Date().toISOString(),
+        };
+        if (points > 0) {
+          updates.total_earned = (existing.total_earned || 0) + points;
+        }
+        await supabase.from("patient_loyalty_points").update(updates).eq(
+          "id",
+          existing.id,
+        );
       } else {
-        await supabase.from('patient_loyalty_points').insert({
-          patient_id: patientId, lab_id, current_balance: newBalance,
-          total_earned: points > 0 ? points : 0, total_redeemed: 0
+        await supabase.from("patient_loyalty_points").insert({
+          patient_id: patientId,
+          lab_id,
+          current_balance: newBalance,
+          total_earned: points > 0 ? points : 0,
+          total_redeemed: 0,
         });
       }
 
-      await supabase.from('loyalty_transactions').insert({
-        patient_id: patientId, lab_id,
-        type: 'adjusted', points, balance_after: newBalance,
-        description: reason || `Manual adjustment: ${points > 0 ? '+' : ''}${points} points`,
+      await supabase.from("loyalty_transactions").insert({
+        patient_id: patientId,
+        lab_id,
+        type: "adjusted",
+        points,
+        balance_after: newBalance,
+        description: reason ||
+          `Manual adjustment: ${points > 0 ? "+" : ""}${points} points`,
         created_by: user?.id || null,
       });
 
@@ -1808,22 +2050,24 @@ export const database = {
      */
     getLabSettings: async (): Promise<{ data: any; error: any }> => {
       const lab_id = await database.getCurrentUserLabId();
-      if (!lab_id) return { data: null, error: new Error('No lab_id found') };
+      if (!lab_id) return { data: null, error: new Error("No lab_id found") };
 
       const { data, error } = await supabase
-        .from('labs')
-        .select('loyalty_enabled, loyalty_conversion_rate, loyalty_min_redeem_points, loyalty_point_value')
-        .eq('id', lab_id)
+        .from("labs")
+        .select(
+          "loyalty_enabled, loyalty_conversion_rate, loyalty_min_redeem_points, loyalty_point_value",
+        )
+        .eq("id", lab_id)
         .single();
 
       return { data, error };
     },
   },
-  
+
   reports: {
     getTemplateContext: async (orderId: string) => {
       if (!orderId) {
-        return { data: null, error: new Error('orderId is required') };
+        return { data: null, error: new Error("orderId is required") };
       }
 
       const {
@@ -1832,97 +2076,139 @@ export const database = {
       } = await supabase.auth.getSession();
 
       if (sessionError) {
-        console.error('Failed to load session for template context:', sessionError);
+        console.error(
+          "Failed to load session for template context:",
+          sessionError,
+        );
         return { data: null, error: sessionError };
       }
 
       const accessToken = session?.access_token;
       if (!accessToken) {
-        return { data: null, error: new Error('No active session found for current user') };
+        return {
+          data: null,
+          error: new Error("No active session found for current user"),
+        };
       }
 
       let response: Response;
       try {
-        response = await fetch('/.netlify/functions/get-template-context', {
-          method: 'POST',
+        response = await fetch("/.netlify/functions/get-template-context", {
+          method: "POST",
           headers: {
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
             apikey: supabaseAnonKey,
             Authorization: `Bearer ${accessToken}`,
           },
           body: JSON.stringify({ orderId }),
         });
       } catch (networkError) {
-        console.error('Network error fetching report template context:', networkError);
-        return { data: null, error: networkError instanceof Error ? networkError : new Error('Network error') };
+        console.error(
+          "Network error fetching report template context:",
+          networkError,
+        );
+        return {
+          data: null,
+          error: networkError instanceof Error
+            ? networkError
+            : new Error("Network error"),
+        };
       }
 
-      let payload: { success?: boolean; context?: ReportTemplateContext; error?: string } | null = null;
+      let payload: {
+        success?: boolean;
+        context?: ReportTemplateContext;
+        error?: string;
+      } | null = null;
       try {
         payload = (await response.json()) as typeof payload;
       } catch (parseError) {
-        console.error('Failed to parse template context response:', parseError);
+        console.error("Failed to parse template context response:", parseError);
         return {
           data: null,
-          error: new Error('Invalid response from template context endpoint'),
+          error: new Error("Invalid response from template context endpoint"),
         };
       }
 
       if (!response.ok) {
-        const message = payload?.error || `Template context request failed with status ${response.status}`;
+        const message = payload?.error ||
+          `Template context request failed with status ${response.status}`;
         return { data: null, error: new Error(message) };
       }
 
       if (!payload?.success) {
-        const message = payload?.error || 'Failed to load report context';
+        const message = payload?.error || "Failed to load report context";
         return { data: null, error: new Error(message) };
       }
 
       const context = payload.context;
 
       if (!context) {
-        return { data: null, error: new Error('No context returned for order') };
+        return {
+          data: null,
+          error: new Error("No context returned for order"),
+        };
       }
 
       const placeholderValues = context.placeholderValues;
-      const normalizedPlaceholderValues: Record<string, string | number | boolean | null> =
-        placeholderValues && typeof placeholderValues === 'object' && !Array.isArray(placeholderValues)
-          ? (placeholderValues as Record<string, string | number | boolean | null>)
+      const normalizedPlaceholderValues: Record<
+        string,
+        string | number | boolean | null
+      > =
+        placeholderValues && typeof placeholderValues === "object" &&
+          !Array.isArray(placeholderValues)
+          ? (placeholderValues as Record<
+            string,
+            string | number | boolean | null
+          >)
           : {};
 
-      const labBrandingSource = context.labBranding && typeof context.labBranding === 'object' && !Array.isArray(context.labBranding)
-        ? (context.labBranding as { defaultHeaderHtml?: unknown; defaultFooterHtml?: unknown })
-        : undefined;
+      const labBrandingSource =
+        context.labBranding && typeof context.labBranding === "object" &&
+          !Array.isArray(context.labBranding)
+          ? (context.labBranding as {
+            defaultHeaderHtml?: unknown;
+            defaultFooterHtml?: unknown;
+          })
+          : undefined;
 
-      const normalizedLabBranding: ReportTemplateLabBranding | undefined = labBrandingSource
-        ? {
+      const normalizedLabBranding: ReportTemplateLabBranding | undefined =
+        labBrandingSource
+          ? {
             defaultHeaderHtml:
-              typeof labBrandingSource.defaultHeaderHtml === 'string'
+              typeof labBrandingSource.defaultHeaderHtml === "string"
                 ? labBrandingSource.defaultHeaderHtml
                 : labBrandingSource.defaultHeaderHtml == null
-                  ? null
-                  : String(labBrandingSource.defaultHeaderHtml),
+                ? null
+                : String(labBrandingSource.defaultHeaderHtml),
             defaultFooterHtml:
-              typeof labBrandingSource.defaultFooterHtml === 'string'
+              typeof labBrandingSource.defaultFooterHtml === "string"
                 ? labBrandingSource.defaultFooterHtml
                 : labBrandingSource.defaultFooterHtml == null
-                  ? null
-                  : String(labBrandingSource.defaultFooterHtml),
+                ? null
+                : String(labBrandingSource.defaultFooterHtml),
           }
-        : undefined;
+          : undefined;
 
       const normalized: ReportTemplateContext = {
         ...context,
-        orderId: context.orderId ? String(context.orderId) : '',
+        orderId: context.orderId ? String(context.orderId) : "",
         patientId: context.patientId ? String(context.patientId) : null,
         labId: context.labId ? String(context.labId) : null,
         analyteParameters: Array.isArray(context.analyteParameters)
-          ? context.analyteParameters.map((param) => (param == null ? '' : String(param))).filter((param) => param.length > 0)
+          ? context.analyteParameters.map((
+            param,
+          ) => (param == null ? "" : String(param))).filter((param) =>
+            param.length > 0
+          )
           : [],
         testGroupIds: Array.isArray(context.testGroupIds)
-          ? context.testGroupIds.map((id) => (id == null ? '' : String(id))).filter((id) => id.length > 0)
+          ? context.testGroupIds.map((id) => (id == null ? "" : String(id)))
+            .filter((id) => id.length > 0)
           : [],
-        analytes: Array.isArray(context.analytes) ? (context.analytes as ReportTemplateAnalyteRow[]) : [],
+        analytes: Array.isArray(context.analytes)
+          ? (context.analytes as ReportTemplateAnalyteRow[])
+          : [],
         placeholderValues: normalizedPlaceholderValues,
         labBranding: normalizedLabBranding,
       };
@@ -1933,26 +2219,34 @@ export const database = {
     getAll: async (labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: [], error: new Error('No lab_id found for current user') };
+        return {
+          data: [],
+          error: new Error("No lab_id found for current user"),
+        };
       }
       const { data, error } = await supabase
-        .from('reports')
-        .select('id, patient_id, result_id, status, generated_date, doctor, notes, created_at, updated_at, lab_id, patients(name), results(test_name)')
-        .eq('lab_id', labId)
-        .order('generated_date', { ascending: false });
+        .from("reports")
+        .select(
+          "id, patient_id, result_id, status, generated_date, doctor, notes, created_at, updated_at, lab_id, patients(name), results(test_name)",
+        )
+        .eq("lab_id", labId)
+        .order("generated_date", { ascending: false });
       return { data, error };
     },
 
     getById: async (id: string, labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
       const { data, error } = await supabase
-        .from('reports')
-        .select('*')
-        .eq('id', id)
-        .eq('lab_id', labId)
+        .from("reports")
+        .select("*")
+        .eq("id", id)
+        .eq("lab_id", labId)
         .single();
       return { data, error };
     },
@@ -1960,10 +2254,13 @@ export const database = {
     create: async (reportData: any, labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
       const { data, error } = await supabase
-        .from('reports')
+        .from("reports")
         .insert([{ ...reportData, lab_id: labId }])
         .select()
         .single();
@@ -1973,13 +2270,16 @@ export const database = {
     update: async (id: string, reportData: any, labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
       const { data, error } = await supabase
-        .from('reports')
+        .from("reports")
         .update(reportData)
-        .eq('id', id)
-        .eq('lab_id', labId)
+        .eq("id", id)
+        .eq("lab_id", labId)
         .select()
         .single();
       return { data, error };
@@ -1988,13 +2288,13 @@ export const database = {
     delete: async (id: string, labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { error: new Error('No lab_id found for current user') };
+        return { error: new Error("No lab_id found for current user") };
       }
       const { error } = await supabase
-        .from('reports')
+        .from("reports")
         .delete()
-        .eq('id', id)
-        .eq('lab_id', labId);
+        .eq("id", id)
+        .eq("lab_id", labId);
       return { error };
     },
 
@@ -2004,19 +2304,19 @@ export const database = {
       caption: string;
       sentBy: string;
       includedClinicalSummary: boolean;
-      sentVia?: 'api' | 'manual_link';
+      sentVia?: "api" | "manual_link";
     }) => {
       const { data, error } = await supabase
-        .from('reports')
+        .from("reports")
         .update({
           whatsapp_sent_at: new Date().toISOString(),
           whatsapp_sent_to: params.to,
           whatsapp_sent_by: params.sentBy,
           whatsapp_caption: params.caption,
           clinical_summary_included: params.includedClinicalSummary,
-          whatsapp_sent_via: params.sentVia || 'api',
+          whatsapp_sent_via: params.sentVia || "api",
         })
-        .eq('id', reportId)
+        .eq("id", reportId)
         .select()
         .single();
       return { data, error };
@@ -2028,33 +2328,33 @@ export const database = {
       includedClinicalSummary: boolean;
     }) => {
       const { data, error } = await supabase
-        .from('reports')
+        .from("reports")
         .update({
           email_sent_at: new Date().toISOString(),
           email_sent_to: params.to,
           email_sent_by: params.sentBy,
           clinical_summary_included: params.includedClinicalSummary,
         })
-        .eq('id', reportId)
+        .eq("id", reportId)
         .select()
         .single();
       return { data, error };
     },
 
     recordDoctorNotification: async (reportId: string, params: {
-      via: 'whatsapp' | 'email' | 'both';
+      via: "whatsapp" | "email" | "both";
       sentBy: string;
-      sentVia?: 'api' | 'manual_link';
+      sentVia?: "api" | "manual_link";
     }) => {
       const { data, error } = await supabase
-        .from('reports')
+        .from("reports")
         .update({
           doctor_informed_at: new Date().toISOString(),
           doctor_informed_via: params.via,
           doctor_informed_by: params.sentBy,
-          doctor_sent_via: params.sentVia || 'api',
+          doctor_sent_via: params.sentVia || "api",
         })
-        .eq('id', reportId)
+        .eq("id", reportId)
         .select()
         .single();
       return { data, error };
@@ -2062,7 +2362,7 @@ export const database = {
 
     getDeliveryStatus: async (reportId: string) => {
       const { data, error } = await supabase
-        .from('reports')
+        .from("reports")
         .select(`
           whatsapp_sent_at,
           whatsapp_sent_to,
@@ -2079,53 +2379,59 @@ export const database = {
           doctor_sent_via,
           clinical_summary_included
         `)
-        .eq('id', reportId)
+        .eq("id", reportId)
         .single();
       return { data, error };
     },
 
-    wasAlreadySent: async (reportId: string, type: 'whatsapp' | 'email' | 'doctor') => {
+    wasAlreadySent: async (
+      reportId: string,
+      type: "whatsapp" | "email" | "doctor",
+    ) => {
       const { data, error } = await supabase
-        .from('reports')
+        .from("reports")
         .select(`
           whatsapp_sent_at,
           email_sent_at,
           doctor_informed_at
         `)
-        .eq('id', reportId)
+        .eq("id", reportId)
         .single();
-      
+
       if (error || !data) return false;
-      
-      if (type === 'whatsapp') return !!data.whatsapp_sent_at;
-      if (type === 'email') return !!data.email_sent_at;
-      if (type === 'doctor') return !!data.doctor_informed_at;
+
+      if (type === "whatsapp") return !!data.whatsapp_sent_at;
+      if (type === "email") return !!data.email_sent_at;
+      if (type === "doctor") return !!data.doctor_informed_at;
       return false;
     },
 
     getByOrderId: async (orderId: string) => {
       const { data, error } = await supabase
-        .from('reports')
-        .select('*')
-        .eq('order_id', orderId)
-        .eq('report_type', 'final')
+        .from("reports")
+        .select("*")
+        .eq("order_id", orderId)
+        .eq("report_type", "final")
         .maybeSingle();
       return { data, error };
-    }
+    },
   },
 
   labTemplates: {
     list: async (labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: [], error: new Error('No lab_id found for current user') };
+        return {
+          data: [],
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('lab_templates')
-        .select('*')
-        .eq('lab_id', labId)
-        .order('template_name', { ascending: true });
+        .from("lab_templates")
+        .select("*")
+        .eq("lab_id", labId)
+        .order("template_name", { ascending: true });
 
       return { data: (data as any[]) || [], error };
     },
@@ -2133,14 +2439,17 @@ export const database = {
     getById: async (templateId: string, labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('lab_templates')
-        .select('*')
-        .eq('lab_id', labId)
-        .eq('id', templateId)
+        .from("lab_templates")
+        .select("*")
+        .eq("lab_id", labId)
+        .eq("id", templateId)
         .single();
 
       return { data, error };
@@ -2159,10 +2468,14 @@ export const database = {
       styles?: any;
       userId?: string | null;
       isDefault?: boolean;
+      isInterpretationOnly?: boolean;
     }) => {
       const labId = params.labId || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const payload = {
@@ -2170,21 +2483,22 @@ export const database = {
         template_name: params.name,
         template_description: params.description ?? null,
         test_group_id: params.testGroupId ?? null,
-        category: params.category ?? 'general',
+        category: params.category ?? "general",
         gjs_project: params.project ?? null,
         gjs_html: params.html ?? null,
         gjs_css: params.css ?? null,
         gjs_components: params.components ?? null,
         gjs_styles: params.styles ?? null,
         is_default: params.isDefault ?? false,
+        is_interpretation_only: params.isInterpretationOnly ?? false,
         created_by: params.userId ?? null,
         updated_by: params.userId ?? null,
       };
 
       const { data, error } = await supabase
-        .from('lab_templates')
+        .from("lab_templates")
         .insert([payload])
-        .select('*')
+        .select("*")
         .single();
 
       if (error || !data) {
@@ -2192,7 +2506,7 @@ export const database = {
       }
 
       await supabase
-        .from('lab_template_versions')
+        .from("lab_template_versions")
         .insert({
           template_id: data.id,
           version_number: 1,
@@ -2202,7 +2516,7 @@ export const database = {
           gjs_components: params.components ?? null,
           gjs_styles: params.styles ?? null,
           created_by: params.userId ?? null,
-          version_name: 'Initial',
+          version_name: "Initial",
         });
 
       return { data, error: null };
@@ -2220,25 +2534,29 @@ export const database = {
     }) => {
       const labId = params.labId || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const existing = await supabase
-        .from('lab_templates')
-        .select('template_version')
-        .eq('lab_id', labId)
-        .eq('id', params.templateId)
+        .from("lab_templates")
+        .select("template_version")
+        .eq("lab_id", labId)
+        .eq("id", params.templateId)
         .single();
 
       if (existing.error) {
         return { data: null, error: existing.error };
       }
 
-      const currentVersion = (existing.data?.template_version as number | null) ?? 1;
+      const currentVersion =
+        (existing.data?.template_version as number | null) ?? 1;
       const nextVersion = currentVersion + 1;
 
       const { data, error } = await supabase
-        .from('lab_templates')
+        .from("lab_templates")
         .update({
           gjs_project: params.project ?? null,
           gjs_html: params.html ?? null,
@@ -2248,9 +2566,9 @@ export const database = {
           template_version: nextVersion,
           updated_by: params.userId ?? null,
         })
-        .eq('lab_id', labId)
-        .eq('id', params.templateId)
-        .select('*')
+        .eq("lab_id", labId)
+        .eq("id", params.templateId)
+        .select("*")
         .single();
 
       if (error || !data) {
@@ -2258,7 +2576,7 @@ export const database = {
       }
 
       await supabase
-        .from('lab_template_versions')
+        .from("lab_template_versions")
         .insert({
           template_id: params.templateId,
           version_number: nextVersion,
@@ -2282,18 +2600,22 @@ export const database = {
       category?: string | null;
       testGroupId?: string | null;
       isDefault?: boolean;
+      isInterpretationOnly?: boolean;
       userId?: string | null;
     }) => {
       const labId = params.labId || (await database.getCurrentUserLabId());
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const updates: Record<string, any> = {
         updated_by: params.userId ?? null,
       };
 
-      if (typeof params.name === 'string') {
+      if (typeof params.name === "string") {
         updates.template_name = params.name;
       }
       if (params.description !== undefined) {
@@ -2305,16 +2627,19 @@ export const database = {
       if (params.testGroupId !== undefined) {
         updates.test_group_id = params.testGroupId ?? null;
       }
-      if (typeof params.isDefault === 'boolean') {
+      if (typeof params.isDefault === "boolean") {
         updates.is_default = params.isDefault;
+      }
+      if (typeof params.isInterpretationOnly === "boolean") {
+        updates.is_interpretation_only = params.isInterpretationOnly;
       }
 
       const { data, error } = await supabase
-        .from('lab_templates')
+        .from("lab_templates")
         .update(updates)
-        .eq('lab_id', labId)
-        .eq('id', params.templateId)
-        .select('*')
+        .eq("lab_id", labId)
+        .eq("id", params.templateId)
+        .select("*")
         .single();
 
       return { data, error };
@@ -2331,23 +2656,27 @@ export const database = {
     }) => {
       const labId = params.labId || (await database.getCurrentUserLabId());
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const updates: Record<string, any> = {
         ai_verification_status: params.status,
         ai_verification_summary: params.summary ?? null,
         ai_verification_details: params.details ?? null,
-        ai_verification_checked_at: params.checkedAt ?? new Date().toISOString(),
+        ai_verification_checked_at: params.checkedAt ??
+          new Date().toISOString(),
         updated_by: params.userId ?? null,
       };
 
       const { data, error } = await supabase
-        .from('lab_templates')
+        .from("lab_templates")
         .update(updates)
-        .eq('lab_id', labId)
-        .eq('id', params.templateId)
-        .select('*')
+        .eq("lab_id", labId)
+        .eq("id", params.templateId)
+        .select("*")
         .single();
 
       return { data, error };
@@ -2356,14 +2685,14 @@ export const database = {
     delete: async (templateId: string, labIdOverride?: string) => {
       const labId = labIdOverride || (await database.getCurrentUserLabId());
       if (!labId) {
-        return { error: new Error('No lab_id found for current user') };
+        return { error: new Error("No lab_id found for current user") };
       }
 
       // Delete template versions first (foreign key constraint)
       const { error: versionsError } = await supabase
-        .from('lab_template_versions')
+        .from("lab_template_versions")
         .delete()
-        .eq('template_id', templateId);
+        .eq("template_id", templateId);
 
       if (versionsError) {
         return { error: versionsError };
@@ -2371,10 +2700,10 @@ export const database = {
 
       // Delete the main template
       const { error } = await supabase
-        .from('lab_templates')
+        .from("lab_templates")
         .delete()
-        .eq('lab_id', labId)
-        .eq('id', templateId);
+        .eq("lab_id", labId)
+        .eq("id", templateId);
 
       return { error };
     },
@@ -2384,11 +2713,14 @@ export const database = {
     listLabParameters: async (labIdOverride?: string) => {
       const labId = labIdOverride || (await database.getCurrentUserLabId());
       if (!labId) {
-        return { data: [], error: new Error('No lab_id found for current user') };
+        return {
+          data: [],
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('lab_analytes')
+        .from("lab_analytes")
         .select(
           `
             id,
@@ -2406,13 +2738,13 @@ export const database = {
             interpretation_normal,
             interpretation_high,
             analytes:analytes!inner ( id, name, unit, reference_range )
-          `
+          `,
         )
-        .eq('lab_id', labId)
-        .eq('is_active', true)
-        .eq('visible', true)
-  .order('lab_specific_name', { ascending: true, nullsFirst: false })
-  .order('name', { ascending: true, nullsFirst: false });
+        .eq("lab_id", labId)
+        .eq("is_active", true)
+        .eq("visible", true)
+        .order("lab_specific_name", { ascending: true, nullsFirst: false })
+        .order("name", { ascending: true, nullsFirst: false });
 
       if (error) {
         return { data: [], error };
@@ -2420,16 +2752,20 @@ export const database = {
 
       const mapped = (data || []).map((row: any) => {
         const baseAnalyte = row.analytes || {};
-        const label = (row.lab_specific_name || row.name || baseAnalyte.name || 'Analyte').trim();
-        const slug = label.replace(/[^a-zA-Z0-9]+/g, ' ').trim().replace(/\s+/g, '');
+        const label =
+          (row.lab_specific_name || row.name || baseAnalyte.name || "Analyte")
+            .trim();
+        const slug = label.replace(/[^a-zA-Z0-9]+/g, " ").trim().replace(
+          /\s+/g,
+          "",
+        );
 
         return {
           id: row.analyte_id || row.id || baseAnalyte.id,
           label,
-          placeholder: `{{${slug || 'Analyte'}}}`,
+          placeholder: `{{${slug || "Analyte"}}}`,
           unit: row.lab_specific_unit || row.unit || baseAnalyte.unit || null,
-          referenceRange:
-            row.lab_specific_reference_range ||
+          referenceRange: row.lab_specific_reference_range ||
             row.reference_range ||
             baseAnalyte.reference_range ||
             null,
@@ -2441,44 +2777,49 @@ export const database = {
 
     listTestGroupParameters: async (testGroupId: string) => {
       if (!testGroupId) {
-        return { data: [], error: new Error('testGroupId is required') };
+        return { data: [], error: new Error("testGroupId is required") };
       }
 
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: [], error: new Error('No lab_id found for current user') };
+        return {
+          data: [],
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       // Get lab-specific analytes for this test group
       // Include 'code' field for proper placeholder generation matching backend RPC
       const { data, error } = await supabase
-        .from('test_group_analytes')
+        .from("test_group_analytes")
         .select(
           `analyte_id,
            created_at,
-           analytes!inner ( id, name, code, unit, reference_range, value_type )`
+           analytes!inner ( id, name, code, unit, reference_range, value_type )`,
         )
-        .eq('test_group_id', testGroupId)
-        .order('created_at', { ascending: true });
+        .eq("test_group_id", testGroupId)
+        .order("created_at", { ascending: true });
 
       if (error) {
         return { data: [], error };
       }
 
       // Get lab-specific overrides for these analytes
-      const analyteIds = (data || []).map((row: any) => row.analyte_id).filter(Boolean);
+      const analyteIds = (data || []).map((row: any) => row.analyte_id).filter(
+        Boolean,
+      );
 
       let labAnalytesMap: Record<string, any> = {};
       if (analyteIds.length > 0) {
         const { data: labAnalytes } = await supabase
-          .from('lab_analytes')
-          .select('*')
-          .eq('lab_id', labId)
-          .in('analyte_id', analyteIds);
+          .from("lab_analytes")
+          .select("*")
+          .eq("lab_id", labId)
+          .in("analyte_id", analyteIds);
 
         if (labAnalytes) {
           labAnalytesMap = Object.fromEntries(
-            labAnalytes.map((la: any) => [la.analyte_id, la])
+            labAnalytes.map((la: any) => [la.analyte_id, la]),
           );
         }
       }
@@ -2492,19 +2833,23 @@ export const database = {
           labOverride.lab_specific_name ||
           labOverride.name ||
           baseAnalyte.name ||
-          'Unnamed Analyte'
+          "Unnamed Analyte"
         ).trim();
 
         // Generate placeholder code that matches backend RPC pattern:
         // Use analyte.code if available, otherwise sanitize the parameter name
         // Pattern: ANALYTE_[CODE]_VALUE (uppercase, alphanumeric only)
-        const valueType = (baseAnalyte.value_type || 'numeric').toString();
-        const isDescriptive = ['qualitative', 'semi_quantitative', 'descriptive'].includes(
-          valueType.toLowerCase()
+        const valueType = (baseAnalyte.value_type || "numeric").toString();
+        const isDescriptive = [
+          "qualitative",
+          "semi_quantitative",
+          "descriptive",
+        ].includes(
+          valueType.toLowerCase(),
         );
         const analyteCode = (!isDescriptive && baseAnalyte.code)
-          ? baseAnalyte.code.replace(/[^A-Za-z0-9]+/g, '').toUpperCase()
-          : label.replace(/[^A-Za-z0-9]+/g, '').toUpperCase();
+          ? baseAnalyte.code.replace(/[^A-Za-z0-9]+/g, "").toUpperCase()
+          : label.replace(/[^A-Za-z0-9]+/g, "").toUpperCase();
 
         // Main placeholder is ANALYTE_[CODE] (value will be added as suffix in variations)
         const placeholderBase = `ANALYTE_${analyteCode}`;
@@ -2516,8 +2861,10 @@ export const database = {
           placeholder: `{{${placeholderBase}_VALUE}}`,
           // Store the base for generating variations
           placeholderBase,
-          unit: labOverride.lab_specific_unit || labOverride.unit || baseAnalyte.unit || null,
-          referenceRange: labOverride.lab_specific_reference_range || labOverride.reference_range || baseAnalyte.reference_range || null,
+          unit: labOverride.lab_specific_unit || labOverride.unit ||
+            baseAnalyte.unit || null,
+          referenceRange: labOverride.lab_specific_reference_range ||
+            labOverride.reference_range || baseAnalyte.reference_range || null,
           valueType,
         };
       });
@@ -2527,11 +2874,11 @@ export const database = {
 
     listPatientParameters: async (patientId: string) => {
       if (!patientId) {
-        return { data: [], error: new Error('patientId is required') };
+        return { data: [], error: new Error("patientId is required") };
       }
 
       const { data, error } = await supabase
-        .from('patients')
+        .from("patients")
         .select(`
           id,
           name,
@@ -2540,18 +2887,26 @@ export const database = {
           default_doctor_id,
           default_location_id
         `)
-        .eq('id', patientId)
+        .eq("id", patientId)
         .single();
 
       if (error || !data) {
-        return { data: [], error: error || new Error('Patient not found') };
+        return { data: [], error: error || new Error("Patient not found") };
       }
 
       const placeholders = [
-        { key: 'patientName', label: 'Patient Name', value: data.name || '' },
-        { key: 'patientGender', label: 'Patient Gender', value: data.gender || '' },
-        { key: 'patientDOB', label: 'Patient Date of Birth', value: data.date_of_birth || '' },
-        { key: 'patientId', label: 'Patient ID', value: data.id },
+        { key: "patientName", label: "Patient Name", value: data.name || "" },
+        {
+          key: "patientGender",
+          label: "Patient Gender",
+          value: data.gender || "",
+        },
+        {
+          key: "patientDOB",
+          label: "Patient Date of Birth",
+          value: data.date_of_birth || "",
+        },
+        { key: "patientId", label: "Patient ID", value: data.id },
       ];
 
       const mapped = placeholders.map((item) => ({
@@ -2564,27 +2919,30 @@ export const database = {
       return { data: mapped, error: null };
     },
   },
-  
+
   orders: {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       const { data, error } = await supabase
-        .from('orders')
+        .from("orders")
         .select(`
           *,
           patients(name, age, gender),
           order_tests(test_name, created_at, outsourced_lab_id, outsourced_labs(name)),
           results(id, status, result_values(parameter, value, unit, reference_range, flag))
         `)
-        .eq('lab_id', lab_id)
-        .order('order_date', { ascending: false });
-      
+        .eq("lab_id", lab_id)
+        .order("order_date", { ascending: false });
+
       if (error || !data) return { data, error };
-      
+
       // Sort order_tests by creation date (newest first) for each order
       data.forEach((order: any) => {
         if (order.order_tests && order.order_tests.length > 0) {
@@ -2595,36 +2953,36 @@ export const database = {
           });
         }
       });
-      
+
       // Manually fetch attachments for each order
       const ordersWithAttachments = await Promise.all(
         data.map(async (order) => {
           const { data: orderAttachments } = await supabase
-            .from('attachments')
-            .select('id, file_url, original_filename, file_type')
-            .eq('related_table', 'orders')
-            .eq('related_id', order.id);
-          
+            .from("attachments")
+            .select("id, file_url, original_filename, file_type")
+            .eq("related_table", "orders")
+            .eq("related_id", order.id);
+
           return {
             ...order,
-            attachments: orderAttachments || []
+            attachments: orderAttachments || [],
           };
-        })
+        }),
       );
-      
+
       return { data: ordersWithAttachments, error: null };
     },
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-        .from('orders')
+        .from("orders")
         .select(`
           *,
           order_tests(*, created_at, outsourced_lab_id, outsourced_labs(name))
         `)
-        .eq('id', id)
+        .eq("id", id)
         .single();
-      
+
       // Sort order_tests by creation date (newest first) if data exists
       if (data && data.order_tests) {
         data.order_tests.sort((a: any, b: any) => {
@@ -2633,7 +2991,7 @@ export const database = {
           return dateB.getTime() - dateA.getTime();
         });
       }
-      
+
       return { data, error };
     },
 
@@ -2641,34 +2999,45 @@ export const database = {
       // Get current user's lab_id
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
       // Get current auth user id for created_by
       const { data: auth } = await supabase.auth.getUser();
       const authUserId = auth?.user?.id || null;
-      
+
       // First get the daily sequence for sample ID generation
-      const orderDate = orderData.order_date || new Date().toISOString().split('T')[0];
-      
+      const orderDate = orderData.order_date ||
+        new Date().toISOString().split("T")[0];
+
       // Count existing orders for this date to get sequence number (filtered by lab_id)
       const { count: dailyOrderCount, error: countError } = await supabase
-        .from('orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('lab_id', lab_id)
-        .gte('order_date', orderDate)
-        .lt('order_date', new Date(new Date(orderDate).getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
-      
+        .from("orders")
+        .select("id", { count: "exact", head: true })
+        .eq("lab_id", lab_id)
+        .gte("order_date", orderDate)
+        .lt(
+          "order_date",
+          new Date(new Date(orderDate).getTime() + 24 * 60 * 60 * 1000)
+            .toISOString().split("T")[0],
+        );
+
       if (countError) {
-        console.error('Error counting daily orders:', countError);
+        console.error("Error counting daily orders:", countError);
         return { data: null, error: countError };
       }
-      
+
       const dailySequence = (dailyOrderCount || 0) + 1;
-      
+
       // Generate sample tracking data for this order
-      const sampleId = generateOrderSampleId(new Date(orderDate), dailySequence);
+      const sampleId = generateOrderSampleId(
+        new Date(orderDate),
+        dailySequence,
+      );
       const { color_code, color_name } = getOrderAssignedColor(dailySequence);
-      
+
       // Create the order with sample tracking data and lab_id
       const { tests, ...orderDetails } = orderData;
       const orderWithSample = {
@@ -2678,11 +3047,11 @@ export const database = {
         color_name,
         lab_id,
         created_by: orderDetails?.created_by ?? authUserId,
-        status: orderData.status || 'Order Created' // Default status
+        status: orderData.status || "Order Created", // Default status
       };
-      
+
       const { data: order, error } = await supabase
-        .from('orders')
+        .from("orders")
         .insert([orderWithSample])
         .select()
         .single();
@@ -2699,70 +3068,76 @@ export const database = {
         orderDate: order.order_date,
         colorCode: order.color_code,
         colorName: order.color_name,
-        patientName: order.patient_name
+        patientName: order.patient_name,
       });
 
       // Update order with QR code data
       const { data: updatedOrder, error: updateError } = await supabase
-        .from('orders')
+        .from("orders")
         .update({ qr_code_data: qrCodeData })
-        .eq('id', order.id)
+        .eq("id", order.id)
         .select()
         .single();
 
       if (updateError) {
-        console.error('Error updating order with QR code:', updateError);
+        console.error("Error updating order with QR code:", updateError);
         return { data: order, error: updateError };
       }
 
       // Then create the associated tests only if there are tests to create
       if (updatedOrder && tests && Array.isArray(tests) && tests.length > 0) {
         let orderTestsData: any[] = [];
-        
+
         // Handle both string array (legacy) and object array (new format)
-        if (typeof tests[0] === 'string') {
+        if (typeof tests[0] === "string") {
           // Legacy format - lookup test_group_ids from test_groups table
-          const validTestNames = tests.filter(test => test && typeof test === 'string' && test.trim() !== '');
-          
+          const validTestNames = tests.filter((test) =>
+            test && typeof test === "string" && test.trim() !== ""
+          );
+
           if (validTestNames.length > 0) {
             const { data: testGroups, error: testGroupError } = await supabase
-              .from('test_groups')
-              .select('id, name')
-              .in('name', validTestNames);
-            
+              .from("test_groups")
+              .select("id, name")
+              .in("name", validTestNames);
+
             if (testGroupError) {
-              console.error('Error fetching test groups:', testGroupError);
+              console.error("Error fetching test groups:", testGroupError);
             }
-            
+
             // Create a map of test name to test_group_id
             const testGroupMap = new Map<string, string>();
-            (testGroups || []).forEach(tg => {
+            (testGroups || []).forEach((tg) => {
               testGroupMap.set(tg.name, tg.id);
             });
-            
-            orderTestsData = validTestNames.map(testName => ({
+
+            orderTestsData = validTestNames.map((testName) => ({
               order_id: updatedOrder.id,
               test_name: testName,
               test_group_id: testGroupMap.get(testName) || null,
               sample_id: updatedOrder.sample_id,
-              lab_id
+              lab_id,
             }));
           }
         } else {
           // New format - tests are objects with id, name, and type
-          const validTestObjects = tests.filter(test => 
-            test && 
-            typeof test === 'object' && 
-            test.name && 
-            test.name.trim() !== ''
+          const validTestObjects = tests.filter((test) =>
+            test &&
+            typeof test === "object" &&
+            test.name &&
+            test.name.trim() !== ""
           );
-          
+
           // Separate packages from individual tests
-          const packages = validTestObjects.filter(test => test.type === 'package');
-          const individualTests = validTestObjects.filter(test => test.type !== 'package');
-          
+          const packages = validTestObjects.filter((test) =>
+            test.type === "package"
+          );
+          const individualTests = validTestObjects.filter((test) =>
+            test.type !== "package"
+          );
+
           // Add individual tests with their prices
-          orderTestsData = individualTests.map(test => ({
+          orderTestsData = individualTests.map((test) => ({
             order_id: updatedOrder.id,
             test_name: test.name,
             test_group_id: test.id || null,
@@ -2770,17 +3145,17 @@ export const database = {
             price: test.price ?? 0, // Store price for billing
             sample_id: updatedOrder.sample_id,
             lab_id,
-            outsourced_lab_id: test.outsourced_lab_id || null
+            outsourced_lab_id: test.outsourced_lab_id || null,
           }));
-          
+
           // For packages, add both the package record AND expand to individual test groups
           if (packages.length > 0) {
             // Fetch package details with test groups
-            const packageIds = packages.map(p => p.id).filter(Boolean);
-            
+            const packageIds = packages.map((p) => p.id).filter(Boolean);
+
             if (packageIds.length > 0) {
               const { data: packageDetails } = await supabase
-                .from('packages')
+                .from("packages")
                 .select(`
                   id,
                   name,
@@ -2789,10 +3164,10 @@ export const database = {
                     test_groups(id, name)
                   )
                 `)
-                .in('id', packageIds);
-              
+                .in("id", packageIds);
+
               // Add package entry (with package_id set and PACKAGE PRICE)
-              packages.forEach(pkg => {
+              packages.forEach((pkg) => {
                 orderTestsData.push({
                   order_id: updatedOrder.id,
                   test_name: `📦 ${pkg.name}`, // Prefix with package emoji for visibility
@@ -2801,11 +3176,13 @@ export const database = {
                   price: pkg.price ?? 0, // Store PACKAGE price for billing
                   sample_id: updatedOrder.sample_id,
                   lab_id,
-                  outsourced_lab_id: null
+                  outsourced_lab_id: null,
                 });
-                
+
                 // Expand package test groups - these have ₹0 price (included in package)
-                const pkgDetails = packageDetails?.find(pd => pd.id === pkg.id);
+                const pkgDetails = packageDetails?.find((pd) =>
+                  pd.id === pkg.id
+                );
                 if (pkgDetails?.package_test_groups) {
                   pkgDetails.package_test_groups.forEach((ptg: any) => {
                     if (ptg.test_groups) {
@@ -2817,7 +3194,7 @@ export const database = {
                         price: 0, // ₹0 - included in package price
                         sample_id: updatedOrder.sample_id,
                         lab_id,
-                        outsourced_lab_id: null
+                        outsourced_lab_id: null,
                       });
                     }
                   });
@@ -2826,61 +3203,82 @@ export const database = {
             }
           }
         }
-        
+
         if (orderTestsData.length > 0) {
-          console.log('Creating order_tests with test_group_ids:', orderTestsData);
-          
+          console.log(
+            "Creating order_tests with test_group_ids:",
+            orderTestsData,
+          );
+
           const { error: orderTestsError } = await supabase
-            .from('order_tests')
+            .from("order_tests")
             .insert(orderTestsData);
-          
+
           if (orderTestsError) {
-            console.error('Error creating order tests:', orderTestsError);
+            console.error("Error creating order tests:", orderTestsError);
             return { data: updatedOrder, error: orderTestsError };
           }
-          
-          console.log(`✅ Created ${orderTestsData.length} order test records with proper test_group_ids`);
+
+          console.log(
+            `✅ Created ${orderTestsData.length} order test records with proper test_group_ids`,
+          );
 
           // ✅ Fix package pricing - update prices after insert to override any trigger
           // Tests inside a package (have package_id AND test_group_id) should be ₹0
-          const packageTestsToUpdate = orderTestsData.filter(t => t.package_id && t.test_group_id);
+          const packageTestsToUpdate = orderTestsData.filter((t) =>
+            t.package_id && t.test_group_id
+          );
           if (packageTestsToUpdate.length > 0) {
-            const testNames = packageTestsToUpdate.map(t => t.test_name);
+            const testNames = packageTestsToUpdate.map((t) => t.test_name);
             const { error: priceUpdateError } = await supabase
-              .from('order_tests')
+              .from("order_tests")
               .update({ price: 0 })
-              .eq('order_id', updatedOrder.id)
-              .in('test_name', testNames)
-              .not('test_group_id', 'is', null); // Only update those with test_group_id (not package entry)
-            
+              .eq("order_id", updatedOrder.id)
+              .in("test_name", testNames)
+              .not("test_group_id", "is", null); // Only update those with test_group_id (not package entry)
+
             if (priceUpdateError) {
-              console.warn('Could not update package test prices:', priceUpdateError);
+              console.warn(
+                "Could not update package test prices:",
+                priceUpdateError,
+              );
             } else {
-              console.log(`✅ Updated ${packageTestsToUpdate.length} package tests to ₹0 price`);
-              
+              console.log(
+                `✅ Updated ${packageTestsToUpdate.length} package tests to ₹0 price`,
+              );
+
               // Recalculate order total_amount from order_tests to ensure consistency
               const { data: updatedOrderTests } = await supabase
-                .from('order_tests')
-                .select('price')
-                .eq('order_id', updatedOrder.id);
-              
+                .from("order_tests")
+                .select("price")
+                .eq("order_id", updatedOrder.id);
+
               if (updatedOrderTests) {
-                const correctTotal = updatedOrderTests.reduce((sum, t) => sum + (Number(t.price) || 0), 0);
+                const correctTotal = updatedOrderTests.reduce(
+                  (sum, t) => sum + (Number(t.price) || 0),
+                  0,
+                );
                 await supabase
-                  .from('orders')
+                  .from("orders")
                   .update({ total_amount: correctTotal })
-                  .eq('id', updatedOrder.id);
-                console.log(`✅ Updated order total_amount to ₹${correctTotal}`);
+                  .eq("id", updatedOrder.id);
+                console.log(
+                  `✅ Updated order total_amount to ₹${correctTotal}`,
+                );
               }
             }
           }
 
           // ✅ Auto-create placeholder results for outsourced tests
-          const outsourcedTests = orderTestsData.filter(test => test.outsourced_lab_id);
+          const outsourcedTests = orderTestsData.filter((test) =>
+            test.outsourced_lab_id
+          );
           if (outsourcedTests.length > 0) {
-            console.log(`Creating ${outsourcedTests.length} placeholder results for outsourced tests`);
-            
-            const outsourcedResults = outsourcedTests.map(test => ({
+            console.log(
+              `Creating ${outsourcedTests.length} placeholder results for outsourced tests`,
+            );
+
+            const outsourcedResults = outsourcedTests.map((test) => ({
               order_id: updatedOrder.id,
               patient_id: orderData.patient_id,
               patient_name: orderData.patient_name,
@@ -2888,24 +3286,26 @@ export const database = {
               test_group_id: test.test_group_id,
               lab_id: test.lab_id,
               outsourced_to_lab_id: test.outsourced_lab_id,
-              outsourced_status: 'pending_send',
-              outsourced_logistics_status: 'pending_dispatch',
-              status: 'Entered', // Use valid result_status enum value
-              verification_status: 'pending_verification',
-              entered_by: orderData.created_by || 'System',
-              entered_date: new Date().toISOString().split('T')[0],
-              created_at: new Date().toISOString()
+              outsourced_status: "pending_send",
+              outsourced_logistics_status: "pending_dispatch",
+              status: "Entered", // Use valid result_status enum value
+              verification_status: "pending_verification",
+              entered_by: orderData.created_by || "System",
+              entered_date: new Date().toISOString().split("T")[0],
+              created_at: new Date().toISOString(),
             }));
 
             const { error: resultsError } = await supabase
-              .from('results')
+              .from("results")
               .insert(outsourcedResults);
 
             if (resultsError) {
-              console.error('Error creating outsourced results:', resultsError);
+              console.error("Error creating outsourced results:", resultsError);
               // Don't fail the order creation, just log the error
             } else {
-              console.log(`✅ Created ${outsourcedResults.length} placeholder results for outsourced tests`);
+              console.log(
+                `✅ Created ${outsourcedResults.length} placeholder results for outsourced tests`,
+              );
             }
           }
         }
@@ -2915,51 +3315,64 @@ export const database = {
 
       // Trigger order registration notification (async, don't block response)
       notificationTriggerService.triggerOrderRegistered(updatedOrder.id, lab_id)
-        .catch(err => console.error('Error triggering order registration notification:', err));
+        .catch((err) =>
+          console.error(
+            "Error triggering order registration notification:",
+            err,
+          )
+        );
 
       return { data: finalData, error: null };
     },
 
     update: async (id: string, orderData: any) => {
       const { data, error } = await supabase
-        .from('orders')
+        .from("orders")
         .update(orderData)
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
     },
 
     // NEW: Sample collection methods
-    markSampleCollected: async (orderId: string, collectedBy?: string, collectorUserId?: string) => {
+    markSampleCollected: async (
+      orderId: string,
+      collectedBy?: string,
+      collectorUserId?: string,
+    ) => {
       try {
         const { data: auth } = await supabase.auth.getUser();
-        const collectorName = collectedBy || auth?.user?.user_metadata?.full_name || auth?.user?.email || 'Unknown User';
+        const collectorName = collectedBy ||
+          auth?.user?.user_metadata?.full_name || auth?.user?.email ||
+          "Unknown User";
         const collectorId = collectorUserId || auth?.user?.id;
-        
+
+        const now = new Date().toISOString();
         const { data, error } = await supabase
-          .from('orders')
+          .from("orders")
           .update({
-            sample_collected_at: new Date().toISOString(),
+            sample_collected_at: now,
             sample_collected_by: collectorName,
             sample_collector_id: collectorId, // NEW: Track collector user ID
-            status: 'Sample Collection',
-            status_updated_at: new Date().toISOString(),
-            status_updated_by: collectorName
+            sample_received_at: now, // TAT starts from sample receipt (same as collection when no transit)
+            status: "Sample Collection",
+            status_updated_at: now,
+            status_updated_by: collectorName,
           })
-          .eq('id', orderId)
+          .eq("id", orderId)
           .select()
           .single();
-        
+
         if (error) {
-          console.error('Error marking sample as collected:', error);
+          console.error("Error marking sample as collected:", error);
           return { data: null, error };
         }
-        
-        console.log('Sample marked as collected successfully:', data);
+
+        console.log("Sample marked as collected successfully:", data);
         return { data, error: null };
       } catch (err) {
-        console.error('Error in markSampleCollected:', err);
+        console.error("Error in markSampleCollected:", err);
         return { data: null, error: err };
       }
     },
@@ -2967,67 +3380,73 @@ export const database = {
     markSampleNotCollected: async (orderId: string) => {
       try {
         const { data: auth } = await supabase.auth.getUser();
-        const updaterName = auth?.user?.user_metadata?.full_name || auth?.user?.email || 'Unknown User';
-        
+        const updaterName = auth?.user?.user_metadata?.full_name ||
+          auth?.user?.email || "Unknown User";
+
         const { data, error } = await supabase
-          .from('orders')
+          .from("orders")
           .update({
             sample_collected_at: null,
             sample_collected_by: null,
-            status: 'Order Created',
+            status: "Order Created",
             status_updated_at: new Date().toISOString(),
-            status_updated_by: updaterName
+            status_updated_by: updaterName,
           })
-          .eq('id', orderId)
+          .eq("id", orderId)
           .select()
           .single();
-        
+
         if (error) {
-          console.error('Error marking sample as not collected:', error);
+          console.error("Error marking sample as not collected:", error);
           return { data: null, error };
         }
-        
-        console.log('Sample marked as not collected successfully:', data);
+
+        console.log("Sample marked as not collected successfully:", data);
         return { data, error: null };
       } catch (err) {
-        console.error('Error in markSampleNotCollected:', err);
+        console.error("Error in markSampleNotCollected:", err);
         return { data: null, error: err };
       }
     },
 
-    updateStatus: async (orderId: string, newStatus: string, updatedBy?: string) => {
+    updateStatus: async (
+      orderId: string,
+      newStatus: string,
+      updatedBy?: string,
+    ) => {
       try {
         const { data: auth } = await supabase.auth.getUser();
-        const updaterName = updatedBy || auth?.user?.user_metadata?.full_name || auth?.user?.email || 'Unknown User';
-        
+        const updaterName = updatedBy || auth?.user?.user_metadata?.full_name ||
+          auth?.user?.email || "Unknown User";
+
         const { data, error } = await supabase
-          .from('orders')
+          .from("orders")
           .update({
             status: newStatus,
             status_updated_at: new Date().toISOString(),
-            status_updated_by: updaterName
+            status_updated_by: updaterName,
           })
-          .eq('id', orderId)
+          .eq("id", orderId)
           .select()
           .single();
-        
+
         if (error) {
-          console.error('Error updating order status:', error);
+          console.error("Error updating order status:", error);
           return { data: null, error };
         }
-        
-        console.log('Order status updated successfully:', data);
+
+        console.log("Order status updated successfully:", data);
         return { data, error: null };
       } catch (err) {
-        console.error('Error in updateStatus:', err);
+        console.error("Error in updateStatus:", err);
         return { data: null, error: err };
       }
     },
     delete: async (id: string) => {
       const { error } = await supabase
-        .from('orders')
+        .from("orders")
         .delete()
-        .eq('id', id);
+        .eq("id", id);
       return { error };
     },
 
@@ -3036,67 +3455,80 @@ export const database = {
       try {
         // Get order with tests and results
         const { data: order, error: orderError } = await supabase
-          .from('orders')
+          .from("orders")
           .select(`
             *,
             order_tests(test_name),
             results(id, status, result_values(id))
           `)
-          .eq('id', orderId)
+          .eq("id", orderId)
           .single();
 
         if (orderError || !order) {
-          console.error('Error fetching order for status check:', orderError);
+          console.error("Error fetching order for status check:", orderError);
           return { data: null, error: orderError };
         }
 
         const totalTests = order.order_tests?.length || 0;
         const results = order.results || [];
-        
+
         // Count results by status
-        const resultsWithValues = results.filter((r: any) => r.result_values && r.result_values.length > 0);
-        const approvedResults = results.filter((r: any) => r.status === 'Approved');
-        
+        const resultsWithValues = results.filter((r: any) =>
+          r.result_values && r.result_values.length > 0
+        );
+        const approvedResults = results.filter((r: any) =>
+          r.status === "Approved"
+        );
+
         let newStatus = order.status;
-        
+
         // Determine new status based on completion
-        if (order.status === 'In Progress') {
+        if (order.status === "In Progress") {
           // If all tests have results submitted, move to Pending Approval
           if (resultsWithValues.length >= totalTests && totalTests > 0) {
-            newStatus = 'Pending Approval';
+            newStatus = "Pending Approval";
           }
-        } else if (order.status === 'Pending Approval') {
+        } else if (order.status === "Pending Approval") {
           // If all results are approved, move to Completed
           if (approvedResults.length >= totalTests && totalTests > 0) {
-            newStatus = 'Completed';
+            newStatus = "Completed";
           }
         }
 
         // Update status if it changed
         if (newStatus !== order.status) {
           const { data: updatedOrder, error: updateError } = await supabase
-            .from('orders')
-            .update({ 
+            .from("orders")
+            .update({
               status: newStatus,
               status_updated_at: new Date().toISOString(),
-              status_updated_by: 'System (Auto)'
+              status_updated_by: "System (Auto)",
             })
-            .eq('id', orderId)
+            .eq("id", orderId)
             .select()
             .single();
 
           if (updateError) {
-            console.error('Error updating order status:', updateError);
+            console.error("Error updating order status:", updateError);
             return { data: null, error: updateError };
           }
 
-          console.log(`Order ${orderId} status automatically updated from "${order.status}" to "${newStatus}"`);
-          return { data: { ...updatedOrder, statusChanged: true, previousStatus: order.status }, error: null };
+          console.log(
+            `Order ${orderId} status automatically updated from "${order.status}" to "${newStatus}"`,
+          );
+          return {
+            data: {
+              ...updatedOrder,
+              statusChanged: true,
+              previousStatus: order.status,
+            },
+            error: null,
+          };
         }
 
         return { data: { ...order, statusChanged: false }, error: null };
       } catch (error) {
-        console.error('Error in checkAndUpdateStatus:', error);
+        console.error("Error in checkAndUpdateStatus:", error);
         return { data: null, error };
       }
     },
@@ -3105,36 +3537,36 @@ export const database = {
     markAsDelivered: async (orderId: string, deliveredBy?: string) => {
       try {
         const { data: updatedOrder, error } = await supabase
-          .from('orders')
-          .update({ 
-            status: 'Delivered',
+          .from("orders")
+          .update({
+            status: "Delivered",
             delivered_at: new Date().toISOString(),
-            delivered_by: deliveredBy || 'System',
+            delivered_by: deliveredBy || "System",
             status_updated_at: new Date().toISOString(),
-            status_updated_by: deliveredBy || 'System'
+            status_updated_by: deliveredBy || "System",
           })
-          .eq('id', orderId)
+          .eq("id", orderId)
           .select()
           .single();
 
         if (error) {
-          console.error('Error marking order as delivered:', error);
+          console.error("Error marking order as delivered:", error);
           return { data: null, error };
         }
 
         console.log(`Order ${orderId} marked as delivered`);
         return { data: updatedOrder, error: null };
       } catch (error) {
-        console.error('Error in markAsDelivered:', error);
+        console.error("Error in markAsDelivered:", error);
         return { data: null, error };
       }
-    }
+    },
   },
-  
+
   results: {
     getAll: async () => {
       const { data, error } = await supabase
-        .from('results')
+        .from("results")
         .select(`
           *, 
           result_values(*), 
@@ -3144,36 +3576,36 @@ export const database = {
           manually_verified, 
           ai_extraction_metadata
         `) // Include AI and attachment columns
-        .order('entered_date', { ascending: false });
-      
+        .order("entered_date", { ascending: false });
+
       if (error || !data) {
         return { data, error };
       }
 
-      // For each result, if it doesn't have a direct attachment_id, 
+      // For each result, if it doesn't have a direct attachment_id,
       // check for attachments linked to its order
       const enrichedData = await Promise.all(
         data.map(async (result) => {
           if (!result.attachment_id && result.order_id) {
             // Look for attachments linked to this order
             const { data: orderAttachments } = await supabase
-              .from('attachments')
-              .select('id, file_url, description, original_filename')
-              .eq('related_table', 'orders')
-              .eq('related_id', result.order_id)
-              .order('created_at', { ascending: false })
+              .from("attachments")
+              .select("id, file_url, description, original_filename")
+              .eq("related_table", "orders")
+              .eq("related_id", result.order_id)
+              .order("created_at", { ascending: false })
               .limit(1);
-            
+
             if (orderAttachments && orderAttachments.length > 0) {
               return {
                 ...result,
                 attachment_id: orderAttachments[0].id,
-                attachment_info: orderAttachments[0]
+                attachment_info: orderAttachments[0],
               };
             }
           }
           return result;
-        })
+        }),
       );
 
       return { data: enrichedData, error };
@@ -3181,11 +3613,13 @@ export const database = {
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-        .from('results')
-        .select('*, result_values(*), attachment_id, extracted_by_ai, ai_confidence, manually_verified, ai_extraction_metadata')
-        .eq('id', id)
+        .from("results")
+        .select(
+          "*, result_values(*), attachment_id, extracted_by_ai, ai_confidence, manually_verified, ai_extraction_metadata",
+        )
+        .eq("id", id)
         .single();
-      
+
       if (error || !data) {
         return { data, error };
       }
@@ -3193,21 +3627,21 @@ export const database = {
       // If no direct attachment_id, check for attachments linked to the order
       if (!data.attachment_id && data.order_id) {
         const { data: orderAttachments } = await supabase
-          .from('attachments')
-          .select('id, file_url, description, original_filename')
-          .eq('related_table', 'orders')
-          .eq('related_id', data.order_id)
-          .order('created_at', { ascending: false })
+          .from("attachments")
+          .select("id, file_url, description, original_filename")
+          .eq("related_table", "orders")
+          .eq("related_id", data.order_id)
+          .order("created_at", { ascending: false })
           .limit(1);
-        
+
         if (orderAttachments && orderAttachments.length > 0) {
           return {
             data: {
               ...data,
               attachment_id: orderAttachments[0].id,
-              attachment_info: orderAttachments[0]
+              attachment_info: orderAttachments[0],
             },
-            error: null
+            error: null,
           };
         }
       }
@@ -3217,50 +3651,52 @@ export const database = {
 
     getByOrderId: async (orderId: string) => {
       const { data, error } = await supabase
-        .from('results')
-        .select('*, result_values(*), attachment_id, extracted_by_ai, ai_confidence, manually_verified, ai_extraction_metadata')
-        .eq('order_id', orderId)
-        .order('entered_date', { ascending: false });
-      
+        .from("results")
+        .select(
+          "*, result_values(*), attachment_id, extracted_by_ai, ai_confidence, manually_verified, ai_extraction_metadata",
+        )
+        .eq("order_id", orderId)
+        .order("entered_date", { ascending: false });
+
       if (error || !data) {
         return { data, error };
       }
 
-      // For each result, if it doesn't have a direct attachment_id, 
+      // For each result, if it doesn't have a direct attachment_id,
       // check for attachments linked to this order
       const enrichedData = await Promise.all(
         data.map(async (result) => {
           if (!result.attachment_id) {
             // Look for attachments linked to this order
             const { data: orderAttachments } = await supabase
-              .from('attachments')
-              .select('id, file_url, description, original_filename')
-              .eq('related_table', 'orders')
-              .eq('related_id', orderId)
-              .order('created_at', { ascending: false })
+              .from("attachments")
+              .select("id, file_url, description, original_filename")
+              .eq("related_table", "orders")
+              .eq("related_id", orderId)
+              .order("created_at", { ascending: false })
               .limit(1);
-            
+
             if (orderAttachments && orderAttachments.length > 0) {
               return {
                 ...result,
                 attachment_id: orderAttachments[0].id,
-                attachment_info: orderAttachments[0]
+                attachment_info: orderAttachments[0],
               };
             }
           }
           return result;
-        })
+        }),
       );
 
       return { data: enrichedData, error };
     },
     getByOrderAndTestGroup: async (orderId: string, testGroupId: string) => {
       const { data, error } = await supabase
-        .from('results')
-        .select('*')
-        .eq('order_id', orderId)
-        .eq('test_group_id', testGroupId)
-        .order('entered_date', { ascending: false })
+        .from("results")
+        .select("*")
+        .eq("order_id", orderId)
+        .eq("test_group_id", testGroupId)
+        .order("entered_date", { ascending: false })
         .limit(1)
         .maybeSingle();
       return { data, error };
@@ -3268,7 +3704,7 @@ export const database = {
     create: async (resultData: any) => {
       const { values, ...rest } = resultData; // Separate values array
       const { data: result, error } = await supabase
-        .from('results')
+        .from("results")
         .insert([rest]) // This will now include attachment_id and AI fields if provided
         .select()
         .single();
@@ -3280,16 +3716,16 @@ export const database = {
       if (result && values && values.length > 0) {
         // First, get all analytes to map parameter names to analyte_ids
         const { data: analytes, error: analytesError } = await supabase
-          .from('analytes')
-          .select('id, name');
-        
+          .from("analytes")
+          .select("id, name");
+
         if (analytesError) {
-          console.error('Error fetching analytes:', analytesError);
+          console.error("Error fetching analytes:", analytesError);
           return { data: null, error: analytesError };
         }
 
         // Create a map of analyte names to IDs
-        const analyteMap = new Map(analytes?.map(a => [a.name, a.id]) || []);
+        const analyteMap = new Map(analytes?.map((a) => [a.name, a.id]) || []);
 
         const resultValuesToInsert = values.map((val: any) => ({
           result_id: result.id,
@@ -3301,14 +3737,14 @@ export const database = {
           reference_range: val.reference_range,
           flag: val.flag,
         }));
-        
+
         const { error: valuesError } = await supabase
-          .from('result_values')
+          .from("result_values")
           .insert(resultValuesToInsert);
 
         if (valuesError) {
           // Optionally, handle rollback of the result if result_values insertion fails
-          console.error('Error inserting result values:', valuesError);
+          console.error("Error inserting result values:", valuesError);
           return { data: null, error: valuesError };
         }
       }
@@ -3323,12 +3759,12 @@ export const database = {
 
     update: async (id: string, resultData: any) => {
       const { values, ...rest } = resultData; // Separate values array from main result data
-      
+
       // First update the main result record
       const { data: result, error } = await supabase
-        .from('results')
+        .from("results")
         .update(rest)
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
 
@@ -3340,28 +3776,28 @@ export const database = {
       if (result && values && values.length > 0) {
         // First delete existing result_values for this result
         const { error: deleteError } = await supabase
-          .from('result_values')
+          .from("result_values")
           .delete()
-          .eq('result_id', id);
+          .eq("result_id", id);
 
         if (deleteError) {
-          console.error('Error deleting existing result values:', deleteError);
+          console.error("Error deleting existing result values:", deleteError);
           return { data: null, error: deleteError };
         }
 
         // Then insert the new result_values
         // First, get all analytes to map parameter names to analyte_ids
         const { data: analytes, error: analytesError } = await supabase
-          .from('analytes')
-          .select('id, name');
-        
+          .from("analytes")
+          .select("id, name");
+
         if (analytesError) {
-          console.error('Error fetching analytes:', analytesError);
+          console.error("Error fetching analytes:", analytesError);
           return { data: null, error: analytesError };
         }
 
         // Create a map of analyte names to IDs
-        const analyteMap = new Map(analytes?.map(a => [a.name, a.id]) || []);
+        const analyteMap = new Map(analytes?.map((a) => [a.name, a.id]) || []);
 
         const resultValuesToInsert = values.map((val: any) => ({
           result_id: id,
@@ -3373,13 +3809,13 @@ export const database = {
           reference_range: val.reference_range,
           flag: val.flag,
         }));
-        
+
         const { error: valuesError } = await supabase
-          .from('result_values')
+          .from("result_values")
           .insert(resultValuesToInsert);
 
         if (valuesError) {
-          console.error('Error inserting updated result values:', valuesError);
+          console.error("Error inserting updated result values:", valuesError);
           return { data: null, error: valuesError };
         }
       }
@@ -3388,53 +3824,55 @@ export const database = {
       if (result.order_id) {
         await database.orders.checkAndUpdateStatus(result.order_id);
       }
-      
+
       return { data: result, error: null };
     },
 
     delete: async (id: string) => {
       const { error } = await supabase
-        .from('results')
+        .from("results")
         .delete()
-        .eq('id', id);
+        .eq("id", id);
       return { error };
     },
 
     getByPatientId: async (patientId: string) => {
       const { data, error } = await supabase
-        .from('results')
-        .select('*, result_values(*), attachment_id, extracted_by_ai, ai_confidence, manually_verified, ai_extraction_metadata')
-        .eq('patient_id', patientId)
-        .order('entered_date', { ascending: false });
-      
+        .from("results")
+        .select(
+          "*, result_values(*), attachment_id, extracted_by_ai, ai_confidence, manually_verified, ai_extraction_metadata",
+        )
+        .eq("patient_id", patientId)
+        .order("entered_date", { ascending: false });
+
       if (error || !data) {
         return { data, error };
       }
 
-      // For each result, if it doesn't have a direct attachment_id, 
+      // For each result, if it doesn't have a direct attachment_id,
       // check for attachments linked to its order
       const enrichedData = await Promise.all(
         data.map(async (result) => {
           if (!result.attachment_id && result.order_id) {
             // Look for attachments linked to this order
             const { data: orderAttachments } = await supabase
-              .from('attachments')
-              .select('id, file_url, description, original_filename')
-              .eq('related_table', 'orders')
-              .eq('related_id', result.order_id)
-              .order('created_at', { ascending: false })
+              .from("attachments")
+              .select("id, file_url, description, original_filename")
+              .eq("related_table", "orders")
+              .eq("related_id", result.order_id)
+              .order("created_at", { ascending: false })
               .limit(1);
-            
+
             if (orderAttachments && orderAttachments.length > 0) {
               return {
                 ...result,
                 attachment_id: orderAttachments[0].id,
-                attachment_info: orderAttachments[0]
+                attachment_info: orderAttachments[0],
               };
             }
           }
           return result;
-        })
+        }),
       );
 
       return { data: enrichedData, error };
@@ -3443,30 +3881,35 @@ export const database = {
     // New function to get results by attachment ID
     getByAttachmentId: async (attachmentId: string) => {
       const { data, error } = await supabase
-        .from('results')
-        .select('*, result_values(*), attachment_id, extracted_by_ai, ai_confidence, manually_verified, ai_extraction_metadata')
-        .eq('attachment_id', attachmentId)
-        .order('entered_date', { ascending: false });
+        .from("results")
+        .select(
+          "*, result_values(*), attachment_id, extracted_by_ai, ai_confidence, manually_verified, ai_extraction_metadata",
+        )
+        .eq("attachment_id", attachmentId)
+        .order("entered_date", { ascending: false });
       return { data, error };
     },
 
     // Get report extras (trend charts, clinical summary) for a result
     getReportExtras: async (resultId: string) => {
       const { data, error } = await supabase
-        .from('results')
-        .select('report_extras')
-        .eq('id', resultId)
+        .from("results")
+        .select("report_extras")
+        .eq("id", resultId)
         .single();
       return { data: data?.report_extras || null, error };
     },
 
     // Update report extras (merge with existing)
-    updateReportExtras: async (resultId: string, extras: Record<string, any>) => {
+    updateReportExtras: async (
+      resultId: string,
+      extras: Record<string, any>,
+    ) => {
       // First get existing extras
       const { data: existing } = await supabase
-        .from('results')
-        .select('report_extras')
-        .eq('id', resultId)
+        .from("results")
+        .select("report_extras")
+        .eq("id", resultId)
         .single();
 
       const merged = {
@@ -3476,10 +3919,10 @@ export const database = {
       };
 
       const { data, error } = await supabase
-        .from('results')
+        .from("results")
         .update({ report_extras: merged })
-        .eq('id', resultId)
-        .select('report_extras')
+        .eq("id", resultId)
+        .select("report_extras")
         .single();
 
       return { data: data?.report_extras || null, error };
@@ -3488,10 +3931,10 @@ export const database = {
     // Get report extras for all results in an order (for PDF generation)
     getReportExtrasForOrder: async (orderId: string) => {
       const { data, error } = await supabase
-        .from('results')
-        .select('id, report_extras')
-        .eq('order_id', orderId)
-        .not('report_extras', 'is', null);
+        .from("results")
+        .select("id, report_extras")
+        .eq("order_id", orderId)
+        .not("report_extras", "is", null);
 
       if (error || !data) {
         return { data: null, error };
@@ -3510,7 +3953,10 @@ export const database = {
 
         // Merge trend charts
         if (extras.trend_charts && extras.trend_charts.length > 0) {
-          merged.trend_charts = [...merged.trend_charts, ...extras.trend_charts];
+          merged.trend_charts = [
+            ...merged.trend_charts,
+            ...extras.trend_charts,
+          ];
           if (extras.include_trends_in_report) {
             merged.include_trends_in_report = true;
           }
@@ -3525,7 +3971,7 @@ export const database = {
 
       const hasData = merged.trend_charts?.length || merged.clinical_summary;
       return { data: hasData ? merged : null, error: null };
-    }
+    },
   },
 
   resultValues: {
@@ -3535,26 +3981,30 @@ export const database = {
       }
 
       const { data, error } = await supabase
-        .from('result_values')
+        .from("result_values")
         .insert(values)
         .select();
 
       return { data, error };
     },
-    updateVerificationStatus: async (resultValueIds: string[], status: 'approved' | 'rejected' | 'pending', note?: string): Promise<{ data: any; error: any }> => {
+    updateVerificationStatus: async (
+      resultValueIds: string[],
+      status: "approved" | "rejected" | "pending",
+      note?: string,
+    ): Promise<{ data: any; error: any }> => {
       try {
         // Get current user
         const { data: currentUser } = await database.auth.getCurrentUser();
         if (!currentUser?.user) {
-          throw new Error('User not authenticated');
+          throw new Error("User not authenticated");
         }
 
         const updateData: any = {
           verify_status: status,
-          verified: status === 'approved',
+          verified: status === "approved",
           verified_by: currentUser.user.id,
           verified_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         };
 
         if (note) {
@@ -3562,9 +4012,9 @@ export const database = {
         }
 
         const { data, error } = await supabase
-          .from('result_values')
+          .from("result_values")
           .update(updateData)
-          .in('id', resultValueIds)
+          .in("id", resultValueIds)
           .select(`
             id,
             verify_status,
@@ -3578,40 +4028,56 @@ export const database = {
         if (!error && data && data.length > 0) {
           try {
             await database.workflows?.logStepEvent({
-              order_id: data[0]?.order_id || '',
-              step_name: 'result_verification',
+              order_id: data[0]?.order_id || "",
+              step_name: "result_verification",
               user_id: currentUser.user.id,
               event_data: {
                 result_value_ids: resultValueIds,
                 status,
-                note
-              }
+                note,
+              },
             });
           } catch (workflowError) {
-            console.warn('Could not log workflow event:', workflowError);
+            console.warn("Could not log workflow event:", workflowError);
             // Don't fail the main operation if workflow logging fails
           }
         }
 
         return { data, error };
       } catch (error) {
-        console.error('Error updating verification status:', error);
+        console.error("Error updating verification status:", error);
         return { data: null, error };
       }
     },
 
-    bulkApprove: async (resultValueIds: string[], note?: string): Promise<{ data: any; error: any }> => {
-      return database.resultValues.updateVerificationStatus(resultValueIds, 'approved', note);
+    bulkApprove: async (
+      resultValueIds: string[],
+      note?: string,
+    ): Promise<{ data: any; error: any }> => {
+      return database.resultValues.updateVerificationStatus(
+        resultValueIds,
+        "approved",
+        note,
+      );
     },
 
-    bulkReject: async (resultValueIds: string[], note?: string): Promise<{ data: any; error: any }> => {
-      return database.resultValues.updateVerificationStatus(resultValueIds, 'rejected', note);
+    bulkReject: async (
+      resultValueIds: string[],
+      note?: string,
+    ): Promise<{ data: any; error: any }> => {
+      return database.resultValues.updateVerificationStatus(
+        resultValueIds,
+        "rejected",
+        note,
+      );
     },
 
-    getVerifierSignature: async (resultValueId: string): Promise<string | null> => {
+    getVerifierSignature: async (
+      resultValueId: string,
+    ): Promise<string | null> => {
       try {
         const { data, error } = await supabase
-          .from('result_values')
+          .from("result_values")
           .select(`
             verified_by,
             lab_id,
@@ -3626,55 +4092,65 @@ export const database = {
               )
             )
           `)
-          .eq('id', resultValueId)
-          .eq('verify_status', 'approved')
+          .eq("id", resultValueId)
+          .eq("verify_status", "approved")
           .single();
 
-        if (error || !data?.verified_by || !data.users?.lab_user_signatures?.length) {
+        if (
+          error || !data?.verified_by ||
+          !data.users?.lab_user_signatures?.length
+        ) {
           return null;
         }
 
         // Get the active signature for this user
-        const signature = data.users.lab_user_signatures.find((sig: any) => sig.is_active);
+        const signature = data.users.lab_user_signatures.find((sig: any) =>
+          sig.is_active
+        );
         if (!signature) return null;
 
         // Return best available URL
-        return signature.imagekit_url || signature.processed_signature_url || signature.signature_url;
+        return signature.imagekit_url || signature.processed_signature_url ||
+          signature.signature_url;
       } catch (error) {
-        console.error('Error fetching verifier signature:', error);
+        console.error("Error fetching verifier signature:", error);
         return null;
       }
     },
 
-    getApproverInfo: async (resultId: string): Promise<{ userId: string; labId: string } | null> => {
+    getApproverInfo: async (
+      resultId: string,
+    ): Promise<{ userId: string; labId: string } | null> => {
       try {
         const { data, error } = await supabase
-          .from('result_values')
+          .from("result_values")
           .select(`
             verified_by,
             lab_id,
             users:verified_by(id, email, lab_id)
           `)
-          .eq('result_id', resultId)
-          .eq('verify_status', 'approved')
+          .eq("result_id", resultId)
+          .eq("verify_status", "approved")
           .single();
 
         if (error || !data?.verified_by) return null;
 
         return {
           userId: data.verified_by,
-          labId: data.lab_id || data.users?.lab_id
+          labId: data.lab_id || data.users?.lab_id,
         };
       } catch (error) {
-        console.error('Error fetching approver info:', error);
+        console.error("Error fetching approver info:", error);
         return null;
       }
     },
 
-    getPendingForLab: async (labId: string): Promise<{ data: any[]; error: any }> => {
+    getPendingForLab: async (
+      labId: string,
+    ): Promise<{ data: any[]; error: any }> => {
       try {
         const { data, error } = await supabase
-          .from('result_values')
+          .from("result_values")
           .select(`
             id,
             parameter,
@@ -3693,13 +4169,13 @@ export const database = {
             orders(id, order_number, patient_id, patients(name)),
             users:verified_by(email, raw_user_meta_data)
           `)
-          .eq('lab_id', labId)
-          .in('verify_status', ['pending', 'rejected'])
-          .order('created_at', { ascending: false });
+          .eq("lab_id", labId)
+          .in("verify_status", ["pending", "rejected"])
+          .order("created_at", { ascending: false });
 
         return { data: data || [], error };
       } catch (error) {
-        console.error('Error fetching pending results:', error);
+        console.error("Error fetching pending results:", error);
         return { data: [], error };
       }
     },
@@ -3707,10 +4183,10 @@ export const database = {
     // Update result value with AI flag analysis results
     updateWithAIFlag: async (resultValueId: string, updates: {
       flag?: string;
-      flag_source?: 'rule' | 'ai' | 'manual';
+      flag_source?: "rule" | "ai" | "manual";
       flag_confidence?: number;
       ai_interpretation?: string;
-      ai_audit_status?: 'pending' | 'approved' | 'rejected';
+      ai_audit_status?: "pending" | "approved" | "rejected";
       ai_audit_notes?: string;
       // Enriched analyte snapshot fields for PDF template
       normal_range_min?: number | null;
@@ -3724,45 +4200,47 @@ export const database = {
     }): Promise<{ data: any; error: any }> => {
       try {
         const { data, error } = await supabase
-          .from('result_values')
+          .from("result_values")
           .update({
             ...updates,
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
           })
-          .eq('id', resultValueId)
+          .eq("id", resultValueId)
           .select()
           .single();
         return { data, error };
       } catch (error) {
-        console.error('Error updating result value with AI flag:', error);
+        console.error("Error updating result value with AI flag:", error);
         return { data: null, error };
       }
     },
 
     // Bulk update result values with AI flags
-    bulkUpdateWithAIFlags: async (updates: Array<{
-      id: string;
-      flag?: string;
-      flag_source?: 'rule' | 'ai' | 'manual';
-      flag_confidence?: number;
-      ai_interpretation?: string;
-      ai_audit_status?: 'pending' | 'approved' | 'rejected';
-      // Enriched analyte snapshot fields for PDF template
-      normal_range_min?: number | null;
-      normal_range_max?: number | null;
-      low_critical?: string | null;
-      high_critical?: string | null;
-      reference_range_male?: string | null;
-      reference_range_female?: string | null;
-      method?: string | null;
-      value_type?: string | null;
-    }>): Promise<{ success: number; failed: number }> => {
+    bulkUpdateWithAIFlags: async (
+      updates: Array<{
+        id: string;
+        flag?: string;
+        flag_source?: "rule" | "ai" | "manual";
+        flag_confidence?: number;
+        ai_interpretation?: string;
+        ai_audit_status?: "pending" | "approved" | "rejected";
+        // Enriched analyte snapshot fields for PDF template
+        normal_range_min?: number | null;
+        normal_range_max?: number | null;
+        low_critical?: string | null;
+        high_critical?: string | null;
+        reference_range_male?: string | null;
+        reference_range_female?: string | null;
+        method?: string | null;
+        value_type?: string | null;
+      }>,
+    ): Promise<{ success: number; failed: number }> => {
       let successCount = 0;
       let failedCount = 0;
 
       for (const update of updates) {
         const { error } = await supabase
-          .from('result_values')
+          .from("result_values")
           .update({
             flag: update.flag,
             flag_source: update.flag_source,
@@ -3770,17 +4248,31 @@ export const database = {
             ai_interpretation: update.ai_interpretation,
             ai_audit_status: update.ai_audit_status,
             // Enriched analyte snapshot fields (only set if provided)
-            ...(update.normal_range_min !== undefined ? { normal_range_min: update.normal_range_min } : {}),
-            ...(update.normal_range_max !== undefined ? { normal_range_max: update.normal_range_max } : {}),
-            ...(update.low_critical !== undefined ? { low_critical: update.low_critical } : {}),
-            ...(update.high_critical !== undefined ? { high_critical: update.high_critical } : {}),
-            ...(update.reference_range_male !== undefined ? { reference_range_male: update.reference_range_male } : {}),
-            ...(update.reference_range_female !== undefined ? { reference_range_female: update.reference_range_female } : {}),
+            ...(update.normal_range_min !== undefined
+              ? { normal_range_min: update.normal_range_min }
+              : {}),
+            ...(update.normal_range_max !== undefined
+              ? { normal_range_max: update.normal_range_max }
+              : {}),
+            ...(update.low_critical !== undefined
+              ? { low_critical: update.low_critical }
+              : {}),
+            ...(update.high_critical !== undefined
+              ? { high_critical: update.high_critical }
+              : {}),
+            ...(update.reference_range_male !== undefined
+              ? { reference_range_male: update.reference_range_male }
+              : {}),
+            ...(update.reference_range_female !== undefined
+              ? { reference_range_female: update.reference_range_female }
+              : {}),
             ...(update.method !== undefined ? { method: update.method } : {}),
-            ...(update.value_type !== undefined ? { value_type: update.value_type } : {}),
-            updated_at: new Date().toISOString()
+            ...(update.value_type !== undefined
+              ? { value_type: update.value_type }
+              : {}),
+            updated_at: new Date().toISOString(),
           })
-          .eq('id', update.id);
+          .eq("id", update.id);
 
         if (error) {
           console.error(`Failed to update result ${update.id}:`, error);
@@ -3794,10 +4286,12 @@ export const database = {
     },
 
     // Get result value with full flag context for verification
-    getWithFlagContext: async (resultValueId: string): Promise<{ data: any; error: any }> => {
+    getWithFlagContext: async (
+      resultValueId: string,
+    ): Promise<{ data: any; error: any }> => {
       try {
         const { data, error } = await supabase
-          .from('result_values')
+          .from("result_values")
           .select(`
             *,
             results:result_id(
@@ -3828,21 +4322,23 @@ export const database = {
               interpretation_high
             )
           `)
-          .eq('id', resultValueId)
+          .eq("id", resultValueId)
           .single();
 
         return { data, error };
       } catch (error) {
-        console.error('Error fetching result value with flag context:', error);
+        console.error("Error fetching result value with flag context:", error);
         return { data: null, error };
       }
     },
 
     // Get all result values for an order with flag details (used by PDF and verification)
-    getForOrderWithFlags: async (orderId: string): Promise<{ data: any[]; error: any }> => {
+    getForOrderWithFlags: async (
+      orderId: string,
+    ): Promise<{ data: any[]; error: any }> => {
       try {
         const { data, error } = await supabase
-          .from('result_values')
+          .from("result_values")
           .select(`
             id,
             lab_id,
@@ -3884,94 +4380,98 @@ export const database = {
               interpretation_high
             )
           `)
-          .eq('order_id', orderId)
-          .order('parameter');
+          .eq("order_id", orderId)
+          .order("parameter");
 
         return { data: data || [], error };
       } catch (error) {
-        console.error('Error fetching result values with flags:', error);
+        console.error("Error fetching result values with flags:", error);
         return { data: [], error };
       }
-    }
+    },
   },
-
-
 
   invoices: {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       // Query invoices with basic data
       const { data, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .select(`
           *,
           invoice_items(*)
         `)
-        .eq('lab_id', lab_id)
-        .order('invoice_date', { ascending: false });
-      
+        .eq("lab_id", lab_id)
+        .order("invoice_date", { ascending: false });
+
       if (error) {
         return { data: null, error };
       }
-      
+
       // Calculate paid_amount from payments table for each invoice
       const invoicesWithPayments = await Promise.all(
         (data || []).map(async (invoice) => {
           const { data: payments } = await supabase
-            .from('payments')
-            .select('amount')
-            .eq('invoice_id', invoice.id);
-          
+            .from("payments")
+            .select("amount")
+            .eq("invoice_id", invoice.id);
+
           const paid_amount = (payments || []).reduce(
-            (sum, p) => sum + parseFloat(p.amount || '0'), 
-            0
+            (sum, p) => sum + parseFloat(p.amount || "0"),
+            0,
           );
-          
+
           return {
             ...invoice,
             paid_amount,
-            payment_status: invoice.status
+            payment_status: invoice.status,
           };
-        })
+        }),
       );
-      
+
       return { data: invoicesWithPayments, error: null };
     },
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .select(`
           *,
           invoice_items(*)
         `)
-        .eq('id', id)
+        .eq("id", id)
         .single();
       return { data, error };
     },
 
     create: async (invoiceData: any) => {
       const { invoice_items, ...invoiceDetails } = invoiceData;
-      
+
       // Get current user's lab_id
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       // Ensure location_id is populated
       let location_id = invoiceDetails.location_id;
       if (!location_id) {
         // Try to get from order if order_id is provided
         if (invoiceDetails.order_id) {
           const { data: order } = await supabase
-            .from('orders')
-            .select('location_id')
-            .eq('id', invoiceDetails.order_id)
+            .from("orders")
+            .select("location_id")
+            .eq("id", invoiceDetails.order_id)
             .single();
           if (order?.location_id) {
             location_id = order.location_id;
@@ -3982,9 +4482,9 @@ export const database = {
           const { data: { user } } = await supabase.auth.getUser();
           if (user) {
             const { data: userData } = await supabase
-              .from('users')
-              .select('default_location_id')
-              .eq('id', user.id)
+              .from("users")
+              .select("default_location_id")
+              .eq("id", user.id)
               .single();
             if (userData?.default_location_id) {
               location_id = userData.default_location_id;
@@ -3994,19 +4494,19 @@ export const database = {
         // If still no location, get lab's default location
         if (!location_id && lab_id) {
           const { data: labData } = await supabase
-            .from('labs')
-            .select('default_processing_location_id')
-            .eq('id', lab_id)
+            .from("labs")
+            .select("default_processing_location_id")
+            .eq("id", lab_id)
             .single();
           if (labData?.default_processing_location_id) {
             location_id = labData.default_processing_location_id;
           }
         }
       }
-      
+
       // First create the invoice with lab_id and location_id
       const { data: invoice, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .insert([{ ...invoiceDetails, lab_id, location_id }])
         .select()
         .single();
@@ -4020,15 +4520,15 @@ export const database = {
         const invoiceItemsToInsert = invoice_items.map((item: any) => ({
           ...item,
           invoice_id: invoice.id,
-          lab_id
+          lab_id,
         }));
 
         const { error: itemsError } = await supabase
-          .from('invoice_items')
+          .from("invoice_items")
           .insert(invoiceItemsToInsert);
 
         if (itemsError) {
-          console.error('Error inserting invoice items:', itemsError);
+          console.error("Error inserting invoice items:", itemsError);
           return { data: invoice, error: itemsError };
         }
       }
@@ -4038,9 +4538,9 @@ export const database = {
 
     update: async (id: string, invoiceData: any) => {
       const { data, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .update(invoiceData)
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
@@ -4048,9 +4548,9 @@ export const database = {
 
     delete: async (id: string) => {
       const { error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .delete()
-        .eq('id', id);
+        .eq("id", id);
       return { error };
     },
 
@@ -4058,85 +4558,96 @@ export const database = {
     getUnbilledByAccount: async (accountId: string, billingPeriod?: string) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       let query = supabase
-        .from('invoices')
+        .from("invoices")
         .select(`
           *,
           invoice_items(*)
         `)
-        .eq('lab_id', lab_id)
-        .eq('account_id', accountId)
-        .eq('invoice_type', 'account')
-        .is('consolidated_invoice_id', null); // Not yet consolidated
+        .eq("lab_id", lab_id)
+        .eq("account_id", accountId)
+        .eq("invoice_type", "account")
+        .is("consolidated_invoice_id", null); // Not yet consolidated
 
       if (billingPeriod) {
-        query = query.eq('billing_period', billingPeriod);
+        query = query.eq("billing_period", billingPeriod);
       }
 
-      const { data, error } = await query.order('invoice_date', { ascending: false });
+      const { data, error } = await query.order("invoice_date", {
+        ascending: false,
+      });
       return { data, error };
     },
 
     getByBillingPeriod: async (billingPeriod: string) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .select(`
           *,
           invoice_items(*),
           accounts(name)
         `)
-        .eq('lab_id', lab_id)
-        .eq('billing_period', billingPeriod)
-        .order('account_id')
-        .order('invoice_date', { ascending: false });
-      
+        .eq("lab_id", lab_id)
+        .eq("billing_period", billingPeriod)
+        .order("account_id")
+        .order("invoice_date", { ascending: false });
+
       return { data, error };
     },
 
-    markAsConsolidated: async (invoiceIds: string[], consolidatedInvoiceId: string) => {
+    markAsConsolidated: async (
+      invoiceIds: string[],
+      consolidatedInvoiceId: string,
+    ) => {
       const { data, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .update({ consolidated_invoice_id: consolidatedInvoiceId })
-        .in('id', invoiceIds)
+        .in("id", invoiceIds)
         .select();
-      
+
       return { data, error };
     },
 
     getByOrderId: async (orderId: string) => {
       const { data, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .select(`
           *,
           invoice_items(*)
         `)
-        .eq('order_id', orderId)
-        .order('invoice_date', { ascending: false })
+        .eq("order_id", orderId)
+        .order("invoice_date", { ascending: false })
         .limit(1)
         .maybeSingle();
-      
+
       return { data, error };
     },
 
     // Get ALL invoices for an order (for orders with multiple invoices due to added tests)
     getAllByOrderId: async (orderId: string) => {
       const { data, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .select(`
           *,
           invoice_items(*)
         `)
-        .eq('order_id', orderId)
-        .order('invoice_date', { ascending: false });
-      
+        .eq("order_id", orderId)
+        .order("invoice_date", { ascending: false });
+
       return { data: data || [], error };
     },
 
@@ -4145,18 +4656,18 @@ export const database = {
       to: string;
       caption: string;
       sentBy: string;
-      sentVia?: 'api' | 'manual_link';
+      sentVia?: "api" | "manual_link";
     }) => {
       const { data, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .update({
           whatsapp_sent_at: new Date().toISOString(),
           whatsapp_sent_to: params.to,
           whatsapp_sent_by: params.sentBy,
           whatsapp_caption: params.caption,
-          whatsapp_sent_via: params.sentVia || 'api',
+          whatsapp_sent_via: params.sentVia || "api",
         })
-        .eq('id', invoiceId)
+        .eq("id", invoiceId)
         .select()
         .single();
       return { data, error };
@@ -4165,17 +4676,17 @@ export const database = {
     recordEmailSend: async (invoiceId: string, params: {
       to: string;
       sentBy: string;
-      sentVia?: 'api' | 'manual_link';
+      sentVia?: "api" | "manual_link";
     }) => {
       const { data, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .update({
           email_sent_at: new Date().toISOString(),
           email_sent_to: params.to,
           email_sent_by: params.sentBy,
-          email_sent_via: params.sentVia || 'api',
+          email_sent_via: params.sentVia || "api",
         })
-        .eq('id', invoiceId)
+        .eq("id", invoiceId)
         .select()
         .single();
       return { data, error };
@@ -4183,15 +4694,15 @@ export const database = {
 
     recordPaymentReminder: async (invoiceId: string, params: {
       sentBy: string;
-      sentVia?: 'api' | 'manual_link';
+      sentVia?: "api" | "manual_link";
     }) => {
       const { data, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .update({
           last_reminder_at: new Date().toISOString(),
           reminder_sent_by: params.sentBy,
         })
-        .eq('id', invoiceId)
+        .eq("id", invoiceId)
         .select()
         .single();
       return { data, error };
@@ -4199,7 +4710,7 @@ export const database = {
 
     getDeliveryStatus: async (invoiceId: string) => {
       const { data, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .select(`
           whatsapp_sent_at,
           whatsapp_sent_to,
@@ -4214,27 +4725,27 @@ export const database = {
           last_reminder_at,
           reminder_sent_by
         `)
-        .eq('id', invoiceId)
+        .eq("id", invoiceId)
         .single();
       return { data, error };
     },
 
-    wasAlreadySent: async (invoiceId: string, type: 'whatsapp' | 'email') => {
+    wasAlreadySent: async (invoiceId: string, type: "whatsapp" | "email") => {
       const { data, error } = await supabase
-        .from('invoices')
+        .from("invoices")
         .select(`
           whatsapp_sent_at,
           email_sent_at
         `)
-        .eq('id', invoiceId)
+        .eq("id", invoiceId)
         .single();
-      
+
       if (error || !data) return false;
-      
-      if (type === 'whatsapp') return !!data.whatsapp_sent_at;
-      if (type === 'email') return !!data.email_sent_at;
+
+      if (type === "whatsapp") return !!data.whatsapp_sent_at;
+      if (type === "email") return !!data.email_sent_at;
       return false;
-    }
+    },
   },
 
   // NEW: Consolidated invoices methods
@@ -4242,125 +4753,137 @@ export const database = {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('consolidated_invoices')
+        .from("consolidated_invoices")
         .select(`
           *,
           accounts(name)
         `)
-        .eq('lab_id', lab_id)
-        .order('invoice_date', { ascending: false });
-      
+        .eq("lab_id", lab_id)
+        .order("invoice_date", { ascending: false });
+
       return { data, error };
     },
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-        .from('consolidated_invoices')
+        .from("consolidated_invoices")
         .select(`
           *,
           accounts(name)
         `)
-        .eq('id', id)
+        .eq("id", id)
         .single();
-      
+
       return { data, error };
     },
 
     create: async (consolidatedData: any) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('consolidated_invoices')
+        .from("consolidated_invoices")
         .insert([{ ...consolidatedData, lab_id }])
         .select()
         .single();
-      
+
       return { data, error };
     },
 
     update: async (id: string, updates: any) => {
       const { data, error } = await supabase
-        .from('consolidated_invoices')
+        .from("consolidated_invoices")
         .update(updates)
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
-      
+
       return { data, error };
     },
 
     getByAccount: async (accountId: string) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('consolidated_invoices')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .eq('account_id', accountId)
-        .order('billing_period', { ascending: false });
-      
+        .from("consolidated_invoices")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .eq("account_id", accountId)
+        .order("billing_period", { ascending: false });
+
       return { data, error };
-    }
+    },
   },
-  
+
   invoice_items: {
     create: async (items: any[]) => {
       const { data, error } = await supabase
-        .from('invoice_items')
+        .from("invoice_items")
         .insert(items)
         .select();
       return { data, error };
     },
-    
+
     update: async (id: string, itemData: any) => {
       const { data, error } = await supabase
-        .from('invoice_items')
+        .from("invoice_items")
         .update(itemData)
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
     },
-    
+
     delete: async (id: string) => {
       const { error } = await supabase
-        .from('invoice_items')
+        .from("invoice_items")
         .delete()
-        .eq('id', id);
+        .eq("id", id);
       return { error };
-    }
+    },
   },
-  
+
   payments: {
     getByInvoiceId: async (invoiceId: string) => {
       const { data, error } = await supabase
-        .from('payments')
-        .select('*')
-        .eq('invoice_id', invoiceId)
-        .order('payment_date', { ascending: false });
+        .from("payments")
+        .select("*")
+        .eq("invoice_id", invoiceId)
+        .order("payment_date", { ascending: false });
       return { data, error };
     },
-    
+
     create: async (paymentData: any) => {
       // Get current user's lab_id if not already provided
       if (!paymentData.lab_id) {
         const lab_id = await database.getCurrentUserLabId();
         if (!lab_id) {
-          return { data: null, error: new Error('No lab_id found for current user') };
+          return {
+            data: null,
+            error: new Error("No lab_id found for current user"),
+          };
         }
         paymentData.lab_id = lab_id;
       }
-      
+
       // Get current user info for received_by
       if (!paymentData.received_by) {
         const { data: { user } } = await supabase.auth.getUser();
@@ -4368,37 +4891,37 @@ export const database = {
           paymentData.received_by = user.id;
         }
       }
-      
+
       // Get location_id from invoice if not provided
       if (!paymentData.location_id && paymentData.invoice_id) {
         const { data: invoice } = await supabase
-          .from('invoices')
-          .select('location_id, order_id')
-          .eq('id', paymentData.invoice_id)
+          .from("invoices")
+          .select("location_id, order_id")
+          .eq("id", paymentData.invoice_id)
           .single();
-        
+
         if (invoice?.location_id) {
           paymentData.location_id = invoice.location_id;
         } else if (invoice?.order_id) {
           // If invoice has no location, try to get from order
           const { data: order } = await supabase
-            .from('orders')
-            .select('location_id')
-            .eq('id', invoice.order_id)
+            .from("orders")
+            .select("location_id")
+            .eq("id", invoice.order_id)
             .single();
           if (order?.location_id) {
             paymentData.location_id = order.location_id;
           }
         }
-        
+
         // If still no location, get user's default location
         if (!paymentData.location_id) {
           const { data: { user } } = await supabase.auth.getUser();
           if (user) {
             const { data: userData } = await supabase
-              .from('users')
-              .select('default_location_id')
-              .eq('id', user.id)
+              .from("users")
+              .select("default_location_id")
+              .eq("id", user.id)
               .single();
             if (userData?.default_location_id) {
               paymentData.location_id = userData.default_location_id;
@@ -4406,122 +4929,138 @@ export const database = {
           }
         }
       }
-      
+
       const { data, error } = await supabase
-        .from('payments')
+        .from("payments")
         .insert([paymentData])
         .select()
         .single();
-      
+
       if (error) {
-        console.error('Error creating payment:', error);
+        console.error("Error creating payment:", error);
         return { data: null, error };
       }
-      
+
       // Update invoice status after successful payment
       if (data && paymentData.invoice_id) {
         try {
-          console.log('Updating invoice status for invoice:', paymentData.invoice_id);
-          
+          console.log(
+            "Updating invoice status for invoice:",
+            paymentData.invoice_id,
+          );
+
           // Get total payments for this invoice
           const { data: payments, error: paymentsError } = await supabase
-            .from('payments')
-            .select('amount')
-            .eq('invoice_id', paymentData.invoice_id);
+            .from("payments")
+            .select("amount")
+            .eq("invoice_id", paymentData.invoice_id);
 
           if (paymentsError) {
-            console.error('Error fetching payments:', paymentsError);
+            console.error("Error fetching payments:", paymentsError);
             return { data, error: null }; // Return payment but log error
           }
 
           // Get invoice total
           const { data: invoice, error: invoiceError } = await supabase
-            .from('invoices')
-            .select('total')
-            .eq('id', paymentData.invoice_id)
+            .from("invoices")
+            .select("total")
+            .eq("id", paymentData.invoice_id)
             .single();
 
           if (invoiceError) {
-            console.error('Error fetching invoice:', invoiceError);
+            console.error("Error fetching invoice:", invoiceError);
             return { data, error: null }; // Return payment but log error
           }
 
           if (invoice && payments) {
-            const totalPaid = payments.reduce((sum, p) => sum + parseFloat(p.amount || '0'), 0);
-            const invoiceTotal = parseFloat(invoice.total || '0');
+            const totalPaid = payments.reduce(
+              (sum, p) => sum + parseFloat(p.amount || "0"),
+              0,
+            );
+            const invoiceTotal = parseFloat(invoice.total || "0");
 
-            let newStatus = 'Unpaid';
+            let newStatus = "Unpaid";
             if (totalPaid >= invoiceTotal) {
-              newStatus = 'Paid';
+              newStatus = "Paid";
             } else if (totalPaid > 0) {
-              newStatus = 'Partial';
+              newStatus = "Partial";
             }
 
-            console.log('Invoice status update:', { 
-              invoiceId: paymentData.invoice_id, 
-              totalPaid, 
-              invoiceTotal, 
-              newStatus 
+            console.log("Invoice status update:", {
+              invoiceId: paymentData.invoice_id,
+              totalPaid,
+              invoiceTotal,
+              newStatus,
             });
 
             // Update invoice status
             const { error: updateError } = await supabase
-              .from('invoices')
-              .update({ 
+              .from("invoices")
+              .update({
                 status: newStatus,
                 payment_method: paymentData.payment_method,
-                payment_date: paymentData.payment_date
+                payment_date: paymentData.payment_date,
               })
-              .eq('id', paymentData.invoice_id);
+              .eq("id", paymentData.invoice_id);
 
             if (updateError) {
-              console.error('Error updating invoice status:', updateError);
+              console.error("Error updating invoice status:", updateError);
             } else {
-              console.log('Invoice status updated successfully to:', newStatus);
+              console.log("Invoice status updated successfully to:", newStatus);
             }
           }
         } catch (updateErr) {
-          console.error('Exception updating invoice status:', updateErr);
+          console.error("Exception updating invoice status:", updateErr);
           // Don't fail the whole operation, payment was successful
         }
       }
-      
+
       return { data, error: null };
     },
-    
-    getPaymentSummary: async (startDate?: string, endDate?: string, method?: string) => {
+
+    getPaymentSummary: async (
+      startDate?: string,
+      endDate?: string,
+      method?: string,
+    ) => {
       let query = supabase
-        .from('payments')
-        .select('*');
-      
+        .from("payments")
+        .select("*");
+
       if (startDate) {
-        query = query.gte('payment_date', startDate);
+        query = query.gte("payment_date", startDate);
       }
-      
+
       if (endDate) {
-        query = query.lte('payment_date', endDate);
+        query = query.lte("payment_date", endDate);
       }
-      
+
       if (method) {
-        query = query.eq('payment_method', method);
+        query = query.eq("payment_method", method);
       }
-      
-      const { data, error } = await query.order('payment_date', { ascending: false });
+
+      const { data, error } = await query.order("payment_date", {
+        ascending: false,
+      });
       return { data, error };
     },
-    
+
     // For Cash Reconciliation (cash-only, date + location)
-    getByDateRange: async (fromDate: string, toDate: string, locationId: string) => {
+    getByDateRange: async (
+      fromDate: string,
+      toDate: string,
+      locationId: string,
+    ) => {
       const { data, error } = await supabase
-        .from('payments')
-        .select('*, invoices(patient_name)')
-        .eq('payment_method', 'cash')
-        .eq('location_id', locationId)
-        .gte('payment_date', fromDate)
-        .lte('payment_date', toDate)
-        .order('created_at');
+        .from("payments")
+        .select("*, invoices(patient_name)")
+        .eq("payment_method", "cash")
+        .eq("location_id", locationId)
+        .gte("payment_date", fromDate)
+        .lte("payment_date", toDate)
+        .order("created_at");
       return { data, error };
-    }
+    },
   },
 
   // =============================================
@@ -4532,28 +5071,31 @@ export const database = {
     getAll: async (filters?: { status?: string; location_id?: string }) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       let query = supabase
-        .from('refund_requests')
+        .from("refund_requests")
         .select(`
           *,
           invoices(total, patient_name),
           patients(name, phone),
           users!refund_requests_requested_by_fkey(name)
         `)
-        .eq('lab_id', lab_id)
-        .order('created_at', { ascending: false });
-      
+        .eq("lab_id", lab_id)
+        .order("created_at", { ascending: false });
+
       if (filters?.status) {
-        query = query.eq('status', filters.status);
+        query = query.eq("status", filters.status);
       }
-      
+
       if (filters?.location_id) {
-        query = query.eq('location_id', filters.location_id);
+        query = query.eq("location_id", filters.location_id);
       }
-      
+
       const { data, error } = await query;
       return { data, error };
     },
@@ -4561,15 +5103,15 @@ export const database = {
     // Get refund requests for a specific invoice
     getByInvoiceId: async (invoiceId: string) => {
       const { data, error } = await supabase
-        .from('refund_requests')
+        .from("refund_requests")
         .select(`
           *,
           users!refund_requests_requested_by_fkey(name),
           users!refund_requests_approved_by_fkey(name),
           users!refund_requests_paid_by_fkey(name)
         `)
-        .eq('invoice_id', invoiceId)
-        .order('created_at', { ascending: false });
+        .eq("invoice_id", invoiceId)
+        .order("created_at", { ascending: false });
       return { data, error };
     },
 
@@ -4577,14 +5119,17 @@ export const database = {
     getPendingApprovals: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       const { data, error } = await supabase
-        .from('v_pending_refund_approvals')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .order('created_at', { ascending: true });
+        .from("v_pending_refund_approvals")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .order("created_at", { ascending: true });
       return { data, error };
     },
 
@@ -4592,23 +5137,28 @@ export const database = {
     getDailyCashSummary: async (date?: string, locationId?: string) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       let query = supabase
-        .from('v_daily_cash_summary')
-        .select('*')
-        .eq('lab_id', lab_id);
-      
+        .from("v_daily_cash_summary")
+        .select("*")
+        .eq("lab_id", lab_id);
+
       if (date) {
-        query = query.eq('summary_date', date);
+        query = query.eq("summary_date", date);
       }
-      
+
       if (locationId) {
-        query = query.eq('location_id', locationId);
+        query = query.eq("location_id", locationId);
       }
-      
-      const { data, error } = await query.order('summary_date', { ascending: false });
+
+      const { data, error } = await query.order("summary_date", {
+        ascending: false,
+      });
       return { data, error };
     },
 
@@ -4616,14 +5166,17 @@ export const database = {
     getCashRefundsByDate: async (date: string, locationId?: string) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const startOfDay = `${date}T00:00:00`;
       const endOfDay = `${date}T23:59:59.999`;
 
       let query = supabase
-        .from('refund_requests')
+        .from("refund_requests")
         .select(`
           id,
           invoice_id,
@@ -4636,15 +5189,15 @@ export const database = {
           locations(name),
           users!refund_requests_requested_by_fkey(name)
         `)
-        .eq('lab_id', lab_id)
-        .eq('refund_method', 'cash')
-        .eq('status', 'paid')
-        .gte('paid_at', startOfDay)
-        .lte('paid_at', endOfDay)
-        .order('paid_at', { ascending: false });
+        .eq("lab_id", lab_id)
+        .eq("refund_method", "cash")
+        .eq("status", "paid")
+        .gte("paid_at", startOfDay)
+        .lte("paid_at", endOfDay)
+        .order("paid_at", { ascending: false });
 
-      if (locationId && locationId !== 'all') {
-        query = query.eq('location_id', locationId);
+      if (locationId && locationId !== "all") {
+        query = query.eq("location_id", locationId);
       }
 
       const { data, error } = await query;
@@ -4661,40 +5214,40 @@ export const database = {
       refunded_items?: any[];
     }) => {
       // RPC function handles user authentication and lookup via email
-      const { data, error } = await supabase.rpc('create_refund_request', {
+      const { data, error } = await supabase.rpc("create_refund_request", {
         p_invoice_id: refundData.invoice_id,
         p_refund_amount: refundData.refund_amount,
         p_refund_method: refundData.refund_method,
         p_reason_category: refundData.reason_category || null,
         p_reason_details: refundData.reason_details || null,
-        p_refunded_items: refundData.refunded_items || []
+        p_refunded_items: refundData.refunded_items || [],
       });
       return { data, error };
     },
 
     // Approve a refund request (admin only, calls RPC function)
     approve: async (refundId: string, adminNotes?: string) => {
-      const { data, error } = await supabase.rpc('approve_refund', {
+      const { data, error } = await supabase.rpc("approve_refund", {
         p_refund_id: refundId,
-        p_admin_notes: adminNotes || null
+        p_admin_notes: adminNotes || null,
       });
       return { data, error };
     },
 
     // Reject a refund request (admin only, calls RPC function)
     reject: async (refundId: string, rejectionReason: string) => {
-      const { data, error } = await supabase.rpc('reject_refund', {
+      const { data, error } = await supabase.rpc("reject_refund", {
         p_refund_id: refundId,
-        p_rejection_reason: rejectionReason
+        p_rejection_reason: rejectionReason,
       });
       return { data, error };
     },
 
     // Mark refund as paid (admin only, calls RPC function)
     markPaid: async (refundId: string, paymentReference?: string) => {
-      const { data, error } = await supabase.rpc('mark_refund_paid', {
+      const { data, error } = await supabase.rpc("mark_refund_paid", {
         p_refund_id: refundId,
-        p_payment_reference: paymentReference || null
+        p_payment_reference: paymentReference || null,
       });
       return { data, error };
     },
@@ -4703,31 +5256,31 @@ export const database = {
     cancel: async (refundId: string) => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
-        return { data: null, error: new Error('User not authenticated') };
+        return { data: null, error: new Error("User not authenticated") };
       }
-      
+
       // Get user's internal ID using email (matches getCurrentUserLabId pattern)
       const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select('id')
-        .eq('email', user.email)
-        .eq('status', 'Active')
+        .from("users")
+        .select("id")
+        .eq("email", user.email)
+        .eq("status", "Active")
         .single();
-      
+
       if (userError || !userData) {
-        return { data: null, error: new Error('User not found') };
+        return { data: null, error: new Error("User not found") };
       }
-      
+
       const { data, error } = await supabase
-        .from('refund_requests')
+        .from("refund_requests")
         .update({
-          status: 'cancelled',
+          status: "cancelled",
           cancelled_by: userData.id,
           cancelled_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', refundId)
-        .in('status', ['draft', 'pending_approval'])
+        .eq("id", refundId)
+        .in("status", ["draft", "pending_approval"])
         .select()
         .single();
       return { data, error };
@@ -4737,16 +5290,19 @@ export const database = {
     getStats: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       const { data, error } = await supabase
-        .from('refund_requests')
-        .select('status, refund_amount')
-        .eq('lab_id', lab_id);
-      
+        .from("refund_requests")
+        .select("status, refund_amount")
+        .eq("lab_id", lab_id);
+
       if (error) return { data: null, error };
-      
+
       const stats = {
         pending_count: 0,
         pending_amount: 0,
@@ -4755,43 +5311,45 @@ export const database = {
         paid_count: 0,
         paid_amount: 0,
         rejected_count: 0,
-        total_count: data?.length || 0
+        total_count: data?.length || 0,
       };
-      
-      (data || []).forEach(r => {
-        if (r.status === 'pending_approval') {
+
+      (data || []).forEach((r) => {
+        if (r.status === "pending_approval") {
           stats.pending_count++;
           stats.pending_amount += r.refund_amount;
-        } else if (r.status === 'approved') {
+        } else if (r.status === "approved") {
           stats.approved_count++;
           stats.approved_amount += r.refund_amount;
-        } else if (r.status === 'paid') {
+        } else if (r.status === "paid") {
           stats.paid_count++;
           stats.paid_amount += r.refund_amount;
-        } else if (r.status === 'rejected') {
+        } else if (r.status === "rejected") {
           stats.rejected_count++;
         }
       });
-      
+
       return { data: stats, error: null };
-    }
+    },
   },
 
   analytes: {
     getAll: async () => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        console.warn('No lab ID found for current user, fetching all active analytes globally. This might not be the intended behavior for a multi-lab setup.');
+        console.warn(
+          "No lab ID found for current user, fetching all active analytes globally. This might not be the intended behavior for a multi-lab setup.",
+        );
         const { data, error } = await supabase
-          .from('analytes')
-          .select('*')
-          .order('name');
+          .from("analytes")
+          .select("*")
+          .order("name");
         return { data, error };
       }
 
       // Fetch analytes joined with lab_analytes for the specific lab
       const { data, error } = await supabase
-        .from('lab_analytes')
+        .from("lab_analytes")
         .select(`
           is_active,
           visible,
@@ -4812,74 +5370,88 @@ export const database = {
           description,
           analytes(*)
         `)
-        .eq('lab_id', labId)
-        .eq('is_active', true)
-        .eq('visible', true);
-      
+        .eq("lab_id", labId)
+        .eq("is_active", true)
+        .eq("visible", true);
+
       if (error) {
         return { data: null, error };
       }
-      
+
       // Flatten the structure to match the expected Analyte interface
       const formattedData = Array.isArray(data)
-        ? data.map(item => {
-            // item.analytes may be an array or object, handle accordingly
-            const analyteObj = Array.isArray(item.analytes) ? item.analytes[0] : item.analytes;
-            if (analyteObj) {
-              // Parse expected_normal_values from lab_analytes (may be string or array)
-              let expectedNormalValues = analyteObj.expected_normal_values || [];
-              if (item.expected_normal_values) {
-                // Lab-specific override takes priority
-                if (typeof item.expected_normal_values === 'string') {
-                  try {
-                    expectedNormalValues = JSON.parse(item.expected_normal_values);
-                  } catch {
-                    expectedNormalValues = [];
-                  }
-                } else if (Array.isArray(item.expected_normal_values)) {
-                  expectedNormalValues = item.expected_normal_values;
+        ? data.map((item) => {
+          // item.analytes may be an array or object, handle accordingly
+          const analyteObj = Array.isArray(item.analytes)
+            ? item.analytes[0]
+            : item.analytes;
+          if (analyteObj) {
+            // Parse expected_normal_values from lab_analytes (may be string or array)
+            let expectedNormalValues = analyteObj.expected_normal_values || [];
+            if (item.expected_normal_values) {
+              // Lab-specific override takes priority
+              if (typeof item.expected_normal_values === "string") {
+                try {
+                  expectedNormalValues = JSON.parse(
+                    item.expected_normal_values,
+                  );
+                } catch {
+                  expectedNormalValues = [];
                 }
+              } else if (Array.isArray(item.expected_normal_values)) {
+                expectedNormalValues = item.expected_normal_values;
               }
-              
-              // Parse expected_value_flag_map from lab_analytes
-              let expectedValueFlagMap = analyteObj.expected_value_flag_map || {};
-              if (item.expected_value_flag_map) {
-                if (typeof item.expected_value_flag_map === 'string') {
-                  try { expectedValueFlagMap = JSON.parse(item.expected_value_flag_map); } catch { /* keep global */ }
-                } else {
-                  expectedValueFlagMap = item.expected_value_flag_map;
-                }
-              }
-
-              return {
-                ...analyteObj,
-                is_active: item.is_active,
-                visible: item.visible,
-                // Prioritize lab-specific category if it exists, otherwise use global
-                category: item.category || analyteObj.category || 'General',
-                // Prioritize lab-specific critical values if present
-                low_critical: item.low_critical ?? analyteObj.low_critical,
-                high_critical: item.high_critical ?? analyteObj.high_critical,
-                // Prioritize lab-specific method if present
-                method: item.lab_specific_method || item.method || analyteObj.method,
-                // Prioritize lab-specific values if they exist, otherwise use global
-                referenceRange: item.lab_specific_reference_range || analyteObj.reference_range,
-                interpretation: {
-                  low: item.lab_specific_interpretation_low || analyteObj.interpretation_low,
-                  normal: item.lab_specific_interpretation_normal || analyteObj.interpretation_normal,
-                  high: item.lab_specific_interpretation_high || analyteObj.interpretation_high,
-                },
-                ref_range_knowledge: item.ref_range_knowledge || analyteObj.ref_range_knowledge,
-                expected_normal_values: expectedNormalValues,
-                expected_value_flag_map: expectedValueFlagMap,
-                // Prioritize lab-specific value_type, code, description
-                value_type: item.value_type || analyteObj.value_type || 'numeric',
-                code: item.code || analyteObj.code || '',
-                description: item.description || analyteObj.description || '',
-              };
             }
-            return null;
-          }).filter(Boolean)
+
+            // Parse expected_value_flag_map from lab_analytes
+            let expectedValueFlagMap = analyteObj.expected_value_flag_map || {};
+            if (item.expected_value_flag_map) {
+              if (typeof item.expected_value_flag_map === "string") {
+                try {
+                  expectedValueFlagMap = JSON.parse(
+                    item.expected_value_flag_map,
+                  );
+                } catch { /* keep global */ }
+              } else {
+                expectedValueFlagMap = item.expected_value_flag_map;
+              }
+            }
+
+            return {
+              ...analyteObj,
+              is_active: item.is_active,
+              visible: item.visible,
+              // Prioritize lab-specific category if it exists, otherwise use global
+              category: item.category || analyteObj.category || "General",
+              // Prioritize lab-specific critical values if present
+              low_critical: item.low_critical ?? analyteObj.low_critical,
+              high_critical: item.high_critical ?? analyteObj.high_critical,
+              // Prioritize lab-specific method if present
+              method: item.lab_specific_method || item.method ||
+                analyteObj.method,
+              // Prioritize lab-specific values if they exist, otherwise use global
+              referenceRange: item.lab_specific_reference_range ||
+                analyteObj.reference_range,
+              interpretation: {
+                low: item.lab_specific_interpretation_low ||
+                  analyteObj.interpretation_low,
+                normal: item.lab_specific_interpretation_normal ||
+                  analyteObj.interpretation_normal,
+                high: item.lab_specific_interpretation_high ||
+                  analyteObj.interpretation_high,
+              },
+              ref_range_knowledge: item.ref_range_knowledge ||
+                analyteObj.ref_range_knowledge,
+              expected_normal_values: expectedNormalValues,
+              expected_value_flag_map: expectedValueFlagMap,
+              // Prioritize lab-specific value_type, code, description
+              value_type: item.value_type || analyteObj.value_type || "numeric",
+              code: item.code || analyteObj.code || "",
+              description: item.description || analyteObj.description || "",
+            };
+          }
+          return null;
+        }).filter(Boolean)
         : [];
       return { data: formattedData, error: null };
     },
@@ -4887,11 +5459,11 @@ export const database = {
     // Get global analytes (for master analyte management)
     getAllGlobal: async () => {
       const { data, error } = await supabase
-        .from('analytes')
-        .select('*')
-        .eq('is_global', true)
-        .eq('is_active', true)
-        .order('name');
+        .from("analytes")
+        .select("*")
+        .eq("is_global", true)
+        .eq("is_active", true)
+        .order("name");
       return { data, error };
     },
 
@@ -4920,7 +5492,11 @@ export const database = {
       formula_variables?: string[];
       formula_description?: string | null;
       // Flag determination fields
-      value_type?: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
+      value_type?:
+        | "numeric"
+        | "qualitative"
+        | "semi_quantitative"
+        | "descriptive";
       expected_normal_values?: string[];
       expected_value_flag_map?: Record<string, string>;
       flag_rules?: any;
@@ -4929,7 +5505,7 @@ export const database = {
     }) => {
       // First create the analyte in the analytes table
       const { data, error } = await supabase
-        .from('analytes')
+        .from("analytes")
         .insert([{
           name: analyteData.name,
           unit: analyteData.unit,
@@ -4941,12 +5517,12 @@ export const database = {
           interpretation_low: analyteData.interpretation_low,
           interpretation_normal: analyteData.interpretation_normal,
           interpretation_high: analyteData.interpretation_high,
-          category: analyteData.category || 'General', // Ensure category is never null
+          category: analyteData.category || "General", // Ensure category is never null
           is_global: analyteData.is_global || false,
           is_active: analyteData.is_active !== false, // Default to true
           ai_processing_type: analyteData.ai_processing_type,
           ai_prompt_override: analyteData.ai_prompt_override,
-          group_ai_mode: analyteData.group_ai_mode || 'individual',
+          group_ai_mode: analyteData.group_ai_mode || "individual",
           ref_range_knowledge: analyteData.ref_range_knowledge || null,
           // Calculated parameter fields
           is_calculated: analyteData.is_calculated || false,
@@ -4954,16 +5530,16 @@ export const database = {
           formula_variables: analyteData.formula_variables || [],
           formula_description: analyteData.formula_description || null,
           // Flag determination fields
-          value_type: analyteData.value_type || 'numeric',
+          value_type: analyteData.value_type || "numeric",
           expected_normal_values: analyteData.expected_normal_values || [],
           expected_value_flag_map: analyteData.expected_value_flag_map || {},
           flag_rules: analyteData.flag_rules || null,
           code: analyteData.code || null,
-          description: analyteData.description || null
+          description: analyteData.description || null,
         }])
         .select()
         .single();
-      
+
       if (error || !data) {
         return { data, error };
       }
@@ -4972,12 +5548,12 @@ export const database = {
       const labId = await database.getCurrentUserLabId();
       if (labId) {
         await supabase
-          .from('lab_analytes')
+          .from("lab_analytes")
           .insert([{
             lab_id: labId,
             analyte_id: data.id,
             is_active: true,
-            visible: true
+            visible: true,
           }]);
       }
 
@@ -4987,9 +5563,9 @@ export const database = {
     // Update analyte global status
     updateGlobalStatus: async (analyteId: string, isGlobal: boolean) => {
       const { data, error } = await supabase
-        .from('analytes')
+        .from("analytes")
         .update({ is_global: isGlobal })
-        .eq('id', analyteId)
+        .eq("id", analyteId)
         .select()
         .single();
       return { data, error };
@@ -5017,14 +5593,18 @@ export const database = {
       formula_variables?: string[];
       formula_description?: string | null;
       // Flag determination fields
-      value_type?: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
+      value_type?:
+        | "numeric"
+        | "qualitative"
+        | "semi_quantitative"
+        | "descriptive";
       expected_normal_values?: string[];
       flag_rules?: any;
       code?: string;
       description?: string;
     }) => {
       const { data, error } = await supabase
-        .from('analytes')
+        .from("analytes")
         .update({
           name: updates.name,
           unit: updates.unit,
@@ -5051,9 +5631,9 @@ export const database = {
           flag_rules: updates.flag_rules,
           code: updates.code,
           description: updates.description,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', analyteId)
+        .eq("id", analyteId)
         .select()
         .single();
       return { data, error };
@@ -5071,11 +5651,11 @@ export const database = {
       lab_id?: string | null;
     }) => {
       const { data, error } = await supabase
-        .from('workflows')
+        .from("workflows")
         .insert({
           ...payload,
           created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
         .select()
         .single();
@@ -5087,17 +5667,17 @@ export const database = {
       try {
         // Find mapping
         const { data: mapping, error: mapError } = await supabase
-          .from('test_workflow_map')
-          .select('id, workflow_version_id')
-          .eq('lab_id', labId)
-          .eq('test_code', testCode)
-          .eq('is_default', true)
+          .from("test_workflow_map")
+          .select("id, workflow_version_id")
+          .eq("lab_id", labId)
+          .eq("test_code", testCode)
+          .eq("is_default", true)
           .maybeSingle();
         if (mapError || !mapping) return { data: null, error: mapError };
         const { data: version, error: verError } = await supabase
-          .from('workflow_versions')
-          .select('id, version, definition, workflow_id')
-          .eq('id', mapping.workflow_version_id)
+          .from("workflow_versions")
+          .select("id, version, definition, workflow_id")
+          .eq("id", mapping.workflow_version_id)
           .single();
         if (verError) return { data: null, error: verError };
         return { data: version, error: null };
@@ -5107,40 +5687,63 @@ export const database = {
     },
     getOrderWorkflowInstance: async (orderId: string) => {
       const { data, error } = await supabase
-        .from('order_workflow_instances')
-        .select('id, workflow_version_id, current_step_id, started_at, completed_at')
-        .eq('order_id', orderId)
+        .from("order_workflow_instances")
+        .select(
+          "id, workflow_version_id, current_step_id, started_at, completed_at",
+        )
+        .eq("order_id", orderId)
         .maybeSingle();
       return { data, error };
     },
-    createOrderWorkflowInstance: async (orderId: string, workflowVersionId: string, firstStepId: string) => {
+    createOrderWorkflowInstance: async (
+      orderId: string,
+      workflowVersionId: string,
+      firstStepId: string,
+    ) => {
       const { data, error } = await supabase
-        .from('order_workflow_instances')
-        .insert({ order_id: orderId, workflow_version_id: workflowVersionId, current_step_id: firstStepId })
+        .from("order_workflow_instances")
+        .insert({
+          order_id: orderId,
+          workflow_version_id: workflowVersionId,
+          current_step_id: firstStepId,
+        })
         .select()
         .single();
       return { data, error };
     },
-    updateOrderWorkflowCurrentStep: async (instanceId: string, nextStepId: string | null) => {
+    updateOrderWorkflowCurrentStep: async (
+      instanceId: string,
+      nextStepId: string | null,
+    ) => {
       const patch: any = { current_step_id: nextStepId };
       if (!nextStepId) patch.completed_at = new Date().toISOString();
       const { data, error } = await supabase
-        .from('order_workflow_instances')
+        .from("order_workflow_instances")
         .update(patch)
-        .eq('id', instanceId)
+        .eq("id", instanceId)
         .select()
         .single();
       return { data, error };
     },
-    insertStepEvent: async (instanceId: string, stepId: string, eventType: string, payload?: any) => {
+    insertStepEvent: async (
+      instanceId: string,
+      stepId: string,
+      eventType: string,
+      payload?: any,
+    ) => {
       const { data, error } = await supabase
-        .from('workflow_step_events')
-        .insert({ instance_id: instanceId, step_id: stepId, event_type: eventType, payload })
+        .from("workflow_step_events")
+        .insert({
+          instance_id: instanceId,
+          step_id: stepId,
+          event_type: eventType,
+          payload,
+        })
         .select()
         .single();
       return { data, error };
     },
-    
+
     logStepEvent: async (eventData: {
       order_id: string;
       step_name: string;
@@ -5149,15 +5752,15 @@ export const database = {
     }): Promise<void> => {
       try {
         await supabase
-          .from('workflow_step_events')
+          .from("workflow_step_events")
           .insert({
             ...eventData,
-            created_at: new Date().toISOString()
+            created_at: new Date().toISOString(),
           });
       } catch (error) {
-        console.error('Error logging workflow step event:', error);
+        console.error("Error logging workflow step event:", error);
       }
-    }
+    },
   },
 
   workflowVersions: {
@@ -5169,14 +5772,14 @@ export const database = {
       active?: boolean;
     }) => {
       const { data, error } = await supabase
-        .from('workflow_versions')
+        .from("workflow_versions")
         .insert({
           workflow_id: payload.workflow_id,
           version: parseInt(payload.version) || 1,
           definition: payload.definition,
           description: payload.description || null,
           active: payload.active || false,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
         })
         .select()
         .single();
@@ -5186,9 +5789,9 @@ export const database = {
 
     update: async (versionId: string, updates: Record<string, unknown>) => {
       const { data, error } = await supabase
-        .from('workflow_versions')
+        .from("workflow_versions")
         .update(updates)
-        .eq('id', versionId)
+        .eq("id", versionId)
         .select()
         .single();
 
@@ -5197,9 +5800,9 @@ export const database = {
 
     getById: async (versionId: string) => {
       const { data, error } = await supabase
-        .from('workflow_versions')
-        .select('*')
-        .eq('id', versionId)
+        .from("workflow_versions")
+        .select("*")
+        .eq("id", versionId)
         .single();
 
       return { data, error };
@@ -5207,7 +5810,7 @@ export const database = {
 
     getAll: async () => {
       const { data, error } = await supabase
-        .from('workflow_versions')
+        .from("workflow_versions")
         .select(`
           id,
           name,
@@ -5218,30 +5821,30 @@ export const database = {
           definition,
           workflow_id
         `)
-        .order('created_at', { ascending: false });
+        .order("created_at", { ascending: false });
 
       return { data, error };
     },
 
     delete: async (versionId: string) => {
       const { error } = await supabase
-        .from('workflow_versions')
+        .from("workflow_versions")
         .delete()
-        .eq('id', versionId);
+        .eq("id", versionId);
 
       return { error };
-    }
+    },
   },
 
   testWorkflowMap: {
     async getAll() {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab context') };
+        return { data: null, error: new Error("No lab context") };
       }
 
       const { data, error } = await supabase
-        .from('test_workflow_map')
+        .from("test_workflow_map")
         .select(`
           id,
           test_group_id,
@@ -5265,8 +5868,8 @@ export const database = {
             active
           )
         `)
-        .eq('lab_id', labId)
-        .order('priority', { ascending: true });
+        .eq("lab_id", labId)
+        .order("priority", { ascending: true });
 
       return { data, error };
     },
@@ -5274,11 +5877,11 @@ export const database = {
     async getByTestGroupId(testGroupId: string) {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab context') };
+        return { data: null, error: new Error("No lab context") };
       }
 
       const { data, error } = await supabase
-        .from('test_workflow_map')
+        .from("test_workflow_map")
         .select(`
           *,
           workflow_versions (
@@ -5289,10 +5892,10 @@ export const database = {
             active
           )
         `)
-        .eq('test_group_id', testGroupId)
-        .eq('lab_id', labId)
-        .eq('is_active', true)
-        .order('priority', { ascending: true });
+        .eq("test_group_id", testGroupId)
+        .eq("lab_id", labId)
+        .eq("is_active", true)
+        .order("priority", { ascending: true });
 
       return { data, error };
     },
@@ -5300,28 +5903,31 @@ export const database = {
     async create(mappingData: any) {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab context') };
+        return { data: null, error: new Error("No lab context") };
       }
 
       // Verify the test group belongs to the current lab
       const { data: testGroup } = await supabase
-        .from('test_groups')
-        .select('lab_id, code')
-        .eq('id', mappingData.test_group_id)
-        .eq('lab_id', labId)
+        .from("test_groups")
+        .select("lab_id, code")
+        .eq("id", mappingData.test_group_id)
+        .eq("lab_id", labId)
         .single();
 
       if (!testGroup) {
-        return { data: null, error: new Error('Test group not found or access denied') };
+        return {
+          data: null,
+          error: new Error("Test group not found or access denied"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('test_workflow_map')
+        .from("test_workflow_map")
         .insert([{
           ...mappingData,
           lab_id: labId,
           test_code: mappingData.test_code || testGroup.code,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
         }])
         .select()
         .single();
@@ -5332,17 +5938,17 @@ export const database = {
     async update(id: string, updates: any) {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab context') };
+        return { data: null, error: new Error("No lab context") };
       }
 
       const { data, error } = await supabase
-        .from('test_workflow_map')
+        .from("test_workflow_map")
         .update({
           ...updates,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', id)
-        .eq('lab_id', labId)
+        .eq("id", id)
+        .eq("lab_id", labId)
         .select()
         .single();
 
@@ -5352,19 +5958,19 @@ export const database = {
     async delete(id: string) {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab context') };
+        return { data: null, error: new Error("No lab context") };
       }
 
       const { data, error } = await supabase
-        .from('test_workflow_map')
+        .from("test_workflow_map")
         .delete()
-        .eq('id', id)
-        .eq('lab_id', labId)
+        .eq("id", id)
+        .eq("lab_id", labId)
         .select()
         .single();
 
       return { data, error };
-    }
+    },
   },
 
   aiIssues: {
@@ -5376,16 +5982,16 @@ export const database = {
       metadata?: Record<string, unknown> | null;
     }) => {
       const { data, error } = await supabase
-        .from('ai_issues')
+        .from("ai_issues")
         .insert({
           ...payload,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
         })
         .select()
         .single();
 
       return { data, error };
-    }
+    },
   },
 
   // Lab-specific analyte management
@@ -5393,13 +5999,13 @@ export const database = {
     // Get lab-specific analyte configuration
     getByLabAndAnalyte: async (labId: string, analyteId: string) => {
       const { data, error } = await supabase
-        .from('lab_analytes')
+        .from("lab_analytes")
         .select(`
           *,
           analytes(*)
         `)
-        .eq('lab_id', labId)
-        .eq('analyte_id', analyteId)
+        .eq("lab_id", labId)
+        .eq("analyte_id", analyteId)
         .single();
       return { data, error };
     },
@@ -5411,13 +6017,13 @@ export const database = {
       }
 
       const { data, error } = await supabase
-        .from('lab_analytes')
+        .from("lab_analytes")
         .select(`
           *,
           analytes(*)
         `)
-        .eq('lab_id', labId)
-        .in('analyte_id', analyteIds);
+        .eq("lab_id", labId)
+        .in("analyte_id", analyteIds);
       return { data: data || [], error };
     },
 
@@ -5450,7 +6056,11 @@ export const database = {
       lab_specific_interpretation_high?: string;
       ref_range_knowledge?: any;
       // Flag determination fields
-      value_type?: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
+      value_type?:
+        | "numeric"
+        | "qualitative"
+        | "semi_quantitative"
+        | "descriptive";
       expected_normal_values?: string[];
       expected_value_flag_map?: Record<string, string>;
       flag_rules?: any;
@@ -5458,10 +6068,10 @@ export const database = {
       description?: string;
     }) => {
       const { data, error } = await supabase
-        .from('lab_analytes')
+        .from("lab_analytes")
         .update(updates)
-        .eq('lab_id', labId)
-        .eq('analyte_id', analyteId)
+        .eq("lab_id", labId)
+        .eq("analyte_id", analyteId)
         .select()
         .single();
       return { data, error };
@@ -5469,8 +6079,8 @@ export const database = {
 
     // Add global analytes to a specific lab
     addGlobalAnalytesToLab: async (labId: string) => {
-      const { data, error } = await supabase.rpc('add_global_analytes_to_lab', {
-        target_lab_id: labId
+      const { data, error } = await supabase.rpc("add_global_analytes_to_lab", {
+        target_lab_id: labId,
       });
       return { data, error };
     },
@@ -5478,63 +6088,80 @@ export const database = {
     // Get all lab analytes for a specific lab (including inactive/invisible ones)
     getAllForLab: async (labId: string) => {
       const { data, error } = await supabase
-        .from('lab_analytes')
+        .from("lab_analytes")
         .select(`
           *,
           analytes(*)
         `)
-        .eq('lab_id', labId)
-        .order('analytes(name)');
+        .eq("lab_id", labId)
+        .order("analytes(name)");
       return { data, error };
     },
 
     // Sync global analytes to all labs
     syncGlobalAnalytesToAllLabs: async () => {
-      const { data, error } = await supabase.rpc('sync_global_analytes_to_all_labs');
+      const { data, error } = await supabase.rpc(
+        "sync_global_analytes_to_all_labs",
+      );
       return { data, error };
     },
 
     // Get analyte usage statistics
     getUsageStats: async () => {
-      const { data, error } = await supabase.rpc('get_analyte_lab_usage_stats');
+      const { data, error } = await supabase.rpc("get_analyte_lab_usage_stats");
       return { data, error };
     },
 
     // Bulk update interpretations for multiple analytes (used by AI interpretation generator)
-    updateInterpretations: async (labId: string, interpretations: Array<{
-      analyte_id: string;
-      interpretation_low?: string;
-      interpretation_normal?: string;
-      interpretation_high?: string;
-    }>) => {
-      const results: { success: string[]; failed: string[] } = { success: [], failed: [] };
-      
+    updateInterpretations: async (
+      labId: string,
+      interpretations: Array<{
+        analyte_id: string;
+        interpretation_low?: string;
+        interpretation_normal?: string;
+        interpretation_high?: string;
+      }>,
+    ) => {
+      const results: { success: string[]; failed: string[] } = {
+        success: [],
+        failed: [],
+      };
+
       for (const interp of interpretations) {
         const updates: Record<string, string> = {};
-        if (interp.interpretation_low) updates.interpretation_low = interp.interpretation_low;
-        if (interp.interpretation_normal) updates.interpretation_normal = interp.interpretation_normal;
-        if (interp.interpretation_high) updates.interpretation_high = interp.interpretation_high;
-        
+        if (interp.interpretation_low) {
+          updates.interpretation_low = interp.interpretation_low;
+        }
+        if (interp.interpretation_normal) {
+          updates.interpretation_normal = interp.interpretation_normal;
+        }
+        if (interp.interpretation_high) {
+          updates.interpretation_high = interp.interpretation_high;
+        }
+
         if (Object.keys(updates).length === 0) continue;
-        
+
         // First check if lab_analyte exists
         const { data: existing } = await supabase
-          .from('lab_analytes')
-          .select('id')
-          .eq('lab_id', labId)
-          .eq('analyte_id', interp.analyte_id)
+          .from("lab_analytes")
+          .select("id")
+          .eq("lab_id", labId)
+          .eq("analyte_id", interp.analyte_id)
           .single();
-        
+
         if (existing) {
           // Update existing lab_analyte
           const { error } = await supabase
-            .from('lab_analytes')
+            .from("lab_analytes")
             .update(updates)
-            .eq('lab_id', labId)
-            .eq('analyte_id', interp.analyte_id);
-          
+            .eq("lab_id", labId)
+            .eq("analyte_id", interp.analyte_id);
+
           if (error) {
-            console.error(`Failed to update interpretations for analyte ${interp.analyte_id}:`, error);
+            console.error(
+              `Failed to update interpretations for analyte ${interp.analyte_id}:`,
+              error,
+            );
             results.failed.push(interp.analyte_id);
           } else {
             results.success.push(interp.analyte_id);
@@ -5542,26 +6169,31 @@ export const database = {
         } else {
           // Create new lab_analyte with interpretations
           const { error } = await supabase
-            .from('lab_analytes')
+            .from("lab_analytes")
             .insert({
               lab_id: labId,
               analyte_id: interp.analyte_id,
               is_active: true,
-              ...updates
+              ...updates,
             });
-          
+
           if (error) {
-            console.error(`Failed to create lab_analyte with interpretations for ${interp.analyte_id}:`, error);
+            console.error(
+              `Failed to create lab_analyte with interpretations for ${interp.analyte_id}:`,
+              error,
+            );
             results.failed.push(interp.analyte_id);
           } else {
             results.success.push(interp.analyte_id);
           }
         }
       }
-      
-      return { 
-        data: results, 
-        error: results.failed.length > 0 ? new Error(`Failed to update ${results.failed.length} analytes`) : null 
+
+      return {
+        data: results,
+        error: results.failed.length > 0
+          ? new Error(`Failed to update ${results.failed.length} analytes`)
+          : null,
       };
     },
     // ...existing code...
@@ -5571,26 +6203,29 @@ export const database = {
     listByLab: async (labIdOverride?: string) => {
       const labId = labIdOverride || (await database.getCurrentUserLabId());
       if (!labId) {
-        return { data: [], error: new Error('No lab_id found for current user') };
+        return {
+          data: [],
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('test_groups')
-        .select('id, name, category, lab_id')
-        .eq('is_active', true)
+        .from("test_groups")
+        .select("id, name, category, lab_id")
+        .eq("is_active", true)
         .or(`lab_id.eq.${labId},lab_id.is.null`)
-        .order('name', { ascending: true });
+        .order("name", { ascending: true });
 
       return { data: (data as any[]) || [], error };
     },
 
     getByLabId: async (labId: string) => {
       const { data, error } = await supabase
-        .from('test_groups')
-        .select('id, name, category, lab_id, description')
-        .eq('is_active', true)
+        .from("test_groups")
+        .select("id, name, category, lab_id, description")
+        .eq("is_active", true)
         .or(`lab_id.eq.${labId},lab_id.is.null`)
-        .order('name', { ascending: true });
+        .order("name", { ascending: true });
 
       return { data: (data as any[]) || [], error };
     },
@@ -5602,12 +6237,15 @@ export const database = {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-          .from('test_groups')
-          .select(`
+        .from("test_groups")
+        .select(`
             id,
             name,
             code,
@@ -5660,16 +6298,16 @@ export const database = {
               )
             )
         `)
-        .eq('lab_id', lab_id)
-        .eq('is_active', true)
-        .order('name');
+        .eq("lab_id", lab_id)
+        .eq("is_active", true)
+        .order("name");
       return { data, error };
     },
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-          .from('test_groups')
-          .select(`
+        .from("test_groups")
+        .select(`
             id,
             name,
             code,
@@ -5722,15 +6360,15 @@ export const database = {
               )
             )
         `)
-        .eq('id', id)
+        .eq("id", id)
         .single();
       return { data, error };
     },
 
     getByNames: async (names: string[]) => {
       const { data, error } = await supabase
-          .from('test_groups')
-          .select(`
+        .from("test_groups")
+        .select(`
             id,
             name,
             code,
@@ -5783,8 +6421,8 @@ export const database = {
               )
             )
         `)
-        .in('name', names)
-        .eq('is_active', true);
+        .in("name", names)
+        .eq("is_active", true);
       return { data, error };
     },
 
@@ -5792,31 +6430,42 @@ export const database = {
       try {
         // Ensure all required fields have valid values
         const sanitizedData = {
-          name: testGroupData.name || 'Unnamed Test Group',
-          code: testGroupData.code || 'UNNAMED',
-          category: testGroupData.category || 'Laboratory',
-            clinical_purpose: testGroupData.clinicalPurpose || 'Clinical assessment and diagnosis',
-            methodology: testGroupData.methodology || null,
-            price: testGroupData.price || 0,
-            turnaround_time: testGroupData.turnaroundTime || '24 hours',
+          name: testGroupData.name || "Unnamed Test Group",
+          code: testGroupData.code || "UNNAMED",
+          category: testGroupData.category || "Laboratory",
+          clinical_purpose: testGroupData.clinicalPurpose ||
+            "Clinical assessment and diagnosis",
+          methodology: testGroupData.methodology || null,
+          price: testGroupData.price || 0,
+          turnaround_time: testGroupData.turnaroundTime || "24 hours",
           tat_hours: testGroupData.tat_hours || 3, // TAT in hours for breach calculation
-          sample_type: testGroupData.sampleType || 'Serum',
+          sample_type: testGroupData.sampleType || "Serum",
           requires_fasting: testGroupData.requiresFasting || false,
           is_active: testGroupData.isActive !== false,
-          default_ai_processing_type: testGroupData.default_ai_processing_type || 'ocr_report',
+          default_ai_processing_type:
+            testGroupData.default_ai_processing_type || "ocr_report",
           group_level_prompt: testGroupData.group_level_prompt || null,
           lab_id: testGroupData.lab_id || null,
           to_be_copied: testGroupData.to_be_copied || false,
           // New configuration fields
-          test_type: testGroupData.testType || 'Default',
-          gender: testGroupData.gender || 'Both',
-          sample_color: testGroupData.sampleColor || 'Red',
+          test_type: testGroupData.testType || "Default",
+          gender: testGroupData.gender || "Both",
+          sample_color: testGroupData.sampleColor || "Red",
           barcode_suffix: testGroupData.barcodeSuffix || null,
           // Auto-sync legacy booleans from required_patient_inputs
-          lmp_required: (testGroupData.required_patient_inputs || []).includes('lmp') || testGroupData.lmpRequired || false,
-          id_required: (testGroupData.required_patient_inputs || []).includes('id_document') || testGroupData.idRequired || false,
-          consent_form: (testGroupData.required_patient_inputs || []).includes('consent_form') || testGroupData.consentForm || false,
-          pre_collection_guidelines: testGroupData.preCollectionGuidelines || null,
+          lmp_required:
+            (testGroupData.required_patient_inputs || []).includes("lmp") ||
+            testGroupData.lmpRequired || false,
+          id_required:
+            (testGroupData.required_patient_inputs || []).includes(
+              "id_document",
+            ) || testGroupData.idRequired || false,
+          consent_form:
+            (testGroupData.required_patient_inputs || []).includes(
+              "consent_form",
+            ) || testGroupData.consentForm || false,
+          pre_collection_guidelines: testGroupData.preCollectionGuidelines ||
+            null,
           flabs_id: testGroupData.flabsId || null,
           only_female: testGroupData.onlyFemale || false,
           only_male: testGroupData.onlyMale || false,
@@ -5827,36 +6476,42 @@ export const database = {
           ref_range_ai_config: testGroupData.ref_range_ai_config || null,
           required_patient_inputs: testGroupData.required_patient_inputs || [],
           is_outsourced: testGroupData.is_outsourced || false,
-          default_outsourced_lab_id: testGroupData.default_outsourced_lab_id || null
+          default_outsourced_lab_id: testGroupData.default_outsourced_lab_id ||
+            null,
         };
 
-        console.log('Creating test group with data:', sanitizedData);
+        console.log("Creating test group with data:", sanitizedData);
 
         // Step 1: Create the test group
         const { data: testGroup, error: testGroupError } = await supabase
-          .from('test_groups')
+          .from("test_groups")
           .insert([sanitizedData])
           .select()
           .single();
 
         if (testGroupError) {
-          console.error('Error creating test group:', testGroupError);
+          console.error("Error creating test group:", testGroupError);
           return { data: null, error: testGroupError };
         }
 
         // Step 2: Create test group analyte relationships
         if (testGroupData.analytes && testGroupData.analytes.length > 0) {
-          const analyteRelations = testGroupData.analytes.map((analyteId: string) => ({
+          const analyteRelations = testGroupData.analytes.map((
+            analyteId: string,
+          ) => ({
             test_group_id: testGroup.id,
-            analyte_id: analyteId
+            analyte_id: analyteId,
           }));
 
           const { error: relationError } = await supabase
-            .from('test_group_analytes')
+            .from("test_group_analytes")
             .insert(analyteRelations);
 
           if (relationError) {
-            console.error('Error creating test group analyte relations:', relationError);
+            console.error(
+              "Error creating test group analyte relations:",
+              relationError,
+            );
             // Still return the test group even if analyte relations failed
             return { data: testGroup, error: relationError };
           }
@@ -5864,7 +6519,7 @@ export const database = {
 
         return { data: testGroup, error: null };
       } catch (error) {
-        console.error('Unexpected error creating test group:', error);
+        console.error("Unexpected error creating test group:", error);
         return { data: null, error };
       }
     },
@@ -5873,14 +6528,14 @@ export const database = {
       try {
         // Step 1: Update the test group
         const { data, error } = await supabase
-          .from('test_groups')
+          .from("test_groups")
           .update({
             name: updates.name,
             code: updates.code,
             category: updates.category,
-              clinical_purpose: updates.clinicalPurpose,
-              methodology: updates.methodology ?? null,
-              price: updates.price,
+            clinical_purpose: updates.clinicalPurpose,
+            methodology: updates.methodology ?? null,
+            price: updates.price,
             turnaround_time: updates.turnaroundTime,
             tat_hours: updates.tat_hours, // TAT in hours for breach calculation
             sample_type: updates.sampleType,
@@ -5894,9 +6549,16 @@ export const database = {
             sample_color: updates.sampleColor,
             barcode_suffix: updates.barcodeSuffix,
             // Auto-sync legacy booleans from required_patient_inputs
-            lmp_required: (updates.required_patient_inputs || []).includes('lmp') || updates.lmpRequired || false,
-            id_required: (updates.required_patient_inputs || []).includes('id_document') || updates.idRequired || false,
-            consent_form: (updates.required_patient_inputs || []).includes('consent_form') || updates.consentForm || false,
+            lmp_required:
+              (updates.required_patient_inputs || []).includes("lmp") ||
+              updates.lmpRequired || false,
+            id_required:
+              (updates.required_patient_inputs || []).includes("id_document") ||
+              updates.idRequired || false,
+            consent_form:
+              (updates.required_patient_inputs || []).includes(
+                "consent_form",
+              ) || updates.consentForm || false,
             pre_collection_guidelines: updates.preCollectionGuidelines,
             flabs_id: updates.flabsId,
             only_female: updates.onlyFemale,
@@ -5909,14 +6571,14 @@ export const database = {
             required_patient_inputs: updates.required_patient_inputs,
             is_outsourced: updates.is_outsourced,
             default_outsourced_lab_id: updates.default_outsourced_lab_id,
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
           })
-          .eq('id', id)
+          .eq("id", id)
           .select()
           .single();
-        
+
         if (error) {
-          console.error('Error updating test group:', error);
+          console.error("Error updating test group:", error);
           return { data: null, error };
         }
 
@@ -5924,36 +6586,44 @@ export const database = {
         if (updates.analytes && Array.isArray(updates.analytes)) {
           // First delete existing analyte relationships
           const { error: deleteError } = await supabase
-            .from('test_group_analytes')
+            .from("test_group_analytes")
             .delete()
-            .eq('test_group_id', id);
+            .eq("test_group_id", id);
 
           if (deleteError) {
-            console.error('Error deleting existing analyte relationships:', deleteError);
+            console.error(
+              "Error deleting existing analyte relationships:",
+              deleteError,
+            );
             return { data, error: deleteError };
           }
 
           // Then insert new analyte relationships
           if (updates.analytes.length > 0) {
-            const analyteRelations = updates.analytes.map((analyteId: string) => ({
+            const analyteRelations = updates.analytes.map((
+              analyteId: string,
+            ) => ({
               test_group_id: id,
-              analyte_id: analyteId
+              analyte_id: analyteId,
             }));
 
             const { error: insertError } = await supabase
-              .from('test_group_analytes')
+              .from("test_group_analytes")
               .insert(analyteRelations);
 
             if (insertError) {
-              console.error('Error inserting new analyte relationships:', insertError);
+              console.error(
+                "Error inserting new analyte relationships:",
+                insertError,
+              );
               return { data, error: insertError };
             }
           }
         }
-        
+
         return { data, error: null };
       } catch (error) {
-        console.error('Unexpected error updating test group:', error);
+        console.error("Unexpected error updating test group:", error);
         return { data: null, error };
       }
     },
@@ -5961,28 +6631,28 @@ export const database = {
     delete: async (id: string) => {
       // First delete analyte relationships
       await supabase
-        .from('test_group_analytes')
+        .from("test_group_analytes")
         .delete()
-        .eq('test_group_id', id);
+        .eq("test_group_id", id);
 
       // Then delete the test group
       const { error } = await supabase
-        .from('test_groups')
+        .from("test_groups")
         .delete()
-        .eq('id', id);
-      
+        .eq("id", id);
+
       return { error };
-    }
+    },
   },
 
   packages: {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: { message: 'No lab context found' } };
+        return { data: null, error: { message: "No lab context found" } };
       }
       const { data, error } = await supabase
-        .from('packages')
+        .from("packages")
         .select(`
           id,
           name,
@@ -6006,15 +6676,15 @@ export const database = {
             )
           )
         `)
-        .eq('lab_id', lab_id)
-        .eq('is_active', true)
-        .order('name');
+        .eq("lab_id", lab_id)
+        .eq("is_active", true)
+        .order("name");
       return { data, error };
     },
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-        .from('packages')
+        .from("packages")
         .select(`
           id,
           name,
@@ -6042,41 +6712,42 @@ export const database = {
             )
           )
         `)
-        .eq('id', id)
+        .eq("id", id)
         .single();
       return { data, error };
     },
 
-
     create: async (packageData: any) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: { message: 'No lab context found' } };
+        return { data: null, error: { message: "No lab context found" } };
       }
 
       // Extract testGroupIds to prevent Supabase error (column does not exist)
       const { testGroupIds, ...pkgData } = packageData;
 
       const { data: pkg, error: pkgError } = await supabase
-        .from('packages')
+        .from("packages")
         .insert([{ ...pkgData, lab_id }])
         .select()
         .single();
-      
+
       if (pkgError || !pkg) return { data: null, error: pkgError };
 
       // Link test groups if provided
-      if (testGroupIds && Array.isArray(testGroupIds) && testGroupIds.length > 0) {
+      if (
+        testGroupIds && Array.isArray(testGroupIds) && testGroupIds.length > 0
+      ) {
         const links = testGroupIds.map((tgId: string) => ({
           package_id: pkg.id,
-          test_group_id: tgId
+          test_group_id: tgId,
         }));
-        
+
         const { error: linkError } = await supabase
-          .from('package_test_groups')
+          .from("package_test_groups")
           .insert(links);
-          
-        if (linkError) console.error('Error linking test groups:', linkError);
+
+        if (linkError) console.error("Error linking test groups:", linkError);
       }
 
       return { data: pkg, error: null };
@@ -6087,9 +6758,9 @@ export const database = {
       const { testGroupIds, ...pkgData } = packageData;
 
       const { data, error } = await supabase
-        .from('packages')
+        .from("packages")
         .update(pkgData)
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
 
@@ -6099,22 +6770,24 @@ export const database = {
       if (testGroupIds && Array.isArray(testGroupIds)) {
         // Delete existing links
         await supabase
-          .from('package_test_groups')
+          .from("package_test_groups")
           .delete()
-          .eq('package_id', id);
+          .eq("package_id", id);
 
         // Insert new links if any
         if (testGroupIds.length > 0) {
           const links = testGroupIds.map((tgId: string) => ({
             package_id: id,
-            test_group_id: tgId
+            test_group_id: tgId,
           }));
-          
+
           const { error: linkError } = await supabase
-            .from('package_test_groups')
+            .from("package_test_groups")
             .insert(links);
-            
-          if (linkError) console.error('Error updating test group links:', linkError);
+
+          if (linkError) {
+            console.error("Error updating test group links:", linkError);
+          }
         }
       }
 
@@ -6124,16 +6797,16 @@ export const database = {
     delete: async (id: string) => {
       // First delete related package_test_groups
       await supabase
-        .from('package_test_groups')
+        .from("package_test_groups")
         .delete()
-        .eq('package_id', id);
+        .eq("package_id", id);
 
       // Then delete the package
       const { error } = await supabase
-        .from('packages')
+        .from("packages")
         .delete()
-        .eq('id', id);
-      
+        .eq("id", id);
+
       return { error };
     },
 
@@ -6148,20 +6821,21 @@ export const database = {
         package_name: pkg.name,
         // Price is overridden by package - tests inherit package discount
         original_price: ptg.test_groups?.price || 0,
-        discounted_price: pkg.discount_percentage 
-          ? (ptg.test_groups?.price || 0) * (1 - (pkg.discount_percentage / 100))
-          : ptg.test_groups?.price || 0
+        discounted_price: pkg.discount_percentage
+          ? (ptg.test_groups?.price || 0) *
+            (1 - (pkg.discount_percentage / 100))
+          : ptg.test_groups?.price || 0,
       }));
 
       return {
         data: {
           package: pkg,
           testGroups,
-          totalPackagePrice: pkg.price // Use package price instead of sum
+          totalPackagePrice: pkg.price, // Use package price instead of sum
         },
-        error: null
+        error: null,
       };
-    }
+    },
   },
 
   // ============================================
@@ -6173,10 +6847,10 @@ export const database = {
      */
     getByTemplate: async (templateId: string) => {
       const { data, error } = await supabase
-        .from('lab_template_sections')
-        .select('*')
-        .eq('template_id', templateId)
-        .order('display_order');
+        .from("lab_template_sections")
+        .select("*")
+        .eq("template_id", templateId)
+        .order("display_order");
       return { data, error };
     },
 
@@ -6185,10 +6859,10 @@ export const database = {
      */
     getByTestGroup: async (testGroupId: string) => {
       const { data, error } = await supabase
-        .from('lab_template_sections')
-        .select('*')
-        .eq('test_group_id', testGroupId)
-        .order('display_order');
+        .from("lab_template_sections")
+        .select("*")
+        .eq("test_group_id", testGroupId)
+        .order("display_order");
       return { data, error };
     },
 
@@ -6197,17 +6871,17 @@ export const database = {
      */
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
-      if (!lab_id) return { data: null, error: { message: 'No lab context' } };
+      if (!lab_id) return { data: null, error: { message: "No lab context" } };
 
       const { data, error } = await supabase
-        .from('lab_template_sections')
+        .from("lab_template_sections")
         .select(`
           *,
           lab_templates(id, template_name),
           test_groups(id, name)
         `)
-        .eq('lab_id', lab_id)
-        .order('display_order');
+        .eq("lab_id", lab_id)
+        .order("display_order");
       return { data, error };
     },
 
@@ -6229,10 +6903,10 @@ export const database = {
       placeholder_key?: string;
     }) => {
       const lab_id = await database.getCurrentUserLabId();
-      if (!lab_id) return { data: null, error: { message: 'No lab context' } };
+      if (!lab_id) return { data: null, error: { message: "No lab context" } };
 
       const { data, error } = await supabase
-        .from('lab_template_sections')
+        .from("lab_template_sections")
         .insert([{ ...sectionData, lab_id }])
         .select()
         .single();
@@ -6242,22 +6916,25 @@ export const database = {
     /**
      * Update a section
      */
-    update: async (id: string, sectionData: Partial<{
-      section_type: string;
-      section_name: string;
-      display_order: number;
-      default_content: string;
-      predefined_options: string[];
-      is_required: boolean;
-      is_editable: boolean;
-      allow_images: boolean;
-      allow_technician_entry: boolean;
-      placeholder_key: string;
-    }>) => {
+    update: async (
+      id: string,
+      sectionData: Partial<{
+        section_type: string;
+        section_name: string;
+        display_order: number;
+        default_content: string;
+        predefined_options: string[];
+        is_required: boolean;
+        is_editable: boolean;
+        allow_images: boolean;
+        allow_technician_entry: boolean;
+        placeholder_key: string;
+      }>,
+    ) => {
       const { data, error } = await supabase
-        .from('lab_template_sections')
+        .from("lab_template_sections")
         .update({ ...sectionData, updated_at: new Date().toISOString() })
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
@@ -6268,11 +6945,11 @@ export const database = {
      */
     delete: async (id: string) => {
       const { error } = await supabase
-        .from('lab_template_sections')
+        .from("lab_template_sections")
         .delete()
-        .eq('id', id);
+        .eq("id", id);
       return { error };
-    }
+    },
   },
 
   // ============================================
@@ -6284,7 +6961,7 @@ export const database = {
      */
     getByResult: async (resultId: string) => {
       const { data, error } = await supabase
-        .from('result_section_content')
+        .from("result_section_content")
         .select(`
           *,
           lab_template_sections(
@@ -6299,8 +6976,8 @@ export const database = {
             display_order
           )
         `)
-        .eq('result_id', resultId)
-        .order('section_id');
+        .eq("result_id", resultId)
+        .order("section_id");
       return { data, error };
     },
 
@@ -6316,10 +6993,10 @@ export const database = {
       image_urls?: string[];
     }) => {
       const { data, error } = await supabase
-        .from('result_section_content')
+        .from("result_section_content")
         .insert([{
           ...contentData,
-          edited_at: new Date().toISOString()
+          edited_at: new Date().toISOString(),
         }])
         .select()
         .single();
@@ -6336,12 +7013,12 @@ export const database = {
       image_urls?: string[];
     }) => {
       const { data, error } = await supabase
-        .from('result_section_content')
+        .from("result_section_content")
         .update({
           ...contentData,
-          edited_at: new Date().toISOString()
+          edited_at: new Date().toISOString(),
         })
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
@@ -6360,13 +7037,13 @@ export const database = {
       image_urls?: string[];
     }, userId: string) => {
       const { data, error } = await supabase
-        .from('result_section_content')
+        .from("result_section_content")
         .upsert({
           ...contentData,
           edited_by: userId,
-          edited_at: new Date().toISOString()
+          edited_at: new Date().toISOString(),
         }, {
-          onConflict: 'result_id,section_id'
+          onConflict: "result_id,section_id",
         })
         .select()
         .single();
@@ -6376,9 +7053,11 @@ export const database = {
     /**
      * Get section content for PDF rendering (returns map of placeholder_key -> final_content)
      */
-    getForPdfRendering: async (resultId: string): Promise<{ data: Record<string, string> | null; error: any }> => {
+    getForPdfRendering: async (
+      resultId: string,
+    ): Promise<{ data: Record<string, string> | null; error: any }> => {
       const { data, error } = await supabase
-        .from('result_section_content')
+        .from("result_section_content")
         .select(`
           final_content,
           image_urls,
@@ -6386,27 +7065,36 @@ export const database = {
             placeholder_key
           )
         `)
-        .eq('result_id', resultId)
-        .not('lab_template_sections.placeholder_key', 'is', null);
-      
+        .eq("result_id", resultId)
+        .not("lab_template_sections.placeholder_key", "is", null);
+
       if (error || !data) return { data: null, error };
 
-      const buildSectionHtml = (content: string | null | undefined, imageUrls?: string[] | null) => {
-        const trimmedContent = typeof content === 'string' ? content.trim() : '';
+      const buildSectionHtml = (
+        content: string | null | undefined,
+        imageUrls?: string[] | null,
+      ) => {
+        const trimmedContent = typeof content === "string"
+          ? content.trim()
+          : "";
         const formattedText = trimmedContent
-          ? `<div class="section-content">${trimmedContent.replace(/\r\n/g, '\n').replace(/\n/g, '<br/>')}</div>`
-          : '';
+          ? `<div class="section-content">${
+            trimmedContent.replace(/\r\n/g, "\n").replace(/\n/g, "<br/>")
+          }</div>`
+          : "";
 
         const urls = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
         const imageHtml = urls.length > 0
-          ? `<div class="section-images">${urls
+          ? `<div class="section-images">${
+            urls
               .map((url) => {
-                const separator = url.includes('?') ? '&' : '?';
+                const separator = url.includes("?") ? "&" : "?";
                 return `<img src="${url}${separator}tr=w-1200,q-85,sharpen-5" class="report-section-image" />`;
               })
-              .join('')}
+              .join("")
+          }
             </div>`
-          : '';
+          : "";
 
         return `${formattedText}${imageHtml}`.trim();
       };
@@ -6416,7 +7104,10 @@ export const database = {
       for (const item of data) {
         const key = (item.lab_template_sections as any)?.placeholder_key;
         if (key) {
-          const html = buildSectionHtml(item.final_content, item.image_urls as string[] | null);
+          const html = buildSectionHtml(
+            item.final_content,
+            item.image_urls as string[] | null,
+          );
           if (html) {
             sectionMap[key] = html;
           }
@@ -6430,13 +7121,13 @@ export const database = {
      */
     finalize: async (id: string, userId: string) => {
       const { data, error } = await supabase
-        .from('result_section_content')
+        .from("result_section_content")
         .update({
           is_finalized: true,
           finalized_at: new Date().toISOString(),
-          finalized_by: userId
+          finalized_by: userId,
         })
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
@@ -6447,14 +7138,14 @@ export const database = {
      */
     finalizeAllForResult: async (resultId: string, userId: string) => {
       const { data, error } = await supabase
-        .from('result_section_content')
+        .from("result_section_content")
         .update({
           is_finalized: true,
           finalized_at: new Date().toISOString(),
-          finalized_by: userId
+          finalized_by: userId,
         })
-        .eq('result_id', resultId)
-        .eq('is_finalized', false)
+        .eq("result_id", resultId)
+        .eq("is_finalized", false)
         .select();
       return { data, error };
     },
@@ -6462,31 +7153,36 @@ export const database = {
     /**
      * Initialize sections for a result from template defaults
      */
-    initializeFromTemplate: async (resultId: string, testGroupId: string, userId: string) => {
+    initializeFromTemplate: async (
+      resultId: string,
+      testGroupId: string,
+      userId: string,
+    ) => {
       // Get sections for the test group
-      const { data: sections, error: fetchError } = await database.templateSections.getByTestGroup(testGroupId);
+      const { data: sections, error: fetchError } = await database
+        .templateSections.getByTestGroup(testGroupId);
       if (fetchError || !sections || sections.length === 0) {
         return { data: [], error: fetchError };
       }
 
       // Create content entries with default values
-      const contentEntries = sections.map(section => ({
+      const contentEntries = sections.map((section) => ({
         result_id: resultId,
         section_id: section.id,
         selected_options: [],
-        custom_text: '',
-        final_content: section.default_content || '',
+        custom_text: "",
+        final_content: section.default_content || "",
         image_urls: [],
         edited_by: userId,
-        edited_at: new Date().toISOString()
+        edited_at: new Date().toISOString(),
       }));
 
       const { data, error } = await supabase
-        .from('result_section_content')
+        .from("result_section_content")
         .insert(contentEntries)
         .select();
       return { data, error };
-    }
+    },
   },
 
   // ============================================
@@ -6498,12 +7194,12 @@ export const database = {
      */
     getByAnalyte: async (calculatedAnalyteId: string) => {
       const { data, error } = await supabase
-        .from('analyte_dependencies')
+        .from("analyte_dependencies")
         .select(`
           *,
           source_analyte:analytes!analyte_dependencies_source_analyte_id_fkey(id, name, unit)
         `)
-        .eq('calculated_analyte_id', calculatedAnalyteId);
+        .eq("calculated_analyte_id", calculatedAnalyteId);
       return { data, error };
     },
 
@@ -6512,12 +7208,12 @@ export const database = {
      */
     getDependents: async (sourceAnalyteId: string) => {
       const { data, error } = await supabase
-        .from('analyte_dependencies')
+        .from("analyte_dependencies")
         .select(`
           *,
           calculated_analyte:analytes!analyte_dependencies_calculated_analyte_id_fkey(id, name, formula)
         `)
-        .eq('source_analyte_id', sourceAnalyteId);
+        .eq("source_analyte_id", sourceAnalyteId);
       return { data, error };
     },
 
@@ -6532,17 +7228,20 @@ export const database = {
       // Client-side circular check before DB call
       const hasCycle = await database.analyteDependencies.checkCircular(
         dependencyData.calculated_analyte_id,
-        dependencyData.source_analyte_id
+        dependencyData.source_analyte_id,
       );
       if (hasCycle) {
-        return { 
-          data: null, 
-          error: { message: 'Circular dependency detected. This would create an infinite calculation loop.' } 
+        return {
+          data: null,
+          error: {
+            message:
+              "Circular dependency detected. This would create an infinite calculation loop.",
+          },
         };
       }
 
       const { data, error } = await supabase
-        .from('analyte_dependencies')
+        .from("analyte_dependencies")
         .insert([dependencyData])
         .select()
         .single();
@@ -6554,9 +7253,9 @@ export const database = {
      */
     delete: async (id: string) => {
       const { error } = await supabase
-        .from('analyte_dependencies')
+        .from("analyte_dependencies")
         .delete()
-        .eq('id', id);
+        .eq("id", id);
       return { error };
     },
 
@@ -6564,13 +7263,16 @@ export const database = {
      * Check for circular dependencies (client-side BFS)
      * Returns true if adding this dependency would create a cycle
      */
-    checkCircular: async (calculatedAnalyteId: string, sourceAnalyteId: string): Promise<boolean> => {
+    checkCircular: async (
+      calculatedAnalyteId: string,
+      sourceAnalyteId: string,
+    ): Promise<boolean> => {
       const visited = new Set<string>([calculatedAnalyteId]);
       const queue = [sourceAnalyteId];
 
       while (queue.length > 0) {
         const current = queue.shift()!;
-        
+
         // Found cycle
         if (current === calculatedAnalyteId) {
           return true;
@@ -6581,9 +7283,9 @@ export const database = {
 
         // Get what this analyte depends on (if it's calculated)
         const { data } = await supabase
-          .from('analyte_dependencies')
-          .select('source_analyte_id')
-          .eq('calculated_analyte_id', current);
+          .from("analyte_dependencies")
+          .select("source_analyte_id")
+          .eq("calculated_analyte_id", current);
 
         if (data) {
           for (const dep of data) {
@@ -6600,15 +7302,18 @@ export const database = {
     /**
      * Set up all dependencies for a calculated analyte at once
      */
-    setDependencies: async (calculatedAnalyteId: string, dependencies: Array<{
-      source_analyte_id: string;
-      variable_name: string;
-    }>) => {
+    setDependencies: async (
+      calculatedAnalyteId: string,
+      dependencies: Array<{
+        source_analyte_id: string;
+        variable_name: string;
+      }>,
+    ) => {
       // Delete existing dependencies
       await supabase
-        .from('analyte_dependencies')
+        .from("analyte_dependencies")
         .delete()
-        .eq('calculated_analyte_id', calculatedAnalyteId);
+        .eq("calculated_analyte_id", calculatedAnalyteId);
 
       if (dependencies.length === 0) {
         return { data: [], error: null };
@@ -6618,29 +7323,32 @@ export const database = {
       for (const dep of dependencies) {
         const hasCycle = await database.analyteDependencies.checkCircular(
           calculatedAnalyteId,
-          dep.source_analyte_id
+          dep.source_analyte_id,
         );
         if (hasCycle) {
-          return { 
-            data: null, 
-            error: { message: `Circular dependency detected with analyte ID: ${dep.source_analyte_id}` } 
+          return {
+            data: null,
+            error: {
+              message:
+                `Circular dependency detected with analyte ID: ${dep.source_analyte_id}`,
+            },
           };
         }
       }
 
       // Insert new dependencies
-      const insertData = dependencies.map(dep => ({
+      const insertData = dependencies.map((dep) => ({
         calculated_analyte_id: calculatedAnalyteId,
         source_analyte_id: dep.source_analyte_id,
-        variable_name: dep.variable_name
+        variable_name: dep.variable_name,
       }));
 
       const { data, error } = await supabase
-        .from('analyte_dependencies')
+        .from("analyte_dependencies")
         .insert(insertData)
         .select();
       return { data, error };
-    }
+    },
   },
 
   // ============================================
@@ -6669,11 +7377,11 @@ export const database = {
       const { data: { user } } = await supabase.auth.getUser();
       const lab_id = auditData.lab_id || await database.getCurrentUserLabId();
       const { data, error } = await supabase
-        .from('ai_flag_audits')
+        .from("ai_flag_audits")
         .insert([{
           ...auditData,
           lab_id,
-          resolved_by: user?.id
+          resolved_by: user?.id,
         }])
         .select()
         .single();
@@ -6685,7 +7393,7 @@ export const database = {
      */
     getPending: async (labId?: string) => {
       let query = supabase
-        .from('ai_flag_audits')
+        .from("ai_flag_audits")
         .select(`
           *,
           result_values:result_value_id(
@@ -6702,11 +7410,11 @@ export const database = {
             )
           )
         `)
-        .eq('audit_status', 'pending')
-        .order('created_at', { ascending: false });
+        .eq("audit_status", "pending")
+        .order("created_at", { ascending: false });
 
       if (labId) {
-        query = query.eq('result_values.lab_id', labId);
+        query = query.eq("result_values.lab_id", labId);
       }
 
       const { data, error } = await query;
@@ -6717,19 +7425,19 @@ export const database = {
      * Resolve an audit (approve or reject the flag change)
      */
     resolve: async (auditId: string, resolution: {
-      status: 'approved' | 'rejected';
+      status: "approved" | "rejected";
       notes?: string;
     }) => {
       const { data: { user } } = await supabase.auth.getUser();
       const { data, error } = await supabase
-        .from('ai_flag_audits')
+        .from("ai_flag_audits")
         .update({
           audit_status: resolution.status,
           audit_notes: resolution.notes,
           reviewed_by: user?.id,
-          reviewed_at: new Date().toISOString()
+          reviewed_at: new Date().toISOString(),
         })
-        .eq('id', auditId)
+        .eq("id", auditId)
         .select()
         .single();
       return { data, error };
@@ -6740,29 +7448,32 @@ export const database = {
      */
     getForResultValue: async (resultValueId: string) => {
       const { data, error } = await supabase
-        .from('ai_flag_audits')
-        .select('*')
-        .eq('result_value_id', resultValueId)
-        .order('created_at', { ascending: false });
+        .from("ai_flag_audits")
+        .select("*")
+        .eq("result_value_id", resultValueId)
+        .order("created_at", { ascending: false });
       return { data, error };
     },
 
     /**
      * Get flag audit statistics
      */
-    getStats: async (labId?: string, dateRange?: { start: Date; end: Date }) => {
+    getStats: async (
+      labId?: string,
+      dateRange?: { start: Date; end: Date },
+    ) => {
       let query = supabase
-        .from('ai_flag_audits')
-        .select('flag_source, audit_status, confidence_score');
+        .from("ai_flag_audits")
+        .select("flag_source, audit_status, confidence_score");
 
       if (dateRange) {
         query = query
-          .gte('created_at', dateRange.start.toISOString())
-          .lte('created_at', dateRange.end.toISOString());
+          .gte("created_at", dateRange.start.toISOString())
+          .lte("created_at", dateRange.end.toISOString());
       }
 
       const { data, error } = await query;
-      
+
       if (error || !data) {
         return { data: null, error };
       }
@@ -6771,22 +7482,23 @@ export const database = {
       const stats = {
         total: data.length,
         bySource: {
-          rule: data.filter(d => d.flag_source === 'rule').length,
-          ai: data.filter(d => d.flag_source === 'ai').length,
-          manual: data.filter(d => d.flag_source === 'manual').length
+          rule: data.filter((d) => d.flag_source === "rule").length,
+          ai: data.filter((d) => d.flag_source === "ai").length,
+          manual: data.filter((d) => d.flag_source === "manual").length,
         },
         byStatus: {
-          pending: data.filter(d => d.audit_status === 'pending').length,
-          approved: data.filter(d => d.audit_status === 'approved').length,
-          rejected: data.filter(d => d.audit_status === 'rejected').length
+          pending: data.filter((d) => d.audit_status === "pending").length,
+          approved: data.filter((d) => d.audit_status === "approved").length,
+          rejected: data.filter((d) => d.audit_status === "rejected").length,
         },
-        averageConfidence: data.length > 0 
-          ? data.reduce((sum, d) => sum + (d.confidence_score || 0), 0) / data.length 
-          : 0
+        averageConfidence: data.length > 0
+          ? data.reduce((sum, d) => sum + (d.confidence_score || 0), 0) /
+            data.length
+          : 0,
       };
 
       return { data: stats, error: null };
-    }
+    },
   },
 
   // ============================================
@@ -6798,10 +7510,10 @@ export const database = {
      */
     getForAnalyte: async (analyteId: string) => {
       const { data, error } = await supabase
-        .from('analyte_flag_rules')
-        .select('*')
-        .eq('analyte_id', analyteId)
-        .order('priority', { ascending: true });
+        .from("analyte_flag_rules")
+        .select("*")
+        .eq("analyte_id", analyteId)
+        .order("priority", { ascending: true });
       return { data, error };
     },
 
@@ -6811,14 +7523,14 @@ export const database = {
     create: async (ruleData: {
       analyte_id: string;
       rule_name: string;
-      rule_type: 'range' | 'pattern' | 'formula';
+      rule_type: "range" | "pattern" | "formula";
       condition: any;
       result_flag: string;
       priority?: number;
       is_active?: boolean;
     }) => {
       const { data, error } = await supabase
-        .from('analyte_flag_rules')
+        .from("analyte_flag_rules")
         .insert([ruleData])
         .select()
         .single();
@@ -6836,12 +7548,12 @@ export const database = {
       is_active?: boolean;
     }) => {
       const { data, error } = await supabase
-        .from('analyte_flag_rules')
+        .from("analyte_flag_rules")
         .update({
           ...updates,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', ruleId)
+        .eq("id", ruleId)
         .select()
         .single();
       return { data, error };
@@ -6852,13 +7564,12 @@ export const database = {
      */
     delete: async (ruleId: string) => {
       const { error } = await supabase
-        .from('analyte_flag_rules')
+        .from("analyte_flag_rules")
         .delete()
-        .eq('id', ruleId);
+        .eq("id", ruleId);
       return { error };
-    }
+    },
   },
-
 };
 
 // Attachment batch management helpers
@@ -6866,7 +7577,7 @@ export const attachmentBatch = {
   async uploadMultiple(files: File[], context: {
     orderId: string;
     testId?: string;
-    scope: 'order' | 'test';
+    scope: "order" | "test";
     labId: string;
     patientId: string;
     userId: string;
@@ -6874,10 +7585,10 @@ export const attachmentBatch = {
     onOptimizationProgress?: (progress: number, fileName: string) => void;
   }) {
     const batchId = crypto.randomUUID();
-    
+
     // Create batch record first
     const { error: batchError } = await supabase
-      .from('attachment_batches')
+      .from("attachment_batches")
       .insert({
         id: batchId,
         order_id: context.orderId,
@@ -6886,59 +7597,63 @@ export const attachmentBatch = {
         total_files: files.length,
         upload_context: {
           testId: context.testId,
-          scope: context.scope
+          scope: context.scope,
         },
         uploaded_by: context.userId,
         lab_id: context.labId,
-        batch_status: 'uploading',
-        batch_description: `${context.scope === 'test' ? 'Test-specific' : 'Order-level'} batch upload of ${files.length} files`
+        batch_status: "uploading",
+        batch_description: `${
+          context.scope === "test" ? "Test-specific" : "Order-level"
+        } batch upload of ${files.length} files`,
       });
-    
+
     if (batchError) throw batchError;
-    
+
     // Optimize images if enabled
     let filesToUpload = files;
     let totalOptimizationStats = null;
-    
+
     if (context.optimize !== false) {
       console.log(`Optimizing ${files.length} files for batch upload...`);
-      const { optimizeBatch } = await import('./imageOptimizer');
-      
+      const { optimizeBatch } = await import("./imageOptimizer");
+
       const optimizationResult = await optimizeBatch(
-        files, 
-        context.onOptimizationProgress
+        files,
+        context.onOptimizationProgress,
       );
-      
+
       filesToUpload = optimizationResult.files;
       totalOptimizationStats = optimizationResult.totalStats;
-      
+
       if (totalOptimizationStats.savedBytes > 0) {
-        console.log(`Batch optimization complete: ${totalOptimizationStats.savedPercent}% reduction`);
+        console.log(
+          `Batch optimization complete: ${totalOptimizationStats.savedPercent}% reduction`,
+        );
       }
     }
-    
+
     const uploadPromises = filesToUpload.map(async (file, index) => {
       const sequence = index + 1;
       const label = `Image ${sequence}`;
-      
+
       // Generate unique path with batch info
       const filePath = `${context.labId}/${new Date().getFullYear()}/${
         new Date().getMonth() + 1
       }/${batchId}/${sequence}_${file.name}`;
-      
+
       try {
         // Upload to storage
         const { error: storageError } = await supabase.storage
-          .from('attachments')
+          .from("attachments")
           .upload(filePath, file);
-        
+
         if (storageError) throw storageError;
-        
+
         // Get public URL
         const { data: urlData } = supabase.storage
-          .from('attachments')
+          .from("attachments")
           .getPublicUrl(filePath);
-        
+
         // Create attachment record
         const attachmentData = {
           batch_id: batchId,
@@ -6950,7 +7665,7 @@ export const attachmentBatch = {
           original_filename: file.name,
           file_size: file.size,
           file_type: file.type,
-          related_table: 'orders',
+          related_table: "orders",
           related_id: context.orderId,
           order_id: context.orderId,
           patient_id: context.patientId,
@@ -6959,17 +7674,17 @@ export const attachmentBatch = {
           description: `${label} from batch upload`,
           batch_metadata: {
             originalIndex: index + 1,
-            uploadContext: context
+            uploadContext: context,
           },
-          processing_status: 'pending'
+          processing_status: "pending",
         };
-        
+
         const { data: attachment, error: attachmentError } = await supabase
-          .from('attachments')
+          .from("attachments")
           .insert(attachmentData)
           .select()
           .single();
-        
+
         if (attachmentError) throw attachmentError;
 
         if (attachment?.id) {
@@ -6979,136 +7694,154 @@ export const attachmentBatch = {
             storagePath: filePath,
             fileName: file.name,
             contentType: file.type,
-            assetType: context.scope === 'test' ? 'order-test-attachment' : 'order-attachment',
+            assetType: context.scope === "test"
+              ? "order-test-attachment"
+              : "order-attachment",
           });
 
-          attachment.processing_status = 'processing';
-          attachment.resolved_file_url = attachment.imagekit_url || attachment.processed_url || attachment.file_url;
+          attachment.processing_status = "processing";
+          attachment.resolved_file_url = attachment.imagekit_url ||
+            attachment.processed_url || attachment.file_url;
         }
-        
+
         return { success: true, data: attachment };
       } catch (error) {
         return { success: false, error, fileName: file.name };
       }
     });
-    
+
     const results = await Promise.allSettled(uploadPromises);
-    
+
     // Update batch status
-    const successful = results.filter(r => r.status === 'fulfilled' && r.value.success);
-    const failed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success));
-    
+    const successful = results.filter((r) =>
+      r.status === "fulfilled" && r.value.success
+    );
+    const failed = results.filter((r) =>
+      r.status === "rejected" || (r.status === "fulfilled" && !r.value.success)
+    );
+
     await supabase
-      .from('attachment_batches')
-      .update({ 
-        batch_status: failed.length > 0 ? 'failed' : 'completed',
-        batch_description: `Batch upload: ${successful.length} successful, ${failed.length} failed`
+      .from("attachment_batches")
+      .update({
+        batch_status: failed.length > 0 ? "failed" : "completed",
+        batch_description:
+          `Batch upload: ${successful.length} successful, ${failed.length} failed`,
       })
-      .eq('id', batchId);
-    
+      .eq("id", batchId);
+
     return {
       batchId,
-      successful: successful.map(r => r.status === 'fulfilled' ? r.value.data : null).filter(Boolean),
-      failed: failed.map(r => r.status === 'fulfilled' ? r.value : { error: 'Unknown error' }),
+      successful: successful.map((r) =>
+        r.status === "fulfilled" ? r.value.data : null
+      ).filter(Boolean),
+      failed: failed.map((r) =>
+        r.status === "fulfilled" ? r.value : { error: "Unknown error" }
+      ),
       totalFiles: files.length,
-      optimizationStats: totalOptimizationStats
+      optimizationStats: totalOptimizationStats,
     };
   },
 
   async getBatch(batchId: string) {
     // Get batch first
     const { data: batch, error: batchError } = await supabase
-      .from('attachment_batches')
-      .select('*')
-      .eq('id', batchId)
+      .from("attachment_batches")
+      .select("*")
+      .eq("id", batchId)
       .single();
-    
+
     if (batchError) return { data: null, error: batchError };
-    
+
     // Get attachments for this batch
     const { data: attachments, error: attachError } = await supabase
-      .from('attachments')
-      .select('*')
-      .eq('batch_id', batchId)
-      .order('batch_sequence');
-    
+      .from("attachments")
+      .select("*")
+      .eq("batch_id", batchId)
+      .order("batch_sequence");
+
     if (attachError) return { data: null, error: attachError };
     const normalized = (attachments || []).map((attachment) => ({
       ...attachment,
-      resolved_file_url: attachment.imagekit_url || attachment.processed_url || attachment.file_url,
+      resolved_file_url: attachment.imagekit_url || attachment.processed_url ||
+        attachment.file_url,
     }));
-    
-    return { 
+
+    return {
       data: {
         ...batch,
-        attachments: normalized
-      }, 
-      error: null 
+        attachments: normalized,
+      },
+      error: null,
     };
   },
 
   async getBatchesByOrder(orderId: string) {
     // Get batches first
     const { data: batches, error: batchError } = await supabase
-      .from('attachment_batches')
-      .select('*')
-      .eq('order_id', orderId)
-      .order('created_at', { ascending: false });
-    
+      .from("attachment_batches")
+      .select("*")
+      .eq("order_id", orderId)
+      .order("created_at", { ascending: false });
+
     if (batchError) return { data: null, error: batchError };
-    
+
     // Get attachments for each batch
     if (batches && batches.length > 0) {
-      const batchIds = batches.map(b => b.id);
+      const batchIds = batches.map((b) => b.id);
       const { data: attachments, error: attachError } = await supabase
-        .from('attachments')
-        .select('id, batch_id, image_label, batch_sequence, file_url, file_type, original_filename, file_size, imagekit_url, processed_url, processing_status, variants, image_processed_at')
-        .in('batch_id', batchIds)
-        .order('batch_sequence');
-      
+        .from("attachments")
+        .select(
+          "id, batch_id, image_label, batch_sequence, file_url, file_type, original_filename, file_size, imagekit_url, processed_url, processing_status, variants, image_processed_at",
+        )
+        .in("batch_id", batchIds)
+        .order("batch_sequence");
+
       if (attachError) return { data: null, error: attachError };
 
       const normalizedAttachments = (attachments || []).map((attachment) => ({
         ...attachment,
-        resolved_file_url: attachment.imagekit_url || attachment.processed_url || attachment.file_url,
+        resolved_file_url: attachment.imagekit_url ||
+          attachment.processed_url || attachment.file_url,
       }));
-      
+
       // Merge attachments with batches
-      const batchesWithAttachments = batches.map(batch => ({
+      const batchesWithAttachments = batches.map((batch) => ({
         ...batch,
-        attachments: normalizedAttachments.filter(att => att.batch_id === batch.id)
+        attachments: normalizedAttachments.filter((att) =>
+          att.batch_id === batch.id
+        ),
       }));
-      
+
       return { data: batchesWithAttachments, error: null };
     }
-    
+
     return { data: batches, error: null };
   },
 
   async updateBatchMetadata(batchId: string, metadata: Record<string, any>) {
     const { data, error } = await supabase
-      .from('attachment_batches')
+      .from("attachment_batches")
       .update({ upload_context: metadata })
-      .eq('id', batchId)
+      .eq("id", batchId)
       .select()
       .single();
-    
+
     return { data, error };
-  }
+  },
 };
 
 const resolveImageKitFunctionUrl = (): string => {
   const direct = import.meta.env.VITE_IMAGEKIT_PROCESS_ENDPOINT;
-  if (direct && typeof direct === 'string' && direct.trim().length > 0) {
+  if (direct && typeof direct === "string" && direct.trim().length > 0) {
     return direct.trim();
   }
 
   const base = import.meta.env.VITE_NETLIFY_FUNCTIONS_BASE_URL;
-  if (base && typeof base === 'string' && base.trim().length > 0) {
-    return `${base.replace(/\/$/, '')}/.netlify/functions/imagekit-process`;
+  if (base && typeof base === "string" && base.trim().length > 0) {
+    return `${base.replace(/\/$/, "")}/.netlify/functions/imagekit-process`;
   }
 
-  return '/.netlify/functions/imagekit-process';
+  return "/.netlify/functions/imagekit-process";
 };
 
 const queueImageKitProcessing = async (payload: {
@@ -7119,7 +7852,7 @@ const queueImageKitProcessing = async (payload: {
   contentType?: string;
   assetType?: string;
 }) => {
-  if (typeof fetch !== 'function') {
+  if (typeof fetch !== "function") {
     return;
   }
 
@@ -7127,28 +7860,28 @@ const queueImageKitProcessing = async (payload: {
 
   try {
     const response = await fetch(endpoint, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'x-netlify-background': 'true',
+        "Content-Type": "application/json",
+        "x-netlify-background": "true",
       },
       body: JSON.stringify({
         assetId: payload.attachmentId,
-        tableName: 'attachments',
+        tableName: "attachments",
         labId: payload.labId,
-        storageBucket: 'attachments',
+        storageBucket: "attachments",
         storagePath: payload.storagePath,
         fileName: payload.fileName,
         contentType: payload.contentType,
-        assetType: payload.assetType || 'order-attachment',
+        assetType: payload.assetType || "order-attachment",
       }),
     });
 
     if (!response.ok) {
-      console.warn('ImageKit processing request failed', response.status);
+      console.warn("ImageKit processing request failed", response.status);
     }
   } catch (error) {
-    console.warn('Failed to trigger ImageKit processing', error);
+    console.warn("Failed to trigger ImageKit processing", error);
   }
 };
 
@@ -7170,31 +7903,37 @@ export const attachments = {
   }) => {
     try {
       // Import optimization function dynamically to avoid circular imports
-      const { smartOptimizeImage } = await import('./imageOptimizer');
-      
+      const { smartOptimizeImage } = await import("./imageOptimizer");
+
       // Optimize image if enabled and it's an image file
       let fileToUpload = file;
       let optimizationStats = null;
-      
+
       const shouldOptimize = options?.optimize ?? metadata.optimize ?? true;
-      
-      if (shouldOptimize !== false && file.type.startsWith('image/')) {
+
+      if (shouldOptimize !== false && file.type.startsWith("image/")) {
         if (options?.onOptimizationProgress) {
           options.onOptimizationProgress(10, file.name);
         }
-        console.log(`Optimizing image: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+        console.log(
+          `Optimizing image: ${file.name} (${
+            (file.size / 1024 / 1024).toFixed(2)
+          } MB)`,
+        );
         const result = await smartOptimizeImage(file);
         fileToUpload = result.file;
         optimizationStats = result.stats;
-        
+
         if (optimizationStats) {
-          console.log(`Image optimized: ${optimizationStats.savedPercent}% reduction`);
+          console.log(
+            `Image optimized: ${optimizationStats.savedPercent}% reduction`,
+          );
         }
         if (options?.onOptimizationProgress) {
           options.onOptimizationProgress(100, file.name);
         }
       }
-      
+
       const labId = await database.getCurrentUserLabId();
       const timestamp = Date.now();
       const fileName = `${timestamp}_${fileToUpload.name}`;
@@ -7202,19 +7941,19 @@ export const attachments = {
 
       // Upload file to storage
       const { error: uploadError } = await supabase.storage
-        .from('attachments')
+        .from("attachments")
         .upload(filePath, fileToUpload);
 
       if (uploadError) throw uploadError;
 
       // Get public URL
       const { data: { publicUrl } } = supabase.storage
-        .from('attachments')
+        .from("attachments")
         .getPublicUrl(filePath);
 
       // Save attachment metadata
       const { data, error } = await supabase
-        .from('attachments')
+        .from("attachments")
         .insert({
           patient_id: metadata.patient_id,
           related_table: metadata.related_table,
@@ -7231,7 +7970,7 @@ export const attachments = {
           tag: metadata.tag,
           lab_id: labId,
           uploaded_by: (await supabase.auth.getUser()).data.user?.id,
-          processing_status: 'pending'
+          processing_status: "pending",
         })
         .select()
         .single();
@@ -7245,15 +7984,18 @@ export const attachments = {
           storagePath: filePath,
           fileName: file.name,
           contentType: file.type,
-          assetType: metadata.tag === 'test-specific' ? 'order-test-attachment' : 'order-attachment'
+          assetType: metadata.tag === "test-specific"
+            ? "order-test-attachment"
+            : "order-attachment",
         });
 
-        data.processing_status = 'processing';
-        data.resolved_file_url = data.imagekit_url || data.processed_url || data.file_url;
+        data.processing_status = "processing";
+        data.resolved_file_url = data.imagekit_url || data.processed_url ||
+          data.file_url;
       }
       return { data, error: null };
     } catch (error) {
-      console.error('Error uploading attachment:', error);
+      console.error("Error uploading attachment:", error);
       return { data: null, error };
     }
   },
@@ -7262,15 +8004,15 @@ export const attachments = {
   getByOrderTest: async (orderTestId: string) => {
     try {
       const { data, error } = await supabase
-        .from('attachments')
-        .select('*')
-        .eq('order_test_id', orderTestId)
-        .order('created_at', { ascending: false });
+        .from("attachments")
+        .select("*")
+        .eq("order_test_id", orderTestId)
+        .order("created_at", { ascending: false });
 
       if (error) throw error;
       return { data, error: null };
     } catch (error) {
-      console.error('Error fetching test attachments:', error);
+      console.error("Error fetching test attachments:", error);
       return { data: null, error };
     }
   },
@@ -7279,7 +8021,7 @@ export const attachments = {
   getByOrderWithTestInfo: async (orderId: string) => {
     try {
       const { data, error } = await supabase
-        .from('attachments')
+        .from("attachments")
         .select(`
           *,
           order_tests!attachments_order_test_id_fkey(
@@ -7288,80 +8030,80 @@ export const attachments = {
             test_group_id
           )
         `)
-        .eq('order_id', orderId)
-        .order('created_at', { ascending: false });
+        .eq("order_id", orderId)
+        .order("created_at", { ascending: false });
 
       if (error) throw error;
       return { data, error: null };
     } catch (error) {
-      console.error('Error fetching order attachments:', error);
+      console.error("Error fetching order attachments:", error);
       return { data: null, error };
     }
   },
 
   getByRelatedId: async (relatedTable: string, relatedId: string) => {
     const { data, error } = await supabase
-      .from('attachments')
-      .select('*')
-      .eq('related_table', relatedTable)
-      .eq('related_id', relatedId)
-      .order('created_at', { ascending: false });
+      .from("attachments")
+      .select("*")
+      .eq("related_table", relatedTable)
+      .eq("related_id", relatedId)
+      .order("created_at", { ascending: false });
     return { data, error };
   },
 
   getByIdWithProcessingStatus: async (attachmentId: string) => {
     const { data, error } = await supabase
-      .from('attachments')
-      .select('id, imagekit_url, processed_url, file_url, processing_status')
-      .eq('id', attachmentId)
+      .from("attachments")
+      .select("id, imagekit_url, processed_url, file_url, processing_status")
+      .eq("id", attachmentId)
       .single();
     return { data, error };
   },
 
   // Helper function specifically for orders (commonly used)
   getByOrderId: async (orderId: string) => {
-    return attachments.getByRelatedId('orders', orderId);
+    return attachments.getByRelatedId("orders", orderId);
   },
 
   // Helper function specifically for patients
   getByPatientIdRelated: async (patientId: string) => {
-    return attachments.getByRelatedId('patients', patientId);
+    return attachments.getByRelatedId("patients", patientId);
   },
 
   // Helper function specifically for results
   getByResultId: async (resultId: string) => {
-    return attachments.getByRelatedId('results', resultId);
+    return attachments.getByRelatedId("results", resultId);
   },
 
   getByPatientId: async (patientId: string) => {
     const { data, error } = await supabase
-      .from('attachments')
-      .select('*')
-      .eq('patient_id', patientId)
-      .order('created_at', { ascending: false });
+      .from("attachments")
+      .select("*")
+      .eq("patient_id", patientId)
+      .order("created_at", { ascending: false });
     return { data, error };
   },
 
   getByLabId: async (labId: string) => {
     const { data, error } = await supabase
-      .from('attachments')
-      .select('*')
-      .eq('lab_id', labId)
-      .order('created_at', { ascending: false });
+      .from("attachments")
+      .select("*")
+      .eq("lab_id", labId)
+      .order("created_at", { ascending: false });
     return { data, error };
   },
   getById: async (id: string) => {
     const { data, error } = await supabase
-      .from('attachments')
-      .select('*')
-      .eq('id', id)
+      .from("attachments")
+      .select("*")
+      .eq("id", id)
       .single();
     return { data, error };
   },
 
   create: async (attachmentData: any) => {
     const { data, error } = await supabase
-      .from('attachments')
+      .from("attachments")
       .insert([attachmentData])
       .select()
       .single();
@@ -7370,9 +8112,9 @@ export const attachments = {
 
   updateDescription: async (id: string, description: string) => {
     const { data, error } = await supabase
-      .from('attachments')
+      .from("attachments")
       .update({ description })
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
     return { data, error };
@@ -7380,31 +8122,31 @@ export const attachments = {
   delete: async (id: string) => {
     // First get the file path to delete from storage
     const { data: attachment, error: fetchError } = await supabase
-      .from('attachments')
-      .select('file_path')
-      .eq('id', id)
+      .from("attachments")
+      .select("file_path")
+      .eq("id", id)
       .single();
-    
+
     if (fetchError) {
       return { error: fetchError };
     }
-    
+
     // Delete from storage
     if (attachment?.file_path) {
       const { error: storageError } = await supabase.storage
-        .from('attachments')
+        .from("attachments")
         .remove([attachment.file_path]);
-      
+
       if (storageError) {
-        console.warn('Failed to delete file from storage:', storageError);
+        console.warn("Failed to delete file from storage:", storageError);
       }
     }
-    
+
     // Delete from database
     const { error } = await supabase
-      .from('attachments')
+      .from("attachments")
       .delete()
-      .eq('id', id);
+      .eq("id", id);
     return { error };
   },
 
@@ -7413,46 +8155,49 @@ export const attachments = {
     try {
       // Get all attachments in the batch first
       const { data: attachments, error: fetchError } = await supabase
-        .from('attachments')
-        .select('file_path, id')
-        .eq('batch_id', batchId);
-      
+        .from("attachments")
+        .select("file_path, id")
+        .eq("batch_id", batchId);
+
       if (fetchError) return { error: fetchError };
-      
+
       // Delete files from storage
       if (attachments && attachments.length > 0) {
         const filePaths = attachments
-          .map(att => att.file_path)
+          .map((att) => att.file_path)
           .filter(Boolean);
-        
+
         if (filePaths.length > 0) {
           const { error: storageError } = await supabase.storage
-            .from('attachments')
+            .from("attachments")
             .remove(filePaths);
-          
+
           if (storageError) {
-            console.warn('Some files failed to delete from storage:', storageError);
+            console.warn(
+              "Some files failed to delete from storage:",
+              storageError,
+            );
           }
         }
       }
-      
+
       // Delete attachments from database
       const { error: attachmentsDeleteError } = await supabase
-        .from('attachments')
+        .from("attachments")
         .delete()
-        .eq('batch_id', batchId);
-      
+        .eq("batch_id", batchId);
+
       if (attachmentsDeleteError) return { error: attachmentsDeleteError };
-      
+
       // Delete batch record
       const { error: batchDeleteError } = await supabase
-        .from('attachment_batches')
+        .from("attachment_batches")
         .delete()
-        .eq('id', batchId);
-      
+        .eq("id", batchId);
+
       return { error: batchDeleteError };
     } catch (error) {
-      console.error('Error deleting batch:', error);
+      console.error("Error deleting batch:", error);
       return { error };
     }
   },
@@ -7462,59 +8207,61 @@ export const attachments = {
     try {
       // Get all batches for the order
       const { data: batches, error: fetchError } = await supabase
-        .from('attachment_batches')
-        .select('id')
-        .eq('order_id', orderId);
-      
+        .from("attachment_batches")
+        .select("id")
+        .eq("order_id", orderId);
+
       if (fetchError) return { error: fetchError };
-      
+
       // Delete each batch
-      const deletePromises = batches?.map(batch => 
+      const deletePromises = batches?.map((batch) =>
         this.deleteBatch(batch.id)
       ) || [];
-      
+
       const results = await Promise.allSettled(deletePromises);
-      
+
       // Check if any deletions failed
-      const failures = results.filter(result => 
-        result.status === 'rejected' || 
-        (result.status === 'fulfilled' && result.value.error)
+      const failures = results.filter((result) =>
+        result.status === "rejected" ||
+        (result.status === "fulfilled" && result.value.error)
       );
-      
+
       if (failures.length > 0) {
-        console.warn('Some batch deletions failed:', failures);
-        return { 
-          error: new Error(`Failed to delete ${failures.length} of ${batches?.length} batches`) 
+        console.warn("Some batch deletions failed:", failures);
+        return {
+          error: new Error(
+            `Failed to delete ${failures.length} of ${batches?.length} batches`,
+          ),
         };
       }
-      
+
       return { error: null };
     } catch (error) {
-      console.error('Error deleting all batches for order:', error);
+      console.error("Error deleting all batches for order:", error);
       return { error };
     }
-  }
+  },
 };
 
 // Database helper functions for OCR results
 export const ocrResults = {
   getByAttachmentId: async (attachmentId: string) => {
     const { data, error } = await supabase
-      .from('ocr_results')
-      .select('*')
-      .eq('attachment_id', attachmentId)
-      .order('created_at', { ascending: false });
+      .from("ocr_results")
+      .select("*")
+      .eq("attachment_id", attachmentId)
+      .order("created_at", { ascending: false });
     return { data, error };
   },
 
   create: async (ocrData: any) => {
     const { data, error } = await supabase
-      .from('ocr_results')
+      .from("ocr_results")
       .insert([ocrData])
       .select()
       .single();
     return { data, error };
-  }
+  },
 };
 
 // User management helper functions
@@ -7527,36 +8274,36 @@ export const userManagement = {
     }
 
     const { data, error } = await supabase
-      .from('users')
+      .from("users")
       .select(`
         *,
         labs(id, name, code)
       `)
-      .eq('email', user.email)
+      .eq("email", user.email)
       .single();
-    
+
     return { data, error };
   },
 
   // Update user's lab assignment
   updateUserLab: async (userId: string, labId: string) => {
     const { data, error } = await supabase
-      .from('users')
-      .update({ 
+      .from("users")
+      .update({
         lab_id: labId,
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       })
-      .eq('id', userId)
+      .eq("id", userId)
       .select()
       .single();
-    
+
     return { data, error };
   },
 
   // Get all users for a specific lab
   getUsersByLab: async (labId: string) => {
     const { data, error } = await supabase
-      .from('users')
+      .from("users")
       .select(`
         id,
         name,
@@ -7566,12 +8313,12 @@ export const userManagement = {
         join_date,
         last_login
       `)
-      .eq('lab_id', labId)
-      .eq('status', 'Active')
-      .order('name');
-    
+      .eq("lab_id", labId)
+      .eq("status", "Active")
+      .order("name");
+
     return { data, error };
-  }
+  },
 };
 
 // Phase 2 API Methods - Master Data Management
@@ -7581,23 +8328,26 @@ const masterDataAPI = {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       const { data, error } = await supabase
-        .from('doctors')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .eq('is_active', true)
-        .order('name');
+        .from("doctors")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .eq("is_active", true)
+        .order("name");
       return { data, error };
     },
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-        .from('doctors')
-        .select('*')
-        .eq('id', id)
+        .from("doctors")
+        .select("*")
+        .eq("id", id)
         .single();
       return { data, error };
     },
@@ -7605,16 +8355,21 @@ const masterDataAPI = {
     search: async (searchTerm: string) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       const { data, error } = await supabase
-        .from('doctors')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .eq('is_active', true)
-        .or(`name.ilike.%${searchTerm}%,license_number.ilike.%${searchTerm}%,specialization.ilike.%${searchTerm}%,hospital.ilike.%${searchTerm}%`)
-        .order('name')
+        .from("doctors")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .eq("is_active", true)
+        .or(
+          `name.ilike.%${searchTerm}%,license_number.ilike.%${searchTerm}%,specialization.ilike.%${searchTerm}%,hospital.ilike.%${searchTerm}%`,
+        )
+        .order("name")
         .limit(20);
       return { data, error };
     },
@@ -7632,16 +8387,19 @@ const masterDataAPI = {
     }) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('doctors')
+        .from("doctors")
         .insert([{
           ...doctorData,
           lab_id,
           is_active: true,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
         }])
         .select()
         .single();
@@ -7661,12 +8419,12 @@ const masterDataAPI = {
       is_active?: boolean;
     }) => {
       const { data, error } = await supabase
-        .from('doctors')
+        .from("doctors")
         .update({
           ...updates,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
@@ -7674,39 +8432,45 @@ const masterDataAPI = {
 
     delete: async (id: string) => {
       const { data, error } = await supabase
-        .from('doctors')
-        .update({ 
+        .from("doctors")
+        .update({
           is_active: false,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
-    }
+    },
   },
 
-  // Locations API  
+  // Locations API
   locations: {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
-      console.log('[locations.getAll v2] Lab ID:', lab_id);
+      console.log("[locations.getAll v2] Lab ID:", lab_id);
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       // Apply location filtering based on user restrictions
       const filterCheck = await database.shouldFilterByLocation();
 
       let query = supabase
-        .from('locations')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .eq('is_active', true)
-        .order('name');
+        .from("locations")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .eq("is_active", true)
+        .order("name");
 
-      if (filterCheck.shouldFilter && !filterCheck.canViewAll && filterCheck.locationIds.length > 0) {
-        query = query.in('id', filterCheck.locationIds);
+      if (
+        filterCheck.shouldFilter && !filterCheck.canViewAll &&
+        filterCheck.locationIds.length > 0
+      ) {
+        query = query.in("id", filterCheck.locationIds);
       }
 
       const { data, error } = await query;
@@ -7715,16 +8479,16 @@ const masterDataAPI = {
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-        .from('locations')
-        .select('*')
-        .eq('id', id)
+        .from("locations")
+        .select("*")
+        .eq("id", id)
         .single();
       return { data, error };
     },
 
     getWithCreditBalance: async (id: string) => {
       const { data, error } = await supabase
-        .from('locations')
+        .from("locations")
         .select(`
           *,
           credit_transactions!location_id(
@@ -7733,7 +8497,7 @@ const masterDataAPI = {
             created_at
           )
         `)
-        .eq('id', id)
+        .eq("id", id)
         .single();
 
       if (error || !data) {
@@ -7743,20 +8507,20 @@ const masterDataAPI = {
       // Calculate current credit balance
       const creditTransactions = data.credit_transactions || [];
       const totalCredits = creditTransactions
-        .filter((t: any) => t.type === 'credit')
+        .filter((t: any) => t.type === "credit")
         .reduce((sum: number, t: any) => sum + parseFloat(t.amount), 0);
       const totalDebits = creditTransactions
-        .filter((t: any) => t.type === 'debit')
+        .filter((t: any) => t.type === "debit")
         .reduce((sum: number, t: any) => sum + parseFloat(t.amount), 0);
-      
+
       const currentBalance = totalCredits - totalDebits;
 
       return {
         data: {
           ...data,
-          current_credit_balance: currentBalance
+          current_credit_balance: currentBalance,
         },
-        error: null
+        error: null,
       };
     },
 
@@ -7774,16 +8538,19 @@ const masterDataAPI = {
     }) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('locations')
+        .from("locations")
         .insert([{
           ...locationData,
           lab_id,
           is_active: true,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
         }])
         .select()
         .single();
@@ -7804,12 +8571,12 @@ const masterDataAPI = {
       is_active?: boolean;
     }) => {
       const { data, error } = await supabase
-        .from('locations')
+        .from("locations")
         .update({
           ...updates,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
@@ -7817,12 +8584,12 @@ const masterDataAPI = {
 
     delete: async (id: string) => {
       const { data, error } = await supabase
-        .from('locations')
-        .update({ 
+        .from("locations")
+        .update({
           is_active: false,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
@@ -7830,7 +8597,7 @@ const masterDataAPI = {
 
     checkCreditLimit: async (id: string, orderAmount: number) => {
       const { data: location, error } = await supabase
-        .from('locations')
+        .from("locations")
         .select(`
           *,
           credit_transactions!location_id(
@@ -7839,29 +8606,29 @@ const masterDataAPI = {
             created_at
           )
         `)
-        .eq('id', id)
+        .eq("id", id)
         .single();
 
       if (error || !location) {
-        return { 
-          allowed: false, 
-          currentBalance: 0, 
-          creditLimit: 0, 
+        return {
+          allowed: false,
+          currentBalance: 0,
+          creditLimit: 0,
           availableCredit: 0,
-          name: '',
-          error 
+          name: "",
+          error,
         };
       }
 
       // Calculate current credit balance
       const creditTransactions = location.credit_transactions || [];
       const totalCredits = creditTransactions
-        .filter((t: any) => t.transaction_type === 'credit')
+        .filter((t: any) => t.transaction_type === "credit")
         .reduce((sum: number, t: any) => sum + parseFloat(t.amount), 0);
       const totalDebits = creditTransactions
-        .filter((t: any) => t.transaction_type === 'debit')
+        .filter((t: any) => t.transaction_type === "debit")
         .reduce((sum: number, t: any) => sum + parseFloat(t.amount), 0);
-      
+
       const currentBalance = totalCredits - totalDebits;
       const creditLimit = location.credit_limit || 0;
       const availableCredit = creditLimit - currentBalance;
@@ -7873,7 +8640,7 @@ const masterDataAPI = {
         creditLimit,
         availableCredit,
         name: location.name,
-        error: null
+        error: null,
       };
     },
 
@@ -7881,22 +8648,28 @@ const masterDataAPI = {
     getCollectionCenters: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       // Apply location filtering
       const filterCheck = await database.shouldFilterByLocation();
-      
-      let query = supabase
-        .from('locations')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .eq('is_active', true)
-        .eq('is_collection_center', true)
-        .order('name');
 
-      if (filterCheck.shouldFilter && !filterCheck.canViewAll && filterCheck.locationIds.length > 0) {
-        query = query.in('id', filterCheck.locationIds);
+      let query = supabase
+        .from("locations")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .eq("is_active", true)
+        .eq("is_collection_center", true)
+        .order("name");
+
+      if (
+        filterCheck.shouldFilter && !filterCheck.canViewAll &&
+        filterCheck.locationIds.length > 0
+      ) {
+        query = query.in("id", filterCheck.locationIds);
       }
 
       const { data, error } = await query;
@@ -7907,22 +8680,28 @@ const masterDataAPI = {
     getProcessingCenters: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       // Apply location filtering
       const filterCheck = await database.shouldFilterByLocation();
-      
-      let query = supabase
-        .from('locations')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .eq('is_active', true)
-        .eq('is_processing_center', true)
-        .order('name');
 
-      if (filterCheck.shouldFilter && !filterCheck.canViewAll && filterCheck.locationIds.length > 0) {
-        query = query.in('id', filterCheck.locationIds);
+      let query = supabase
+        .from("locations")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .eq("is_active", true)
+        .eq("is_processing_center", true)
+        .order("name");
+
+      if (
+        filterCheck.shouldFilter && !filterCheck.canViewAll &&
+        filterCheck.locationIds.length > 0
+      ) {
+        query = query.in("id", filterCheck.locationIds);
       }
 
       const { data, error } = await query;
@@ -7933,22 +8712,28 @@ const masterDataAPI = {
     getReceivingLocations: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       // Apply location filtering
       const filterCheck = await database.shouldFilterByLocation();
-      
-      let query = supabase
-        .from('locations')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .eq('is_active', true)
-        .eq('can_receive_samples', true)
-        .order('name');
 
-      if (filterCheck.shouldFilter && !filterCheck.canViewAll && filterCheck.locationIds.length > 0) {
-        query = query.in('id', filterCheck.locationIds);
+      let query = supabase
+        .from("locations")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .eq("is_active", true)
+        .eq("can_receive_samples", true)
+        .order("name");
+
+      if (
+        filterCheck.shouldFilter && !filterCheck.canViewAll &&
+        filterCheck.locationIds.length > 0
+      ) {
+        query = query.in("id", filterCheck.locationIds);
       }
 
       const { data, error } = await query;
@@ -7959,25 +8744,28 @@ const masterDataAPI = {
     getDefaultProcessingCenter: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       const { data: lab, error: labError } = await supabase
-        .from('labs')
-        .select('default_processing_location_id')
-        .eq('id', lab_id)
+        .from("labs")
+        .select("default_processing_location_id")
+        .eq("id", lab_id)
         .single();
-      
+
       if (labError || !lab?.default_processing_location_id) {
         return { data: null, error: labError };
       }
-      
+
       const { data, error } = await supabase
-        .from('locations')
-        .select('*')
-        .eq('id', lab.default_processing_location_id)
+        .from("locations")
+        .select("*")
+        .eq("id", lab.default_processing_location_id)
         .single();
-      
+
       return { data, error };
     },
 
@@ -7988,16 +8776,16 @@ const masterDataAPI = {
       can_receive_samples?: boolean;
     }) => {
       const { data, error } = await supabase
-        .from('locations')
+        .from("locations")
         .update({
           ...params,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
-    }
+    },
   },
 
   // Accounts API
@@ -8005,23 +8793,26 @@ const masterDataAPI = {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       const { data, error } = await supabase
-        .from('accounts')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .eq('is_active', true)
-        .order('name');
+        .from("accounts")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .eq("is_active", true)
+        .order("name");
       return { data, error };
     },
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-        .from('accounts')
-        .select('*')
-        .eq('id', id)
+        .from("accounts")
+        .select("*")
+        .eq("id", id)
         .single();
       return { data, error };
     },
@@ -8029,23 +8820,34 @@ const masterDataAPI = {
     search: async (searchTerm: string) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       const { data, error } = await supabase
-        .from('accounts')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .eq('is_active', true)
-        .or(`name.ilike.%${searchTerm}%,type.ilike.%${searchTerm}%,contact_person.ilike.%${searchTerm}%`)
-        .order('name')
+        .from("accounts")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .eq("is_active", true)
+        .or(
+          `name.ilike.%${searchTerm}%,type.ilike.%${searchTerm}%,contact_person.ilike.%${searchTerm}%`,
+        )
+        .order("name")
         .limit(20);
       return { data, error };
     },
 
     create: async (accountData: {
       name: string;
-      type: 'hospital' | 'corporate' | 'insurer' | 'clinic' | 'doctor' | 'other';
+      type:
+        | "hospital"
+        | "corporate"
+        | "insurer"
+        | "clinic"
+        | "doctor"
+        | "other";
       contact_person?: string;
       phone?: string;
       email?: string;
@@ -8057,16 +8859,19 @@ const masterDataAPI = {
     }) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('accounts')
+        .from("accounts")
         .insert([{
           ...accountData,
           lab_id,
           is_active: true,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
         }])
         .select()
         .single();
@@ -8075,7 +8880,13 @@ const masterDataAPI = {
 
     update: async (id: string, updates: {
       name?: string;
-      type?: 'hospital' | 'corporate' | 'insurer' | 'clinic' | 'doctor' | 'other';
+      type?:
+        | "hospital"
+        | "corporate"
+        | "insurer"
+        | "clinic"
+        | "doctor"
+        | "other";
       contact_person?: string;
       phone?: string;
       email?: string;
@@ -8087,12 +8898,12 @@ const masterDataAPI = {
       is_active?: boolean;
     }) => {
       const { data, error } = await supabase
-        .from('accounts')
+        .from("accounts")
         .update({
           ...updates,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
@@ -8100,12 +8911,12 @@ const masterDataAPI = {
 
     delete: async (id: string) => {
       const { data, error } = await supabase
-        .from('accounts')
-        .update({ 
+        .from("accounts")
+        .update({
           is_active: false,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', id)
+        .eq("id", id)
         .select()
         .single();
       return { data, error };
@@ -8113,7 +8924,7 @@ const masterDataAPI = {
 
     checkCreditLimit: async (id: string, orderAmount: number) => {
       const { data: account, error } = await supabase
-        .from('accounts')
+        .from("accounts")
         .select(`
           *,
           credit_transactions!account_id(
@@ -8122,29 +8933,29 @@ const masterDataAPI = {
             created_at
           )
         `)
-        .eq('id', id)
+        .eq("id", id)
         .single();
 
       if (error || !account) {
-        return { 
-          allowed: false, 
-          currentBalance: 0, 
-          creditLimit: 0, 
+        return {
+          allowed: false,
+          currentBalance: 0,
+          creditLimit: 0,
           availableCredit: 0,
-          name: '',
-          error 
+          name: "",
+          error,
         };
       }
 
       // Calculate current credit balance
       const creditTransactions = account.credit_transactions || [];
       const totalCredits = creditTransactions
-        .filter((t: any) => t.transaction_type === 'credit')
+        .filter((t: any) => t.transaction_type === "credit")
         .reduce((sum: number, t: any) => sum + parseFloat(t.amount), 0);
       const totalDebits = creditTransactions
-        .filter((t: any) => t.transaction_type === 'debit')
+        .filter((t: any) => t.transaction_type === "debit")
         .reduce((sum: number, t: any) => sum + parseFloat(t.amount), 0);
-      
+
       const currentBalance = totalCredits - totalDebits;
       const creditLimit = account.credit_limit || 0;
       const availableCredit = creditLimit - currentBalance;
@@ -8156,9 +8967,9 @@ const masterDataAPI = {
         creditLimit,
         availableCredit,
         name: account.name,
-        error: null
+        error: null,
       };
-    }
+    },
   },
 
   // Order Tests API
@@ -8166,26 +8977,29 @@ const masterDataAPI = {
     getUnbilledByOrder: async (orderId: string) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('order_tests')
-        .select('id, test_group_id, test_name, price, is_billed, invoice_id')
-        .eq('order_id', orderId)
-        .eq('is_billed', false)
-        .order('test_name');
-      
+        .from("order_tests")
+        .select("id, test_group_id, test_name, price, is_billed, invoice_id")
+        .eq("order_id", orderId)
+        .eq("is_billed", false)
+        .order("test_name");
+
       return { data, error };
     },
 
     getAll: async (orderId: string) => {
       const { data, error } = await supabase
-        .from('order_tests')
-        .select('*')
-        .eq('order_id', orderId)
-        .order('test_name');
-      
+        .from("order_tests")
+        .select("*")
+        .eq("order_id", orderId)
+        .order("test_name");
+
       return { data, error };
     },
 
@@ -8196,14 +9010,14 @@ const masterDataAPI = {
       billed_amount?: number;
     }) => {
       const { data, error } = await supabase
-        .from('order_tests')
+        .from("order_tests")
         .update(billingData)
-        .eq('id', testId)
+        .eq("id", testId)
         .select()
         .single();
-      
+
       return { data, error };
-    }
+    },
   },
 
   // Enhanced Payments API
@@ -8216,11 +9030,14 @@ const masterDataAPI = {
     }) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       let query = supabase
-        .from('payments')
+        .from("payments")
         .select(`
           *,
           invoices(
@@ -8238,29 +9055,37 @@ const masterDataAPI = {
             register_name
           )
         `)
-        .eq('lab_id', lab_id);
+        .eq("lab_id", lab_id);
 
       if (filters?.startDate) {
-        query = query.gte('payment_date', filters.startDate);
+        query = query.gte("payment_date", filters.startDate);
       }
       if (filters?.endDate) {
-        query = query.lte('payment_date', filters.endDate);
+        query = query.lte("payment_date", filters.endDate);
       }
       if (filters?.paymentMethod) {
-        query = query.eq('payment_method', filters.paymentMethod);
+        query = query.eq("payment_method", filters.paymentMethod);
       }
       if (filters?.locationId) {
-        query = query.eq('location_id', filters.locationId);
+        query = query.eq("location_id", filters.locationId);
       }
 
-      const { data, error } = await query.order('payment_date', { ascending: false });
+      const { data, error } = await query.order("payment_date", {
+        ascending: false,
+      });
       return { data, error };
     },
 
     createPayment: async (paymentData: {
       invoice_id: string;
       amount: number;
-      payment_method: 'cash' | 'card' | 'upi' | 'cheque' | 'bank_transfer' | 'credit';
+      payment_method:
+        | "cash"
+        | "card"
+        | "upi"
+        | "cheque"
+        | "bank_transfer"
+        | "credit";
       reference_number?: string;
       location_id?: string;
       cash_register_id?: string;
@@ -8271,17 +9096,20 @@ const masterDataAPI = {
     }) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       // Start transaction
       const { data: payment, error: paymentError } = await supabase
-        .from('payments')
+        .from("payments")
         .insert([{
           ...paymentData,
           lab_id,
-          payment_date: new Date().toISOString().split('T')[0],
-          created_at: new Date().toISOString()
+          payment_date: new Date().toISOString().split("T")[0],
+          created_at: new Date().toISOString(),
         }])
         .select()
         .single();
@@ -8292,27 +9120,36 @@ const masterDataAPI = {
 
       // Update invoice status based on payment
       if (payment) {
-        await masterDataAPI.enhancedPayments.updateInvoiceStatus(paymentData.invoice_id);
-        
+        await masterDataAPI.enhancedPayments.updateInvoiceStatus(
+          paymentData.invoice_id,
+        );
+
         // If cash payment and register specified, update cash register
-        if (paymentData.payment_method === 'cash' && paymentData.cash_register_id) {
-          await masterDataAPI.cashRegister.addTransaction(paymentData.cash_register_id, {
-            type: 'collection',
-            amount: paymentData.amount,
-            description: `Payment for Invoice #${payment.id}`,
-            reference_id: payment.id
-          });
+        if (
+          paymentData.payment_method === "cash" && paymentData.cash_register_id
+        ) {
+          await masterDataAPI.cashRegister.addTransaction(
+            paymentData.cash_register_id,
+            {
+              type: "collection",
+              amount: paymentData.amount,
+              description: `Payment for Invoice #${payment.id}`,
+              reference_id: payment.id,
+            },
+          );
         }
 
         // If credit payment, create credit transaction
-        if (paymentData.payment_method === 'credit' && paymentData.location_id) {
+        if (
+          paymentData.payment_method === "credit" && paymentData.location_id
+        ) {
           await masterDataAPI.creditTransactions.create({
             location_id: paymentData.location_id,
             amount: paymentData.amount,
-            type: 'debit',
+            type: "debit",
             description: `Payment for Invoice #${payment.id}`,
-            reference_type: 'payment',
-            reference_id: payment.id
+            reference_type: "payment",
+            reference_id: payment.id,
           });
         }
       }
@@ -8323,50 +9160,53 @@ const masterDataAPI = {
     updateInvoiceStatus: async (invoiceId: string) => {
       // Get total payments for this invoice
       const { data: payments } = await supabase
-        .from('payments')
-        .select('amount')
-        .eq('invoice_id', invoiceId);
+        .from("payments")
+        .select("amount")
+        .eq("invoice_id", invoiceId);
 
       // Get invoice total
       const { data: invoice } = await supabase
-        .from('invoices')
-        .select('total_amount')
-        .eq('id', invoiceId)
+        .from("invoices")
+        .select("total_amount")
+        .eq("id", invoiceId)
         .single();
 
       if (!invoice || !payments) return;
 
-      const totalPaid = payments.reduce((sum, p) => sum + parseFloat(p.amount), 0);
+      const totalPaid = payments.reduce(
+        (sum, p) => sum + parseFloat(p.amount),
+        0,
+      );
       const invoiceTotal = parseFloat(invoice.total_amount);
 
-      let status = 'pending';
+      let status = "pending";
       if (totalPaid >= invoiceTotal) {
-        status = 'paid';
+        status = "paid";
       } else if (totalPaid > 0) {
-        status = 'partially_paid';
+        status = "partially_paid";
       }
 
       await supabase
-        .from('invoices')
-        .update({ 
+        .from("invoices")
+        .update({
           status,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', invoiceId);
+        .eq("id", invoiceId);
     },
 
     getPaymentsByInvoice: async (invoiceId: string) => {
       const { data, error } = await supabase
-        .from('payments')
+        .from("payments")
         .select(`
           *,
           locations(name),
           cash_registers(register_name)
         `)
-        .eq('invoice_id', invoiceId)
-        .order('payment_date', { ascending: false });
+        .eq("invoice_id", invoiceId)
+        .order("payment_date", { ascending: false });
       return { data, error };
-    }
+    },
   },
 
   // Cash Register API
@@ -8374,21 +9214,24 @@ const masterDataAPI = {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
-      
+
       const { data, error } = await supabase
-        .from('cash_registers')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .eq('is_active', true)
-        .order('register_name');
+        .from("cash_registers")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .eq("is_active", true)
+        .order("register_name");
       return { data, error };
     },
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-        .from('cash_registers')
+        .from("cash_registers")
         .select(`
           *,
           cash_register_transactions(
@@ -8400,7 +9243,7 @@ const masterDataAPI = {
             created_at
           )
         `)
-        .eq('id', id)
+        .eq("id", id)
         .single();
 
       if (error || !data) {
@@ -8410,22 +9253,23 @@ const masterDataAPI = {
       // Calculate current balance
       const transactions = data.cash_register_transactions || [];
       const collections = transactions
-        .filter((t: any) => t.type === 'collection')
+        .filter((t: any) => t.type === "collection")
         .reduce((sum: number, t: any) => sum + parseFloat(t.amount), 0);
       const expenses = transactions
-        .filter((t: any) => t.type === 'expense')
+        .filter((t: any) => t.type === "expense")
         .reduce((sum: number, t: any) => sum + parseFloat(t.amount), 0);
-      
-      const currentBalance = parseFloat(data.opening_balance) + collections - expenses;
+
+      const currentBalance = parseFloat(data.opening_balance) + collections -
+        expenses;
 
       return {
         data: {
           ...data,
           current_balance: currentBalance,
           total_collections: collections,
-          total_expenses: expenses
+          total_expenses: expenses,
         },
-        error: null
+        error: null,
       };
     },
 
@@ -8438,16 +9282,19 @@ const masterDataAPI = {
     }) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('cash_registers')
+        .from("cash_registers")
         .insert([{
           ...registerData,
           lab_id,
           is_active: true,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
         }])
         .select()
         .single();
@@ -8455,18 +9302,18 @@ const masterDataAPI = {
     },
 
     addTransaction: async (registerId: string, transactionData: {
-      type: 'collection' | 'expense';
+      type: "collection" | "expense";
       amount: number;
       description: string;
       reference_id?: string;
     }) => {
       const { data, error } = await supabase
-        .from('cash_register_transactions')
+        .from("cash_register_transactions")
         .insert([{
           cash_register_id: registerId,
           ...transactionData,
-          transaction_date: new Date().toISOString().split('T')[0],
-          created_at: new Date().toISOString()
+          transaction_date: new Date().toISOString().split("T")[0],
+          created_at: new Date().toISOString(),
         }])
         .select()
         .single();
@@ -8474,28 +9321,29 @@ const masterDataAPI = {
     },
 
     getDailyReconciliation: async (registerId: string, date: string) => {
-      const { data: register, error: registerError } = await masterDataAPI.cashRegister.getById(registerId);
+      const { data: register, error: registerError } = await masterDataAPI
+        .cashRegister.getById(registerId);
       if (registerError || !register) {
         return { data: null, error: registerError };
       }
 
       const { data: transactions, error: transactionsError } = await supabase
-        .from('cash_register_transactions')
-        .select('*')
-        .eq('cash_register_id', registerId)
-        .eq('transaction_date', date)
-        .order('created_at');
+        .from("cash_register_transactions")
+        .select("*")
+        .eq("cash_register_id", registerId)
+        .eq("transaction_date", date)
+        .order("created_at");
 
       if (transactionsError) {
         return { data: null, error: transactionsError };
       }
 
       const dailyCollections = transactions
-        ?.filter(t => t.type === 'collection')
+        ?.filter((t) => t.type === "collection")
         .reduce((sum, t) => sum + parseFloat(t.amount), 0) || 0;
-      
+
       const dailyExpenses = transactions
-        ?.filter(t => t.type === 'expense')
+        ?.filter((t) => t.type === "expense")
         .reduce((sum, t) => sum + parseFloat(t.amount), 0) || 0;
 
       return {
@@ -8506,9 +9354,9 @@ const masterDataAPI = {
           daily_collections: dailyCollections,
           daily_expenses: dailyExpenses,
           net_change: dailyCollections - dailyExpenses,
-          expected_balance: register.current_balance
+          expected_balance: register.current_balance,
         },
-        error: null
+        error: null,
       };
     },
 
@@ -8517,15 +9365,15 @@ const masterDataAPI = {
       variance?: number;
       notes?: string;
     }) => {
-      const date = new Date().toISOString().split('T')[0];
-      
+      const date = new Date().toISOString().split("T")[0];
+
       const { data, error } = await supabase
-        .from('cash_register_closings')
+        .from("cash_register_closings")
         .insert([{
           cash_register_id: registerId,
           closing_date: date,
           ...closingData,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
         }])
         .select()
         .single();
@@ -8533,15 +9381,19 @@ const masterDataAPI = {
     },
 
     // Phase 4 methods for CashReconciliation
-    getOrCreate: async (date: string, locationId: string, shift: 'morning' | 'afternoon' | 'night' | 'full_day') => {
+    getOrCreate: async (
+      date: string,
+      locationId: string,
+      shift: "morning" | "afternoon" | "night" | "full_day",
+    ) => {
       const labId = await database.getCurrentUserLabId();
       const { data, error } = await supabase
-        .from('cash_register')
-        .select('*')
-        .eq('lab_id', labId)
-        .eq('register_date', date)
-        .eq('location_id', locationId)
-        .eq('shift', shift)
+        .from("cash_register")
+        .select("*")
+        .eq("lab_id", labId)
+        .eq("register_date", date)
+        .eq("location_id", locationId)
+        .eq("shift", shift)
         .maybeSingle();
 
       if (error) return { data: null, error };
@@ -8549,9 +9401,9 @@ const masterDataAPI = {
 
       // Get current user ID for created_by
       const { data: { user } } = await supabase.auth.getUser();
-      
+
       const { data: created, error: insertErr } = await supabase
-        .from('cash_register')
+        .from("cash_register")
         .insert({
           lab_id: labId,
           register_date: date,
@@ -8561,31 +9413,32 @@ const masterDataAPI = {
           system_amount: 0,
           created_by: user?.id || null,
         })
-        .select('*')
+        .select("*")
         .single();
       return { data: created, error: insertErr };
     },
 
     update: async (id: string, patch: Partial<{ system_amount: number }>) =>
-      supabase.from('cash_register').update(patch).eq('id', id),
+      supabase.from("cash_register").update(patch).eq("id", id),
 
     reconcile: async (id: string, actualAmount: number, notes?: string) => {
       // Get current user ID for reconciled_by
       const { data: { user } } = await supabase.auth.getUser();
-      
+
       // Get current register data to calculate closing_balance
       const { data: register } = await supabase
-        .from('cash_register')
-        .select('opening_balance, system_amount')
-        .eq('id', id)
+        .from("cash_register")
+        .select("opening_balance, system_amount")
+        .eq("id", id)
         .single();
-      
-      const closingBalance = register 
-        ? parseFloat(register.opening_balance) + parseFloat(register.system_amount)
+
+      const closingBalance = register
+        ? parseFloat(register.opening_balance) +
+          parseFloat(register.system_amount)
         : actualAmount;
-      
+
       return supabase
-        .from('cash_register')
+        .from("cash_register")
         .update({
           actual_amount: actualAmount,
           closing_balance: closingBalance,
@@ -8595,18 +9448,18 @@ const masterDataAPI = {
           reconciled_at: new Date().toISOString(),
           notes: notes || null,
         })
-        .eq('id', id);
-    }
+        .eq("id", id);
+    },
   },
 
   // Credit Transactions API
   creditTransactions: {
     getByLocation: async (locationId: string, limit?: number) => {
       let query = supabase
-        .from('credit_transactions')
-        .select('*')
-        .eq('location_id', locationId)
-        .order('created_at', { ascending: false });
+        .from("credit_transactions")
+        .select("*")
+        .eq("location_id", locationId)
+        .order("created_at", { ascending: false });
 
       if (limit) {
         query = query.limit(limit);
@@ -8619,18 +9472,18 @@ const masterDataAPI = {
     create: async (transactionData: {
       location_id: string;
       amount: number;
-      type: 'credit' | 'debit';
+      type: "credit" | "debit";
       description: string;
       reference_type?: string;
       reference_id?: string;
       notes?: string;
     }) => {
       const { data, error } = await supabase
-        .from('credit_transactions')
+        .from("credit_transactions")
         .insert([{
           ...transactionData,
-          transaction_date: new Date().toISOString().split('T')[0],
-          created_at: new Date().toISOString()
+          transaction_date: new Date().toISOString().split("T")[0],
+          created_at: new Date().toISOString(),
         }])
         .select()
         .single();
@@ -8639,20 +9492,20 @@ const masterDataAPI = {
 
     getCreditSummaryByLocation: async (locationId: string) => {
       const { data: transactions, error } = await supabase
-        .from('credit_transactions')
-        .select('amount, type')
-        .eq('location_id', locationId);
+        .from("credit_transactions")
+        .select("amount, type")
+        .eq("location_id", locationId);
 
       if (error || !transactions) {
         return { data: null, error };
       }
 
       const totalCredits = transactions
-        .filter(t => t.type === 'credit')
+        .filter((t) => t.type === "credit")
         .reduce((sum, t) => sum + parseFloat(t.amount), 0);
-      
+
       const totalDebits = transactions
-        .filter(t => t.type === 'debit')
+        .filter((t) => t.type === "debit")
         .reduce((sum, t) => sum + parseFloat(t.amount), 0);
 
       return {
@@ -8660,20 +9513,23 @@ const masterDataAPI = {
           location_id: locationId,
           total_credits: totalCredits,
           total_debits: totalDebits,
-          current_balance: totalCredits - totalDebits
+          current_balance: totalCredits - totalDebits,
         },
-        error: null
+        error: null,
       };
     },
 
     getLocationCreditReport: async (startDate?: string, endDate?: string) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       let query = supabase
-        .from('credit_transactions')
+        .from("credit_transactions")
         .select(`
           *,
           locations!location_id(
@@ -8682,18 +9538,20 @@ const masterDataAPI = {
             credit_limit
           )
         `)
-        .eq('locations.lab_id', lab_id);
+        .eq("locations.lab_id", lab_id);
 
       if (startDate) {
-        query = query.gte('transaction_date', startDate);
+        query = query.gte("transaction_date", startDate);
       }
       if (endDate) {
-        query = query.lte('transaction_date', endDate);
+        query = query.lte("transaction_date", endDate);
       }
 
-      const { data, error } = await query.order('transaction_date', { ascending: false });
+      const { data, error } = await query.order("transaction_date", {
+        ascending: false,
+      });
       return { data, error };
-    }
+    },
   },
 
   // --- NEW Phase 4: Account-aware invoice helpers used by Billing page/PaymentCapture ---
@@ -8701,25 +9559,24 @@ const masterDataAPI = {
   invoicesV4: {
     getById: async (id: string) =>
       supabase
-        .from('invoices')
-        .select('*, locations(name), accounts(name)')
-        .eq('id', id)
+        .from("invoices")
+        .select("*, locations(name), accounts(name)")
+        .eq("id", id)
         .single(),
 
     getAll: async () =>
       supabase
-        .from('invoices')
-        .select('*, locations(name), accounts(name)')
-        .order('created_at', { ascending: false }),
+        .from("invoices")
+        .select("*, locations(name), accounts(name)")
+        .order("created_at", { ascending: false }),
 
-    getByStatus: async (status: 'Unpaid' | 'Paid' | 'Partial') =>
+    getByStatus: async (status: "Unpaid" | "Paid" | "Partial") =>
       supabase
-        .from('invoices')
-        .select('*, locations(name), accounts(name)')
-        .eq('status', status)
-        .order('created_at', { ascending: false }),
+        .from("invoices")
+        .select("*, locations(name), accounts(name)")
+        .eq("status", status)
+        .order("created_at", { ascending: false }),
   },
-
   // --- Phase 4: Payments - USING ENHANCED VERSION FROM LINES 2688-2850 ---
   // Legacy direct insert removed - now using enhanced version with auto-population
 };
@@ -8731,17 +9588,20 @@ const brandingSignatureAPI = {
     getAll: async (labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: [], error: new Error('No lab_id found for current user') };
+        return {
+          data: [],
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('lab_branding_assets')
-        .select('*')
-        .eq('lab_id', labId)
-        .eq('is_active', true)
-        .order('asset_type')
-        .order('is_default', { ascending: false })
-        .order('created_at', { ascending: false });
+        .from("lab_branding_assets")
+        .select("*")
+        .eq("lab_id", labId)
+        .eq("is_active", true)
+        .order("asset_type")
+        .order("is_default", { ascending: false })
+        .order("created_at", { ascending: false });
 
       return { data: (data as LabBrandingAsset[]) || [], error };
     },
@@ -8749,17 +9609,20 @@ const brandingSignatureAPI = {
     getByType: async (assetType: string, labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: [], error: new Error('No lab_id found for current user') };
+        return {
+          data: [],
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('lab_branding_assets')
-        .select('*')
-        .eq('lab_id', labId)
-        .eq('asset_type', assetType)
-        .eq('is_active', true)
-        .order('is_default', { ascending: false })
-        .order('created_at', { ascending: false });
+        .from("lab_branding_assets")
+        .select("*")
+        .eq("lab_id", labId)
+        .eq("asset_type", assetType)
+        .eq("is_active", true)
+        .order("is_default", { ascending: false })
+        .order("created_at", { ascending: false });
 
       return { data: (data as LabBrandingAsset[]) || [], error };
     },
@@ -8767,23 +9630,26 @@ const brandingSignatureAPI = {
     getDefault: async (assetType: string, labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('lab_branding_assets')
-        .select('*')
-        .eq('lab_id', labId)
-        .eq('asset_type', assetType)
-        .eq('is_default', true)
-        .eq('is_active', true)
+        .from("lab_branding_assets")
+        .select("*")
+        .eq("lab_id", labId)
+        .eq("asset_type", assetType)
+        .eq("is_default", true)
+        .eq("is_active", true)
         .maybeSingle();
 
       return { data: data as LabBrandingAsset | null, error };
     },
 
     create: async (assetData: {
-      asset_type: 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead';
+      asset_type: "header" | "footer" | "watermark" | "logo" | "letterhead";
       asset_name: string;
       file: File;
       description?: string;
@@ -8793,18 +9659,25 @@ const brandingSignatureAPI = {
     }) => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data: { user } } = await supabase.auth.getUser();
       const userId = user?.id;
 
       // Generate file path
-      const filePath = generateBrandingFilePath(labId, assetData.asset_type, assetData.file.name);
+      const filePath = generateBrandingFilePath(
+        labId,
+        assetData.asset_type,
+        assetData.file.name,
+      );
 
       // Upload file to storage
       const { error: uploadError } = await supabase.storage
-        .from('attachments')
+        .from("attachments")
         .upload(filePath, assetData.file);
 
       if (uploadError) {
@@ -8813,12 +9686,12 @@ const brandingSignatureAPI = {
 
       // Get public URL
       const { data: { publicUrl } } = supabase.storage
-        .from('attachments')
+        .from("attachments")
         .getPublicUrl(filePath);
 
       // Create database record
       const { data, error } = await supabase
-        .from('lab_branding_assets')
+        .from("lab_branding_assets")
         .insert([{
           lab_id: labId,
           asset_type: assetData.asset_type,
@@ -8829,11 +9702,11 @@ const brandingSignatureAPI = {
           file_size: assetData.file.size,
           dimensions: assetData.dimensions,
           description: assetData.description,
-          usage_context: assetData.usage_context || ['reports'],
+          usage_context: assetData.usage_context || ["reports"],
           is_default: assetData.is_default || false,
           is_active: true,
           created_by: userId,
-          updated_by: userId
+          updated_by: userId,
         }])
         .select()
         .single();
@@ -8851,13 +9724,13 @@ const brandingSignatureAPI = {
       const userId = user?.id;
 
       const { data, error } = await supabase
-        .from('lab_branding_assets')
+        .from("lab_branding_assets")
         .update({
           ...updates,
           updated_by: userId,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', assetId)
+        .eq("id", assetId)
         .select()
         .single();
 
@@ -8867,32 +9740,39 @@ const brandingSignatureAPI = {
     setDefault: async (assetId: string, labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       // Get asset to find its type
       const { data: asset, error: assetError } = await supabase
-        .from('lab_branding_assets')
-        .select('asset_type')
-        .eq('id', assetId)
+        .from("lab_branding_assets")
+        .select("asset_type")
+        .eq("id", assetId)
         .single();
 
       if (assetError || !asset) {
-        return { data: null, error: assetError || new Error('Asset not found') };
+        return {
+          data: null,
+          error: assetError || new Error("Asset not found"),
+        };
       }
 
       // Use RPC function to set default
-      const { data, error } = await supabase.rpc('set_default_branding_asset', {
+      const { data, error } = await supabase.rpc("set_default_branding_asset", {
         p_asset_id: assetId,
         p_lab_id: labId,
-        p_asset_type: asset.asset_type
+        p_asset_type: asset.asset_type,
       });
 
       if (error) {
         return { data, error };
       }
 
-      const shouldSync = asset.asset_type === 'header' || asset.asset_type === 'footer';
+      const shouldSync = asset.asset_type === "header" ||
+        asset.asset_type === "footer";
       if (shouldSync) {
         const syncResult = await syncLabBrandingDefaultsForLab(labId);
         if (syncResult.error) {
@@ -8906,9 +9786,9 @@ const brandingSignatureAPI = {
     delete: async (assetId: string) => {
       // Get asset file path
       const { data: asset, error: fetchError } = await supabase
-        .from('lab_branding_assets')
-        .select('file_path')
-        .eq('id', assetId)
+        .from("lab_branding_assets")
+        .select("file_path")
+        .eq("id", assetId)
         .single();
 
       if (fetchError) {
@@ -8918,18 +9798,18 @@ const brandingSignatureAPI = {
       // Delete from storage
       if (asset?.file_path) {
         await supabase.storage
-          .from('attachments')
+          .from("attachments")
           .remove([asset.file_path]);
       }
 
       // Delete from database
       const { error } = await supabase
-        .from('lab_branding_assets')
+        .from("lab_branding_assets")
         .delete()
-        .eq('id', assetId);
+        .eq("id", assetId);
 
       return { error };
-    }
+    },
   },
 
   // User Signatures
@@ -8937,24 +9817,27 @@ const brandingSignatureAPI = {
     getAll: async (userIdOverride?: string, labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: [], error: new Error('No lab_id found for current user') };
+        return {
+          data: [],
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data: { user } } = await supabase.auth.getUser();
       const userId = userIdOverride || user?.id;
 
       if (!userId) {
-        return { data: [], error: new Error('No user_id found') };
+        return { data: [], error: new Error("No user_id found") };
       }
 
       const { data, error } = await supabase
-        .from('lab_user_signatures')
-        .select('*')
-        .eq('lab_id', labId)
-        .eq('user_id', userId)
-        .eq('is_active', true)
-        .order('is_default', { ascending: false })
-        .order('created_at', { ascending: false });
+        .from("lab_user_signatures")
+        .select("*")
+        .eq("lab_id", labId)
+        .eq("user_id", userId)
+        .eq("is_active", true)
+        .order("is_default", { ascending: false })
+        .order("created_at", { ascending: false });
 
       return { data: (data as LabUserSignature[]) || [], error };
     },
@@ -8962,18 +9845,21 @@ const brandingSignatureAPI = {
     getAllForLab: async (labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: [], error: new Error('No lab_id found for current user') };
+        return {
+          data: [],
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('lab_user_signatures')
+        .from("lab_user_signatures")
         .select(`
           *,
           users!user_id(id, name, email, role)
         `)
-        .eq('lab_id', labId)
-        .eq('is_active', true)
-        .order('created_at', { ascending: false });
+        .eq("lab_id", labId)
+        .eq("is_active", true)
+        .order("created_at", { ascending: false });
 
       return { data: (data as any[]) || [], error };
     },
@@ -8981,30 +9867,33 @@ const brandingSignatureAPI = {
     getDefault: async (userIdOverride?: string, labIdOverride?: string) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data: { user } } = await supabase.auth.getUser();
       const userId = userIdOverride || user?.id;
 
       if (!userId) {
-        return { data: null, error: new Error('No user_id found') };
+        return { data: null, error: new Error("No user_id found") };
       }
 
       const { data, error } = await supabase
-        .from('lab_user_signatures')
-        .select('*')
-        .eq('lab_id', labId)
-        .eq('user_id', userId)
-        .eq('is_default', true)
-        .eq('is_active', true)
+        .from("lab_user_signatures")
+        .select("*")
+        .eq("lab_id", labId)
+        .eq("user_id", userId)
+        .eq("is_default", true)
+        .eq("is_active", true)
         .maybeSingle();
 
       return { data: data as LabUserSignature | null, error };
     },
 
     create: async (signatureData: {
-      signature_type: 'digital' | 'handwritten' | 'stamp' | 'text';
+      signature_type: "digital" | "handwritten" | "stamp" | "text";
       signature_name: string;
       file?: File;
       text_signature?: string;
@@ -9016,14 +9905,17 @@ const brandingSignatureAPI = {
     }) => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data: { user } } = await supabase.auth.getUser();
       const userId = user?.id;
 
       if (!userId) {
-        return { data: null, error: new Error('No user_id found') };
+        return { data: null, error: new Error("No user_id found") };
       }
 
       let filePath: string | undefined;
@@ -9033,10 +9925,14 @@ const brandingSignatureAPI = {
 
       // Upload file if provided (for digital/handwritten/stamp signatures)
       if (signatureData.file) {
-        filePath = generateSignatureFilePath(labId, userId, signatureData.file.name);
+        filePath = generateSignatureFilePath(
+          labId,
+          userId,
+          signatureData.file.name,
+        );
 
         const { error: uploadError } = await supabase.storage
-          .from('attachments')
+          .from("attachments")
           .upload(filePath, signatureData.file);
 
         if (uploadError) {
@@ -9044,7 +9940,7 @@ const brandingSignatureAPI = {
         }
 
         const { data: { publicUrl } } = supabase.storage
-          .from('attachments')
+          .from("attachments")
           .getPublicUrl(filePath);
 
         fileUrl = publicUrl;
@@ -9054,7 +9950,7 @@ const brandingSignatureAPI = {
 
       // Create database record
       const { data, error } = await supabase
-        .from('lab_user_signatures')
+        .from("lab_user_signatures")
         .insert([{
           lab_id: labId,
           user_id: userId,
@@ -9068,11 +9964,11 @@ const brandingSignatureAPI = {
           text_signature: signatureData.text_signature,
           signature_data: signatureData.signature_data,
           description: signatureData.description,
-          usage_context: signatureData.usage_context || ['reports'],
+          usage_context: signatureData.usage_context || ["reports"],
           is_default: signatureData.is_default || false,
           is_active: true,
           created_by: userId,
-          updated_by: userId
+          updated_by: userId,
         }])
         .select()
         .single();
@@ -9092,37 +9988,44 @@ const brandingSignatureAPI = {
       const userId = user?.id;
 
       const { data, error } = await supabase
-        .from('lab_user_signatures')
+        .from("lab_user_signatures")
         .update({
           ...updates,
           updated_by: userId,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', signatureId)
+        .eq("id", signatureId)
         .select()
         .single();
 
       return { data: data as LabUserSignature | null, error };
     },
 
-    setDefault: async (signatureId: string, userIdOverride?: string, labIdOverride?: string) => {
+    setDefault: async (
+      signatureId: string,
+      userIdOverride?: string,
+      labIdOverride?: string,
+    ) => {
       const labId = labIdOverride || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data: { user } } = await supabase.auth.getUser();
       const userId = userIdOverride || user?.id;
 
       if (!userId) {
-        return { data: null, error: new Error('No user_id found') };
+        return { data: null, error: new Error("No user_id found") };
       }
 
       // Use RPC function to set default
-      const { data, error } = await supabase.rpc('set_default_user_signature', {
+      const { data, error } = await supabase.rpc("set_default_user_signature", {
         p_signature_id: signatureId,
         p_user_id: userId,
-        p_lab_id: labId
+        p_lab_id: labId,
       });
 
       return { data, error };
@@ -9131,9 +10034,9 @@ const brandingSignatureAPI = {
     delete: async (signatureId: string) => {
       // Get signature file path
       const { data: signature, error: fetchError } = await supabase
-        .from('lab_user_signatures')
-        .select('file_path')
-        .eq('id', signatureId)
+        .from("lab_user_signatures")
+        .select("file_path")
+        .eq("id", signatureId)
         .single();
 
       if (fetchError) {
@@ -9143,18 +10046,18 @@ const brandingSignatureAPI = {
       // Delete from storage if file exists
       if (signature?.file_path) {
         await supabase.storage
-          .from('attachments')
+          .from("attachments")
           .remove([signature.file_path]);
       }
 
       // Delete from database
       const { error } = await supabase
-        .from('lab_user_signatures')
+        .from("lab_user_signatures")
         .delete()
-        .eq('id', signatureId);
+        .eq("id", signatureId);
 
       return { error };
-    }
+    },
   },
 
   // =============================================
@@ -9163,37 +10066,40 @@ const brandingSignatureAPI = {
   outsourcedReports: {
     getAll: async (filters?: {
       status?: string;
-      matched?: 'matched' | 'unmatched';
+      matched?: "matched" | "unmatched";
       dateRange?: { start: string; end: string };
       labId?: string;
     }) => {
       const labId = filters?.labId || await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       let query = supabase
-        .from('outsourced_reports')
-        .select('*')
-        .eq('lab_id', labId);
+        .from("outsourced_reports")
+        .select("*")
+        .eq("lab_id", labId);
 
       if (filters?.status) {
-        query = query.eq('status', filters.status);
+        query = query.eq("status", filters.status);
       }
 
-      if (filters?.matched === 'matched') {
-        query = query.not('order_id', 'is', null);
-      } else if (filters?.matched === 'unmatched') {
-        query = query.is('order_id', null);
+      if (filters?.matched === "matched") {
+        query = query.not("order_id", "is", null);
+      } else if (filters?.matched === "unmatched") {
+        query = query.is("order_id", null);
       }
 
       if (filters?.dateRange) {
         query = query
-          .gte('received_at', filters.dateRange.start)
-          .lte('received_at', filters.dateRange.end);
+          .gte("received_at", filters.dateRange.start)
+          .lte("received_at", filters.dateRange.end);
       }
 
-      query = query.order('received_at', { ascending: false });
+      query = query.order("received_at", { ascending: false });
 
       const { data, error } = await query;
       return { data, error };
@@ -9201,9 +10107,9 @@ const brandingSignatureAPI = {
 
     getById: async (reportId: string) => {
       const { data, error } = await supabase
-        .from('outsourced_reports')
-        .select('*')
-        .eq('id', reportId)
+        .from("outsourced_reports")
+        .select("*")
+        .eq("id", reportId)
         .single();
 
       return { data, error };
@@ -9213,32 +10119,32 @@ const brandingSignatureAPI = {
       reportId: string,
       orderId: string,
       patientId: string,
-      confidence?: number
+      confidence?: number,
     ) => {
       const { data: { user } } = await supabase.auth.getUser();
       const userId = user?.id;
 
       const { data, error } = await supabase
-        .from('outsourced_reports')
+        .from("outsourced_reports")
         .update({
           order_id: orderId,
           patient_id: patientId,
           match_confidence: confidence || null,
           matched_at: new Date().toISOString(),
           matched_by: userId || null,
-          status: 'verified'
+          status: "verified",
         })
-        .eq('id', reportId)
+        .eq("id", reportId)
         .select()
         .single();
 
       if (!error && orderId) {
         // Update related result's outsourced_status to 'received'
         await supabase
-          .from('results')
-          .update({ outsourced_status: 'received' })
-          .eq('order_id', orderId)
-          .in('outsourced_status', ['sent', 'awaiting_report']);
+          .from("results")
+          .update({ outsourced_status: "received" })
+          .eq("order_id", orderId)
+          .in("outsourced_status", ["sent", "awaiting_report"]);
       }
 
       return { data, error };
@@ -9246,13 +10152,16 @@ const brandingSignatureAPI = {
 
     suggestMatches: async (reportId: string, maxResults: number = 5) => {
       const { data: report, error: reportError } = await supabase
-        .from('outsourced_reports')
-        .select('ai_extracted_data, received_at, lab_id')
-        .eq('id', reportId)
+        .from("outsourced_reports")
+        .select("ai_extracted_data, received_at, lab_id")
+        .eq("id", reportId)
         .single();
 
       if (reportError || !report) {
-        return { data: null, error: reportError || new Error('Report not found') };
+        return {
+          data: null,
+          error: reportError || new Error("Report not found"),
+        };
       }
 
       const extractedData = report.ai_extracted_data as any;
@@ -9265,9 +10174,9 @@ const brandingSignatureAPI = {
 
       // Get lab settings for date range
       const { data: settings } = await supabase
-        .from('lab_outsourcing_settings')
-        .select('match_date_range_days')
-        .eq('lab_id', report.lab_id)
+        .from("lab_outsourcing_settings")
+        .select("match_date_range_days")
+        .eq("lab_id", report.lab_id)
         .single();
 
       const dateRangeDays = settings?.match_date_range_days || 7;
@@ -9278,7 +10187,7 @@ const brandingSignatureAPI = {
 
       // Fuzzy match orders by patient name and date range
       const { data: orders, error: ordersError } = await supabase
-        .from('orders')
+        .from("orders")
         .select(`
           id,
           order_number,
@@ -9287,10 +10196,10 @@ const brandingSignatureAPI = {
           order_date,
           order_tests!inner(test_name, outsourced_lab_id)
         `)
-        .eq('lab_id', report.lab_id)
-        .gte('order_date', startDate.toISOString())
-        .lte('order_date', endDate.toISOString())
-        .not('order_tests.outsourced_lab_id', 'is', null);
+        .eq("lab_id", report.lab_id)
+        .gte("order_date", startDate.toISOString())
+        .lte("order_date", endDate.toISOString())
+        .not("order_tests.outsourced_lab_id", "is", null);
 
       if (ordersError || !orders) {
         return { data: [], error: ordersError };
@@ -9305,32 +10214,42 @@ const brandingSignatureAPI = {
           // Name similarity (simplified - basic comparison)
           const nameLower = patientName.toLowerCase();
           const orderNameLower = order.patient_name.toLowerCase();
-          
+
           if (orderNameLower === nameLower) {
             confidence += 0.5;
-            matchReasons.push('Exact name match');
-          } else if (orderNameLower.includes(nameLower) || nameLower.includes(orderNameLower)) {
+            matchReasons.push("Exact name match");
+          } else if (
+            orderNameLower.includes(nameLower) ||
+            nameLower.includes(orderNameLower)
+          ) {
             confidence += 0.3;
-            matchReasons.push('Partial name match');
+            matchReasons.push("Partial name match");
           }
 
           // Test name matching
-          const orderTestNames = (order.order_tests || []).map((ot: any) => ot.test_name.toLowerCase());
-          if (testName && orderTestNames.some((tn: string) => tn.includes(testName.toLowerCase()))) {
+          const orderTestNames = (order.order_tests || []).map((ot: any) =>
+            ot.test_name.toLowerCase()
+          );
+          if (
+            testName && orderTestNames.some((tn: string) =>
+              tn.includes(testName.toLowerCase())
+            )
+          ) {
             confidence += 0.3;
-            matchReasons.push('Test name match');
+            matchReasons.push("Test name match");
           }
 
           // Date proximity
           const daysDiff = Math.abs(
-            (new Date(order.order_date).getTime() - new Date(report.received_at).getTime()) / (1000 * 60 * 60 * 24)
+            (new Date(order.order_date).getTime() -
+              new Date(report.received_at).getTime()) / (1000 * 60 * 60 * 24),
           );
           if (daysDiff <= 1) {
             confidence += 0.2;
-            matchReasons.push('Same day order');
+            matchReasons.push("Same day order");
           } else if (daysDiff <= 3) {
             confidence += 0.1;
-            matchReasons.push('Recent order');
+            matchReasons.push("Recent order");
           }
 
           return {
@@ -9341,7 +10260,7 @@ const brandingSignatureAPI = {
             order_date: order.order_date,
             confidence: Math.min(confidence, 1.0),
             match_reasons: matchReasons,
-            test_names: orderTestNames
+            test_names: orderTestNames,
           };
         })
         .filter((s: any) => s.confidence > 0.2)
@@ -9350,9 +10269,9 @@ const brandingSignatureAPI = {
 
       // Store suggestions in the report
       await supabase
-        .from('outsourced_reports')
+        .from("outsourced_reports")
         .update({ match_suggestions: suggestions })
-        .eq('id', reportId);
+        .eq("id", reportId);
 
       return { data: suggestions, error: null };
     },
@@ -9361,14 +10280,14 @@ const brandingSignatureAPI = {
       resultId: string,
       logisticsStatus: string,
       notes?: string,
-      outsourcedStatus?: string // ✅ Add parameter to update outsourced_status
+      outsourcedStatus?: string, // ✅ Add parameter to update outsourced_status
     ) => {
       const { data: { user } } = await supabase.auth.getUser();
       const userId = user?.id;
 
       const updateData: any = {
         outsourced_logistics_status: logisticsStatus,
-        logistics_notes: notes || null
+        logistics_notes: notes || null,
       };
 
       // ✅ Update outsourced_status if provided
@@ -9376,23 +10295,23 @@ const brandingSignatureAPI = {
         updateData.outsourced_status = outsourcedStatus;
       }
 
-      if (logisticsStatus === 'in_transit') {
+      if (logisticsStatus === "in_transit") {
         updateData.dispatched_at = new Date().toISOString();
         updateData.dispatched_by = userId;
       }
 
       const { data, error } = await supabase
-        .from('results')
+        .from("results")
         .update(updateData)
-        .eq('id', resultId)
+        .eq("id", resultId)
         .select()
         .single();
 
       return { data, error };
     },
 
-    getPendingTests: async (filters?: { 
-      outsourcedLabId?: string; 
+    getPendingTests: async (filters?: {
+      outsourcedLabId?: string;
       status?: string;
       fromDate?: string;
       toDate?: string;
@@ -9400,11 +10319,14 @@ const brandingSignatureAPI = {
     }) => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       let query = supabase
-        .from('results')
+        .from("results")
         .select(`
           id,
           order_id,
@@ -9427,42 +10349,46 @@ const brandingSignatureAPI = {
           ),
           outsourced_labs(name)
         `)
-        .eq('lab_id', labId)
-        .not('outsourced_to_lab_id', 'is', null);
+        .eq("lab_id", labId)
+        .not("outsourced_to_lab_id", "is", null);
 
       if (filters?.outsourcedLabId) {
-        query = query.eq('outsourced_to_lab_id', filters.outsourcedLabId);
+        query = query.eq("outsourced_to_lab_id", filters.outsourcedLabId);
       }
 
       // ✅ Updated logic: awaiting_report includes sent tests (unless cancelled)
-      if (filters?.status === 'awaiting_report') {
+      if (filters?.status === "awaiting_report") {
         // Show both 'awaiting_report' AND 'sent' tests (dispatched ones)
         // Exclude only if explicitly cancelled (logistics_status = 'pending_dispatch' with status = 'pending_send')
-        query = query.in('outsourced_status', ['awaiting_report', 'sent']);
+        query = query.in("outsourced_status", ["awaiting_report", "sent"]);
       } else if (filters?.status) {
-        query = query.eq('outsourced_status', filters.status);
+        query = query.eq("outsourced_status", filters.status);
       } else {
-        query = query.in('outsourced_status', ['pending_send', 'sent', 'awaiting_report']);
+        query = query.in("outsourced_status", [
+          "pending_send",
+          "sent",
+          "awaiting_report",
+        ]);
       }
 
       // ✅ Add date filters
       if (filters?.fromDate) {
-        query = query.gte('created_at', filters.fromDate);
+        query = query.gte("created_at", filters.fromDate);
       }
 
       if (filters?.toDate) {
         // Add one day to include the entire end date
         const endDate = new Date(filters.toDate);
         endDate.setDate(endDate.getDate() + 1);
-        query =query.lt('created_at', endDate.toISOString());
+        query = query.lt("created_at", endDate.toISOString());
       }
 
       // ✅ Add location filtering
       if (filters?.locationIds && filters.locationIds.length > 0) {
-        query = query.in('orders.location_id', filters.locationIds);
+        query = query.in("orders.location_id", filters.locationIds);
       }
 
-      query = query.order('created_at', { ascending: false });
+      query = query.order("created_at", { ascending: false });
 
       const { data, error } = await query;
 
@@ -9483,7 +10409,7 @@ const brandingSignatureAPI = {
         dispatched_by: item.dispatched_by,
         outsourced_tat_estimate: item.outsourced_tat_estimate,
         logistics_notes: item.logistics_notes,
-        created_at: item.created_at
+        created_at: item.created_at,
       }));
 
       return { data: transformedData, error };
@@ -9492,13 +10418,13 @@ const brandingSignatureAPI = {
     getLabSettings: async (labId?: string) => {
       const targetLabId = labId || await database.getCurrentUserLabId();
       if (!targetLabId) {
-        return { data: null, error: new Error('No lab_id found') };
+        return { data: null, error: new Error("No lab_id found") };
       }
 
       const { data, error } = await supabase
-        .from('lab_outsourcing_settings')
-        .select('*')
-        .eq('lab_id', targetLabId)
+        .from("lab_outsourcing_settings")
+        .select("*")
+        .eq("lab_id", targetLabId)
         .single();
 
       return { data, error };
@@ -9507,17 +10433,20 @@ const brandingSignatureAPI = {
     updateLabSettings: async (settings: Partial<any>) => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data, error } = await supabase
-        .from('lab_outsourcing_settings')
+        .from("lab_outsourcing_settings")
         .upsert({
           lab_id: labId,
           ...settings,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         })
-        .eq('lab_id', labId)
+        .eq("lab_id", labId)
         .select()
         .single();
 
@@ -9526,16 +10455,16 @@ const brandingSignatureAPI = {
 
     generateTrackingBarcode: async (resultId: string) => {
       const barcode = `OUT-${Date.now()}-${resultId.slice(0, 8)}`;
-      
+
       const { data, error } = await supabase
-        .from('results')
+        .from("results")
         .update({ tracking_barcode: barcode })
-        .eq('id', resultId)
+        .eq("id", resultId)
         .select()
         .single();
 
       return { data: { barcode, ...data }, error };
-    }
+    },
   },
 
   // ============================================================
@@ -9552,11 +10481,14 @@ const brandingSignatureAPI = {
     }) => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       let query = supabase
-        .from('sample_transits')
+        .from("sample_transits")
         .select(`
           *,
           from_location:locations!sample_transits_from_location_id_fkey(id, name, type),
@@ -9566,27 +10498,27 @@ const brandingSignatureAPI = {
           dispatched_by_user:users!sample_transits_dispatched_by_fkey(id, name),
           received_by_user:users!sample_transits_received_by_fkey(id, name)
         `)
-        .eq('lab_id', labId);
+        .eq("lab_id", labId);
 
       if (filters?.status) {
-        query = query.eq('status', filters.status);
+        query = query.eq("status", filters.status);
       }
       if (filters?.fromLocationId) {
-        query = query.eq('from_location_id', filters.fromLocationId);
+        query = query.eq("from_location_id", filters.fromLocationId);
       }
       if (filters?.toLocationId) {
-        query = query.eq('to_location_id', filters.toLocationId);
+        query = query.eq("to_location_id", filters.toLocationId);
       }
       if (filters?.fromDate) {
-        query = query.gte('created_at', filters.fromDate);
+        query = query.gte("created_at", filters.fromDate);
       }
       if (filters?.toDate) {
         const endDate = new Date(filters.toDate);
         endDate.setDate(endDate.getDate() + 1);
-        query = query.lt('created_at', endDate.toISOString());
+        query = query.lt("created_at", endDate.toISOString());
       }
 
-      query = query.order('created_at', { ascending: false });
+      query = query.order("created_at", { ascending: false });
 
       const { data, error } = await query;
       return { data, error };
@@ -9596,12 +10528,15 @@ const brandingSignatureAPI = {
     getPendingDispatch: async (fromLocationId?: string) => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       // Get orders with samples collected at location but not yet dispatched
       let query = supabase
-        .from('orders')
+        .from("orders")
         .select(`
           id,
           order_number,
@@ -9613,15 +10548,17 @@ const brandingSignatureAPI = {
           sample_collected_at,
           locations!orders_location_id_fkey(id, name, type)
         `)
-        .eq('lab_id', labId)
-        .in('transit_status', ['at_collection_point', 'pending_dispatch'])
-        .not('sample_collected_at', 'is', null);
+        .eq("lab_id", labId)
+        .in("transit_status", ["at_collection_point", "pending_dispatch"])
+        .not("sample_collected_at", "is", null);
 
       if (fromLocationId) {
-        query = query.or(`location_id.eq.${fromLocationId},collected_at_location_id.eq.${fromLocationId}`);
+        query = query.or(
+          `location_id.eq.${fromLocationId},collected_at_location_id.eq.${fromLocationId}`,
+        );
       }
 
-      query = query.order('sample_collected_at', { ascending: true });
+      query = query.order("sample_collected_at", { ascending: true });
 
       const { data, error } = await query;
       return { data, error };
@@ -9633,35 +10570,40 @@ const brandingSignatureAPI = {
       sample_id?: string;
       from_location_id: string;
       to_location_id: string;
-      priority?: 'urgent' | 'high' | 'normal' | 'low';
+      priority?: "urgent" | "high" | "normal" | "low";
       dispatch_notes?: string;
       estimated_arrival_at?: string;
       batch_id?: string;
     }) => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data: { user } } = await supabase.auth.getUser();
       const { data: userData } = await supabase
-        .from('users')
-        .select('id')
-        .eq('email', user?.email)
+        .from("users")
+        .select("id")
+        .eq("email", user?.email)
         .single();
 
       // Generate tracking barcode
-      const barcode = `TRN-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+      const barcode = `TRN-${Date.now()}-${
+        Math.random().toString(36).slice(2, 8).toUpperCase()
+      }`;
 
       const { data, error } = await supabase
-        .from('sample_transits')
+        .from("sample_transits")
         .insert([{
           lab_id: labId,
           ...transitData,
-          status: 'pending_dispatch',
+          status: "pending_dispatch",
           tracking_barcode: barcode,
           dispatched_at: new Date().toISOString(),
-          dispatched_by: userData?.id
+          dispatched_by: userData?.id,
         }])
         .select()
         .single();
@@ -9669,9 +10611,9 @@ const brandingSignatureAPI = {
       // Update order transit_status if order_id provided
       if (!error && transitData.order_id) {
         await supabase
-          .from('orders')
-          .update({ transit_status: 'pending_dispatch' })
-          .eq('id', transitData.order_id);
+          .from("orders")
+          .update({ transit_status: "pending_dispatch" })
+          .eq("id", transitData.order_id);
       }
 
       return { data, error };
@@ -9682,19 +10624,22 @@ const brandingSignatureAPI = {
       order_ids: string[];
       from_location_id: string;
       to_location_id: string;
-      priority?: 'urgent' | 'high' | 'normal' | 'low';
+      priority?: "urgent" | "high" | "normal" | "low";
       dispatch_notes?: string;
     }) => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       const { data: { user } } = await supabase.auth.getUser();
       const { data: userData } = await supabase
-        .from('users')
-        .select('id')
-        .eq('email', user?.email)
+        .from("users")
+        .select("id")
+        .eq("email", user?.email)
         .single();
 
       // Generate batch ID
@@ -9707,26 +10652,28 @@ const brandingSignatureAPI = {
         order_id: orderId,
         from_location_id: params.from_location_id,
         to_location_id: params.to_location_id,
-        status: 'in_transit',
-        tracking_barcode: `TRN-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+        status: "in_transit",
+        tracking_barcode: `TRN-${Date.now()}-${idx}-${
+          Math.random().toString(36).slice(2, 6).toUpperCase()
+        }`,
         dispatched_at: now,
         dispatched_by: userData?.id,
-        priority: params.priority || 'normal',
+        priority: params.priority || "normal",
         dispatch_notes: params.dispatch_notes,
-        batch_id: batchId
+        batch_id: batchId,
       }));
 
       const { data, error } = await supabase
-        .from('sample_transits')
+        .from("sample_transits")
         .insert(transitRecords)
         .select();
 
       // Update all orders to in_transit
       if (!error) {
         await supabase
-          .from('orders')
-          .update({ transit_status: 'in_transit' })
-          .in('id', params.order_ids);
+          .from("orders")
+          .update({ transit_status: "in_transit" })
+          .in("id", params.order_ids);
       }
 
       return { data, error, batchId };
@@ -9736,30 +10683,30 @@ const brandingSignatureAPI = {
     updateStatus: async (transitId: string, status: string, notes?: string) => {
       const { data: { user } } = await supabase.auth.getUser();
       const { data: userData } = await supabase
-        .from('users')
-        .select('id')
-        .eq('email', user?.email)
+        .from("users")
+        .select("id")
+        .eq("email", user?.email)
         .single();
 
       const updateData: any = { status };
-      
-      if (status === 'in_transit') {
+
+      if (status === "in_transit") {
         updateData.dispatched_at = new Date().toISOString();
         updateData.dispatched_by = userData?.id;
-      } else if (status === 'delivered' || status === 'received') {
+      } else if (status === "delivered" || status === "received") {
         updateData.received_at = new Date().toISOString();
         updateData.received_by = userData?.id;
         if (notes) updateData.receipt_notes = notes;
-      } else if (status === 'issue_reported') {
+      } else if (status === "issue_reported") {
         updateData.issue_reported_at = new Date().toISOString();
         updateData.issue_reported_by = userData?.id;
         if (notes) updateData.issue_description = notes;
       }
 
       const { data, error } = await supabase
-        .from('sample_transits')
+        .from("sample_transits")
         .update(updateData)
-        .eq('id', transitId)
+        .eq("id", transitId)
         .select()
         .single();
 
@@ -9770,26 +10717,26 @@ const brandingSignatureAPI = {
     receive: async (transitId: string, params?: {
       receipt_notes?: string;
       temperature_at_receipt?: number;
-      condition_at_receipt?: 'good' | 'acceptable' | 'damaged' | 'rejected';
+      condition_at_receipt?: "good" | "acceptable" | "damaged" | "rejected";
     }) => {
       const { data: { user } } = await supabase.auth.getUser();
       const { data: userData } = await supabase
-        .from('users')
-        .select('id')
-        .eq('email', user?.email)
+        .from("users")
+        .select("id")
+        .eq("email", user?.email)
         .single();
 
       const { data, error } = await supabase
-        .from('sample_transits')
+        .from("sample_transits")
         .update({
-          status: 'received',
+          status: "received",
           received_at: new Date().toISOString(),
           received_by: userData?.id,
           receipt_notes: params?.receipt_notes,
           temperature_at_receipt: params?.temperature_at_receipt,
-          condition_at_receipt: params?.condition_at_receipt
+          condition_at_receipt: params?.condition_at_receipt,
         })
-        .eq('id', transitId)
+        .eq("id", transitId)
         .select(`
           *,
           orders(id)
@@ -9799,12 +10746,12 @@ const brandingSignatureAPI = {
       // Update order transit_status to received_at_lab AND set sample_received_at
       if (!error && data?.order_id) {
         await supabase
-          .from('orders')
-          .update({ 
-            transit_status: 'received_at_lab',
-            sample_received_at: new Date().toISOString()
+          .from("orders")
+          .update({
+            transit_status: "received_at_lab",
+            sample_received_at: new Date().toISOString(),
           })
-          .eq('id', data.order_id);
+          .eq("id", data.order_id);
       }
 
       return { data, error };
@@ -9813,40 +10760,40 @@ const brandingSignatureAPI = {
     // Bulk receive multiple transits
     bulkReceive: async (transitIds: string[], params?: {
       receipt_notes?: string;
-      condition_at_receipt?: 'good' | 'acceptable' | 'damaged' | 'rejected';
+      condition_at_receipt?: "good" | "acceptable" | "damaged" | "rejected";
     }) => {
       const { data: { user } } = await supabase.auth.getUser();
       const { data: userData } = await supabase
-        .from('users')
-        .select('id')
-        .eq('email', user?.email)
+        .from("users")
+        .select("id")
+        .eq("email", user?.email)
         .single();
 
       const now = new Date().toISOString();
 
       const { data, error } = await supabase
-        .from('sample_transits')
+        .from("sample_transits")
         .update({
-          status: 'received',
+          status: "received",
           received_at: now,
           received_by: userData?.id,
           receipt_notes: params?.receipt_notes,
-          condition_at_receipt: params?.condition_at_receipt
+          condition_at_receipt: params?.condition_at_receipt,
         })
-        .in('id', transitIds)
-        .select('order_id');
+        .in("id", transitIds)
+        .select("order_id");
 
       // Update all related orders
       if (!error && data) {
-        const orderIds = data.map(t => t.order_id).filter(Boolean);
+        const orderIds = data.map((t) => t.order_id).filter(Boolean);
         if (orderIds.length > 0) {
           await supabase
-            .from('orders')
-            .update({ 
-              transit_status: 'received_at_lab',
-              sample_received_at: now
+            .from("orders")
+            .update({
+              transit_status: "received_at_lab",
+              sample_received_at: now,
             })
-            .in('id', orderIds);
+            .in("id", orderIds);
         }
       }
 
@@ -9857,65 +10804,73 @@ const brandingSignatureAPI = {
     getStats: async (locationId?: string) => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
-        return { data: null, error: new Error('No lab_id found for current user') };
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
       }
 
       // Get counts by status
       let pendingQuery = supabase
-        .from('sample_transits')
-        .select('id', { count: 'exact', head: true })
-        .eq('lab_id', labId)
-        .eq('status', 'pending_dispatch');
+        .from("sample_transits")
+        .select("id", { count: "exact", head: true })
+        .eq("lab_id", labId)
+        .eq("status", "pending_dispatch");
 
       let inTransitQuery = supabase
-        .from('sample_transits')
-        .select('id', { count: 'exact', head: true })
-        .eq('lab_id', labId)
-        .eq('status', 'in_transit');
+        .from("sample_transits")
+        .select("id", { count: "exact", head: true })
+        .eq("lab_id", labId)
+        .eq("status", "in_transit");
 
       let receivedTodayQuery = supabase
-        .from('sample_transits')
-        .select('id', { count: 'exact', head: true })
-        .eq('lab_id', labId)
-        .eq('status', 'received')
-        .gte('received_at', new Date().toISOString().split('T')[0]);
+        .from("sample_transits")
+        .select("id", { count: "exact", head: true })
+        .eq("lab_id", labId)
+        .eq("status", "received")
+        .gte("received_at", new Date().toISOString().split("T")[0]);
 
       if (locationId) {
-        pendingQuery = pendingQuery.eq('from_location_id', locationId);
-        inTransitQuery = inTransitQuery.or(`from_location_id.eq.${locationId},to_location_id.eq.${locationId}`);
-        receivedTodayQuery = receivedTodayQuery.eq('to_location_id', locationId);
+        pendingQuery = pendingQuery.eq("from_location_id", locationId);
+        inTransitQuery = inTransitQuery.or(
+          `from_location_id.eq.${locationId},to_location_id.eq.${locationId}`,
+        );
+        receivedTodayQuery = receivedTodayQuery.eq(
+          "to_location_id",
+          locationId,
+        );
       }
 
       const [pending, inTransit, receivedToday] = await Promise.all([
         pendingQuery,
         inTransitQuery,
-        receivedTodayQuery
+        receivedTodayQuery,
       ]);
 
       return {
         data: {
           pendingDispatch: pending.count || 0,
           inTransit: inTransit.count || 0,
-          receivedToday: receivedToday.count || 0
+          receivedToday: receivedToday.count || 0,
         },
-        error: null
+        error: null,
       };
     },
 
     // Generate tracking barcode for a transit
     generateTrackingBarcode: async (transitId: string) => {
       const barcode = `TRN-${Date.now()}-${transitId.slice(0, 8)}`;
-      
+
       const { data, error } = await supabase
-        .from('sample_transits')
+        .from("sample_transits")
         .update({ tracking_barcode: barcode })
-        .eq('id', transitId)
+        .eq("id", transitId)
         .select()
         .single();
 
       return { data: { barcode, ...data }, error };
-    }
-  }
+    },
+  },
 };
 
 // Merge master data APIs into main database object
@@ -9926,33 +10881,33 @@ Object.assign(database, masterDataAPI, brandingSignatureAPI);
 export const workflowVersions = {
   getAll: async () => {
     const { data, error } = await supabase
-      .from('workflow_versions')
+      .from("workflow_versions")
       .select(`
         *,
         workflows(name, description, type, category, lab_id, is_active)
       `)
-      .order('created_at', { ascending: false });
+      .order("created_at", { ascending: false });
     return { data, error };
   },
 
   getById: async (id: string) => {
     const { data, error } = await supabase
-      .from('workflow_versions')
+      .from("workflow_versions")
       .select(`
         *,
         workflows(name, description, type, category, lab_id, is_active)
       `)
-      .eq('id', id)
+      .eq("id", id)
       .single();
     return { data, error };
   },
 
   getByWorkflowId: async (workflowId: string) => {
     const { data, error } = await supabase
-      .from('workflow_versions')
-      .select('*')
-      .eq('workflow_id', workflowId)
-      .order('version', { ascending: false });
+      .from("workflow_versions")
+      .select("*")
+      .eq("workflow_id", workflowId)
+      .order("version", { ascending: false });
     return { data, error };
   },
 
@@ -9964,7 +10919,7 @@ export const workflowVersions = {
     active?: boolean;
   }) => {
     const { data, error } = await supabase
-      .from('workflow_versions')
+      .from("workflow_versions")
       .insert([versionData])
       .select()
       .single();
@@ -9977,9 +10932,9 @@ export const workflowVersions = {
     active?: boolean;
   }) => {
     const { data, error } = await supabase
-      .from('workflow_versions')
+      .from("workflow_versions")
       .update(updates)
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
     return { data, error };
@@ -9987,27 +10942,27 @@ export const workflowVersions = {
 
   delete: async (id: string) => {
     const { error } = await supabase
-      .from('workflow_versions')
+      .from("workflow_versions")
       .delete()
-      .eq('id', id);
+      .eq("id", id);
     return { error };
-  }
+  },
 };
 
 export const workflows = {
   getAll: async () => {
     const { data, error } = await supabase
-      .from('workflows')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .from("workflows")
+      .select("*")
+      .order("created_at", { ascending: false });
     return { data, error };
   },
 
   getById: async (id: string) => {
     const { data, error } = await supabase
-      .from('workflows')
-      .select('*')
-      .eq('id', id)
+      .from("workflows")
+      .select("*")
+      .eq("id", id)
       .single();
     return { data, error };
   },
@@ -10021,7 +10976,7 @@ export const workflows = {
     is_active?: boolean;
   }) => {
     const { data, error } = await supabase
-      .from('workflows')
+      .from("workflows")
       .insert([workflowData])
       .select()
       .single();
@@ -10036,9 +10991,9 @@ export const workflows = {
     is_active?: boolean;
   }) => {
     const { data, error } = await supabase
-      .from('workflows')
+      .from("workflows")
       .update(updates)
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
     return { data, error };
@@ -10046,27 +11001,27 @@ export const workflows = {
 
   delete: async (id: string) => {
     const { error } = await supabase
-      .from('workflows')
+      .from("workflows")
       .delete()
-      .eq('id', id);
+      .eq("id", id);
     return { error };
-  }
+  },
 };
 
 export const aiProtocols = {
   getAll: async () => {
     const { data, error } = await supabase
-      .from('ai_protocols')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .from("ai_protocols")
+      .select("*")
+      .order("created_at", { ascending: false });
     return { data, error };
   },
 
   getById: async (id: string) => {
     const { data, error } = await supabase
-      .from('ai_protocols')
-      .select('*')
-      .eq('id', id)
+      .from("ai_protocols")
+      .select("*")
+      .eq("id", id)
       .single();
     return { data, error };
   },
@@ -10079,7 +11034,7 @@ export const aiProtocols = {
     lab_id: string;
   }) => {
     const { data, error } = await supabase
-      .from('ai_protocols')
+      .from("ai_protocols")
       .insert([protocolData])
       .select()
       .single();
@@ -10093,9 +11048,9 @@ export const aiProtocols = {
     status?: string;
   }) => {
     const { data, error } = await supabase
-      .from('ai_protocols')
+      .from("ai_protocols")
       .update(updates)
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
     return { data, error };
@@ -10103,22 +11058,22 @@ export const aiProtocols = {
 
   delete: async (id: string) => {
     const { error } = await supabase
-      .from('ai_protocols')
+      .from("ai_protocols")
       .delete()
-      .eq('id', id);
+      .eq("id", id);
     return { error };
-  }
+  },
 };
 
 export const testWorkflowMap = {
   getAll: async (labIdOverride?: string) => {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: [], error: new Error('No lab_id found for current user') };
+      return { data: [], error: new Error("No lab_id found for current user") };
     }
 
     const { data, error } = await supabase
-      .from('test_workflow_map')
+      .from("test_workflow_map")
       .select(`
         id,
         workflow_version_id,
@@ -10132,19 +11087,19 @@ export const testWorkflowMap = {
         test_groups!inner(id, name, lab_id),
         analytes(id, name)
       `)
-      .eq('test_groups.lab_id', labId)
-      .order('priority', { ascending: true });
+      .eq("test_groups.lab_id", labId)
+      .order("priority", { ascending: true });
     return { data, error };
   },
 
   getByTestGroupId: async (testGroupId: string, labIdOverride?: string) => {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: [], error: new Error('No lab_id found for current user') };
+      return { data: [], error: new Error("No lab_id found for current user") };
     }
 
     const { data, error } = await supabase
-      .from('test_workflow_map')
+      .from("test_workflow_map")
       .select(`
         id,
         workflow_version_id,
@@ -10157,10 +11112,10 @@ export const testWorkflowMap = {
         test_groups!inner(id, name, lab_id),
         analytes(id, name)
       `)
-      .eq('test_groups.lab_id', labId)
-      .eq('test_group_id', testGroupId)
-      .eq('is_active', true)
-      .order('priority', { ascending: true });
+      .eq("test_groups.lab_id", labId)
+      .eq("test_group_id", testGroupId)
+      .eq("is_active", true)
+      .order("priority", { ascending: true });
     return { data, error };
   },
 
@@ -10176,11 +11131,14 @@ export const testWorkflowMap = {
   }) => {
     const labId = mappingData.lab_id || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     if (!mappingData.test_code) {
-      return { data: null, error: new Error('test_code is required') };
+      return { data: null, error: new Error("test_code is required") };
     }
 
     const payload = {
@@ -10188,11 +11146,11 @@ export const testWorkflowMap = {
       lab_id: labId,
       is_active: mappingData.is_active ?? true,
       is_default: mappingData.is_default ?? false,
-      priority: mappingData.priority ?? 1
+      priority: mappingData.priority ?? 1,
     };
 
     const { data, error } = await supabase
-      .from('test_workflow_map')
+      .from("test_workflow_map")
       .insert([payload])
       .select()
       .single();
@@ -10207,14 +11165,17 @@ export const testWorkflowMap = {
   }, labIdOverride?: string) => {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     const { data, error } = await supabase
-      .from('test_workflow_map')
+      .from("test_workflow_map")
       .update(updates)
-      .eq('id', id)
-      .eq('lab_id', labId)
+      .eq("id", id)
+      .eq("lab_id", labId)
       .select()
       .single();
     return { data, error };
@@ -10223,16 +11184,16 @@ export const testWorkflowMap = {
   delete: async (id: string, labIdOverride?: string) => {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { error: new Error('No lab_id found for current user') };
+      return { error: new Error("No lab_id found for current user") };
     }
 
     const { error } = await supabase
-      .from('test_workflow_map')
+      .from("test_workflow_map")
       .delete()
-      .eq('id', id)
-      .eq('lab_id', labId);
+      .eq("id", id)
+      .eq("lab_id", labId);
     return { error };
-  }
+  },
 };
 
 const workflowAI = {
@@ -10253,12 +11214,12 @@ const workflowAI = {
       workflow_data: payload.workflow_data ?? {},
       image_attachments: payload.image_attachments ?? [],
       reference_images: payload.reference_images ?? [],
-      processing_status: 'pending' as const
+      processing_status: "pending" as const,
     };
 
     const { data, error } = await supabase
-      .from('workflow_ai_processing')
-      .upsert(insertPayload, { onConflict: 'workflow_instance_id' })
+      .from("workflow_ai_processing")
+      .upsert(insertPayload, { onConflict: "workflow_instance_id" })
       .select()
       .single();
 
@@ -10267,7 +11228,7 @@ const workflowAI = {
 
   async getByOrder(orderId: string) {
     const { data, error } = await supabase
-      .from('workflow_ai_processing')
+      .from("workflow_ai_processing")
       .select(`
         *,
         order_workflow_instances (
@@ -10278,41 +11239,41 @@ const workflowAI = {
         ),
         test_groups (id, name)
       `)
-      .eq('order_id', orderId)
-      .order('created_at', { ascending: false });
+      .eq("order_id", orderId)
+      .order("created_at", { ascending: false });
 
     return { data, error };
   },
 
   async markStatus(
     id: string,
-    status: 'pending' | 'processing' | 'completed' | 'failed',
-    patch: Record<string, unknown> = {}
+    status: "pending" | "processing" | "completed" | "failed",
+    patch: Record<string, unknown> = {},
   ) {
     const timestamps: Record<string, string> = {};
 
-    if (status === 'processing') {
+    if (status === "processing") {
       timestamps.processing_started_at = new Date().toISOString();
     }
 
-    if (status === 'completed') {
+    if (status === "completed") {
       timestamps.processing_completed_at = new Date().toISOString();
     }
 
     const { data, error } = await supabase
-      .from('workflow_ai_processing')
+      .from("workflow_ai_processing")
       .update({
         processing_status: status,
         updated_at: new Date().toISOString(),
         ...timestamps,
-        ...patch
+        ...patch,
       })
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
 
     return { data, error };
-  }
+  },
 };
 
 // Add AI Analysis & Trends namespace
@@ -10326,25 +11287,25 @@ export const aiAnalysis = {
         const { data: { user } } = await supabase.auth.getUser();
         if (user?.email) {
           const { data: userData } = await supabase
-            .from('users')
-            .select('id')
-            .eq('email', user.email)
-            .eq('status', 'Active')
+            .from("users")
+            .select("id")
+            .eq("email", user.email)
+            .eq("status", "Active")
             .single();
           userId = userData?.id;
         }
       }
-      
-      const { data, error } = await supabase.rpc('save_trend_graph_data', {
+
+      const { data, error } = await supabase.rpc("save_trend_graph_data", {
         p_order_id: orderId,
         p_trend_data: trendData,
-        p_user_id: userId
+        p_user_id: userId,
       });
-      
+
       if (error) throw error;
       return { data, error: null };
     } catch (error) {
-      console.error('Failed to save trend data:', error);
+      console.error("Failed to save trend data:", error);
       return { data: null, error };
     }
   },
@@ -10352,31 +11313,35 @@ export const aiAnalysis = {
   /**
    * Save AI-generated doctor summary to report
    */
-  saveDoctorSummary: async (orderId: string, summary: string, userId?: string) => {
+  saveDoctorSummary: async (
+    orderId: string,
+    summary: string,
+    userId?: string,
+  ) => {
     try {
       if (!userId) {
         const { data: { user } } = await supabase.auth.getUser();
         if (user?.email) {
           const { data: userData } = await supabase
-            .from('users')
-            .select('id')
-            .eq('email', user.email)
-            .eq('status', 'Active')
+            .from("users")
+            .select("id")
+            .eq("email", user.email)
+            .eq("status", "Active")
             .single();
           userId = userData?.id;
         }
       }
-      
-      const { data, error } = await supabase.rpc('generate_ai_doctor_summary', {
+
+      const { data, error } = await supabase.rpc("generate_ai_doctor_summary", {
         p_order_id: orderId,
         p_summary_text: summary,
-        p_user_id: userId
+        p_user_id: userId,
       });
-      
+
       if (error) throw error;
       return { data, error: null };
     } catch (error) {
-      console.error('Failed to save AI summary:', error);
+      console.error("Failed to save AI summary:", error);
       return { data: null, error };
     }
   },
@@ -10391,34 +11356,37 @@ export const aiAnalysis = {
       applyInterpretation?: boolean;
       customFlag?: string;
       customInterpretation?: string;
-    }
+    },
   ) => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       let userId = null;
       if (user?.email) {
         const { data: userData } = await supabase
-          .from('users')
-          .select('id')
-          .eq('email', user.email)
-          .eq('status', 'Active')
+          .from("users")
+          .select("id")
+          .eq("email", user.email)
+          .eq("status", "Active")
           .single();
         userId = userData?.id;
       }
-      
-      const { data, error } = await supabase.rpc('apply_ai_suggestions_to_result_value', {
-        p_result_value_id: resultValueId,
-        p_user_id: userId,
-        p_apply_flag: options?.applyFlag ?? true,
-        p_apply_interpretation: options?.applyInterpretation ?? true,
-        p_custom_flag: options?.customFlag ?? null,
-        p_custom_interpretation: options?.customInterpretation ?? null
-      });
-      
+
+      const { data, error } = await supabase.rpc(
+        "apply_ai_suggestions_to_result_value",
+        {
+          p_result_value_id: resultValueId,
+          p_user_id: userId,
+          p_apply_flag: options?.applyFlag ?? true,
+          p_apply_interpretation: options?.applyInterpretation ?? true,
+          p_custom_flag: options?.customFlag ?? null,
+          p_custom_interpretation: options?.customInterpretation ?? null,
+        },
+      );
+
       if (error) throw error;
       return { data, error: null };
     } catch (error) {
-      console.error('Failed to apply AI suggestions:', error);
+      console.error("Failed to apply AI suggestions:", error);
       return { data: null, error };
     }
   },
@@ -10429,16 +11397,18 @@ export const aiAnalysis = {
   getTrendData: async (orderId: string) => {
     try {
       const { data, error } = await supabase
-        .from('orders')
-        .select('trend_graph_data, trend_graph_generated_at, trend_graph_generated_by')
-        .eq('id', orderId)
+        .from("orders")
+        .select(
+          "trend_graph_data, trend_graph_generated_at, trend_graph_generated_by",
+        )
+        .eq("id", orderId)
         .maybeSingle();
-      
+
       if (error) throw error;
       // Return null data if order not found (graceful handling)
       return { data: data || null, error: null };
     } catch (error) {
-      console.error('Failed to get trend data:', error);
+      console.error("Failed to get trend data:", error);
       return { data: null, error };
     }
   },
@@ -10446,31 +11416,40 @@ export const aiAnalysis = {
   /**
    * Update include_in_report flag for trend data and generate/upload images if included
    */
-  updateTrendIncludeInReport: async (orderId: string, includeInReport: boolean) => {
+  updateTrendIncludeInReport: async (
+    orderId: string,
+    includeInReport: boolean,
+  ) => {
     try {
       // First get the existing trend data
       const { data: orderData, error: fetchError } = await supabase
-        .from('orders')
-        .select('trend_graph_data')
-        .eq('id', orderId)
+        .from("orders")
+        .select("trend_graph_data")
+        .eq("id", orderId)
         .single();
-      
+
       if (fetchError) throw fetchError;
-      
+
       const existingData = orderData?.trend_graph_data || {};
       let updatedData = {
         ...existingData,
         include_in_report: includeInReport,
-        include_in_report_updated_at: new Date().toISOString()
+        include_in_report_updated_at: new Date().toISOString(),
       };
-      
+
       // If including in report and we have analytes, generate and upload images
-      if (includeInReport && existingData.analytes && existingData.analytes.length > 0) {
-        console.log(`📸 Generating trend graph images for ${existingData.analytes.length} analytes...`);
-        
+      if (
+        includeInReport && existingData.analytes &&
+        existingData.analytes.length > 0
+      ) {
+        console.log(
+          `📸 Generating trend graph images for ${existingData.analytes.length} analytes...`,
+        );
+
         // Dynamically import trendChartGenerator to avoid circular dependency
-        const { generateTrendSVG, svgToPngBlob, uploadChartImage } = await import('./trendChartGenerator');
-        
+        const { generateTrendSVG, svgToPngBlob, uploadChartImage } =
+          await import("./trendChartGenerator");
+
         const analytesWithImages = await Promise.all(
           existingData.analytes.map(async (analyte: any) => {
             try {
@@ -10479,32 +11458,42 @@ export const aiAnalysis = {
                 order_date: dp.date || dp.timestamp,
                 value: dp.value,
                 unit: analyte.unit,
-                reference_range: `${analyte.reference_range?.min || 0}-${analyte.reference_range?.max || 100}`,
+                reference_range: `${analyte.reference_range?.min || 0}-${
+                  analyte.reference_range?.max || 100
+                }`,
                 flag: dp.flag || null,
               })) || [];
-              
+
               if (trendDataPoints.length < 2) {
-                console.log(`⏭️ Skipping ${analyte.analyte_name}: insufficient data points`);
+                console.log(
+                  `⏭️ Skipping ${analyte.analyte_name}: insufficient data points`,
+                );
                 return analyte;
               }
-              
+
               // Generate SVG
               const svg = generateTrendSVG(trendDataPoints, {
                 width: 500,
                 height: 250,
-                backgroundColor: 'white',
+                backgroundColor: "white",
                 showReferenceRange: true,
               });
-              
+
               // Convert to PNG
               const pngBlob = await svgToPngBlob(svg, 500, 250);
-              
+
               if (pngBlob) {
                 // Upload to storage
-                const imageUrl = await uploadChartImage(pngBlob, orderId, analyte.analyte_name);
-                
+                const imageUrl = await uploadChartImage(
+                  pngBlob,
+                  orderId,
+                  analyte.analyte_name,
+                );
+
                 if (imageUrl) {
-                  console.log(`✅ Uploaded trend image for ${analyte.analyte_name}`);
+                  console.log(
+                    `✅ Uploaded trend image for ${analyte.analyte_name}`,
+                  );
                   return {
                     ...analyte,
                     image_url: imageUrl,
@@ -10512,37 +11501,44 @@ export const aiAnalysis = {
                   };
                 }
               }
-              
+
               return analyte;
             } catch (err) {
-              console.error(`Failed to generate image for ${analyte.analyte_name}:`, err);
+              console.error(
+                `Failed to generate image for ${analyte.analyte_name}:`,
+                err,
+              );
               return analyte;
             }
-          })
+          }),
         );
-        
+
         updatedData = {
           ...updatedData,
           analytes: analytesWithImages,
           images_generated_at: new Date().toISOString(),
         };
-        
-        console.log(`📊 Generated images for ${analytesWithImages.filter((a: any) => a.image_url).length}/${analytesWithImages.length} analytes`);
+
+        console.log(
+          `📊 Generated images for ${
+            analytesWithImages.filter((a: any) => a.image_url).length
+          }/${analytesWithImages.length} analytes`,
+        );
       }
-      
+
       const { data, error } = await supabase
-        .from('orders')
+        .from("orders")
         .update({ trend_graph_data: updatedData })
-        .eq('id', orderId)
+        .eq("id", orderId)
         .select();
-      
+
       if (error) throw error;
       return { data, error: null };
     } catch (error) {
-      console.error('Failed to update trend include in report:', error);
+      console.error("Failed to update trend include in report:", error);
       return { data: null, error };
     }
-  }
+  },
 };
 
 // WhatsApp Templates API
@@ -10550,18 +11546,18 @@ const whatsappTemplates = {
   list: async (labIdOverride?: string, category?: string) => {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: [], error: new Error('No lab_id found for current user') };
+      return { data: [], error: new Error("No lab_id found for current user") };
     }
 
     let query = supabase
-      .from('whatsapp_message_templates')
-      .select('*')
-      .eq('lab_id', labId)
-      .order('category', { ascending: true })
-      .order('name', { ascending: true });
+      .from("whatsapp_message_templates")
+      .select("*")
+      .eq("lab_id", labId)
+      .order("category", { ascending: true })
+      .order("name", { ascending: true });
 
     if (category) {
-      query = query.eq('category', category);
+      query = query.eq("category", category);
     }
 
     const { data, error } = await query;
@@ -10570,9 +11566,9 @@ const whatsappTemplates = {
 
   get: async (id: string) => {
     const { data, error } = await supabase
-      .from('whatsapp_message_templates')
-      .select('*')
-      .eq('id', id)
+      .from("whatsapp_message_templates")
+      .select("*")
+      .eq("id", id)
       .maybeSingle();
 
     return { data, error };
@@ -10581,16 +11577,19 @@ const whatsappTemplates = {
   getDefault: async (category: string, labIdOverride?: string) => {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     const { data, error } = await supabase
-      .from('whatsapp_message_templates')
-      .select('*')
-      .eq('lab_id', labId)
-      .eq('category', category)
-      .eq('is_default', true)
-      .eq('is_active', true)
+      .from("whatsapp_message_templates")
+      .select("*")
+      .eq("lab_id", labId)
+      .eq("category", category)
+      .eq("is_default", true)
+      .eq("is_active", true)
       .maybeSingle();
 
     return { data, error };
@@ -10607,14 +11606,17 @@ const whatsappTemplates = {
   }) => {
     const labId = await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     const { data: { user } } = await supabase.auth.getUser();
     const userId = user?.id;
 
     const { data, error } = await supabase
-      .from('whatsapp_message_templates')
+      .from("whatsapp_message_templates")
       .insert({
         ...templateData,
         lab_id: labId,
@@ -10626,19 +11628,22 @@ const whatsappTemplates = {
     return { data, error };
   },
 
-  update: async (id: string, templateData: Partial<{
-    name: string;
-    category: string;
-    message_content: string;
-    requires_attachment: boolean;
-    placeholders: string[];
-    is_active: boolean;
-    is_default: boolean;
-  }>) => {
+  update: async (
+    id: string,
+    templateData: Partial<{
+      name: string;
+      category: string;
+      message_content: string;
+      requires_attachment: boolean;
+      placeholders: string[];
+      is_active: boolean;
+      is_default: boolean;
+    }>,
+  ) => {
     const { data, error } = await supabase
-      .from('whatsapp_message_templates')
+      .from("whatsapp_message_templates")
       .update(templateData)
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
 
@@ -10647,9 +11652,9 @@ const whatsappTemplates = {
 
   delete: async (id: string) => {
     const { error } = await supabase
-      .from('whatsapp_message_templates')
+      .from("whatsapp_message_templates")
       .delete()
-      .eq('id', id);
+      .eq("id", id);
 
     return { error };
   },
@@ -10658,7 +11663,7 @@ const whatsappTemplates = {
   seedDefaults: async (labIdOverride?: string) => {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { error: new Error('No lab_id found for current user') };
+      return { error: new Error("No lab_id found for current user") };
     }
 
     const { data: { user } } = await supabase.auth.getUser();
@@ -10666,9 +11671,9 @@ const whatsappTemplates = {
 
     // Check if templates already exist
     const { data: existing } = await supabase
-      .from('whatsapp_message_templates')
-      .select('id')
-      .eq('lab_id', labId)
+      .from("whatsapp_message_templates")
+      .select("id")
+      .eq("lab_id", labId)
       .limit(1);
 
     if (existing && existing.length > 0) {
@@ -10676,59 +11681,110 @@ const whatsappTemplates = {
     }
 
     // Import default templates
-    const { DEFAULT_TEMPLATES, extractPlaceholders } = await import('./whatsappTemplates');
+    const { DEFAULT_TEMPLATES, extractPlaceholders } = await import(
+      "./whatsappTemplates"
+    );
 
     const templates = [
       {
         name: DEFAULT_TEMPLATES.report_ready.name,
-        category: 'report_ready',
+        category: "report_ready",
         message_content: DEFAULT_TEMPLATES.report_ready.message,
         requires_attachment: DEFAULT_TEMPLATES.report_ready.requires_attachment,
-        placeholders: extractPlaceholders(DEFAULT_TEMPLATES.report_ready.message),
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.report_ready.message,
+        ),
         is_default: true,
         is_active: true,
       },
       {
         name: DEFAULT_TEMPLATES.appointment_reminder.name,
-        category: 'appointment_reminder',
+        category: "appointment_reminder",
         message_content: DEFAULT_TEMPLATES.appointment_reminder.message,
-        requires_attachment: DEFAULT_TEMPLATES.appointment_reminder.requires_attachment,
-        placeholders: extractPlaceholders(DEFAULT_TEMPLATES.appointment_reminder.message),
+        requires_attachment:
+          DEFAULT_TEMPLATES.appointment_reminder.requires_attachment,
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.appointment_reminder.message,
+        ),
         is_default: true,
         is_active: true,
       },
       {
         name: DEFAULT_TEMPLATES.test_results.name,
-        category: 'test_results',
+        category: "test_results",
         message_content: DEFAULT_TEMPLATES.test_results.message,
         requires_attachment: DEFAULT_TEMPLATES.test_results.requires_attachment,
-        placeholders: extractPlaceholders(DEFAULT_TEMPLATES.test_results.message),
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.test_results.message,
+        ),
         is_default: true,
         is_active: true,
       },
       {
         name: DEFAULT_TEMPLATES.doctor_notification.name,
-        category: 'doctor_notification',
+        category: "doctor_notification",
         message_content: DEFAULT_TEMPLATES.doctor_notification.message,
-        requires_attachment: DEFAULT_TEMPLATES.doctor_notification.requires_attachment,
-        placeholders: extractPlaceholders(DEFAULT_TEMPLATES.doctor_notification.message),
+        requires_attachment:
+          DEFAULT_TEMPLATES.doctor_notification.requires_attachment,
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.doctor_notification.message,
+        ),
         is_default: true,
         is_active: true,
       },
       {
         name: DEFAULT_TEMPLATES.payment_reminder.name,
-        category: 'payment_reminder',
+        category: "payment_reminder",
         message_content: DEFAULT_TEMPLATES.payment_reminder.message,
-        requires_attachment: DEFAULT_TEMPLATES.payment_reminder.requires_attachment,
-        placeholders: extractPlaceholders(DEFAULT_TEMPLATES.payment_reminder.message),
+        requires_attachment:
+          DEFAULT_TEMPLATES.payment_reminder.requires_attachment,
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.payment_reminder.message,
+        ),
+        is_default: true,
+        is_active: true,
+      },
+      {
+        name: DEFAULT_TEMPLATES.registration_confirmation.name,
+        category: "registration_confirmation",
+        message_content: DEFAULT_TEMPLATES.registration_confirmation.message,
+        requires_attachment:
+          DEFAULT_TEMPLATES.registration_confirmation.requires_attachment,
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.registration_confirmation.message,
+        ),
+        is_default: true,
+        is_active: true,
+      },
+      {
+        name: DEFAULT_TEMPLATES.doctor_report_ready.name,
+        category: "doctor_report_ready",
+        message_content: DEFAULT_TEMPLATES.doctor_report_ready.message,
+        requires_attachment:
+          DEFAULT_TEMPLATES.doctor_report_ready.requires_attachment,
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.doctor_report_ready.message,
+        ),
+        is_default: true,
+        is_active: true,
+      },
+      {
+        name: DEFAULT_TEMPLATES.invoice_generated.name,
+        category: "invoice_generated",
+        message_content: DEFAULT_TEMPLATES.invoice_generated.message,
+        requires_attachment:
+          DEFAULT_TEMPLATES.invoice_generated.requires_attachment,
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.invoice_generated.message,
+        ),
         is_default: true,
         is_active: true,
       },
     ];
 
     const { error } = await supabase
-      .from('whatsapp_message_templates')
-      .insert(templates.map(t => ({
+      .from("whatsapp_message_templates")
+      .insert(templates.map((t) => ({
         ...t,
         lab_id: labId,
         created_by: userId,
@@ -10741,44 +11797,44 @@ const whatsappTemplates = {
 // PDF Generation Queue namespace
 const pdfQueue = {
   getNextJob: async (workerId: string) => {
-    const { data, error } = await supabase.rpc('get_next_pdf_job', {
-      worker_id: workerId
+    const { data, error } = await supabase.rpc("get_next_pdf_job", {
+      worker_id: workerId,
     });
 
     return { data: data?.[0] || null, error };
   },
 
   markComplete: async (jobId: string, pdfUrl: string) => {
-    const { error } = await supabase.rpc('complete_pdf_job', {
+    const { error } = await supabase.rpc("complete_pdf_job", {
       job_id: jobId,
-      pdf_url: pdfUrl
+      pdf_url: pdfUrl,
     });
 
     return { error };
   },
 
   markFailed: async (jobId: string, errorMessage: string) => {
-    const { error } = await supabase.rpc('fail_pdf_job', {
+    const { error } = await supabase.rpc("fail_pdf_job", {
       job_id: jobId,
-      error_msg: errorMessage
+      error_msg: errorMessage,
     });
 
     return { error };
   },
 
   updateProgress: async (jobId: string, stage: string, percent: number) => {
-    const { error } = await supabase.rpc('update_pdf_job_progress', {
+    const { error } = await supabase.rpc("update_pdf_job_progress", {
       job_id: jobId,
       stage,
-      percent
+      percent,
     });
 
     return { error };
   },
 
   retryJob: async (jobId: string) => {
-    const { error } = await supabase.rpc('retry_pdf_job', {
-      job_id: jobId
+    const { error } = await supabase.rpc("retry_pdf_job", {
+      job_id: jobId,
     });
 
     return { error };
@@ -10787,11 +11843,14 @@ const pdfQueue = {
   getQueueStatus: async (labIdOverride?: string) => {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     const { data, error } = await supabase
-      .from('pdf_generation_queue')
+      .from("pdf_generation_queue")
       .select(`
         id,
         order_id,
@@ -10807,8 +11866,8 @@ const pdfQueue = {
         max_retries,
         processing_by
       `)
-      .eq('lab_id', labId)
-      .order('created_at', { ascending: false })
+      .eq("lab_id", labId)
+      .order("created_at", { ascending: false })
       .limit(100);
 
     return { data, error };
@@ -10816,9 +11875,9 @@ const pdfQueue = {
 
   getJobForOrder: async (orderId: string) => {
     const { data, error } = await supabase
-      .from('pdf_generation_queue')
-      .select('*')
-      .eq('order_id', orderId)
+      .from("pdf_generation_queue")
+      .select("*")
+      .eq("order_id", orderId)
       .maybeSingle();
 
     return { data, error };
@@ -10827,13 +11886,16 @@ const pdfQueue = {
   getStatistics: async (labIdOverride?: string) => {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     const { data, error } = await supabase
-      .from('pdf_generation_queue')
-      .select('status')
-      .eq('lab_id', labId);
+      .from("pdf_generation_queue")
+      .select("status")
+      .eq("lab_id", labId);
 
     if (error) return { data: null, error };
 
@@ -10842,10 +11904,10 @@ const pdfQueue = {
       processing: 0,
       completed: 0,
       failed: 0,
-      total: data?.length || 0
+      total: data?.length || 0,
     };
 
-    data?.forEach(job => {
+    data?.forEach((job) => {
       if (job.status in stats) {
         stats[job.status as keyof typeof stats]++;
       }
@@ -10855,84 +11917,105 @@ const pdfQueue = {
   },
 
   // Trigger on-demand PDF generation via edge function (fully server-side)
-  triggerGeneration: async (orderId: string, onProgress?: (stage: string, percent: number) => void) => {
+  triggerGeneration: async (
+    orderId: string,
+    onProgress?: (stage: string, percent: number) => void,
+  ) => {
     try {
-      console.log('🚀 Triggering server-side PDF generation for order:', orderId);
-      onProgress?.('Starting server-side PDF generation...', 5);
-      
+      console.log(
+        "🚀 Triggering server-side PDF generation for order:",
+        orderId,
+      );
+      onProgress?.("Starting server-side PDF generation...", 5);
+
       // Get current user ID for WhatsApp integration
       const { data: { user } } = await supabase.auth.getUser();
       const triggeredByUserId = user?.id;
-      
+
       // Call edge function - it handles everything server-side:
       // Context fetch → Template rendering → PDF.co generation → Storage upload
-      const { data, error } = await supabase.functions.invoke('generate-pdf-letterhead', {
-        body: { orderId, triggeredByUserId }
-      });
+      const { data, error } = await supabase.functions.invoke(
+        "generate-pdf-letterhead",
+        {
+          body: { orderId, triggeredByUserId },
+        },
+      );
 
       if (error) {
-        console.error('❌ Edge function failed:', error);
+        console.error("❌ Edge function failed:", error);
         return { data: null, error };
       }
 
       // Check for error response from edge function
       if (data?.error) {
-        console.error('❌ PDF generation failed:', data.error, data.details);
-        return { data: null, error: new Error(data.error + (data.details ? `: ${data.details}` : '')) };
+        console.error("❌ PDF generation failed:", data.error, data.details);
+        return {
+          data: null,
+          error: new Error(
+            data.error + (data.details ? `: ${data.details}` : ""),
+          ),
+        };
       }
 
       // Handle already completed case
-      if (data?.status === 'completed' && data?.pdfUrl) {
-        console.log('✅ PDF already exists:', data.pdfUrl);
-        onProgress?.('PDF already generated', 100);
+      if (data?.status === "completed" && data?.pdfUrl) {
+        console.log("✅ PDF already exists:", data.pdfUrl);
+        onProgress?.("PDF already generated", 100);
         return { data: { success: true, pdfUrl: data.pdfUrl }, error: null };
       }
 
       // Check for successful completion
       if (!data?.success || !data?.pdfUrl) {
-        console.error('❌ Edge function returned unexpected response:', data);
-        return { data: null, error: new Error(data?.message || 'PDF generation failed - no URL returned') };
+        console.error("❌ Edge function returned unexpected response:", data);
+        return {
+          data: null,
+          error: new Error(
+            data?.message || "PDF generation failed - no URL returned",
+          ),
+        };
       }
 
       // Update order status
       await supabase
-        .from('orders')
-        .update({ 
-          report_generation_status: 'completed',
-          report_auto_generated_at: new Date().toISOString()
+        .from("orders")
+        .update({
+          report_generation_status: "completed",
+          report_auto_generated_at: new Date().toISOString(),
         })
-        .eq('id', orderId);
+        .eq("id", orderId);
 
-      onProgress?.('Complete!', 100);
-      console.log('✅ PDF generation complete:', data.pdfUrl);
-      
-      return { 
-        data: { 
-          success: true, 
+      onProgress?.("Complete!", 100);
+      console.log("✅ PDF generation complete:", data.pdfUrl);
+
+      return {
+        data: {
+          success: true,
           pdfUrl: data.pdfUrl,
           storagePath: data.storagePath,
-          jobId: data.jobId 
-        }, 
-        error: null 
+          jobId: data.jobId,
+        },
+        error: null,
       };
     } catch (error) {
-      console.error('❌ PDF generation error:', error);
-      
+      console.error("❌ PDF generation error:", error);
+
       // Mark job as failed
       await supabase
-        .from('pdf_generation_queue')
-        .update({ 
-          status: 'failed',
-          error_message: error instanceof Error ? error.message : String(error)
+        .from("pdf_generation_queue")
+        .update({
+          status: "failed",
+          error_message: error instanceof Error ? error.message : String(error),
         })
-        .eq('order_id', orderId);
-      
-      return { 
-        data: null, 
-        error: error instanceof Error ? error : new Error('Failed to generate PDF')
+        .eq("order_id", orderId);
+
+      return {
+        data: null,
+        error: error instanceof Error
+          ? error
+          : new Error("Failed to generate PDF"),
       };
     }
-  }
+  },
 };
 
 // Add workflow helpers to database object
@@ -10969,13 +12052,13 @@ const flagAudits = {
     ai_suggested_flag?: string;
     ai_confidence?: number;
     ai_reasoning?: string;
-    priority?: 'low' | 'normal' | 'high' | 'critical';
+    priority?: "low" | "normal" | "high" | "critical";
   }) {
     const lab_id = await database.getCurrentUserLabId();
-    if (!lab_id) throw new Error('No lab context');
-    
+    if (!lab_id) throw new Error("No lab context");
+
     return supabase
-      .from('ai_flag_audits')
+      .from("ai_flag_audits")
       .insert({ ...audit, lab_id })
       .select()
       .single();
@@ -10983,96 +12066,104 @@ const flagAudits = {
 
   async getPending(limit = 50) {
     const lab_id = await database.getCurrentUserLabId();
-    if (!lab_id) throw new Error('No lab context');
-    
+    if (!lab_id) throw new Error("No lab context");
+
     return supabase
-      .from('ai_flag_audits')
+      .from("ai_flag_audits")
       .select(`
         *,
         analytes(name, unit),
         orders(order_number, patient:patients(name, age, gender))
       `)
-      .eq('lab_id', lab_id)
-      .eq('status', 'pending')
-      .order('priority', { ascending: true })
-      .order('created_at', { ascending: true })
+      .eq("lab_id", lab_id)
+      .eq("status", "pending")
+      .order("priority", { ascending: true })
+      .order("created_at", { ascending: true })
       .limit(limit);
   },
 
   async getByResultValue(resultValueId: string) {
     return supabase
-      .from('ai_flag_audits')
-      .select('*')
-      .eq('result_value_id', resultValueId)
-      .order('created_at', { ascending: false })
+      .from("ai_flag_audits")
+      .select("*")
+      .eq("result_value_id", resultValueId)
+      .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
   },
 
   async resolve(id: string, data: {
     final_flag: string;
-    resolution_method: 'auto_accepted' | 'ai_accepted' | 'manual_override' | 'ignored';
+    resolution_method:
+      | "auto_accepted"
+      | "ai_accepted"
+      | "manual_override"
+      | "ignored";
     resolution_notes?: string;
   }) {
     const { data: { user } } = await supabase.auth.getUser();
-    
+
     return supabase
-      .from('ai_flag_audits')
+      .from("ai_flag_audits")
       .update({
         ...data,
-        status: data.resolution_method === 'ignored' ? 'ignored' : 'manually_resolved',
+        status: data.resolution_method === "ignored"
+          ? "ignored"
+          : "manually_resolved",
         resolved_by: user?.id,
         resolved_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       })
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
   },
 
   async getStats() {
     const lab_id = await database.getCurrentUserLabId();
-    if (!lab_id) throw new Error('No lab context');
-    
+    if (!lab_id) throw new Error("No lab context");
+
     const { data } = await supabase
-      .from('ai_flag_audits')
-      .select('status, priority')
-      .eq('lab_id', lab_id);
-    
+      .from("ai_flag_audits")
+      .select("status, priority")
+      .eq("lab_id", lab_id);
+
     return {
-      pending: data?.filter(d => d.status === 'pending').length || 0,
-      pendingCritical: data?.filter(d => d.status === 'pending' && d.priority === 'critical').length || 0,
-      resolved: data?.filter(d => d.status !== 'pending').length || 0
+      pending: data?.filter((d) => d.status === "pending").length || 0,
+      pendingCritical:
+        data?.filter((d) => d.status === "pending" && d.priority === "critical")
+          .length || 0,
+      resolved: data?.filter((d) => d.status !== "pending").length || 0,
     };
-  }
+  },
 };
 
 const analyteFlagRules = {
   async getForAnalyte(analyteId: string) {
     const lab_id = await database.getCurrentUserLabId();
-    
+
     return supabase
-      .from('analyte_flag_rules')
-      .select('*')
-      .eq('analyte_id', analyteId)
+      .from("analyte_flag_rules")
+      .select("*")
+      .eq("analyte_id", analyteId)
       .or(`lab_id.eq.${lab_id},lab_id.is.null`)
-      .eq('is_active', true)
-      .order('rule_priority', { ascending: false });
+      .eq("is_active", true)
+      .order("rule_priority", { ascending: false });
   },
 
   async getAll() {
     const lab_id = await database.getCurrentUserLabId();
-    if (!lab_id) throw new Error('No lab context');
-    
+    if (!lab_id) throw new Error("No lab context");
+
     return supabase
-      .from('analyte_flag_rules')
+      .from("analyte_flag_rules")
       .select(`
         *,
         analytes(name, unit, category)
       `)
       .or(`lab_id.eq.${lab_id},lab_id.is.null`)
-      .eq('is_active', true)
-      .order('rule_priority', { ascending: false });
+      .eq("is_active", true)
+      .order("rule_priority", { ascending: false });
   },
 
   async create(rule: {
@@ -11081,7 +12172,7 @@ const analyteFlagRules = {
     rule_priority?: number;
     age_min?: number;
     age_max?: number;
-    gender?: 'Male' | 'Female';
+    gender?: "Male" | "Female";
     ref_low?: number;
     ref_high?: number;
     critical_low?: number;
@@ -11090,43 +12181,46 @@ const analyteFlagRules = {
     abnormal_values?: string[];
   }) {
     const lab_id = await database.getCurrentUserLabId();
-    if (!lab_id) throw new Error('No lab context');
-    
+    if (!lab_id) throw new Error("No lab context");
+
     return supabase
-      .from('analyte_flag_rules')
+      .from("analyte_flag_rules")
       .insert({ ...rule, lab_id })
       .select()
       .single();
   },
 
-  async update(id: string, updates: Partial<{
-    rule_name: string;
-    rule_priority: number;
-    age_min: number;
-    age_max: number;
-    gender: string;
-    ref_low: number;
-    ref_high: number;
-    critical_low: number;
-    critical_high: number;
-    normal_values: string[];
-    abnormal_values: string[];
-    is_active: boolean;
-  }>) {
+  async update(
+    id: string,
+    updates: Partial<{
+      rule_name: string;
+      rule_priority: number;
+      age_min: number;
+      age_max: number;
+      gender: string;
+      ref_low: number;
+      ref_high: number;
+      critical_low: number;
+      critical_high: number;
+      normal_values: string[];
+      abnormal_values: string[];
+      is_active: boolean;
+    }>,
+  ) {
     return supabase
-      .from('analyte_flag_rules')
+      .from("analyte_flag_rules")
       .update(updates)
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
   },
 
   async delete(id: string) {
     return supabase
-      .from('analyte_flag_rules')
+      .from("analyte_flag_rules")
       .delete()
-      .eq('id', id);
-  }
+      .eq("id", id);
+  },
 };
 
 // Add flag audit helpers to database object
@@ -11144,15 +12238,15 @@ export const invoiceTemplates = {
    */
   async getAll() {
     const lab_id = await database.getCurrentUserLabId();
-    if (!lab_id) throw new Error('No lab context');
+    if (!lab_id) throw new Error("No lab context");
 
     return supabase
-      .from('invoice_templates')
-      .select('*')
-      .eq('lab_id', lab_id)
-      .eq('is_active', true)
-      .order('is_default', { ascending: false })
-      .order('created_at', { ascending: false });
+      .from("invoice_templates")
+      .select("*")
+      .eq("lab_id", lab_id)
+      .eq("is_active", true)
+      .order("is_default", { ascending: false })
+      .order("created_at", { ascending: false });
   },
 
   /**
@@ -11160,14 +12254,14 @@ export const invoiceTemplates = {
    */
   async getDefault(labId?: string) {
     const lab_id = labId || await database.getCurrentUserLabId();
-    if (!lab_id) throw new Error('No lab context');
+    if (!lab_id) throw new Error("No lab context");
 
     return supabase
-      .from('invoice_templates')
-      .select('*')
-      .eq('lab_id', lab_id)
-      .eq('is_default', true)
-      .eq('is_active', true)
+      .from("invoice_templates")
+      .select("*")
+      .eq("lab_id", lab_id)
+      .eq("is_default", true)
+      .eq("is_active", true)
       .maybeSingle();
   },
 
@@ -11176,9 +12270,9 @@ export const invoiceTemplates = {
    */
   async getById(id: string) {
     return supabase
-      .from('invoice_templates')
-      .select('*')
-      .eq('id', id)
+      .from("invoice_templates")
+      .select("*")
+      .eq("id", id)
       .single();
   },
 
@@ -11203,12 +12297,12 @@ export const invoiceTemplates = {
     tax_disclaimer?: string;
   }) {
     const lab_id = await database.getCurrentUserLabId();
-    if (!lab_id) throw new Error('No lab context');
+    if (!lab_id) throw new Error("No lab context");
 
     const { data: { user } } = await supabase.auth.getUser();
 
     return supabase
-      .from('invoice_templates')
+      .from("invoice_templates")
       .insert({
         ...template,
         lab_id,
@@ -11221,34 +12315,37 @@ export const invoiceTemplates = {
   /**
    * Update invoice template
    */
-  async update(id: string, updates: Partial<{
-    template_name: string;
-    template_description: string;
-    category: string;
-    gjs_html: string;
-    gjs_css: string;
-    gjs_components: any;
-    gjs_styles: any;
-    gjs_project: any;
-    is_default: boolean;
-    is_active: boolean;
-    include_payment_terms: boolean;
-    payment_terms_text: string;
-    include_tax_breakdown: boolean;
-    include_bank_details: boolean;
-    bank_details: any;
-    tax_disclaimer: string;
-  }>) {
+  async update(
+    id: string,
+    updates: Partial<{
+      template_name: string;
+      template_description: string;
+      category: string;
+      gjs_html: string;
+      gjs_css: string;
+      gjs_components: any;
+      gjs_styles: any;
+      gjs_project: any;
+      is_default: boolean;
+      is_active: boolean;
+      include_payment_terms: boolean;
+      payment_terms_text: string;
+      include_tax_breakdown: boolean;
+      include_bank_details: boolean;
+      bank_details: any;
+      tax_disclaimer: string;
+    }>,
+  ) {
     const { data: { user } } = await supabase.auth.getUser();
 
     return supabase
-      .from('invoice_templates')
+      .from("invoice_templates")
       .update({
         ...updates,
         updated_by: user?.id,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
   },
@@ -11258,13 +12355,13 @@ export const invoiceTemplates = {
    */
   async setDefault(id: string) {
     const lab_id = await database.getCurrentUserLabId();
-    if (!lab_id) throw new Error('No lab context');
+    if (!lab_id) throw new Error("No lab context");
 
     // The trigger will handle unsetting other defaults
     return supabase
-      .from('invoice_templates')
+      .from("invoice_templates")
       .update({ is_default: true })
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
   },
@@ -11274,9 +12371,9 @@ export const invoiceTemplates = {
    */
   async delete(id: string) {
     return supabase
-      .from('invoice_templates')
+      .from("invoice_templates")
       .update({ is_active: false })
-      .eq('id', id);
+      .eq("id", id);
   },
 
   /**
@@ -11284,9 +12381,9 @@ export const invoiceTemplates = {
    */
   async permanentDelete(id: string) {
     return supabase
-      .from('invoice_templates')
+      .from("invoice_templates")
       .delete()
-      .eq('id', id);
+      .eq("id", id);
   },
 };
 
@@ -11296,12 +12393,14 @@ Object.assign(database, {
 });
 
 async function syncLabBrandingDefaultsForLab(
-  labId: string
+  labId: string,
 ): Promise<{ error: Error | null }> {
   const { data: labRecord, error: labFetchError } = await supabase
-    .from('labs')
-    .select('id, name, address, city, state, pincode, phone, email, license_number')
-    .eq('id', labId)
+    .from("labs")
+    .select(
+      "id, name, address, city, state, pincode, phone, email, license_number",
+    )
+    .eq("id", labId)
     .maybeSingle();
 
   if (labFetchError) {
@@ -11309,33 +12408,47 @@ async function syncLabBrandingDefaultsForLab(
   }
 
   if (!labRecord) {
-    return { error: new Error('Lab not found while syncing branding defaults') };
+    return {
+      error: new Error("Lab not found while syncing branding defaults"),
+    };
   }
 
   const { data: assets, error: assetsError } = await supabase
-    .from('lab_branding_assets')
-    .select('asset_type, asset_name, description, file_url, imagekit_url, variants')
-    .eq('lab_id', labId)
-    .eq('is_default', true)
-    .in('asset_type', ['header', 'footer']);
+    .from("lab_branding_assets")
+    .select(
+      "asset_type, asset_name, description, file_url, imagekit_url, variants",
+    )
+    .eq("lab_id", labId)
+    .eq("is_default", true)
+    .in("asset_type", ["header", "footer"]);
 
   if (assetsError) {
     return { error: assetsError };
   }
 
-  const assetList = Array.isArray(assets) ? (assets as BrandingAssetSnippet[]) : [];
-  const headerAsset = assetList.find((asset) => asset.asset_type === 'header') ?? null;
-  const footerAsset = assetList.find((asset) => asset.asset_type === 'footer') ?? null;
+  const assetList = Array.isArray(assets)
+    ? (assets as BrandingAssetSnippet[])
+    : [];
+  const headerAsset =
+    assetList.find((asset) => asset.asset_type === "header") ?? null;
+  const footerAsset =
+    assetList.find((asset) => asset.asset_type === "footer") ?? null;
 
-  const headerHtml = composeHeaderHtml(labRecord as LabContactRecord, headerAsset);
-  const footerHtml = composeFooterHtml(labRecord as LabContactRecord, footerAsset);
+  const headerHtml = composeHeaderHtml(
+    labRecord as LabContactRecord,
+    headerAsset,
+  );
+  const footerHtml = composeFooterHtml(
+    labRecord as LabContactRecord,
+    footerAsset,
+  );
 
   const updateResult = await database.labs.updateBrandingHtmlDefaults(
     {
       headerHtml,
       footerHtml,
     },
-    labId
+    labId,
   );
 
   return { error: updateResult.error };
@@ -11352,13 +12465,16 @@ const notificationSettings = {
   async get(labIdOverride?: string) {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     return supabase
-      .from('lab_notification_settings')
-      .select('*')
-      .eq('lab_id', labId)
+      .from("lab_notification_settings")
+      .select("*")
+      .eq("lab_id", labId)
       .maybeSingle();
   },
 
@@ -11381,16 +12497,19 @@ const notificationSettings = {
   }, labIdOverride?: string) {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     return supabase
-      .from('lab_notification_settings')
+      .from("lab_notification_settings")
       .upsert({
         lab_id: labId,
         ...settings,
         updated_at: new Date().toISOString(),
-      }, { onConflict: 'lab_id' })
+      }, { onConflict: "lab_id" })
       .select()
       .single();
   },
@@ -11402,17 +12521,17 @@ const notificationQueue = {
    */
   async getPending(limit = 10, labIdOverride?: string) {
     const labId = labIdOverride || await database.getCurrentUserLabId();
-    
+
     let query = supabase
-      .from('notification_queue')
-      .select('*')
-      .eq('status', 'pending')
-      .lt('attempts', 3)
-      .order('created_at', { ascending: true })
+      .from("notification_queue")
+      .select("*")
+      .eq("status", "pending")
+      .lt("attempts", 3)
+      .order("created_at", { ascending: true })
       .limit(limit);
 
     if (labId) {
-      query = query.eq('lab_id', labId);
+      query = query.eq("lab_id", labId);
     }
 
     return query;
@@ -11429,24 +12548,24 @@ const notificationQueue = {
   }, labIdOverride?: string) {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: [], error: new Error('No lab_id found for current user') };
+      return { data: [], error: new Error("No lab_id found for current user") };
     }
 
     let query = supabase
-      .from('notification_queue')
-      .select('*')
-      .eq('lab_id', labId)
-      .order('created_at', { ascending: false })
+      .from("notification_queue")
+      .select("*")
+      .eq("lab_id", labId)
+      .order("created_at", { ascending: false })
       .limit(filters?.limit || 50);
 
     if (filters?.status) {
-      query = query.eq('status', filters.status);
+      query = query.eq("status", filters.status);
     }
     if (filters?.trigger_type) {
-      query = query.eq('trigger_type', filters.trigger_type);
+      query = query.eq("trigger_type", filters.trigger_type);
     }
     if (filters?.recipient_type) {
-      query = query.eq('recipient_type', filters.recipient_type);
+      query = query.eq("recipient_type", filters.recipient_type);
     }
 
     return query;
@@ -11456,11 +12575,15 @@ const notificationQueue = {
    * Add notification to queue
    */
   async add(notification: {
-    recipient_type: 'patient' | 'doctor';
+    recipient_type: "patient" | "doctor";
     recipient_phone: string;
     recipient_name?: string;
     recipient_id?: string;
-    trigger_type: 'report_ready' | 'invoice_generated' | 'order_registered' | 'payment_reminder';
+    trigger_type:
+      | "report_ready"
+      | "invoice_generated"
+      | "order_registered"
+      | "payment_reminder";
     order_id?: string;
     report_id?: string;
     invoice_id?: string;
@@ -11472,15 +12595,18 @@ const notificationQueue = {
   }, labIdOverride?: string) {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     return supabase
-      .from('notification_queue')
+      .from("notification_queue")
       .insert({
         lab_id: labId,
         ...notification,
-        status: 'pending',
+        status: "pending",
         scheduled_for: notification.scheduled_for || new Date().toISOString(),
         attempts: 0,
         max_attempts: 3,
@@ -11499,13 +12625,13 @@ const notificationQueue = {
     attempts?: number;
   }) {
     return supabase
-      .from('notification_queue')
+      .from("notification_queue")
       .update({
         status,
         ...additionalFields,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', id);
+      .eq("id", id);
   },
 
   /**
@@ -11514,13 +12640,16 @@ const notificationQueue = {
   async getStats(labIdOverride?: string) {
     const labId = labIdOverride || await database.getCurrentUserLabId();
     if (!labId) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     const { data, error } = await supabase
-      .from('notification_queue')
-      .select('status')
-      .eq('lab_id', labId);
+      .from("notification_queue")
+      .select("status")
+      .eq("lab_id", labId);
 
     if (error) return { data: null, error };
 
@@ -11531,12 +12660,15 @@ const notificationQueue = {
       total: data?.length || 0,
     };
 
-    data?.forEach(item => {
-      if (item.status === 'pending' || item.status === 'scheduled' || item.status === 'sending') {
+    data?.forEach((item) => {
+      if (
+        item.status === "pending" || item.status === "scheduled" ||
+        item.status === "sending"
+      ) {
         stats.pending++;
-      } else if (item.status === 'sent') {
+      } else if (item.status === "sent") {
         stats.sent++;
-      } else if (item.status === 'failed') {
+      } else if (item.status === "failed") {
         stats.failed++;
       }
     });
@@ -11558,15 +12690,15 @@ const locationTestPrices = {
    */
   async getByLocation(locationId: string) {
     const { data, error } = await supabase
-      .from('location_test_prices')
+      .from("location_test_prices")
       .select(`
         *,
         test_group:test_groups(id, name, code, price, category)
       `)
-      .eq('location_id', locationId)
-      .eq('is_active', true)
-      .lte('effective_from', new Date().toISOString().split('T')[0])
-      .order('test_group(name)');
+      .eq("location_id", locationId)
+      .eq("is_active", true)
+      .lte("effective_from", new Date().toISOString().split("T")[0])
+      .order("test_group(name)");
     return { data, error };
   },
 
@@ -11576,19 +12708,22 @@ const locationTestPrices = {
   async getAll() {
     const lab_id = await database.getCurrentUserLabId();
     if (!lab_id) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     const { data, error } = await supabase
-      .from('location_test_prices')
+      .from("location_test_prices")
       .select(`
         *,
         location:locations!inner(id, name, lab_id, collection_percentage, receivable_type),
         test_group:test_groups(id, name, code, price, category)
       `)
-      .eq('location.lab_id', lab_id)
-      .eq('is_active', true)
-      .order('location(name), test_group(name)');
+      .eq("location.lab_id", lab_id)
+      .eq("is_active", true)
+      .order("location(name), test_group(name)");
     return { data, error };
   },
 
@@ -11596,15 +12731,15 @@ const locationTestPrices = {
    * Get effective price for a test at a location
    */
   async getPrice(locationId: string, testGroupId: string) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Date().toISOString().split("T")[0];
     const { data, error } = await supabase
-      .from('location_test_prices')
-      .select('*')
-      .eq('location_id', locationId)
-      .eq('test_group_id', testGroupId)
-      .eq('is_active', true)
-      .lte('effective_from', today)
-      .order('effective_from', { ascending: false })
+      .from("location_test_prices")
+      .select("*")
+      .eq("location_id", locationId)
+      .eq("test_group_id", testGroupId)
+      .eq("is_active", true)
+      .lte("effective_from", today)
+      .order("effective_from", { ascending: false })
       .limit(1)
       .maybeSingle();
     return { data, error };
@@ -11626,36 +12761,38 @@ const locationTestPrices = {
 
     // Check if exists
     const { data: existing } = await supabase
-      .from('location_test_prices')
-      .select('id')
-      .eq('location_id', data.location_id)
-      .eq('test_group_id', data.test_group_id)
-      .eq('is_active', true)
+      .from("location_test_prices")
+      .select("id")
+      .eq("location_id", data.location_id)
+      .eq("test_group_id", data.test_group_id)
+      .eq("is_active", true)
       .maybeSingle();
 
     if (existing) {
       // Update
       const { data: updated, error } = await supabase
-        .from('location_test_prices')
+        .from("location_test_prices")
         .update({
           patient_price: data.patient_price,
           lab_receivable: data.lab_receivable,
-          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          effective_from: data.effective_from ||
+            new Date().toISOString().split("T")[0],
           notes: data.notes,
           updated_by: userId,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', existing.id)
+        .eq("id", existing.id)
         .select()
         .single();
       return { data: updated, error };
     } else {
       // Insert
       const { data: inserted, error } = await supabase
-        .from('location_test_prices')
+        .from("location_test_prices")
         .insert({
           ...data,
-          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          effective_from: data.effective_from ||
+            new Date().toISOString().split("T")[0],
           created_by: userId,
           is_active: true,
         })
@@ -11668,14 +12805,17 @@ const locationTestPrices = {
   /**
    * Bulk upsert prices (for CSV import)
    */
-  async bulkUpsert(locationId: string, prices: Array<{
-    test_group_id: string;
-    patient_price: number;
-    lab_receivable?: number | null;
-  }>) {
+  async bulkUpsert(
+    locationId: string,
+    prices: Array<{
+      test_group_id: string;
+      patient_price: number;
+      lab_receivable?: number | null;
+    }>,
+  ) {
     const { data: { user } } = await supabase.auth.getUser();
     const userId = user?.id;
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Date().toISOString().split("T")[0];
 
     const results = { success: 0, failed: 0, errors: [] as string[] };
 
@@ -11704,9 +12844,9 @@ const locationTestPrices = {
    */
   async delete(id: string) {
     const { data, error } = await supabase
-      .from('location_test_prices')
+      .from("location_test_prices")
       .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
     return { data, error };
@@ -11716,18 +12856,20 @@ const locationTestPrices = {
    * Copy prices from one location to another
    */
   async copyFromLocation(sourceLocationId: string, targetLocationId: string) {
-    const { data: sourcePrices, error: fetchError } = await this.getByLocation(sourceLocationId);
+    const { data: sourcePrices, error: fetchError } = await this.getByLocation(
+      sourceLocationId,
+    );
     if (fetchError || !sourcePrices) {
       return { success: false, error: fetchError };
     }
 
     const results = await this.bulkUpsert(
       targetLocationId,
-      sourcePrices.map(p => ({
+      sourcePrices.map((p) => ({
         test_group_id: p.test_group_id,
         patient_price: p.patient_price,
         lab_receivable: p.lab_receivable,
-      }))
+      })),
     );
 
     return { success: results.failed === 0, ...results };
@@ -11740,15 +12882,15 @@ const locationTestPrices = {
 const locationPackagePrices = {
   async getByLocation(locationId: string) {
     const { data, error } = await supabase
-      .from('location_package_prices')
+      .from("location_package_prices")
       .select(`
         *,
         package:packages(id, name, price, category)
       `)
-      .eq('location_id', locationId)
-      .eq('is_active', true)
-      .lte('effective_from', new Date().toISOString().split('T')[0])
-      .order('package(name)');
+      .eq("location_id", locationId)
+      .eq("is_active", true)
+      .lte("effective_from", new Date().toISOString().split("T")[0])
+      .order("package(name)");
     return { data, error };
   },
 
@@ -11764,34 +12906,36 @@ const locationPackagePrices = {
     const userId = user?.id;
 
     const { data: existing } = await supabase
-      .from('location_package_prices')
-      .select('id')
-      .eq('location_id', data.location_id)
-      .eq('package_id', data.package_id)
-      .eq('is_active', true)
+      .from("location_package_prices")
+      .select("id")
+      .eq("location_id", data.location_id)
+      .eq("package_id", data.package_id)
+      .eq("is_active", true)
       .maybeSingle();
 
     if (existing) {
       const { data: updated, error } = await supabase
-        .from('location_package_prices')
+        .from("location_package_prices")
         .update({
           patient_price: data.patient_price,
           lab_receivable: data.lab_receivable,
-          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          effective_from: data.effective_from ||
+            new Date().toISOString().split("T")[0],
           notes: data.notes,
           updated_by: userId,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', existing.id)
+        .eq("id", existing.id)
         .select()
         .single();
       return { data: updated, error };
     } else {
       const { data: inserted, error } = await supabase
-        .from('location_package_prices')
+        .from("location_package_prices")
         .insert({
           ...data,
-          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          effective_from: data.effective_from ||
+            new Date().toISOString().split("T")[0],
           created_by: userId,
           is_active: true,
         })
@@ -11803,9 +12947,9 @@ const locationPackagePrices = {
 
   async delete(id: string) {
     const { data, error } = await supabase
-      .from('location_package_prices')
+      .from("location_package_prices")
       .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
     return { data, error };
@@ -11821,15 +12965,15 @@ const outsourcedLabPrices = {
    */
   async getByOutsourcedLab(outsourcedLabId: string) {
     const { data, error } = await supabase
-      .from('outsourced_lab_prices')
+      .from("outsourced_lab_prices")
       .select(`
         *,
         test_group:test_groups(id, name, code, price, category)
       `)
-      .eq('outsourced_lab_id', outsourcedLabId)
-      .eq('is_active', true)
-      .lte('effective_from', new Date().toISOString().split('T')[0])
-      .order('test_group(name)');
+      .eq("outsourced_lab_id", outsourcedLabId)
+      .eq("is_active", true)
+      .lte("effective_from", new Date().toISOString().split("T")[0])
+      .order("test_group(name)");
     return { data, error };
   },
 
@@ -11839,19 +12983,22 @@ const outsourcedLabPrices = {
   async getAll() {
     const lab_id = await database.getCurrentUserLabId();
     if (!lab_id) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     const { data, error } = await supabase
-      .from('outsourced_lab_prices')
+      .from("outsourced_lab_prices")
       .select(`
         *,
         outsourced_lab:outsourced_labs(id, name),
         test_group:test_groups(id, name, code, price, category)
       `)
-      .eq('lab_id', lab_id)
-      .eq('is_active', true)
-      .order('outsourced_lab(name), test_group(name)');
+      .eq("lab_id", lab_id)
+      .eq("is_active", true)
+      .order("outsourced_lab(name), test_group(name)");
     return { data, error };
   },
 
@@ -11859,15 +13006,15 @@ const outsourcedLabPrices = {
    * Get cost for a test at an outsourced lab
    */
   async getCost(outsourcedLabId: string, testGroupId: string) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Date().toISOString().split("T")[0];
     const { data, error } = await supabase
-      .from('outsourced_lab_prices')
-      .select('*')
-      .eq('outsourced_lab_id', outsourcedLabId)
-      .eq('test_group_id', testGroupId)
-      .eq('is_active', true)
-      .lte('effective_from', today)
-      .order('effective_from', { ascending: false })
+      .from("outsourced_lab_prices")
+      .select("*")
+      .eq("outsourced_lab_id", outsourcedLabId)
+      .eq("test_group_id", testGroupId)
+      .eq("is_active", true)
+      .lte("effective_from", today)
+      .order("effective_from", { ascending: false })
       .limit(1)
       .maybeSingle();
     return { data, error };
@@ -11885,41 +13032,46 @@ const outsourcedLabPrices = {
   }) {
     const lab_id = await database.getCurrentUserLabId();
     if (!lab_id) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     const { data: { user } } = await supabase.auth.getUser();
     const userId = user?.id;
 
     const { data: existing } = await supabase
-      .from('outsourced_lab_prices')
-      .select('id')
-      .eq('outsourced_lab_id', data.outsourced_lab_id)
-      .eq('test_group_id', data.test_group_id)
-      .eq('is_active', true)
+      .from("outsourced_lab_prices")
+      .select("id")
+      .eq("outsourced_lab_id", data.outsourced_lab_id)
+      .eq("test_group_id", data.test_group_id)
+      .eq("is_active", true)
       .maybeSingle();
 
     if (existing) {
       const { data: updated, error } = await supabase
-        .from('outsourced_lab_prices')
+        .from("outsourced_lab_prices")
         .update({
           cost: data.cost,
-          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          effective_from: data.effective_from ||
+            new Date().toISOString().split("T")[0],
           notes: data.notes,
           updated_by: userId,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', existing.id)
+        .eq("id", existing.id)
         .select()
         .single();
       return { data: updated, error };
     } else {
       const { data: inserted, error } = await supabase
-        .from('outsourced_lab_prices')
+        .from("outsourced_lab_prices")
         .insert({
           ...data,
           lab_id,
-          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          effective_from: data.effective_from ||
+            new Date().toISOString().split("T")[0],
           created_by: userId,
           is_active: true,
         })
@@ -11932,10 +13084,13 @@ const outsourcedLabPrices = {
   /**
    * Bulk upsert prices (for CSV import)
    */
-  async bulkUpsert(outsourcedLabId: string, prices: Array<{
-    test_group_id: string;
-    cost: number;
-  }>) {
+  async bulkUpsert(
+    outsourcedLabId: string,
+    prices: Array<{
+      test_group_id: string;
+      cost: number;
+    }>,
+  ) {
     const results = { success: 0, failed: 0, errors: [] as string[] };
 
     for (const price of prices) {
@@ -11961,9 +13116,9 @@ const outsourcedLabPrices = {
    */
   async delete(id: string) {
     const { data, error } = await supabase
-      .from('outsourced_lab_prices')
+      .from("outsourced_lab_prices")
       .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
     return { data, error };
@@ -11972,14 +13127,21 @@ const outsourcedLabPrices = {
   /**
    * Get outsourced costs report (date range)
    */
-  async getCostsReport(startDate: string, endDate: string, outsourcedLabId?: string) {
+  async getCostsReport(
+    startDate: string,
+    endDate: string,
+    outsourcedLabId?: string,
+  ) {
     const lab_id = await database.getCurrentUserLabId();
     if (!lab_id) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     let query = supabase
-      .from('order_tests')
+      .from("order_tests")
       .select(`
         id,
         test_name,
@@ -11994,16 +13156,18 @@ const outsourcedLabPrices = {
         test_group:test_groups(id, name, code),
         outsourced_lab:outsourced_labs(id, name)
       `)
-      .eq('order.lab_id', lab_id)
-      .not('outsourced_lab_id', 'is', null)
-      .gte('created_at', startDate)
-      .lte('created_at', endDate);
+      .eq("order.lab_id", lab_id)
+      .not("outsourced_lab_id", "is", null)
+      .gte("created_at", startDate)
+      .lte("created_at", endDate);
 
     if (outsourcedLabId) {
-      query = query.eq('outsourced_lab_id', outsourcedLabId);
+      query = query.eq("outsourced_lab_id", outsourcedLabId);
     }
 
-    const { data: tests, error } = await query.order('created_at', { ascending: false });
+    const { data: tests, error } = await query.order("created_at", {
+      ascending: false,
+    });
 
     if (error) return { data: null, error };
 
@@ -12011,7 +13175,10 @@ const outsourcedLabPrices = {
     const enrichedData = await Promise.all(
       (tests || []).map(async (test: any) => {
         if (test.outsourced_lab?.id && test.test_group?.id) {
-          const { data: costData } = await this.getCost(test.outsourced_lab.id, test.test_group.id);
+          const { data: costData } = await this.getCost(
+            test.outsourced_lab.id,
+            test.test_group.id,
+          );
           return {
             ...test,
             outsourced_cost: costData?.cost || 0,
@@ -12019,23 +13186,41 @@ const outsourcedLabPrices = {
           };
         }
         return { ...test, outsourced_cost: 0, margin: test.price || 0 };
-      })
+      }),
     );
 
     // Calculate summary
     const summary = {
       total_tests: enrichedData.length,
       total_revenue: enrichedData.reduce((sum, t) => sum + (t.price || 0), 0),
-      total_cost: enrichedData.reduce((sum, t) => sum + (t.outsourced_cost || 0), 0),
+      total_cost: enrichedData.reduce(
+        (sum, t) => sum + (t.outsourced_cost || 0),
+        0,
+      ),
       total_margin: enrichedData.reduce((sum, t) => sum + (t.margin || 0), 0),
-      by_lab: {} as Record<string, { name: string; tests: number; revenue: number; cost: number; margin: number }>,
+      by_lab: {} as Record<
+        string,
+        {
+          name: string;
+          tests: number;
+          revenue: number;
+          cost: number;
+          margin: number;
+        }
+      >,
     };
 
     enrichedData.forEach((t: any) => {
-      const labId = t.outsourced_lab?.id || 'unknown';
-      const labName = t.outsourced_lab?.name || 'Unknown';
+      const labId = t.outsourced_lab?.id || "unknown";
+      const labName = t.outsourced_lab?.name || "Unknown";
       if (!summary.by_lab[labId]) {
-        summary.by_lab[labId] = { name: labName, tests: 0, revenue: 0, cost: 0, margin: 0 };
+        summary.by_lab[labId] = {
+          name: labName,
+          tests: 0,
+          revenue: 0,
+          cost: 0,
+          margin: 0,
+        };
       }
       summary.by_lab[labId].tests++;
       summary.by_lab[labId].revenue += t.price || 0;
@@ -12056,15 +13241,15 @@ const accountPackagePrices = {
    */
   async getByAccount(accountId: string) {
     const { data, error } = await supabase
-      .from('account_package_prices')
+      .from("account_package_prices")
       .select(`
         *,
         package:packages(id, name, price, category, description)
       `)
-      .eq('account_id', accountId)
-      .eq('is_active', true)
-      .lte('effective_from', new Date().toISOString().split('T')[0])
-      .order('package(name)');
+      .eq("account_id", accountId)
+      .eq("is_active", true)
+      .lte("effective_from", new Date().toISOString().split("T")[0])
+      .order("package(name)");
     return { data, error };
   },
 
@@ -12074,19 +13259,22 @@ const accountPackagePrices = {
   async getAll() {
     const lab_id = await database.getCurrentUserLabId();
     if (!lab_id) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     const { data, error } = await supabase
-      .from('account_package_prices')
+      .from("account_package_prices")
       .select(`
         *,
         account:accounts!inner(id, name, lab_id, type),
         package:packages(id, name, price, category)
       `)
-      .eq('account.lab_id', lab_id)
-      .eq('is_active', true)
-      .order('account(name), package(name)');
+      .eq("account.lab_id", lab_id)
+      .eq("is_active", true)
+      .order("account(name), package(name)");
     return { data, error };
   },
 
@@ -12094,15 +13282,15 @@ const accountPackagePrices = {
    * Get price for a package for an account
    */
   async getPrice(accountId: string, packageId: string) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Date().toISOString().split("T")[0];
     const { data, error } = await supabase
-      .from('account_package_prices')
-      .select('*')
-      .eq('account_id', accountId)
-      .eq('package_id', packageId)
-      .eq('is_active', true)
-      .lte('effective_from', today)
-      .order('effective_from', { ascending: false })
+      .from("account_package_prices")
+      .select("*")
+      .eq("account_id", accountId)
+      .eq("package_id", packageId)
+      .eq("is_active", true)
+      .lte("effective_from", today)
+      .order("effective_from", { ascending: false })
       .limit(1)
       .maybeSingle();
     return { data, error };
@@ -12122,33 +13310,35 @@ const accountPackagePrices = {
     const userId = user?.id;
 
     const { data: existing } = await supabase
-      .from('account_package_prices')
-      .select('id')
-      .eq('account_id', data.account_id)
-      .eq('package_id', data.package_id)
-      .eq('is_active', true)
+      .from("account_package_prices")
+      .select("id")
+      .eq("account_id", data.account_id)
+      .eq("package_id", data.package_id)
+      .eq("is_active", true)
       .maybeSingle();
 
     if (existing) {
       const { data: updated, error } = await supabase
-        .from('account_package_prices')
+        .from("account_package_prices")
         .update({
           price: data.price,
-          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          effective_from: data.effective_from ||
+            new Date().toISOString().split("T")[0],
           notes: data.notes,
           updated_by: userId,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', existing.id)
+        .eq("id", existing.id)
         .select()
         .single();
       return { data: updated, error };
     } else {
       const { data: inserted, error } = await supabase
-        .from('account_package_prices')
+        .from("account_package_prices")
         .insert({
           ...data,
-          effective_from: data.effective_from || new Date().toISOString().split('T')[0],
+          effective_from: data.effective_from ||
+            new Date().toISOString().split("T")[0],
           created_by: userId,
           is_active: true,
         })
@@ -12161,10 +13351,13 @@ const accountPackagePrices = {
   /**
    * Bulk upsert prices (for CSV import)
    */
-  async bulkUpsert(accountId: string, prices: Array<{
-    package_id: string;
-    price: number;
-  }>) {
+  async bulkUpsert(
+    accountId: string,
+    prices: Array<{
+      package_id: string;
+      price: number;
+    }>,
+  ) {
     const results = { success: 0, failed: 0, errors: [] as string[] };
 
     for (const price of prices) {
@@ -12190,9 +13383,9 @@ const accountPackagePrices = {
    */
   async delete(id: string) {
     const { data, error } = await supabase
-      .from('account_package_prices')
+      .from("account_package_prices")
       .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq('id', id)
+      .eq("id", id)
       .select()
       .single();
     return { data, error };
@@ -12209,12 +13402,15 @@ const locationReceivables = {
   async getReport(startDate: string, endDate: string, locationId?: string) {
     const lab_id = await database.getCurrentUserLabId();
     if (!lab_id) {
-      return { data: null, error: new Error('No lab_id found for current user') };
+      return {
+        data: null,
+        error: new Error("No lab_id found for current user"),
+      };
     }
 
     // Get orders with location and invoice info
     let query = supabase
-      .from('orders')
+      .from("orders")
       .select(`
         id,
         patient_name,
@@ -12237,16 +13433,18 @@ const locationReceivables = {
           status
         )
       `)
-      .eq('lab_id', lab_id)
-      .gte('order_date', startDate)
-      .lte('order_date', endDate)
-      .not('collected_at_location_id', 'is', null);
+      .eq("lab_id", lab_id)
+      .gte("order_date", startDate)
+      .lte("order_date", endDate)
+      .not("collected_at_location_id", "is", null);
 
     if (locationId) {
-      query = query.eq('collected_at_location_id', locationId);
+      query = query.eq("collected_at_location_id", locationId);
     }
 
-    const { data: orders, error } = await query.order('order_date', { ascending: false });
+    const { data: orders, error } = await query.order("order_date", {
+      ascending: false,
+    });
 
     if (error) return { data: null, error };
 
@@ -12256,25 +13454,27 @@ const locationReceivables = {
         const location = order.location;
         let receivable = 0;
 
-        if (location?.receivable_type === 'own_center') {
+        if (location?.receivable_type === "own_center") {
           // Own center: receivable = 100% of collected amount
           receivable = order.total_amount || 0;
-        } else if (location?.receivable_type === 'test_wise') {
+        } else if (location?.receivable_type === "test_wise") {
           // Test-wise: lookup each test's receivable
           for (const test of (order.order_tests || [])) {
             const { data: priceData } = await locationTestPrices.getPrice(
               location.id,
-              test.test_group_id
+              test.test_group_id,
             );
             if (priceData?.lab_receivable) {
               receivable += priceData.lab_receivable;
             } else if (location.collection_percentage) {
-              receivable += (test.price || 0) * (location.collection_percentage / 100);
+              receivable += (test.price || 0) *
+                (location.collection_percentage / 100);
             }
           }
         } else {
           // Percentage-based
-          receivable = (order.total_amount || 0) * ((location?.collection_percentage || 0) / 100);
+          receivable = (order.total_amount || 0) *
+            ((location?.collection_percentage || 0) / 100);
         }
 
         return {
@@ -12282,36 +13482,45 @@ const locationReceivables = {
           calculated_receivable: Math.round(receivable * 100) / 100,
           collected_amount: order.invoices?.[0]?.amount_paid || 0,
         };
-      })
+      }),
     );
 
     // Calculate summary
     const summary = {
       total_orders: enrichedOrders.length,
-      total_order_value: enrichedOrders.reduce((sum, o) => sum + (o.total_amount || 0), 0),
-      total_receivable: enrichedOrders.reduce((sum, o) => sum + (o.calculated_receivable || 0), 0),
-      total_collected: enrichedOrders.reduce((sum, o) => sum + (o.collected_amount || 0), 0),
-      by_location: {} as Record<string, { 
-        name: string; 
-        orders: number; 
-        order_value: number; 
-        receivable: number; 
+      total_order_value: enrichedOrders.reduce(
+        (sum, o) => sum + (o.total_amount || 0),
+        0,
+      ),
+      total_receivable: enrichedOrders.reduce(
+        (sum, o) => sum + (o.calculated_receivable || 0),
+        0,
+      ),
+      total_collected: enrichedOrders.reduce(
+        (sum, o) => sum + (o.collected_amount || 0),
+        0,
+      ),
+      by_location: {} as Record<string, {
+        name: string;
+        orders: number;
+        order_value: number;
+        receivable: number;
         collected: number;
         receivable_type: string;
       }>,
     };
 
     enrichedOrders.forEach((o: any) => {
-      const locId = o.location?.id || 'unknown';
-      const locName = o.location?.name || 'Unknown';
-      const recType = o.location?.receivable_type || 'percentage';
-      
+      const locId = o.location?.id || "unknown";
+      const locName = o.location?.name || "Unknown";
+      const recType = o.location?.receivable_type || "percentage";
+
       if (!summary.by_location[locId]) {
-        summary.by_location[locId] = { 
-          name: locName, 
-          orders: 0, 
-          order_value: 0, 
-          receivable: 0, 
+        summary.by_location[locId] = {
+          name: locName,
+          orders: 0,
+          order_value: 0,
+          receivable: 0,
           collected: 0,
           receivable_type: recType,
         };
@@ -12340,27 +13549,27 @@ const pricingHelper = {
     options: {
       accountId?: string | null;
       locationId?: string | null;
-    }
+    },
   ): Promise<{
     price: number;
-    source: 'account' | 'location' | 'base';
+    source: "account" | "location" | "base";
     lab_receivable?: number;
   }> {
     // 1. Check B2B account price (highest priority)
     if (options.accountId) {
       const { data: accountPrice } = await supabase
-        .from('account_prices')
-        .select('price')
-        .eq('account_id', options.accountId)
-        .eq('test_group_id', testGroupId)
-        .eq('is_active', true)
-        .lte('effective_from', new Date().toISOString().split('T')[0])
-        .order('effective_from', { ascending: false })
+        .from("account_prices")
+        .select("price")
+        .eq("account_id", options.accountId)
+        .eq("test_group_id", testGroupId)
+        .eq("is_active", true)
+        .lte("effective_from", new Date().toISOString().split("T")[0])
+        .order("effective_from", { ascending: false })
         .limit(1)
         .maybeSingle();
 
       if (accountPrice?.price !== undefined) {
-        return { price: accountPrice.price, source: 'account' };
+        return { price: accountPrice.price, source: "account" };
       }
     }
 
@@ -12368,20 +13577,20 @@ const pricingHelper = {
     if (options.locationId) {
       const { data: locationPrice } = await locationTestPrices.getPrice(
         options.locationId,
-        testGroupId
+        testGroupId,
       );
 
       if (locationPrice?.patient_price !== undefined) {
-        return { 
-          price: locationPrice.patient_price, 
-          source: 'location',
+        return {
+          price: locationPrice.patient_price,
+          source: "location",
           lab_receivable: locationPrice.lab_receivable || undefined,
         };
       }
     }
 
     // 3. Fall back to base price
-    return { price: basePrice, source: 'base' };
+    return { price: basePrice, source: "base" };
   },
 
   /**
@@ -12394,48 +13603,48 @@ const pricingHelper = {
     options: {
       accountId?: string | null;
       locationId?: string | null;
-    }
+    },
   ): Promise<{
     price: number;
-    source: 'account' | 'location' | 'base';
+    source: "account" | "location" | "base";
     lab_receivable?: number;
   }> {
     // 1. Check B2B account price (highest priority)
     if (options.accountId) {
       const { data: accountPrice } = await accountPackagePrices.getPrice(
         options.accountId,
-        packageId
+        packageId,
       );
 
       if (accountPrice?.price !== undefined) {
-        return { price: accountPrice.price, source: 'account' };
+        return { price: accountPrice.price, source: "account" };
       }
     }
 
     // 2. Check location price (B2C franchise)
     if (options.locationId) {
       const { data: locationPrice } = await supabase
-        .from('location_package_prices')
-        .select('*')
-        .eq('location_id', options.locationId)
-        .eq('package_id', packageId)
-        .eq('is_active', true)
-        .lte('effective_from', new Date().toISOString().split('T')[0])
-        .order('effective_from', { ascending: false })
+        .from("location_package_prices")
+        .select("*")
+        .eq("location_id", options.locationId)
+        .eq("package_id", packageId)
+        .eq("is_active", true)
+        .lte("effective_from", new Date().toISOString().split("T")[0])
+        .order("effective_from", { ascending: false })
         .limit(1)
         .maybeSingle();
 
       if (locationPrice?.patient_price !== undefined) {
-        return { 
-          price: locationPrice.patient_price, 
-          source: 'location',
+        return {
+          price: locationPrice.patient_price,
+          source: "location",
           lab_receivable: locationPrice.lab_receivable || undefined,
         };
       }
     }
 
     // 3. Fall back to base price
-    return { price: basePrice, source: 'base' };
+    return { price: basePrice, source: "base" };
   },
 
   /**
@@ -12445,49 +13654,66 @@ const pricingHelper = {
     accountId?: string | null;
     locationId?: string | null;
   }): Promise<{
-    testPrices: Record<string, { price: number; source: string; lab_receivable?: number }>;
-    packagePrices: Record<string, { price: number; source: string; lab_receivable?: number }>;
+    testPrices: Record<
+      string,
+      { price: number; source: string; lab_receivable?: number }
+    >;
+    packagePrices: Record<
+      string,
+      { price: number; source: string; lab_receivable?: number }
+    >;
   }> {
-    const testPrices: Record<string, { price: number; source: string; lab_receivable?: number }> = {};
-    const packagePrices: Record<string, { price: number; source: string; lab_receivable?: number }> = {};
+    const testPrices: Record<
+      string,
+      { price: number; source: string; lab_receivable?: number }
+    > = {};
+    const packagePrices: Record<
+      string,
+      { price: number; source: string; lab_receivable?: number }
+    > = {};
 
     // Get account test prices (B2B)
     if (options.accountId) {
       const { data: accountTestPrices } = await supabase
-        .from('account_prices')
-        .select('test_group_id, price')
-        .eq('account_id', options.accountId)
-        .eq('is_active', true);
+        .from("account_prices")
+        .select("test_group_id, price")
+        .eq("account_id", options.accountId)
+        .eq("is_active", true);
 
       (accountTestPrices || []).forEach((p: any) => {
-        testPrices[p.test_group_id] = { price: p.price, source: 'account' };
+        testPrices[p.test_group_id] = { price: p.price, source: "account" };
       });
 
-      const { data: accountPkgPrices } = await accountPackagePrices.getByAccount(options.accountId);
+      const { data: accountPkgPrices } = await accountPackagePrices
+        .getByAccount(options.accountId);
       (accountPkgPrices || []).forEach((p: any) => {
-        packagePrices[p.package_id] = { price: p.price, source: 'account' };
+        packagePrices[p.package_id] = { price: p.price, source: "account" };
       });
     }
 
     // Get location prices (B2C) - only if not already set by account
     if (options.locationId) {
-      const { data: locTestPrices } = await locationTestPrices.getByLocation(options.locationId);
+      const { data: locTestPrices } = await locationTestPrices.getByLocation(
+        options.locationId,
+      );
       (locTestPrices || []).forEach((p: any) => {
         if (!testPrices[p.test_group_id]) {
-          testPrices[p.test_group_id] = { 
-            price: p.patient_price, 
-            source: 'location',
+          testPrices[p.test_group_id] = {
+            price: p.patient_price,
+            source: "location",
             lab_receivable: p.lab_receivable || undefined,
           };
         }
       });
 
-      const { data: locPkgPrices } = await locationPackagePrices.getByLocation(options.locationId);
+      const { data: locPkgPrices } = await locationPackagePrices.getByLocation(
+        options.locationId,
+      );
       (locPkgPrices || []).forEach((p: any) => {
         if (!packagePrices[p.package_id]) {
-          packagePrices[p.package_id] = { 
-            price: p.patient_price, 
-            source: 'location',
+          packagePrices[p.package_id] = {
+            price: p.patient_price,
+            source: "location",
             lab_receivable: p.lab_receivable || undefined,
           };
         }
@@ -12675,49 +13901,66 @@ const analytics = {
   /**
    * Get KPI summary for analytics dashboard header
    */
-  async getKpiSummary(filters: AnalyticsFilters): Promise<{ data: KpiSummary[] | null; error: any }> {
+  async getKpiSummary(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: KpiSummary[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_kpi_summary')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_kpi_summary")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.date_range) {
       query = query
-        .gte('date', filters.date_range.from.toISOString().split('T')[0])
-        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+        .gte("date", filters.date_range.from.toISOString().split("T")[0])
+        .lte("date", filters.date_range.to.toISOString().split("T")[0]);
     }
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     } else {
-      query = query.is('location_id', null);
+      query = query.is("location_id", null);
     }
 
-    const { data, error } = await query.order('date', { ascending: false });
+    const { data, error } = await query.order("date", { ascending: false });
     return { data, error };
   },
 
   /**
    * Get aggregated KPIs for a date range (single row totals)
    */
-  async getKpiTotals(filters: AnalyticsFilters): Promise<{ data: KpiSummary | null; error: any }> {
+  async getKpiTotals(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: KpiSummary | null; error: any }> {
     const { data, error } = await this.getKpiSummary(filters);
     if (error || !data || data.length === 0) return { data: null, error };
 
     // Aggregate all days
     const totals: KpiSummary = {
-      date: filters.date_range?.from.toISOString().split('T')[0] || new Date().toISOString().split('T')[0],
+      date: filters.date_range?.from.toISOString().split("T")[0] ||
+        new Date().toISOString().split("T")[0],
       total_orders: data.reduce((sum, d) => sum + (d.total_orders || 0), 0),
       total_revenue: data.reduce((sum, d) => sum + (d.total_revenue || 0), 0),
       avg_order_value: 0,
-      samples_collected: data.reduce((sum, d) => sum + (d.samples_collected || 0), 0),
-      reports_generated: data.reduce((sum, d) => sum + (d.reports_generated || 0), 0),
-      pending_reports: data.reduce((sum, d) => sum + (d.pending_reports || 0), 0),
-      critical_results: data.reduce((sum, d) => sum + (d.critical_results || 0), 0),
+      samples_collected: data.reduce(
+        (sum, d) => sum + (d.samples_collected || 0),
+        0,
+      ),
+      reports_generated: data.reduce(
+        (sum, d) => sum + (d.reports_generated || 0),
+        0,
+      ),
+      pending_reports: data.reduce(
+        (sum, d) => sum + (d.pending_reports || 0),
+        0,
+      ),
+      critical_results: data.reduce(
+        (sum, d) => sum + (d.critical_results || 0),
+        0,
+      ),
       tat_breaches: data.reduce((sum, d) => sum + (d.tat_breaches || 0), 0),
     };
-    totals.avg_order_value = totals.total_orders > 0 
-      ? Math.round(totals.total_revenue / totals.total_orders) 
+    totals.avg_order_value = totals.total_orders > 0
+      ? Math.round(totals.total_revenue / totals.total_orders)
       : 0;
 
     return { data: totals, error: null };
@@ -12726,221 +13969,242 @@ const analytics = {
   /**
    * Get daily revenue breakdown
    */
-  async getRevenueDaily(filters: AnalyticsFilters): Promise<{ data: RevenueDaily[] | null; error: any }> {
+  async getRevenueDaily(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: RevenueDaily[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_revenue_daily')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_revenue_daily")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.date_range) {
       query = query
-        .gte('date', filters.date_range.from.toISOString().split('T')[0])
-        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+        .gte("date", filters.date_range.from.toISOString().split("T")[0])
+        .lte("date", filters.date_range.to.toISOString().split("T")[0]);
     }
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     }
 
-    const { data, error } = await query.order('date', { ascending: false });
+    const { data, error } = await query.order("date", { ascending: false });
     return { data, error };
   },
 
   /**
    * Get orders breakdown by department
    */
-  async getOrdersByDepartment(filters: AnalyticsFilters): Promise<{ data: DepartmentStats[] | null; error: any }> {
+  async getOrdersByDepartment(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: DepartmentStats[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_orders_by_department')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_orders_by_department")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.date_range) {
       query = query
-        .gte('date', filters.date_range.from.toISOString().split('T')[0])
-        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+        .gte("date", filters.date_range.from.toISOString().split("T")[0])
+        .lte("date", filters.date_range.to.toISOString().split("T")[0]);
     }
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     } else {
-      query = query.is('location_id', null);
+      query = query.is("location_id", null);
     }
 
     if (filters.department) {
-      query = query.eq('department', filters.department);
+      query = query.eq("department", filters.department);
     }
 
-    const { data, error } = await query.order('date', { ascending: false });
+    const { data, error } = await query.order("date", { ascending: false });
     return { data, error };
   },
 
   /**
    * Get orders by status for funnel/donut chart
    */
-  async getOrdersByStatus(filters: AnalyticsFilters): Promise<{ data: StatusDistribution[] | null; error: any }> {
+  async getOrdersByStatus(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: StatusDistribution[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_orders_by_status')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_orders_by_status")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.date_range) {
       query = query
-        .gte('date', filters.date_range.from.toISOString().split('T')[0])
-        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+        .gte("date", filters.date_range.from.toISOString().split("T")[0])
+        .lte("date", filters.date_range.to.toISOString().split("T")[0]);
     }
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     } else {
-      query = query.is('location_id', null);
+      query = query.is("location_id", null);
     }
 
-    const { data, error } = await query.order('count', { ascending: false });
+    const { data, error } = await query.order("count", { ascending: false });
     return { data, error };
   },
 
   /**
    * Get top tests by volume and revenue
    */
-  async getTestPopularity(filters: AnalyticsFilters, limit = 10): Promise<{ data: TestPopularity[] | null; error: any }> {
+  async getTestPopularity(
+    filters: AnalyticsFilters,
+    limit = 10,
+  ): Promise<{ data: TestPopularity[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_test_popularity')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_test_popularity")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     } else {
-      query = query.is('location_id', null);
+      query = query.is("location_id", null);
     }
 
-    const { data, error } = await query.lte('rank_by_volume', limit);
+    const { data, error } = await query.lte("rank_by_volume", limit);
     return { data, error };
   },
 
   /**
    * Get TAT summary by department
    */
-  async getTatSummary(filters: AnalyticsFilters): Promise<{ data: TatSummary[] | null; error: any }> {
+  async getTatSummary(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: TatSummary[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_tat_summary')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_tat_summary")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.date_range) {
       query = query
-        .gte('date', filters.date_range.from.toISOString().split('T')[0])
-        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+        .gte("date", filters.date_range.from.toISOString().split("T")[0])
+        .lte("date", filters.date_range.to.toISOString().split("T")[0]);
     }
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     } else {
-      query = query.is('location_id', null);
+      query = query.is("location_id", null);
     }
 
     if (filters.department) {
-      query = query.eq('department', filters.department);
+      query = query.eq("department", filters.department);
     }
 
-    const { data, error } = await query.order('breach_percentage', { ascending: false });
+    const { data, error } = await query.order("breach_percentage", {
+      ascending: false,
+    });
     return { data, error };
   },
 
   /**
    * Get location performance metrics
    */
-  async getLocationPerformance(filters: AnalyticsFilters): Promise<{ data: LocationPerformance[] | null; error: any }> {
+  async getLocationPerformance(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: LocationPerformance[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_location_performance')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_location_performance")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.date_range) {
       query = query
-        .gte('date', filters.date_range.from.toISOString().split('T')[0])
-        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+        .gte("date", filters.date_range.from.toISOString().split("T")[0])
+        .lte("date", filters.date_range.to.toISOString().split("T")[0]);
     }
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     }
 
-    const { data, error } = await query.order('revenue', { ascending: false });
+    const { data, error } = await query.order("revenue", { ascending: false });
     return { data, error };
   },
 
   /**
    * Get B2B account performance
    */
-  async getAccountPerformance(filters: AnalyticsFilters): Promise<{ data: AccountPerformance[] | null; error: any }> {
+  async getAccountPerformance(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: AccountPerformance[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_account_performance')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_account_performance")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.date_range) {
       query = query
-        .gte('date', filters.date_range.from.toISOString().split('T')[0])
-        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+        .gte("date", filters.date_range.from.toISOString().split("T")[0])
+        .lte("date", filters.date_range.to.toISOString().split("T")[0]);
     }
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     } else {
-      query = query.is('location_id', null);
+      query = query.is("location_id", null);
     }
 
     if (filters.account_id) {
-      query = query.eq('account_id', filters.account_id);
+      query = query.eq("account_id", filters.account_id);
     }
 
-    const { data, error } = await query.order('revenue', { ascending: false });
+    const { data, error } = await query.order("revenue", { ascending: false });
     return { data, error };
   },
 
   /**
    * Get outsourced lab metrics
    */
-  async getOutsourcedSummary(filters: AnalyticsFilters): Promise<{ data: OutsourcedSummary[] | null; error: any }> {
+  async getOutsourcedSummary(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: OutsourcedSummary[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_outsourced_summary')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_outsourced_summary")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.date_range) {
       query = query
-        .gte('date', filters.date_range.from.toISOString().split('T')[0])
-        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+        .gte("date", filters.date_range.from.toISOString().split("T")[0])
+        .lte("date", filters.date_range.to.toISOString().split("T")[0]);
     }
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     } else {
-      query = query.is('location_id', null);
+      query = query.is("location_id", null);
     }
 
-    const { data, error } = await query.order('revenue', { ascending: false });
+    const { data, error } = await query.order("revenue", { ascending: false });
     return { data, error };
   },
 
   /**
    * Get critical and abnormal alerts
    */
-  async getCriticalAlerts(filters: AnalyticsFilters): Promise<{ data: CriticalAlert[] | null; error: any }> {
+  async getCriticalAlerts(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: CriticalAlert[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_critical_alerts')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_critical_alerts")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     }
 
     const { data, error } = await query
-      .order('flag', { ascending: true }) // C first, then H, then L
-      .order('hours_since_result', { ascending: false })
+      .order("flag", { ascending: true }) // C first, then H, then L
+      .order("hours_since_result", { ascending: false })
       .limit(100);
 
     return { data, error };
@@ -12949,90 +14213,102 @@ const analytics = {
   /**
    * Get patient demographics
    */
-  async getPatientDemographics(filters: AnalyticsFilters): Promise<{ data: PatientDemographic[] | null; error: any }> {
+  async getPatientDemographics(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: PatientDemographic[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_patient_demographics')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_patient_demographics")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.date_range) {
       query = query
-        .gte('date', filters.date_range.from.toISOString().split('T')[0])
-        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+        .gte("date", filters.date_range.from.toISOString().split("T")[0])
+        .lte("date", filters.date_range.to.toISOString().split("T")[0]);
     }
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     } else {
-      query = query.is('location_id', null);
+      query = query.is("location_id", null);
     }
 
-    const { data, error } = await query.order('patient_count', { ascending: false });
+    const { data, error } = await query.order("patient_count", {
+      ascending: false,
+    });
     return { data, error };
   },
 
   /**
    * Get hourly order distribution
    */
-  async getHourlyDistribution(filters: AnalyticsFilters): Promise<{ data: HourlyDistribution[] | null; error: any }> {
+  async getHourlyDistribution(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: HourlyDistribution[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_hourly_distribution')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_hourly_distribution")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.date_range) {
       query = query
-        .gte('date', filters.date_range.from.toISOString().split('T')[0])
-        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+        .gte("date", filters.date_range.from.toISOString().split("T")[0])
+        .lte("date", filters.date_range.to.toISOString().split("T")[0]);
     }
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     } else {
-      query = query.is('location_id', null);
+      query = query.is("location_id", null);
     }
 
-    const { data, error } = await query.order('hour', { ascending: true });
+    const { data, error } = await query.order("hour", { ascending: true });
     return { data, error };
   },
 
   /**
    * Get payment method distribution
    */
-  async getPaymentMethods(filters: AnalyticsFilters): Promise<{ data: PaymentMethodStats[] | null; error: any }> {
+  async getPaymentMethods(
+    filters: AnalyticsFilters,
+  ): Promise<{ data: PaymentMethodStats[] | null; error: any }> {
     let query = supabase
-      .from('v_analytics_payment_methods')
-      .select('*')
-      .eq('lab_id', filters.lab_id);
+      .from("v_analytics_payment_methods")
+      .select("*")
+      .eq("lab_id", filters.lab_id);
 
     if (filters.date_range) {
       query = query
-        .gte('date', filters.date_range.from.toISOString().split('T')[0])
-        .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+        .gte("date", filters.date_range.from.toISOString().split("T")[0])
+        .lte("date", filters.date_range.to.toISOString().split("T")[0]);
     }
 
     if (filters.location_id) {
-      query = query.eq('location_id', filters.location_id);
+      query = query.eq("location_id", filters.location_id);
     } else {
-      query = query.is('location_id', null);
+      query = query.is("location_id", null);
     }
 
-    const { data, error } = await query.order('total_amount', { ascending: false });
+    const { data, error } = await query.order("total_amount", {
+      ascending: false,
+    });
     return { data, error };
   },
 
   /**
    * Get daily cash summary (from existing view)
    */
-  async getDailyCashSummary(options: { lab_id: string; date: Date; location_id?: string }): Promise<{ data: any[] | null; error: any }> {
+  async getDailyCashSummary(
+    options: { lab_id: string; date: Date; location_id?: string },
+  ): Promise<{ data: any[] | null; error: any }> {
     let query = supabase
-      .from('v_daily_cash_summary')
-      .select('*')
-      .eq('lab_id', options.lab_id)
-      .eq('summary_date', options.date.toISOString().split('T')[0]);
+      .from("v_daily_cash_summary")
+      .select("*")
+      .eq("lab_id", options.lab_id)
+      .eq("summary_date", options.date.toISOString().split("T")[0]);
 
     if (options.location_id) {
-      query = query.eq('location_id', options.location_id);
+      query = query.eq("location_id", options.location_id);
     }
 
     const { data, error } = await query;
@@ -13050,7 +14326,7 @@ export interface InventoryItem {
   location_id?: string | null;
   name: string;
   code?: string;
-  type: 'reagent' | 'consumable' | 'calibrator' | 'control' | 'general';
+  type: "reagent" | "consumable" | "calibrator" | "control" | "general";
   current_stock: number;
   unit: string;
   min_stock: number;
@@ -13058,7 +14334,12 @@ export interface InventoryItem {
   expiry_date?: string;
   storage_temp?: string;
   storage_location?: string;
-  consumption_scope: 'per_test' | 'per_sample' | 'per_order' | 'general' | 'manual';
+  consumption_scope:
+    | "per_test"
+    | "per_sample"
+    | "per_order"
+    | "general"
+    | "manual";
   consumption_per_use?: number;
   pack_contains?: number;
   unit_price?: number;
@@ -13081,7 +14362,7 @@ export interface InventoryTransaction {
   lab_id: string;
   item_id: string;
   location_id?: string | null;
-  type: 'in' | 'out' | 'adjust';
+  type: "in" | "out" | "adjust";
   quantity: number;
   stock_before?: number;
   stock_after?: number;
@@ -13106,12 +14387,12 @@ export interface StockAlert {
   lab_id: string;
   item_id: string;
   location_id?: string | null;
-  type: 'low_stock' | 'out_of_stock' | 'expiring' | 'expired';
+  type: "low_stock" | "out_of_stock" | "expiring" | "expired";
   message: string;
   current_value?: number;
   threshold_value?: number;
   ai_suggestion?: string;
-  status: 'active' | 'dismissed' | 'resolved';
+  status: "active" | "dismissed" | "resolved";
   dismissed_by?: string;
   dismissed_at?: string;
   resolved_at?: string;
@@ -13171,7 +14452,13 @@ export interface InventoryOrder {
   subtotal?: number;
   tax_amount?: number;
   total_amount?: number;
-  status: 'draft' | 'requested' | 'approved' | 'ordered' | 'received' | 'cancelled';
+  status:
+    | "draft"
+    | "requested"
+    | "approved"
+    | "ordered"
+    | "received"
+    | "cancelled";
   ai_suggested?: boolean;
   request_source?: string;
   requested_by?: string;
@@ -13203,53 +14490,59 @@ const inventory = {
     locationId?: string;
   }): Promise<{ data: InventoryItem[] | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
-    const tableName = options?.lowStockOnly ? 'v_inventory_with_tests' : 'inventory_items';
+    const tableName = options?.lowStockOnly
+      ? "v_inventory_with_tests"
+      : "inventory_items";
     let query = supabase
       .from(tableName)
-      .select('*')
-      .eq('lab_id', labId)
-      .order('name');
+      .select("*")
+      .eq("lab_id", labId)
+      .order("name");
 
     if (options?.type) {
-      query = query.eq('type', options.type);
+      query = query.eq("type", options.type);
     }
 
     if (options?.search) {
-      query = query.or(`name.ilike.%${options.search}%,code.ilike.%${options.search}%`);
+      query = query.or(
+        `name.ilike.%${options.search}%,code.ilike.%${options.search}%`,
+      );
     }
 
     if (options?.lowStockOnly) {
-      query = query.in('stock_status', ['low_stock', 'out_of_stock']);
+      query = query.in("stock_status", ["low_stock", "out_of_stock"]);
     }
 
     if (options?.isActive !== undefined) {
-      query = query.eq('is_active', options.isActive);
+      query = query.eq("is_active", options.isActive);
     }
 
     if (options?.locationId) {
-      query = query.eq('location_id', options.locationId);
+      query = query.eq("location_id", options.locationId);
     }
 
     const { data, error } = await query;
     return { data, error };
   },
 
-  async getItemsWithStats(options?: { locationId?: string }): Promise<{ data: InventoryItem[] | null; error: any }> {
+  async getItemsWithStats(
+    options?: { locationId?: string },
+  ): Promise<{ data: InventoryItem[] | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     // Use the view that includes tests_remaining calculation
     let query = supabase
-      .from('v_inventory_with_tests')
-      .select('*')
-      .eq('lab_id', labId)
-      .eq('is_active', true)
-      .order('name');
+      .from("v_inventory_with_tests")
+      .select("*")
+      .eq("lab_id", labId)
+      .eq("is_active", true)
+      .order("name");
 
     if (options?.locationId) {
-      query = query.eq('location_id', options.locationId);
+      query = query.eq("location_id", options.locationId);
     }
 
     const { data, error } = await query;
@@ -13257,19 +14550,21 @@ const inventory = {
     return { data, error };
   },
 
-  async getItemsNeedingAttention(options?: { locationId?: string }): Promise<{ data: InventoryItem[] | null; error: any }> {
+  async getItemsNeedingAttention(
+    options?: { locationId?: string },
+  ): Promise<{ data: InventoryItem[] | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     // Use the attention view
     let query = supabase
-      .from('v_inventory_attention')
-      .select('*')
-      .eq('lab_id', labId)
-      .order('priority', { ascending: true });
+      .from("v_inventory_attention")
+      .select("*")
+      .eq("lab_id", labId)
+      .order("priority", { ascending: true });
 
     if (options?.locationId) {
-      query = query.eq('location_id', options.locationId);
+      query = query.eq("location_id", options.locationId);
     }
 
     const { data, error } = await query;
@@ -13277,34 +14572,38 @@ const inventory = {
     return { data, error };
   },
 
-  async getItemById(itemId: string): Promise<{ data: InventoryItem | null; error: any }> {
+  async getItemById(
+    itemId: string,
+  ): Promise<{ data: InventoryItem | null; error: any }> {
     const { data, error } = await supabase
-      .from('inventory_items')
-      .select('*')
-      .eq('id', itemId)
+      .from("inventory_items")
+      .select("*")
+      .eq("id", itemId)
       .single();
 
     return { data, error };
   },
 
-  async createItem(item: Partial<InventoryItem> & { location_id?: string | null }): Promise<{ data: InventoryItem | null; error: any }> {
+  async createItem(
+    item: Partial<InventoryItem> & { location_id?: string | null },
+  ): Promise<{ data: InventoryItem | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     const { data: { user } } = await supabase.auth.getUser();
 
     let locationId = item.location_id;
     if (!locationId) {
       const { data: lab } = await supabase
-        .from('labs')
-        .select('default_processing_location_id')
-        .eq('id', labId)
+        .from("labs")
+        .select("default_processing_location_id")
+        .eq("id", labId)
         .single();
       locationId = lab?.default_processing_location_id || null;
     }
 
     const { data, error } = await supabase
-      .from('inventory_items')
+      .from("inventory_items")
       .insert({
         ...item,
         lab_id: labId,
@@ -13317,14 +14616,17 @@ const inventory = {
     return { data, error };
   },
 
-  async updateItem(itemId: string, updates: Partial<InventoryItem>): Promise<{ data: InventoryItem | null; error: any }> {
+  async updateItem(
+    itemId: string,
+    updates: Partial<InventoryItem>,
+  ): Promise<{ data: InventoryItem | null; error: any }> {
     const { data, error } = await supabase
-      .from('inventory_items')
+      .from("inventory_items")
       .update({
         ...updates,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', itemId)
+      .eq("id", itemId)
       .select()
       .single();
 
@@ -13334,9 +14636,9 @@ const inventory = {
   async deleteItem(itemId: string): Promise<{ error: any }> {
     // Soft delete by setting is_active to false
     const { error } = await supabase
-      .from('inventory_items')
+      .from("inventory_items")
       .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq('id', itemId);
+      .eq("id", itemId);
 
     return { error };
   },
@@ -13347,39 +14649,39 @@ const inventory = {
 
   async getTransactions(options?: {
     itemId?: string;
-    type?: 'in' | 'out' | 'adjust';
+    type?: "in" | "out" | "adjust";
     fromDate?: string;
     toDate?: string;
     limit?: number;
     locationId?: string;
   }): Promise<{ data: InventoryTransaction[] | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     let query = supabase
-      .from('inventory_transactions')
+      .from("inventory_transactions")
       .select(`
         *,
         item:inventory_items(id, name, code, unit),
         performed_by_user:users!inventory_transactions_performed_by_fkey(name, email)
       `)
-      .eq('lab_id', labId)
-      .order('created_at', { ascending: false });
+      .eq("lab_id", labId)
+      .order("created_at", { ascending: false });
 
     if (options?.itemId) {
-      query = query.eq('item_id', options.itemId);
+      query = query.eq("item_id", options.itemId);
     }
 
     if (options?.type) {
-      query = query.eq('type', options.type);
+      query = query.eq("type", options.type);
     }
 
     if (options?.fromDate) {
-      query = query.gte('created_at', options.fromDate);
+      query = query.gte("created_at", options.fromDate);
     }
 
     if (options?.toDate) {
-      query = query.lte('created_at', options.toDate);
+      query = query.lte("created_at", options.toDate);
     }
 
     if (options?.limit) {
@@ -13387,7 +14689,7 @@ const inventory = {
     }
 
     if (options?.locationId) {
-      query = query.eq('location_id', options.locationId);
+      query = query.eq("location_id", options.locationId);
     }
 
     const { data, error } = await query;
@@ -13396,7 +14698,7 @@ const inventory = {
 
   async createTransaction(transaction: {
     item_id: string;
-    type: 'in' | 'out' | 'adjust';
+    type: "in" | "out" | "adjust";
     quantity: number;
     reason?: string;
     reference?: string;
@@ -13410,12 +14712,12 @@ const inventory = {
     location_id?: string;
   }): Promise<{ data: InventoryTransaction | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     const { data: { user } } = await supabase.auth.getUser();
 
     const { data, error } = await supabase
-      .from('inventory_transactions')
+      .from("inventory_transactions")
       .insert({
         ...transaction,
         lab_id: labId,
@@ -13444,9 +14746,9 @@ const inventory = {
   }): Promise<{ data: InventoryTransaction | null; error: any }> {
     return this.createTransaction({
       item_id: params.itemId,
-      type: 'in',
+      type: "in",
       quantity: params.quantity,
-      reason: params.reason || 'Purchase',
+      reason: params.reason || "Purchase",
       reference: params.reference,
       batch_number: params.batchNumber,
       expiry_date: params.expiryDate,
@@ -13466,7 +14768,7 @@ const inventory = {
   }): Promise<{ data: InventoryTransaction | null; error: any }> {
     return this.createTransaction({
       item_id: params.itemId,
-      type: 'out',
+      type: "out",
       quantity: params.quantity,
       reason: params.reason,
       order_id: params.orderId,
@@ -13484,7 +14786,7 @@ const inventory = {
   }): Promise<{ data: InventoryTransaction | null; error: any }> {
     return this.createTransaction({
       item_id: params.itemId,
-      type: 'adjust',
+      type: "adjust",
       quantity: params.newQuantity,
       reason: params.reason,
       location_id: params.locationId,
@@ -13496,34 +14798,34 @@ const inventory = {
   // ============================================================================
 
   async getAlerts(options?: {
-    status?: 'active' | 'dismissed' | 'resolved';
-    type?: 'low_stock' | 'out_of_stock' | 'expiring' | 'expired';
+    status?: "active" | "dismissed" | "resolved";
+    type?: "low_stock" | "out_of_stock" | "expiring" | "expired";
     locationId?: string;
   }): Promise<{ data: StockAlert[] | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     let query = supabase
-      .from('stock_alerts')
+      .from("stock_alerts")
       .select(`
         *,
         item:inventory_items(id, name, code, current_stock, unit, min_stock)
       `)
-      .eq('lab_id', labId)
-      .order('created_at', { ascending: false });
+      .eq("lab_id", labId)
+      .order("created_at", { ascending: false });
 
     if (options?.status) {
-      query = query.eq('status', options.status);
+      query = query.eq("status", options.status);
     } else {
-      query = query.eq('status', 'active'); // Default to active
+      query = query.eq("status", "active"); // Default to active
     }
 
     if (options?.type) {
-      query = query.eq('type', options.type);
+      query = query.eq("type", options.type);
     }
 
     if (options?.locationId) {
-      query = query.eq('location_id', options.locationId);
+      query = query.eq("location_id", options.locationId);
     }
 
     const { data, error } = await query;
@@ -13534,26 +14836,29 @@ const inventory = {
     const { data: { user } } = await supabase.auth.getUser();
 
     const { error } = await supabase
-      .from('stock_alerts')
+      .from("stock_alerts")
       .update({
-        status: 'dismissed',
+        status: "dismissed",
         dismissed_by: user?.id,
         dismissed_at: new Date().toISOString(),
       })
-      .eq('id', alertId);
+      .eq("id", alertId);
 
     return { error };
   },
 
-  async resolveAlert(alertId: string, resolutionNote?: string): Promise<{ error: any }> {
+  async resolveAlert(
+    alertId: string,
+    resolutionNote?: string,
+  ): Promise<{ error: any }> {
     const { error } = await supabase
-      .from('stock_alerts')
+      .from("stock_alerts")
       .update({
-        status: 'resolved',
+        status: "resolved",
         resolved_at: new Date().toISOString(),
         resolution_note: resolutionNote,
       })
-      .eq('id', alertId);
+      .eq("id", alertId);
 
     return { error };
   },
@@ -13562,57 +14867,69 @@ const inventory = {
   // DASHBOARD STATS
   // ============================================================================
 
-  async getDashboardStats(options?: { locationId?: string }): Promise<{ data: InventoryDashboardStats | null; error: any }> {
+  async getDashboardStats(
+    options?: { locationId?: string },
+  ): Promise<{ data: InventoryDashboardStats | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     try {
       // Get stats from database function
-      const { data, error } = await supabase.rpc('fn_inventory_dashboard_stats', {
-        p_lab_id: labId,
-        p_location_id: options?.locationId || null,
-      });
+      const { data, error } = await supabase.rpc(
+        "fn_inventory_dashboard_stats",
+        {
+          p_lab_id: labId,
+          p_location_id: options?.locationId || null,
+        },
+      );
 
       if (error) {
         // Fallback to manual calculation if function doesn't exist
         let itemsQuery = supabase
-          .from('inventory_items')
-          .select('id, current_stock, min_stock, unit_price, expiry_date')
-          .eq('lab_id', labId)
-          .eq('is_active', true);
+          .from("inventory_items")
+          .select("id, current_stock, min_stock, unit_price, expiry_date")
+          .eq("lab_id", labId)
+          .eq("is_active", true);
 
         if (options?.locationId) {
-          itemsQuery = itemsQuery.eq('location_id', options.locationId);
+          itemsQuery = itemsQuery.eq("location_id", options.locationId);
         }
 
         const { data: items } = await itemsQuery;
 
         let alertsQuery = supabase
-          .from('stock_alerts')
-          .select('id')
-          .eq('lab_id', labId)
-          .eq('status', 'active');
+          .from("stock_alerts")
+          .select("id")
+          .eq("lab_id", labId)
+          .eq("status", "active");
 
         if (options?.locationId) {
-          alertsQuery = alertsQuery.eq('location_id', options.locationId);
+          alertsQuery = alertsQuery.eq("location_id", options.locationId);
         }
 
         const { data: alerts } = await alertsQuery;
 
         const today = new Date();
-        const thirtyDaysFromNow = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
+        const thirtyDaysFromNow = new Date(
+          today.getTime() + 30 * 24 * 60 * 60 * 1000,
+        );
 
         const stats: InventoryDashboardStats = {
           total_items: items?.length || 0,
-          low_stock_count: items?.filter(i => i.current_stock <= i.min_stock && i.current_stock > 0).length || 0,
-          out_of_stock_count: items?.filter(i => i.current_stock <= 0).length || 0,
-          expiring_soon_count: items?.filter(i => {
+          low_stock_count: items?.filter((i) =>
+            i.current_stock <= i.min_stock && i.current_stock > 0
+          ).length || 0,
+          out_of_stock_count: items?.filter((i) =>
+            i.current_stock <= 0
+          ).length || 0,
+          expiring_soon_count: items?.filter((i) => {
             if (!i.expiry_date) return false;
             const exp = new Date(i.expiry_date);
             return exp <= thirtyDaysFromNow && exp > today;
           }).length || 0,
           active_alerts_count: alerts?.length || 0,
-          total_value: items?.reduce((sum, i) => sum + (i.current_stock * (i.unit_price || 0)), 0) || 0,
+          total_value: items?.reduce((sum, i) =>
+            sum + (i.current_stock * (i.unit_price || 0)), 0) || 0,
         };
 
         return { data: stats, error: null };
@@ -13644,14 +14961,17 @@ const inventory = {
   }): Promise<{ data: any | null; error: any }> {
     // Primary path: edge function (supports analyte-level logic and dedupe)
     try {
-      const { data, error } = await supabase.functions.invoke('inventory-auto-consume', {
-        body: {
-          labId: params.labId,
-          orderId: params.orderId,
-          resultId: params.resultId || null,
-          testGroupId: params.testGroupId,
+      const { data, error } = await supabase.functions.invoke(
+        "inventory-auto-consume",
+        {
+          body: {
+            labId: params.labId,
+            orderId: params.orderId,
+            resultId: params.resultId || null,
+            testGroupId: params.testGroupId,
+          },
         },
-      });
+      );
 
       if (!error) {
         return { data, error: null };
@@ -13662,13 +14982,16 @@ const inventory = {
 
     // Fallback path: DB RPC so consumption still gets registered
     try {
-      const { data: rpcData, error: rpcError } = await supabase.rpc('fn_inventory_auto_consume', {
-        p_lab_id: params.labId,
-        p_order_id: params.orderId,
-        p_result_id: params.resultId || null,
-        p_test_group_id: params.testGroupId,
-        p_user_id: null,
-      });
+      const { data: rpcData, error: rpcError } = await supabase.rpc(
+        "fn_inventory_auto_consume",
+        {
+          p_lab_id: params.labId,
+          p_order_id: params.orderId,
+          p_result_id: params.resultId || null,
+          p_test_group_id: params.testGroupId,
+          p_user_id: null,
+        },
+      );
 
       return { data: rpcData, error: rpcError };
     } catch (rpcErr) {
@@ -13681,19 +15004,21 @@ const inventory = {
   // ============================================================================
 
   async getStockWarningsForTest(testGroupId: string, labId: string): Promise<{
-    data: Array<{
-      itemId: string;
-      itemName: string;
-      currentStock: number;
-      minStock: number;
-      unit: string;
-      status: 'out_of_stock' | 'low_stock';
-    }> | null;
+    data:
+      | Array<{
+        itemId: string;
+        itemName: string;
+        currentStock: number;
+        minStock: number;
+        unit: string;
+        status: "out_of_stock" | "low_stock";
+      }>
+      | null;
     error: any;
   }> {
     try {
       const { data, error } = await supabase
-        .from('inventory_test_mapping')
+        .from("inventory_test_mapping")
         .select(`
           item_id,
           inventory_items!inner (
@@ -13705,9 +15030,9 @@ const inventory = {
             is_active
           )
         `)
-        .eq('test_group_id', testGroupId)
-        .eq('lab_id', labId)
-        .eq('is_active', true);
+        .eq("test_group_id", testGroupId)
+        .eq("lab_id", labId)
+        .eq("is_active", true);
 
       if (error) return { data: null, error };
 
@@ -13722,8 +15047,8 @@ const inventory = {
               itemName: item.name,
               currentStock: item.current_stock,
               minStock: item.min_stock || 0,
-              unit: item.unit || 'pcs',
-              status: 'out_of_stock' as const,
+              unit: item.unit || "pcs",
+              status: "out_of_stock" as const,
             };
           }
           if (item.min_stock > 0 && item.current_stock <= item.min_stock) {
@@ -13732,8 +15057,8 @@ const inventory = {
               itemName: item.name,
               currentStock: item.current_stock,
               minStock: item.min_stock,
-              unit: item.unit || 'pcs',
-              status: 'low_stock' as const,
+              unit: item.unit || "pcs",
+              status: "low_stock" as const,
             };
           }
           return null;
@@ -13751,20 +15076,20 @@ const inventory = {
   // ============================================================================
 
   async getPurchaseOrders(options?: {
-    status?: InventoryOrder['status'];
+    status?: InventoryOrder["status"];
     limit?: number;
   }): Promise<{ data: InventoryOrder[] | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     let query = supabase
-      .from('inventory_orders')
-      .select('*')
-      .eq('lab_id', labId)
-      .order('created_at', { ascending: false });
+      .from("inventory_orders")
+      .select("*")
+      .eq("lab_id", labId)
+      .order("created_at", { ascending: false });
 
     if (options?.status) {
-      query = query.eq('status', options.status);
+      query = query.eq("status", options.status);
     }
 
     if (options?.limit) {
@@ -13783,57 +15108,67 @@ const inventory = {
     notes?: string;
     ai_suggested?: boolean;
     request_source?: string;
-    status?: InventoryOrder['status'];
+    status?: InventoryOrder["status"];
   }): Promise<{ data: InventoryOrder | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     const { data: { user } } = await supabase.auth.getUser();
     let userId: string | null = null;
     if (user?.id) {
       const { data: appUserByAuth } = await supabase
-        .from('users')
-        .select('id')
-        .eq('auth_user_id', user.id)
+        .from("users")
+        .select("id")
+        .eq("auth_user_id", user.id)
         .maybeSingle();
 
       if (appUserByAuth?.id) {
         userId = appUserByAuth.id;
       } else if (user.email) {
         const { data: appUserByEmail } = await supabase
-          .from('users')
-          .select('id')
-          .eq('email', user.email)
+          .from("users")
+          .select("id")
+          .eq("email", user.email)
           .maybeSingle();
         userId = appUserByEmail?.id || null;
       }
     }
 
     const cleanItems = (input.items || [])
-      .filter(item => item.name?.trim() && Number(item.quantity) > 0)
-      .map(item => {
+      .filter((item) => item.name?.trim() && Number(item.quantity) > 0)
+      .map((item) => {
         const quantity = Number(item.quantity);
         const unitPrice = Number(item.unit_price || 0);
         return {
           item_id: item.item_id || null,
           name: item.name.trim(),
           quantity,
-          unit: item.unit || 'pcs',
+          unit: item.unit || "pcs",
           unit_price: unitPrice,
           total: quantity * unitPrice,
         };
       });
 
     if (cleanItems.length === 0) {
-      return { data: null, error: new Error('At least one item is required to create a PO request') };
+      return {
+        data: null,
+        error: new Error(
+          "At least one item is required to create a PO request",
+        ),
+      };
     }
 
-    const subtotal = cleanItems.reduce((sum, item) => sum + (item.total || 0), 0);
+    const subtotal = cleanItems.reduce(
+      (sum, item) => sum + (item.total || 0),
+      0,
+    );
     const taxAmount = Number(input.tax_amount || 0);
     const totalAmount = subtotal + taxAmount;
     const nowIso = new Date().toISOString();
-    const status = input.status || 'requested';
-    const orderNumber = `PO-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`;
+    const status = input.status || "requested";
+    const orderNumber = `PO-${new Date().getFullYear()}-${
+      Date.now().toString().slice(-6)
+    }`;
 
     const insertPayload: any = {
       lab_id: labId,
@@ -13846,20 +15181,21 @@ const inventory = {
       total_amount: totalAmount,
       status,
       ai_suggested: Boolean(input.ai_suggested),
-      request_source: input.request_source || (input.ai_suggested ? 'low_stock_reorder' : 'manual'),
+      request_source: input.request_source ||
+        (input.ai_suggested ? "low_stock_reorder" : "manual"),
       notes: input.notes || null,
       created_by: userId,
     };
 
-    if (status === 'requested') {
+    if (status === "requested") {
       insertPayload.requested_by = userId;
       insertPayload.requested_at = nowIso;
     }
 
     const { data, error } = await supabase
-      .from('inventory_orders')
+      .from("inventory_orders")
       .insert(insertPayload)
-      .select('*')
+      .select("*")
       .single();
 
     return { data: data as InventoryOrder | null, error };
@@ -13873,31 +15209,37 @@ const inventory = {
       items: InventoryOrderItem[];
       tax_amount?: number;
       notes?: string;
-    }
+    },
   ): Promise<{ data: InventoryOrder | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     const cleanItems = (input.items || [])
-      .filter(item => item.name?.trim() && Number(item.quantity) > 0)
-      .map(item => {
+      .filter((item) => item.name?.trim() && Number(item.quantity) > 0)
+      .map((item) => {
         const quantity = Number(item.quantity);
         const unitPrice = Number(item.unit_price || 0);
         return {
           item_id: item.item_id || null,
           name: item.name.trim(),
           quantity,
-          unit: item.unit || 'pcs',
+          unit: item.unit || "pcs",
           unit_price: unitPrice,
           total: quantity * unitPrice,
         };
       });
 
     if (cleanItems.length === 0) {
-      return { data: null, error: new Error('At least one item is required in the PO') };
+      return {
+        data: null,
+        error: new Error("At least one item is required in the PO"),
+      };
     }
 
-    const subtotal = cleanItems.reduce((sum, item) => sum + (item.total || 0), 0);
+    const subtotal = cleanItems.reduce(
+      (sum, item) => sum + (item.total || 0),
+      0,
+    );
     const taxAmount = Number(input.tax_amount || 0);
     const totalAmount = subtotal + taxAmount;
 
@@ -13913,11 +15255,11 @@ const inventory = {
     };
 
     const { data, error } = await supabase
-      .from('inventory_orders')
+      .from("inventory_orders")
       .update(payload)
-      .eq('id', orderId)
-      .eq('lab_id', labId)
-      .select('*')
+      .eq("id", orderId)
+      .eq("lab_id", labId)
+      .select("*")
       .single();
 
     return { data: data as InventoryOrder | null, error };
@@ -13925,29 +15267,29 @@ const inventory = {
 
   async updatePurchaseOrderStatus(
     orderId: string,
-    status: InventoryOrder['status'],
+    status: InventoryOrder["status"],
     options?: {
       approvalNote?: string;
       invoiceNumber?: string;
       invoiceDate?: string;
-    }
+    },
   ): Promise<{ data: InventoryOrder | null; error: any }> {
     const { data: { user } } = await supabase.auth.getUser();
     let userId: string | null = null;
     if (user?.id) {
       const { data: appUserByAuth } = await supabase
-        .from('users')
-        .select('id')
-        .eq('auth_user_id', user.id)
+        .from("users")
+        .select("id")
+        .eq("auth_user_id", user.id)
         .maybeSingle();
 
       if (appUserByAuth?.id) {
         userId = appUserByAuth.id;
       } else if (user.email) {
         const { data: appUserByEmail } = await supabase
-          .from('users')
-          .select('id')
-          .eq('email', user.email)
+          .from("users")
+          .select("id")
+          .eq("email", user.email)
           .maybeSingle();
         userId = appUserByEmail?.id || null;
       }
@@ -13957,13 +15299,13 @@ const inventory = {
       updated_at: new Date().toISOString(),
     };
 
-    if (status === 'approved') {
+    if (status === "approved") {
       payload.approved_by = userId;
       payload.approved_at = new Date().toISOString();
       payload.approval_note = options?.approvalNote || null;
     }
 
-    if (status === 'received') {
+    if (status === "received") {
       payload.received_by = userId;
       payload.received_at = new Date().toISOString();
       payload.invoice_number = options?.invoiceNumber || null;
@@ -13971,10 +15313,10 @@ const inventory = {
     }
 
     const { data, error } = await supabase
-      .from('inventory_orders')
+      .from("inventory_orders")
       .update(payload)
-      .eq('id', orderId)
-      .select('*')
+      .eq("id", orderId)
+      .select("*")
       .single();
 
     return { data: data as InventoryOrder | null, error };
@@ -13987,11 +15329,13 @@ const inventory = {
     locationId?: string;
   }): Promise<{ data: InventoryOrder | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
-    const orderItems = Array.isArray(input.order.items) ? input.order.items : [];
+    const orderItems = Array.isArray(input.order.items)
+      ? input.order.items
+      : [];
     if (orderItems.length === 0) {
-      return { data: null, error: new Error('PO has no items to receive') };
+      return { data: null, error: new Error("PO has no items to receive") };
     }
 
     for (const line of orderItems) {
@@ -14002,11 +15346,11 @@ const inventory = {
 
       if (!itemId) {
         const { data: existing } = await supabase
-          .from('inventory_items')
-          .select('id')
-          .eq('lab_id', labId)
-          .ilike('name', line.name)
-          .eq('is_active', true)
+          .from("inventory_items")
+          .select("id")
+          .eq("lab_id", labId)
+          .ilike("name", line.name)
+          .eq("is_active", true)
           .limit(1)
           .maybeSingle();
 
@@ -14016,8 +15360,8 @@ const inventory = {
       if (!itemId) {
         const { data: createdItem, error: createErr } = await this.createItem({
           name: line.name,
-          unit: line.unit || 'pcs',
-          type: 'consumable',
+          unit: line.unit || "pcs",
+          type: "consumable",
           current_stock: 0,
           supplier_name: input.order.supplier_name || undefined,
           location_id: input.locationId || null,
@@ -14027,7 +15371,10 @@ const inventory = {
       }
 
       if (!itemId) {
-        return { data: null, error: new Error(`Unable to resolve inventory item for ${line.name}`) };
+        return {
+          data: null,
+          error: new Error(`Unable to resolve inventory item for ${line.name}`),
+        };
       }
 
       const { error: txErr } = await this.addStock({
@@ -14043,7 +15390,7 @@ const inventory = {
       if (txErr) return { data: null, error: txErr };
     }
 
-    return this.updatePurchaseOrderStatus(input.order.id, 'received', {
+    return this.updatePurchaseOrderStatus(input.order.id, "received", {
       invoiceNumber: input.invoiceNumber,
       invoiceDate: input.invoiceDate,
     });
@@ -14053,23 +15400,25 @@ const inventory = {
   // TEST MAPPING
   // ============================================================================
 
-  async getTestMappings(testGroupId?: string): Promise<{ data: InventoryTestMapping[] | null; error: any }> {
+  async getTestMappings(
+    testGroupId?: string,
+  ): Promise<{ data: InventoryTestMapping[] | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     let query = supabase
-      .from('inventory_test_mapping')
+      .from("inventory_test_mapping")
       .select(`
         *,
         item:inventory_items(id, name, code, unit, current_stock),
         test_group:test_groups(id, name),
         analyte:analytes(id, name)
       `)
-      .eq('lab_id', labId)
-      .eq('is_active', true);
+      .eq("lab_id", labId)
+      .eq("is_active", true);
 
     if (testGroupId) {
-      query = query.eq('test_group_id', testGroupId);
+      query = query.eq("test_group_id", testGroupId);
     }
 
     const { data, error } = await query;
@@ -14084,12 +15433,12 @@ const inventory = {
     unit?: string;
   }): Promise<{ data: InventoryTestMapping | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     const { data: { user } } = await supabase.auth.getUser();
 
     const { data, error } = await supabase
-      .from('inventory_test_mapping')
+      .from("inventory_test_mapping")
       .insert({
         ...mapping,
         lab_id: labId,
@@ -14103,9 +15452,9 @@ const inventory = {
 
   async deleteTestMapping(mappingId: string): Promise<{ error: any }> {
     const { error } = await supabase
-      .from('inventory_test_mapping')
+      .from("inventory_test_mapping")
       .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq('id', mappingId);
+      .eq("id", mappingId);
 
     return { error };
   },
@@ -14114,31 +15463,37 @@ const inventory = {
   // AI INPUT PARSING (calls edge function)
   // ============================================================================
 
-  async parseAiInput(input: string, inputType: 'voice' | 'text' | 'ocr' = 'text'): Promise<{
+  async parseAiInput(
+    input: string,
+    inputType: "voice" | "text" | "ocr" = "text",
+  ): Promise<{
     data: any | null;
     error: any;
   }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     const { data: { user } } = await supabase.auth.getUser();
 
     // Get existing items for matching
     const { data: items } = await supabase
-      .from('inventory_items')
-      .select('id, name, code, unit, current_stock')
-      .eq('lab_id', labId)
-      .eq('is_active', true);
+      .from("inventory_items")
+      .select("id, name, code, unit, current_stock")
+      .eq("lab_id", labId)
+      .eq("is_active", true);
 
-    const { data, error } = await supabase.functions.invoke('inventory-ai-input', {
-      body: {
-        input,
-        inputType,
-        labId,
-        userId: user?.id,
-        existingItems: items || [],
+    const { data, error } = await supabase.functions.invoke(
+      "inventory-ai-input",
+      {
+        body: {
+          input,
+          inputType,
+          labId,
+          userId: user?.id,
+          existingItems: items || [],
+        },
       },
-    });
+    );
 
     return { data, error };
   },
@@ -14147,22 +15502,25 @@ const inventory = {
   // BULK OPERATIONS (PDF Import)
   // ============================================================================
 
-  async bulkCreateOrUpdateItems(items: Array<{
-    name: string;
-    code?: string;
-    type?: string;
-    quantity: number;
-    unit?: string;
-    batch_number?: string;
-    expiry_date?: string;
-    unit_price?: number;
-    supplier_name?: string;
-  }>, locationId?: string): Promise<{
+  async bulkCreateOrUpdateItems(
+    items: Array<{
+      name: string;
+      code?: string;
+      type?: string;
+      quantity: number;
+      unit?: string;
+      batch_number?: string;
+      expiry_date?: string;
+      unit_price?: number;
+      supplier_name?: string;
+    }>,
+    locationId?: string,
+  ): Promise<{
     data: { created: number; updated: number; errors: string[] } | null;
-    error: any
+    error: any;
   }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     const { data: { user } } = await supabase.auth.getUser();
 
@@ -14171,9 +15529,9 @@ const inventory = {
     let resolvedLocationId = locationId;
     if (!resolvedLocationId) {
       const { data: lab } = await supabase
-        .from('labs')
-        .select('default_processing_location_id')
-        .eq('id', labId)
+        .from("labs")
+        .select("default_processing_location_id")
+        .eq("id", labId)
         .single();
       resolvedLocationId = lab?.default_processing_location_id || null;
     }
@@ -14182,23 +15540,23 @@ const inventory = {
       try {
         // Check if item exists (by name or code)
         const { data: existing } = await supabase
-          .from('inventory_items')
-          .select('id, current_stock')
-          .eq('lab_id', labId)
-          .or(`name.ilike.${item.name},code.eq.${item.code || ''}`)
+          .from("inventory_items")
+          .select("id, current_stock")
+          .eq("lab_id", labId)
+          .or(`name.ilike.${item.name},code.eq.${item.code || ""}`)
           .maybeSingle();
 
         if (existing) {
           // Create transaction record (trigger updates stock)
           await supabase
-            .from('inventory_transactions')
+            .from("inventory_transactions")
             .insert({
               lab_id: labId,
               item_id: existing.id,
               location_id: null,
-              type: 'in',
+              type: "in",
               quantity: item.quantity,
-              reason: 'PDF Import',
+              reason: "PDF Import",
               batch_number: item.batch_number,
               expiry_date: item.expiry_date,
               unit_price: item.unit_price,
@@ -14209,15 +15567,15 @@ const inventory = {
         } else {
           // Create new item
           const { data: newItem, error: createError } = await supabase
-            .from('inventory_items')
+            .from("inventory_items")
             .insert({
               lab_id: labId,
               location_id: resolvedLocationId,
               name: item.name,
               code: item.code,
-              type: item.type || 'consumable',
+              type: item.type || "consumable",
               current_stock: 0,
-              unit: item.unit || 'pcs',
+              unit: item.unit || "pcs",
               batch_number: item.batch_number,
               expiry_date: item.expiry_date,
               unit_price: item.unit_price,
@@ -14228,18 +15586,20 @@ const inventory = {
             .single();
 
           if (createError) {
-            results.errors.push(`Failed to create ${item.name}: ${createError.message}`);
+            results.errors.push(
+              `Failed to create ${item.name}: ${createError.message}`,
+            );
           } else {
             // Create initial transaction
             await supabase
-              .from('inventory_transactions')
+              .from("inventory_transactions")
               .insert({
                 lab_id: labId,
                 item_id: newItem.id,
                 location_id: resolvedLocationId,
-                type: 'in',
+                type: "in",
                 quantity: item.quantity,
-                reason: 'PDF Import - Initial Stock',
+                reason: "PDF Import - Initial Stock",
                 batch_number: item.batch_number,
                 expiry_date: item.expiry_date,
                 unit_price: item.unit_price,
@@ -14261,14 +15621,16 @@ const inventory = {
   // CONSUMPTION SUMMARY
   // ============================================================================
 
-  async getConsumptionSummary(days: number = 30): Promise<{ data: any[] | null; error: any }> {
+  async getConsumptionSummary(
+    days: number = 30,
+  ): Promise<{ data: any[] | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     const { data, error } = await supabase
-      .from('v_inventory_consumption_summary')
-      .select('*')
-      .eq('lab_id', labId);
+      .from("v_inventory_consumption_summary")
+      .select("*")
+      .eq("lab_id", labId);
 
     return { data, error };
   },
@@ -14283,139 +15645,188 @@ const inventory = {
       classified: number;
       mapped: number;
       confirmed: number;
-      byCategory: { qc_control: number; test_specific: number; general: number };
+      byCategory: {
+        qc_control: number;
+        test_specific: number;
+        general: number;
+      };
     } | null;
-    error: any
+    error: any;
   }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     const { data: items, error } = await supabase
-      .from('inventory_items')
-      .select('id, ai_classification_status, ai_category')
-      .eq('lab_id', labId)
-      .eq('is_active', true);
+      .from("inventory_items")
+      .select("id, ai_classification_status, ai_category")
+      .eq("lab_id", labId)
+      .eq("is_active", true);
 
     if (error) return { data: null, error };
 
     const stats = {
-      pending: items?.filter(i => !i.ai_classification_status || i.ai_classification_status === 'pending').length || 0,
-      classified: items?.filter(i => i.ai_classification_status === 'classified').length || 0,
-      mapped: items?.filter(i => i.ai_classification_status === 'mapped').length || 0,
-      confirmed: items?.filter(i => i.ai_classification_status === 'confirmed').length || 0,
+      pending:
+        items?.filter((i) =>
+          !i.ai_classification_status ||
+          i.ai_classification_status === "pending"
+        ).length || 0,
+      classified:
+        items?.filter((i) => i.ai_classification_status === "classified")
+          .length || 0,
+      mapped:
+        items?.filter((i) => i.ai_classification_status === "mapped").length ||
+        0,
+      confirmed:
+        items?.filter((i) => i.ai_classification_status === "confirmed")
+          .length || 0,
       byCategory: {
-        qc_control: items?.filter(i => i.ai_category === 'qc_control').length || 0,
-        test_specific: items?.filter(i => i.ai_category === 'test_specific').length || 0,
-        general: items?.filter(i => i.ai_category === 'general').length || 0,
+        qc_control:
+          items?.filter((i) => i.ai_category === "qc_control").length || 0,
+        test_specific:
+          items?.filter((i) => i.ai_category === "test_specific").length || 0,
+        general: items?.filter((i) => i.ai_category === "general").length || 0,
       },
     };
 
     return { data: stats, error: null };
   },
 
-  async getPendingClassificationItems(limit: number = 50): Promise<{ data: InventoryItem[] | null; error: any }> {
+  async getPendingClassificationItems(
+    limit: number = 50,
+  ): Promise<{ data: InventoryItem[] | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     const { data, error } = await supabase
-      .from('inventory_items')
-      .select('*')
-      .eq('lab_id', labId)
-      .eq('is_active', true)
-      .or('ai_classification_status.is.null,ai_classification_status.eq.pending')
-      .order('created_at', { ascending: false })
+      .from("inventory_items")
+      .select("*")
+      .eq("lab_id", labId)
+      .eq("is_active", true)
+      .or(
+        "ai_classification_status.is.null,ai_classification_status.eq.pending",
+      )
+      .order("created_at", { ascending: false })
       .limit(limit);
 
     return { data, error };
   },
 
-  async getClassifiedItems(category?: string, limit: number = 50): Promise<{ data: InventoryItem[] | null; error: any }> {
+  async getClassifiedItems(
+    category?: string,
+    limit: number = 50,
+  ): Promise<{ data: InventoryItem[] | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     let query = supabase
-      .from('inventory_items')
-      .select('*')
-      .eq('lab_id', labId)
-      .eq('is_active', true)
-      .eq('ai_classification_status', 'classified')
-      .order('ai_classification_confidence', { ascending: false })
+      .from("inventory_items")
+      .select("*")
+      .eq("lab_id", labId)
+      .eq("is_active", true)
+      .eq("ai_classification_status", "classified")
+      .order("ai_classification_confidence", { ascending: false })
       .limit(limit);
 
     if (category) {
-      query = query.eq('ai_category', category);
+      query = query.eq("ai_category", category);
     }
 
     const { data, error } = await query;
     return { data, error };
   },
 
-  async getMappingSummaries(limit: number = 50): Promise<{ data: any[] | null; error: any }> {
+  async getMappingSummaries(
+    limit: number = 50,
+  ): Promise<{ data: any[] | null; error: any }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     const { data, error } = await supabase
-      .from('v_inventory_mapping_summary')
-      .select('*')
-      .eq('lab_id', labId)
-      .gt('total_mappings', 0)
+      .from("v_inventory_mapping_summary")
+      .select("*")
+      .eq("lab_id", labId)
+      .gt("total_mappings", 0)
       .limit(limit);
 
     return { data, error };
   },
 
-  async runAIClassification(itemIds?: string[], batchSize: number = 10): Promise<{
+  async runAIClassification(
+    itemIds?: string[],
+    batchSize: number = 10,
+  ): Promise<{
     data: {
       success: boolean;
       classified: number;
-      categories: { qc_control: number; test_specific: number; general: number };
+      categories: {
+        qc_control: number;
+        test_specific: number;
+        general: number;
+      };
       results: any[];
     } | null;
-    error: any
+    error: any;
   }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
     // Get items to classify
     let items: InventoryItem[] = [];
     if (itemIds && itemIds.length > 0) {
       const { data } = await supabase
-        .from('inventory_items')
-        .select('id, name, code, type, unit, current_stock, primary_mapping_instruction')
-        .eq('lab_id', labId)
-        .in('id', itemIds)
+        .from("inventory_items")
+        .select(
+          "id, name, code, type, unit, current_stock, primary_mapping_instruction",
+        )
+        .eq("lab_id", labId)
+        .in("id", itemIds)
         .limit(batchSize);
       items = data || [];
     } else {
       const { data } = await supabase
-        .from('inventory_items')
-        .select('id, name, code, type, unit, current_stock, primary_mapping_instruction')
-        .eq('lab_id', labId)
-        .eq('is_active', true)
-        .or('ai_classification_status.is.null,ai_classification_status.eq.pending')
+        .from("inventory_items")
+        .select(
+          "id, name, code, type, unit, current_stock, primary_mapping_instruction",
+        )
+        .eq("lab_id", labId)
+        .eq("is_active", true)
+        .or(
+          "ai_classification_status.is.null,ai_classification_status.eq.pending",
+        )
         .limit(batchSize);
       items = data || [];
     }
 
     if (items.length === 0) {
-      return { data: { success: true, classified: 0, categories: { qc_control: 0, test_specific: 0, general: 0 }, results: [] }, error: null };
+      return {
+        data: {
+          success: true,
+          classified: 0,
+          categories: { qc_control: 0, test_specific: 0, general: 0 },
+          results: [],
+        },
+        error: null,
+      };
     }
 
-    const { data, error } = await supabase.functions.invoke('inventory-ai-classify', {
-      body: {
-        lab_id: labId,
-        items: items.map(i => ({
-          id: i.id,
-          name: i.name,
-          code: i.code,
-          type: i.type,
-          unit: i.unit,
-          current_stock: i.current_stock,
-          primary_mapping_instruction: i.primary_mapping_instruction,
-        })),
-        batch_size: batchSize,
+    const { data, error } = await supabase.functions.invoke(
+      "inventory-ai-classify",
+      {
+        body: {
+          lab_id: labId,
+          items: items.map((i) => ({
+            id: i.id,
+            name: i.name,
+            code: i.code,
+            type: i.type,
+            unit: i.unit,
+            current_stock: i.current_stock,
+            primary_mapping_instruction: i.primary_mapping_instruction,
+          })),
+          batch_size: batchSize,
+        },
       },
-    });
+    );
 
     return { data, error };
   },
@@ -14428,30 +15839,36 @@ const inventory = {
       qc_links_created: number;
       results: any[];
     } | null;
-    error: any
+    error: any;
   }> {
     const labId = await database.getCurrentUserLabId();
-    if (!labId) return { data: null, error: new Error('No lab_id found') };
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
 
-    const { data, error } = await supabase.functions.invoke('inventory-ai-map', {
-      body: {
-        lab_id: labId,
-        item_ids: itemIds,
-        batch_size: batchSize,
+    const { data, error } = await supabase.functions.invoke(
+      "inventory-ai-map",
+      {
+        body: {
+          lab_id: labId,
+          item_ids: itemIds,
+          batch_size: batchSize,
+        },
       },
-    });
+    );
 
     return { data, error };
   },
 
-  async updateMappingInstruction(itemId: string, instruction: string): Promise<{ error: any }> {
+  async updateMappingInstruction(
+    itemId: string,
+    instruction: string,
+  ): Promise<{ error: any }> {
     const { error } = await supabase
-      .from('inventory_items')
+      .from("inventory_items")
       .update({
         primary_mapping_instruction: instruction,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', itemId);
+      .eq("id", itemId);
 
     return { error };
   },
@@ -14459,7 +15876,7 @@ const inventory = {
   async confirmMapping(mappingId: string): Promise<{ error: any }> {
     const { data: { user } } = await supabase.auth.getUser();
 
-    const { error } = await supabase.rpc('fn_inventory_confirm_mapping', {
+    const { error } = await supabase.rpc("fn_inventory_confirm_mapping", {
       p_mapping_id: mappingId,
       p_user_id: user?.id,
     });
@@ -14468,7 +15885,7 @@ const inventory = {
   },
 
   async linkQCLot(itemId: string, qcLotId: string): Promise<{ error: any }> {
-    const { error } = await supabase.rpc('fn_inventory_link_qc_lot', {
+    const { error } = await supabase.rpc("fn_inventory_link_qc_lot", {
       p_item_id: itemId,
       p_qc_lot_id: qcLotId,
     });
@@ -14497,17 +15914,20 @@ Object.assign(database, {
  * @param age_unit - The unit: 'years' | 'months' | 'days' (defaults to 'years')
  * @returns Formatted string like "9y", "6m", "15d"
  */
-export const formatAge = (age: number | string | null | undefined, age_unit?: string | null): string => {
-  if (age === null || age === undefined || age === '') return 'N/A';
+export const formatAge = (
+  age: number | string | null | undefined,
+  age_unit?: string | null,
+): string => {
+  if (age === null || age === undefined || age === "") return "N/A";
 
   const unitMap: Record<string, string> = {
-    years: 'y',
-    months: 'm',
-    days: 'd',
+    years: "y",
+    months: "m",
+    days: "d",
   };
 
-  const unit = age_unit || 'years';
-  const abbrev = unitMap[unit] || 'y';
+  const unit = age_unit || "years";
+  const abbrev = unitMap[unit] || "y";
 
   return `${age}${abbrev}`;
 };
@@ -14518,22 +15938,24 @@ export const formatAge = (age: number | string | null | undefined, age_unit?: st
  * @param age_unit - The unit: 'years' | 'months' | 'days' (defaults to 'years')
  * @returns Formatted string like "9 years", "6 months", "15 days"
  */
-export const formatAgeFull = (age: number | string | null | undefined, age_unit?: string | null): string => {
-  if (age === null || age === undefined || age === '') return 'N/A';
+export const formatAgeFull = (
+  age: number | string | null | undefined,
+  age_unit?: string | null,
+): string => {
+  if (age === null || age === undefined || age === "") return "N/A";
 
-  const unit = age_unit || 'years';
-  const numAge = typeof age === 'string' ? parseInt(age, 10) : age;
+  const unit = age_unit || "years";
+  const numAge = typeof age === "string" ? parseInt(age, 10) : age;
 
   // Handle singular/plural
   if (numAge === 1) {
     const singularMap: Record<string, string> = {
-      years: 'year',
-      months: 'month',
-      days: 'day',
+      years: "year",
+      months: "month",
+      days: "day",
     };
-    return `${numAge} ${singularMap[unit] || 'year'}`;
+    return `${numAge} ${singularMap[unit] || "year"}`;
   }
 
   return `${age} ${unit}`;
 };
-

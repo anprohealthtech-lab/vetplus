@@ -106,6 +106,7 @@ type CardOrder = {
   hours_until_tat_breach?: number | null;
   is_tat_breached?: boolean | null;
   tat_hours?: number | null;
+  tatStarted?: boolean;
 };
 
 /* ===========================
@@ -581,10 +582,12 @@ const Orders: React.FC = () => {
         ? Math.max(invoiceInfo.totalInvoiced, orderAmount)
         : orderAmount;
 
-      // Calculate dynamic expected date based on TAT
+      // Calculate dynamic expected date based on TAT (only when sample has been received)
       let calculatedExpectedDateMs = 0;
+      let hasTatStartTime = false;
       rows.forEach((r) => {
         if (r.tat_hours && r.tat_start_time) {
+          hasTatStartTime = true;
           const start = new Date(r.tat_start_time).getTime();
           const duration = Number(r.tat_hours) * 3600 * 1000;
           const end = start + duration;
@@ -594,9 +597,11 @@ const Orders: React.FC = () => {
         }
       });
 
+      // TAT only starts after sample receipt — no fallback calculation before that
       const dynamicExpectedDate = calculatedExpectedDateMs > 0
         ? new Date(calculatedExpectedDateMs).toISOString()
         : o.expected_date;
+      const tatStarted = hasTatStartTime;
       const panels: Panel[] = rows.map((r) => {
         // Check if this test group is outsourced
         const outsourcedTest = (o.order_tests || []).find((t: any) => t.test_group_id === r.test_group_id);
@@ -700,7 +705,8 @@ const Orders: React.FC = () => {
 
         hours_until_tat_breach: minHours,
         is_tat_breached: isBreached,
-        tat_hours: maxTatHours
+        tat_hours: maxTatHours,
+        tatStarted
       };
     });
 
@@ -717,7 +723,8 @@ const Orders: React.FC = () => {
     // dashboard summary (kept)
     const s = sorted.reduce(
       (acc, o) => {
-        if (o.status === "Completed" || o.status === "Delivered") acc.allDone++;
+        if (o.status === "Completed" || o.status === "Delivered" ||
+            (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal)) acc.allDone++;
         else if (o.status === "Pending Approval") acc.awaitingApproval++;
         else if (o.enteredTotal > 0 && o.enteredTotal >= o.expectedTotal * 0.75) acc.mostlyDone++;
         else acc.pending++;
@@ -793,7 +800,8 @@ const Orders: React.FC = () => {
   const filteredSummary = useMemo(() => {
     return filtered.reduce(
       (acc, o) => {
-        if (o.status === "Completed" || o.status === "Delivered") acc.allDone++;
+        if (o.status === "Completed" || o.status === "Delivered" ||
+            (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal)) acc.allDone++;
         else if (o.status === "Pending Approval") acc.awaitingApproval++;
         else if (o.enteredTotal > 0 && o.enteredTotal >= o.expectedTotal * 0.75) acc.mostlyDone++;
         else acc.pending++;
@@ -1501,12 +1509,18 @@ const Orders: React.FC = () => {
                             </div>
                             <div className="text-sm text-gray-600">
                               <div>Ordered: {new Date(o.order_date).toLocaleDateString()}</div>
-                                <div className={`${new Date(o.expected_date) < new Date() ? "text-red-600 font-bold" : ""} `}>
-                                  Expected: {mobile.isMobile
-                                    ? new Date(o.expected_date).toLocaleDateString()
-                                    : new Date(o.expected_date).toLocaleString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                                  {new Date(o.expected_date) < new Date() && " ⚠️ OVERDUE"}
-                                </div>
+                                {!o.tatStarted ? (
+                                  <div className="text-amber-600 font-medium text-xs">
+                                    ⏳ TAT starts after collection
+                                  </div>
+                                ) : (
+                                  <div className={`${new Date(o.expected_date) < new Date() ? "text-red-600 font-bold" : ""} `}>
+                                    Expected: {mobile.isMobile
+                                      ? new Date(o.expected_date).toLocaleDateString()
+                                      : new Date(o.expected_date).toLocaleString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                    {new Date(o.expected_date) < new Date() && " ⚠️ OVERDUE"}
+                                  </div>
+                                )}
                               </div>
 
                             {/* Updated button section with Add Tests functionality */}

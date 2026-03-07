@@ -83,6 +83,29 @@ interface DetailedApprovalModalProps {
   onRequestClarification: (resultId: string, notes: string) => void;
 }
 
+const getFlagDisplay = (flag?: string) => {
+  const rawFlag = flag || '';
+  const normalizedFlag = rawFlag.trim().toLowerCase();
+
+  if (['critical_h', 'critical high', 'critical_high', 'ch', 'h*', 'hh'].includes(normalizedFlag)) {
+    return { label: 'Critical High', className: 'text-red-700 bg-red-100' };
+  }
+
+  if (['critical_l', 'critical low', 'critical_low', 'cl', 'l*', 'll'].includes(normalizedFlag)) {
+    return { label: 'Critical Low', className: 'text-blue-700 bg-blue-100' };
+  }
+
+  if (normalizedFlag === 'h' || normalizedFlag === 'high') {
+    return { label: 'High', className: 'text-red-600 bg-red-100' };
+  }
+
+  if (normalizedFlag === 'l' || normalizedFlag === 'low') {
+    return { label: 'Low', className: 'text-blue-600 bg-blue-100' };
+  }
+
+  return { label: rawFlag, className: 'text-gray-600 bg-gray-100' };
+};
+
 const DetailedApprovalModal: React.FC<DetailedApprovalModalProps> = ({
   isOpen,
   onClose,
@@ -349,15 +372,14 @@ const DetailedApprovalModal: React.FC<DetailedApprovalModalProps> = ({
                           <td className="border border-gray-300 p-3">{analyte.unit}</td>
                           <td className="border border-gray-300 p-3">{analyte.reference_range}</td>
                           <td className="border border-gray-300 p-3">
-                            {analyte.flag && (
-                              <span className={`font-medium px-2 py-1 rounded text-xs ${
-                                analyte.flag === 'H' ? 'text-red-600 bg-red-100' : 
-                                analyte.flag === 'L' ? 'text-blue-600 bg-blue-100' : 
-                                'text-gray-600 bg-gray-100'
-                              }`}>
-                                {analyte.flag}
-                              </span>
-                            )}
+                            {analyte.flag && (() => {
+                              const flagDisplay = getFlagDisplay(analyte.flag);
+                              return (
+                                <span className={`font-medium px-2 py-1 rounded text-xs ${flagDisplay.className}`}>
+                                  {flagDisplay.label}
+                                </span>
+                              );
+                            })()}
                           </td>
                           <td className="border border-gray-300 p-3">{analyte.department}</td>
                         </tr>

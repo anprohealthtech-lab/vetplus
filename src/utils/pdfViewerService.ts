@@ -364,8 +364,17 @@ export const generateViewerPDF = async (
             imgFormat = 'JPEG';
           }
           
-          // Add header image (FULL PAGE WIDTH - no margins, like letterhead PDF)
-          const headerHeight = 28; // ~28mm header height for full-width image
+          // Add header image full page width, height proportional to image aspect ratio
+          // Cap at 35mm so it doesn't dominate the page
+          const headerImg = new Image();
+          const headerDims = await new Promise<{ w: number; h: number }>((resolve) => {
+            headerImg.onload = () => resolve({ w: headerImg.naturalWidth, h: headerImg.naturalHeight });
+            headerImg.onerror = () => resolve({ w: 4, h: 1 }); // fallback 4:1 ratio
+            headerImg.src = base64;
+          });
+          const maxHeaderH = 30; // mm cap
+          const naturalHeaderH = (headerDims.h / headerDims.w) * pageWidth;
+          const headerHeight = Math.min(naturalHeaderH, maxHeaderH);
           doc.addImage(base64, imgFormat, 0, 0, pageWidth, headerHeight, undefined, 'FAST');
           return { success: true, headerHeight };
         }
@@ -971,24 +980,39 @@ export const generateViewerPDF = async (
             reader.readAsDataURL(blob);
           });
           
-          // Signature box on the right side
-          const sigWidth = 45;
-          const sigHeight = 20;
+          // Signature box on the right side — use aspect-ratio-preserving dimensions
+          const MAX_SIG_WIDTH = 32; // mm
+          const MAX_SIG_HEIGHT = 12; // mm
+          // Probe natural image dimensions via Image element for proper aspect ratio
+          const imgDims = await new Promise<{ w: number; h: number }>((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+            img.onerror = () => resolve({ w: 1, h: 1 });
+            img.src = base64;
+          });
+          const aspect = imgDims.h / imgDims.w;
+          let sigWidth = MAX_SIG_WIDTH;
+          let sigHeight = MAX_SIG_WIDTH * aspect;
+          if (sigHeight > MAX_SIG_HEIGHT) {
+            sigHeight = MAX_SIG_HEIGHT;
+            sigWidth = MAX_SIG_HEIGHT / aspect;
+          }
           const sigX = pageWidth - margin - sigWidth;
-          
+
           // Label
           doc.setFontSize(8);
           doc.setFont('helvetica', 'normal');
           doc.setTextColor(100, 100, 100);
           doc.text('Authorized Signatory', sigX, yPos);
-          
+
           // Signature image
-          doc.addImage(base64, 'PNG', sigX, yPos + 2, sigWidth, sigHeight, undefined, 'FAST');
+          const imgFmt = base64.includes('image/jpeg') || base64.includes('image/jpg') ? 'JPEG' : 'PNG';
+          doc.addImage(base64, imgFmt, sigX, yPos + 2, sigWidth, sigHeight, undefined, 'FAST');
           
           // Line under signature
           doc.setDrawColor(150, 150, 150);
           doc.setLineWidth(0.3);
-          doc.line(sigX, yPos + sigHeight + 4, sigX + sigWidth, yPos + sigHeight + 4);
+          doc.line(sigX, yPos + 2 + sigHeight + 2, sigX + sigWidth, yPos + 2 + sigHeight + 2);
           
           console.log('✅ Signature image loaded');
         }

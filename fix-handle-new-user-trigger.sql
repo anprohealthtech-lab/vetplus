@@ -1,4 +1,4 @@
--- Fix handle_new_user trigger to include role_id
+-- Fix handle_new_user trigger to include role_id and be robust
 -- Run this in Supabase SQL Editor
 
 CREATE OR REPLACE FUNCTION public.handle_new_user()
@@ -6,6 +6,7 @@ RETURNS trigger AS $$
 DECLARE
     default_lab_id uuid;
     default_role_id uuid;
+    resolved_role TEXT;
 BEGIN
     -- Get the first active lab as default
     SELECT id INTO default_lab_id 
@@ -19,6 +20,13 @@ BEGIN
     FROM user_roles
     WHERE role_code = 'technician'
     LIMIT 1;
+
+    -- Resolve the role from metadata, defaulting to 'Technician'
+    resolved_role := COALESCE(NEW.raw_user_meta_data->>'role', 'Technician');
+    -- Validate the role is a valid enum value
+    IF resolved_role NOT IN ('Admin', 'Lab Manager', 'Manager', 'Technician', 'Receptionist', 'Doctor') THEN
+        resolved_role := 'Technician';
+    END IF;
     
     -- Insert new user into public.users table
     INSERT INTO public.users (
@@ -36,7 +44,7 @@ BEGIN
         NEW.id,
         COALESCE(NEW.raw_user_meta_data->>'name', NEW.email),
         NEW.email,
-        'Technician',
+        resolved_role::user_role,
         COALESCE((NEW.raw_user_meta_data->>'role_id')::uuid, default_role_id),
         'Active',
         COALESCE((NEW.raw_user_meta_data->>'lab_id')::uuid, default_lab_id),
@@ -50,7 +58,7 @@ BEGIN
 EXCEPTION
     WHEN OTHERS THEN
         -- Log error but don't fail the auth user creation
-        RAISE WARNING 'Failed to create public.users record: %', SQLERRM;
+        RAISE WARNING 'handle_new_user trigger failed: % (SQLSTATE: %)', SQLERRM, SQLSTATE;
         RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;

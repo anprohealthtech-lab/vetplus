@@ -848,7 +848,12 @@ const Tests: React.FC = () => {
             isCritical: labAnalyte.is_critical ?? analyte.isCritical,
             ref_range_knowledge: labAnalyte.ref_range_knowledge || analyte.ref_range_knowledge,
             expected_normal_values: labAnalyte.expected_normal_values || analyte.expected_normal_values || [],
-            expected_value_flag_map: labAnalyte.expected_value_flag_map || (analyteSource as any)?.expected_value_flag_map || analyte.expected_value_flag_map || {}
+            expected_value_flag_map: labAnalyte.expected_value_flag_map || (analyteSource as any)?.expected_value_flag_map || analyte.expected_value_flag_map || {},
+            // Calculated parameter fields (from global analyte record)
+            isCalculated: analyteSource?.is_calculated || analyte.isCalculated || false,
+            formula: analyteSource?.formula || analyte.formula || '',
+            formulaVariables: analyteSource?.formula_variables || analyte.formulaVariables || [],
+            formulaDescription: analyteSource?.formula_description || analyte.formulaDescription || ''
           });
           setShowEditAnalyteModal(true);
           return;
@@ -1097,7 +1102,12 @@ const Tests: React.FC = () => {
           toBeCopied: updatedAnalyte.to_be_copied ?? toBeCopied,
           ref_range_knowledge: updatedAnalyte.ref_range_knowledge,
           expected_normal_values: updatedAnalyte.expected_normal_values || formData.expected_normal_values || [],
-          expected_value_flag_map: updatedAnalyte.expected_value_flag_map || formData.expected_value_flag_map || {}
+          expected_value_flag_map: updatedAnalyte.expected_value_flag_map || formData.expected_value_flag_map || {},
+          // Calculated parameter fields (from formData since they're saved to global analytes table)
+          isCalculated: formData.is_calculated ?? formData.isCalculated ?? editingAnalyte.isCalculated ?? false,
+          formula: formData.formula ?? editingAnalyte.formula ?? '',
+          formulaVariables: formData.formula_variables ?? formData.formulaVariables ?? editingAnalyte.formulaVariables ?? [],
+          formulaDescription: formData.formula_description ?? formData.formulaDescription ?? editingAnalyte.formulaDescription ?? ''
         };
 
         setAnalytes(prev => prev.map(a => a.id === editingAnalyte.id ? transformedAnalyte : a));
@@ -2090,8 +2100,15 @@ const Tests: React.FC = () => {
                 ai_prompt_override: editingAnalyte.aiPromptOverride,
                 group_ai_mode: editingAnalyte.groupAiMode,
                 is_global: editingAnalyte.isGlobal,
-                to_be_copied: editingAnalyte.toBeCopied
+                to_be_copied: editingAnalyte.toBeCopied,
+                is_calculated: editingAnalyte.isCalculated,
+                formula: editingAnalyte.formula,
+                formula_variables: editingAnalyte.formulaVariables,
+                formula_description: editingAnalyte.formulaDescription
               }}
+              availableAnalytes={analytes
+                .filter(a => !a.isCalculated && a.id !== editingAnalyte.id)
+                .map(a => ({ id: a.id, name: a.name, unit: a.unit || '', category: a.category }))}
               onSave={handleUpdateAnalyte}
               onCancel={handleCloseAnalyteModal}
             />

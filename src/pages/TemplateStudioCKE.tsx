@@ -54,6 +54,7 @@ interface LabTemplateRecord {
   ai_verification_summary?: string | null;
   ai_verification_details?: unknown;
   ai_verification_checked_at?: string | null;
+  is_interpretation_only?: boolean | null;
 }
 
 interface TestGroupOption {
@@ -132,6 +133,9 @@ const toTitleCase = (value: string) =>
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
 
+const normalizeSearchText = (value?: string | null) =>
+  (value || '').toLowerCase().replace(/\s+/g, '').trim();
+
 const parseVariantMap = (value: unknown): Record<string, string> => {
   if (!value) {
     return {};
@@ -168,10 +172,9 @@ const parseVariantMap = (value: unknown): Record<string, string> => {
 
 const CKEDITOR_VERSION = '47.1.0';
 const CKEDITOR_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.umd.js`;
-// Premium features removed - not needed and causing errors
-// const CKEDITOR_PREMIUM_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5-premium-features/${CKEDITOR_VERSION}/ckeditor5-premium-features.umd.js`;
+const CKEDITOR_PREMIUM_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5-premium-features/${CKEDITOR_VERSION}/ckeditor5-premium-features.umd.js`;
 const CKEDITOR_CSS_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.css`;
-// const CKEDITOR_PREMIUM_CSS_URL = `https://cdn.ckeditor.com/ckeditor5-premium-features/${CKEDITOR_VERSION}/ckeditor5-premium-features.css`;
+const CKEDITOR_PREMIUM_CSS_URL = `https://cdn.ckeditor.com/ckeditor5-premium-features/${CKEDITOR_VERSION}/ckeditor5-premium-features.css`;
 
 const resourcePromises: Record<string, Promise<void> | undefined> = {};
 
@@ -233,9 +236,13 @@ const ensureScript = (src: string) => {
 const loadCkeditorResources = async () => {
   await Promise.all([
     ensureStylesheet(CKEDITOR_CSS_URL),
+    ensureStylesheet(CKEDITOR_PREMIUM_CSS_URL),
     ensureScript(CKEDITOR_SCRIPT_URL),
-    // Premium features removed - not essential and causing errors
   ]);
+  // Load premium features after base script is ready (they depend on CKEDITOR being defined)
+  await ensureScript(CKEDITOR_PREMIUM_SCRIPT_URL).catch(() => {
+    console.warn('CKEditor premium features failed to load — premium plugins (FormatPainter, etc.) will be unavailable.');
+  });
 };
 
 interface PremiumEditorConfigOptions {
@@ -778,6 +785,7 @@ const TemplateStudioCKE: React.FC = () => {
     description: '',
     category: 'reports',
     testGroupId: '',
+    isInterpretationOnly: false,
   });
   const [metadataSaving, setMetadataSaving] = useState(false);
   const [metadataMessage, setMetadataMessage] = useState<string | null>(null);
@@ -900,6 +908,24 @@ const TemplateStudioCKE: React.FC = () => {
       group.name.toLowerCase().replace(/\s+/g, '').includes(testGroupQuery.toLowerCase().replace(/\s+/g, ''))
     );
   }, [testGroups, testGroupQuery]);
+
+  const filteredTemplates = useMemo(() => {
+    const searchLower = normalizeSearchText(templateSearchQuery);
+    if (!searchLower) {
+      return templates;
+    }
+
+    return templates.filter((template) => {
+      const templateName = normalizeSearchText(template.template_name || 'Untitled Template');
+      const templateDescription = normalizeSearchText(template.template_description || '');
+      const templateCategory = normalizeSearchText(template.category || '');
+      return (
+        templateName.includes(searchLower) ||
+        templateDescription.includes(searchLower) ||
+        templateCategory.includes(searchLower)
+      );
+    });
+  }, [templates, templateSearchQuery]);
 
   const editorContainerRef = useRef<HTMLDivElement | null>(null);
   const editorInstanceRef = useRef<any>(null);
@@ -1438,11 +1464,11 @@ const TemplateStudioCKE: React.FC = () => {
           }
         });
 
-        setPlaceholderPickerOpen(false);
+        // Do NOT close picker — keep open so user can fill next table cell
         setPlaceholderError(null);
       } catch (err) {
         console.error('Failed to insert placeholder:', err);
-        setPlaceholderError('Unable to insert placeholder. Select an insertion point and try again.');
+        setPlaceholderError('Unable to insert placeholder. Click inside a table cell in the editor first, then click a placeholder button.');
       }
     },
     [ckeditorInstance]
@@ -1701,6 +1727,7 @@ const TemplateStudioCKE: React.FC = () => {
         description: '',
         category: 'reports',
         testGroupId: '',
+        isInterpretationOnly: false,
       });
       setAuditResult(null);
       return;
@@ -1711,6 +1738,7 @@ const TemplateStudioCKE: React.FC = () => {
       description: templateMeta.template_description || '',
       category: templateMeta.category || 'reports',
       testGroupId: templateMeta.test_group_id || '',
+      isInterpretationOnly: templateMeta.is_interpretation_only ?? false,
     });
 
     if (templateMeta.ai_verification_details) {
@@ -2008,6 +2036,7 @@ const TemplateStudioCKE: React.FC = () => {
         description: metadataDraft.description,
         category: metadataDraft.category,
         testGroupId: metadataDraft.testGroupId || null,
+        isInterpretationOnly: metadataDraft.isInterpretationOnly,
         userId: identityId ?? null,
       });
 
@@ -2377,7 +2406,7 @@ const TemplateStudioCKE: React.FC = () => {
         setTemplateMeta(null);
         setHtmlContent('');
         setCssContent('');
-        setMetadataDraft({ name: '', description: '', category: '', testGroupId: '' });
+        setMetadataDraft({ name: '', description: '', category: '', testGroupId: '', isInterpretationOnly: false });
       }
 
       setIsDeleteConfirmOpen(false);
@@ -2545,24 +2574,32 @@ const TemplateStudioCKE: React.FC = () => {
           <div className="flex items-center gap-3 min-w-0">
             <div className="flex items-center gap-2">
               <Layers className="h-5 w-5 text-blue-600 shrink-0" />
-              <select
-                value={selectedTemplateId || ''}
-                onChange={(event) => handleTemplateSelect(event.target.value)}
-                className="text-sm font-semibold text-gray-900 bg-transparent border-0 focus:ring-0 cursor-pointer pr-8 max-w-[250px] truncate"
-              >
-                {templates
-                  .filter((template) => {
-                    const searchLower = templateSearchQuery.toLowerCase().trim();
-                    if (!searchLower) return true;
-                    const templateName = (template.template_name || 'Untitled Template').toLowerCase();
-                    return templateName.includes(searchLower);
-                  })
-                  .map((template) => (
-                    <option key={template.id} value={template.id}>
-                      {template.template_name || 'Untitled Template'}
+              <div className="flex flex-col gap-1 min-w-[240px]">
+                <input
+                  type="text"
+                  value={templateSearchQuery}
+                  onChange={(event) => setTemplateSearchQuery(event.target.value)}
+                  placeholder="Search templates (e.g., tsh)..."
+                  className="w-full rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <select
+                  value={selectedTemplateId || ''}
+                  onChange={(event) => handleTemplateSelect(event.target.value)}
+                  className="text-sm font-semibold text-gray-900 bg-transparent border-0 focus:ring-0 cursor-pointer pr-8 max-w-[250px] truncate"
+                >
+                  {filteredTemplates.length > 0 ? (
+                    filteredTemplates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.template_name || 'Untitled Template'}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="" disabled>
+                      No templates found
                     </option>
-                  ))}
-              </select>
+                  )}
+                </select>
+              </div>
             </div>
             {verificationStatusBadge ? (
               <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${verificationStatusBadge.classes}`}>
@@ -2857,6 +2894,23 @@ const TemplateStudioCKE: React.FC = () => {
                       className="w-full rounded-md border border-gray-300 px-3 py-2 text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
+                  <div className="flex items-center gap-2 mt-4 mb-2 bg-blue-50/50 p-2 rounded-md border border-blue-100">
+                    <input
+                      type="checkbox"
+                      id="interpretationOnly"
+                      checked={metadataDraft.isInterpretationOnly}
+                      onChange={(event) =>
+                        setMetadataDraft((prev) => ({ ...prev, isInterpretationOnly: event.target.checked }))
+                      }
+                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <label htmlFor="interpretationOnly" className="text-xs font-medium text-gray-700 select-none cursor-pointer">
+                      Interpretation Only Mode
+                    </label>
+                  </div>
+                  <p className="text-[10px] text-gray-500 mb-4 px-1 leading-relaxed">
+                    If checked, this template will be appended to the bottom of the default generated report table instead of replacing the entire layout. Useful for clinical interpretations or comments.
+                  </p>
                   <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1">Linked Test Group</label>
                     <Combobox

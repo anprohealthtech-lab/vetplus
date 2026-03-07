@@ -50,8 +50,46 @@ export interface QueuedNotification {
 // Helper: Check if current time is within send window
 function isWithinSendWindow(settings: NotificationSettings): boolean {
   const now = new Date();
-  const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:00`;
-  return currentTime >= settings.send_window_start && currentTime <= settings.send_window_end;
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+  const [startHour, startMinute] = (settings.send_window_start || '09:00:00').split(':').map(Number);
+  const [endHour, endMinute] = (settings.send_window_end || '21:00:00').split(':').map(Number);
+  const startMinutes = (startHour * 60) + startMinute;
+  const endMinutes = (endHour * 60) + endMinute;
+
+  if (startMinutes <= endMinutes) {
+    return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+  }
+
+  return currentMinutes >= startMinutes || currentMinutes <= endMinutes;
+}
+
+function getNextWindowStartIso(settings: NotificationSettings): string {
+  const now = new Date();
+  const [startHour, startMinute] = (settings.send_window_start || '09:00:00').split(':').map(Number);
+
+  const nextStart = new Date(now);
+  nextStart.setHours(startHour, startMinute, 0, 0);
+
+  if (nextStart <= now) {
+    nextStart.setDate(nextStart.getDate() + 1);
+  }
+
+  return nextStart.toISOString();
+}
+
+async function matchesRequiredReportStatus(
+  reportId: string,
+  requiredStatus: NotificationSettings['send_report_on_status'],
+): Promise<boolean> {
+  const { data: report } = await supabase
+    .from('reports')
+    .select('status, report_status')
+    .eq('id', reportId)
+    .maybeSingle();
+
+  const currentStatus = (report?.report_status || report?.status || '').toLowerCase();
+  return currentStatus === requiredStatus.toLowerCase();
 }
 
 // Helper: Format phone number for WhatsApp
@@ -171,6 +209,18 @@ export const notificationTriggerService = {
       return { sent: false, reason: 'disabled' };
     }
 
+    const statusGate = settings.send_report_on_status || 'Completed';
+    const statusMatches = await matchesRequiredReportStatus(reportId, statusGate);
+    const withinWindow = isWithinSendWindow(settings);
+
+    if (!statusMatches) {
+      console.log(`[NotificationTrigger] Report status does not match configured trigger status (${statusGate})`);
+    }
+
+    if (!withinWindow) {
+      console.log('[NotificationTrigger] Outside configured send window');
+    }
+
     // Fetch order details with patient and doctor
     const { data: order, error: orderError } = await supabase
       .from('orders')
@@ -218,6 +268,8 @@ export const notificationTriggerService = {
     };
 
     const results: { patient?: any; doctor?: any } = {};
+    const shouldAttemptNow = statusMatches && withinWindow;
+    const scheduledFor = !withinWindow ? getNextWindowStartIso(settings) : new Date().toISOString();
 
     // Send to patient
     if (settings.auto_send_report_to_patient && order.patients?.phone) {
@@ -226,13 +278,15 @@ export const notificationTriggerService = {
         templateData
       );
 
-      const sendResult = await notificationTriggerService.sendWithFallback(
-        order.patients.phone,
-        patientMessage,
-        pdfUrl,
-        order.patient_name,
-        testNames
-      );
+      const sendResult = shouldAttemptNow
+        ? await notificationTriggerService.sendWithFallback(
+          order.patients.phone,
+          patientMessage,
+          pdfUrl,
+          order.patient_name,
+          testNames
+        )
+        : { success: false, error: !statusMatches ? `Waiting for status ${statusGate}` : 'Outside send window' };
 
       if (sendResult.success) {
         // Update report tracking fields
@@ -247,22 +301,26 @@ export const notificationTriggerService = {
         
         results.patient = { sent: true, messageId: sendResult.messageId };
       } else {
-        // Queue for retry
-        await notificationTriggerService.queueNotification({
-          lab_id: labId,
-          recipient_type: 'patient',
-          recipient_phone: order.patients.phone,
-          recipient_name: order.patient_name,
-          recipient_id: order.patients.id,
-          trigger_type: 'report_ready',
-          order_id: orderId,
-          report_id: reportId,
-          message_content: patientMessage,
-          attachment_url: pdfUrl,
-          attachment_type: 'report',
-          last_error: sendResult.error,
-        });
-        results.patient = { sent: false, queued: true, error: sendResult.error };
+        if (settings.queue_outside_window !== false || statusMatches) {
+          await notificationTriggerService.queueNotification({
+            lab_id: labId,
+            recipient_type: 'patient',
+            recipient_phone: order.patients.phone,
+            recipient_name: order.patient_name,
+            recipient_id: order.patients.id,
+            trigger_type: 'report_ready',
+            order_id: orderId,
+            report_id: reportId,
+            message_content: patientMessage,
+            attachment_url: pdfUrl,
+            attachment_type: 'report',
+            scheduled_for: scheduledFor,
+            last_error: sendResult.error,
+          });
+          results.patient = { sent: false, queued: true, error: sendResult.error };
+        } else {
+          results.patient = { sent: false, queued: false, skipped: true, reason: sendResult.error };
+        }
       }
     }
 
@@ -273,13 +331,15 @@ export const notificationTriggerService = {
         templateData
       );
 
-      const sendResult = await notificationTriggerService.sendWithFallback(
-        order.doctors.phone,
-        doctorMessage,
-        pdfUrl,
-        order.patient_name,
-        testNames
-      );
+      const sendResult = shouldAttemptNow
+        ? await notificationTriggerService.sendWithFallback(
+          order.doctors.phone,
+          doctorMessage,
+          pdfUrl,
+          order.patient_name,
+          testNames
+        )
+        : { success: false, error: !statusMatches ? `Waiting for status ${statusGate}` : 'Outside send window' };
 
       if (sendResult.success) {
         // Update report tracking fields
@@ -293,22 +353,26 @@ export const notificationTriggerService = {
         
         results.doctor = { sent: true, messageId: sendResult.messageId };
       } else {
-        // Queue for retry
-        await notificationTriggerService.queueNotification({
-          lab_id: labId,
-          recipient_type: 'doctor',
-          recipient_phone: order.doctors.phone,
-          recipient_name: order.doctors.name,
-          recipient_id: order.doctors.id,
-          trigger_type: 'report_ready',
-          order_id: orderId,
-          report_id: reportId,
-          message_content: doctorMessage,
-          attachment_url: pdfUrl,
-          attachment_type: 'report',
-          last_error: sendResult.error,
-        });
-        results.doctor = { sent: false, queued: true, error: sendResult.error };
+        if (settings.queue_outside_window !== false || statusMatches) {
+          await notificationTriggerService.queueNotification({
+            lab_id: labId,
+            recipient_type: 'doctor',
+            recipient_phone: order.doctors.phone,
+            recipient_name: order.doctors.name,
+            recipient_id: order.doctors.id,
+            trigger_type: 'report_ready',
+            order_id: orderId,
+            report_id: reportId,
+            message_content: doctorMessage,
+            attachment_url: pdfUrl,
+            attachment_type: 'report',
+            scheduled_for: scheduledFor,
+            last_error: sendResult.error,
+          });
+          results.doctor = { sent: false, queued: true, error: sendResult.error };
+        } else {
+          results.doctor = { sent: false, queued: false, skipped: true, reason: sendResult.error };
+        }
       }
     }
 
@@ -324,6 +388,10 @@ export const notificationTriggerService = {
     if (!settings?.auto_send_invoice_to_patient) {
       return { sent: false, reason: 'disabled' };
     }
+
+    const withinWindow = isWithinSendWindow(settings);
+    const shouldAttemptNow = withinWindow;
+    const scheduledFor = withinWindow ? new Date().toISOString() : getNextWindowStartIso(settings);
 
     // Fetch invoice with patient details
     const { data: invoice, error } = await supabase
@@ -370,12 +438,14 @@ export const notificationTriggerService = {
       templateData
     );
 
-    const sendResult = await notificationTriggerService.sendWithFallback(
-      invoice.patients.phone,
-      message,
-      pdfUrl,
-      invoice.patient_name
-    );
+    const sendResult = shouldAttemptNow
+      ? await notificationTriggerService.sendWithFallback(
+        invoice.patients.phone,
+        message,
+        pdfUrl,
+        invoice.patient_name
+      )
+      : { success: false, error: 'Outside send window' };
 
     if (sendResult.success) {
       await supabase
@@ -389,21 +459,24 @@ export const notificationTriggerService = {
       
       return { sent: true, messageId: sendResult.messageId };
     } else {
-      // Queue for retry
-      await notificationTriggerService.queueNotification({
-        lab_id: labId,
-        recipient_type: 'patient',
-        recipient_phone: invoice.patients.phone,
-        recipient_name: invoice.patient_name,
-        recipient_id: invoice.patients.id,
-        trigger_type: 'invoice_generated',
-        invoice_id: invoiceId,
-        message_content: message,
-        attachment_url: pdfUrl,
-        attachment_type: 'invoice',
-        last_error: sendResult.error,
-      });
-      return { sent: false, queued: true, error: sendResult.error };
+      if (settings.queue_outside_window !== false) {
+        await notificationTriggerService.queueNotification({
+          lab_id: labId,
+          recipient_type: 'patient',
+          recipient_phone: invoice.patients.phone,
+          recipient_name: invoice.patient_name,
+          recipient_id: invoice.patients.id,
+          trigger_type: 'invoice_generated',
+          invoice_id: invoiceId,
+          message_content: message,
+          attachment_url: pdfUrl,
+          attachment_type: 'invoice',
+          scheduled_for: scheduledFor,
+          last_error: sendResult.error,
+        });
+        return { sent: false, queued: true, error: sendResult.error };
+      }
+      return { sent: false, queued: false, skipped: true, reason: sendResult.error };
     }
   },
 
@@ -415,6 +488,10 @@ export const notificationTriggerService = {
     if (!settings?.auto_send_registration_confirmation) {
       return { sent: false, reason: 'disabled' };
     }
+
+    const withinWindow = isWithinSendWindow(settings);
+    const shouldAttemptNow = withinWindow;
+    const scheduledFor = withinWindow ? new Date().toISOString() : getNextWindowStartIso(settings);
 
     // Fetch order with patient and tests
     const { data: order, error } = await supabase
@@ -456,32 +533,48 @@ export const notificationTriggerService = {
       LabName: lab?.name || 'Lab',
     };
 
+    // Try to use the lab's customized template from DB, fallback to hardcoded default
+    let templateMessage = DEFAULT_TEMPLATES.registration_confirmation.message;
+    try {
+      const { data: dbTemplate } = await database.whatsappTemplates.getDefault('registration_confirmation', labId);
+      if (dbTemplate?.message_content) {
+        templateMessage = dbTemplate.message_content;
+      }
+    } catch (e) {
+      console.warn('[NotificationTrigger] Failed to fetch DB template, using default:', e);
+    }
+
     const message = replacePlaceholders(
-      DEFAULT_TEMPLATES.registration_confirmation.message,
+      templateMessage,
       templateData
     );
 
-    const sendResult = await notificationTriggerService.sendWithFallback(
-      order.patients.phone,
-      message
-    );
+    const sendResult = shouldAttemptNow
+      ? await notificationTriggerService.sendWithFallback(
+        order.patients.phone,
+        message
+      )
+      : { success: false, error: 'Outside send window' };
 
     if (sendResult.success) {
       return { sent: true, messageId: sendResult.messageId };
     } else {
-      // Queue for retry
-      await notificationTriggerService.queueNotification({
-        lab_id: labId,
-        recipient_type: 'patient',
-        recipient_phone: order.patients.phone,
-        recipient_name: order.patient_name,
-        recipient_id: order.patients.id,
-        trigger_type: 'order_registered',
-        order_id: orderId,
-        message_content: message,
-        last_error: sendResult.error,
-      });
-      return { sent: false, queued: true, error: sendResult.error };
+      if (settings.queue_outside_window !== false) {
+        await notificationTriggerService.queueNotification({
+          lab_id: labId,
+          recipient_type: 'patient',
+          recipient_phone: order.patients.phone,
+          recipient_name: order.patient_name,
+          recipient_id: order.patients.id,
+          trigger_type: 'order_registered',
+          order_id: orderId,
+          message_content: message,
+          scheduled_for: scheduledFor,
+          last_error: sendResult.error,
+        });
+        return { sent: false, queued: true, error: sendResult.error };
+      }
+      return { sent: false, queued: false, skipped: true, reason: sendResult.error };
     }
   },
 
@@ -512,6 +605,43 @@ export const notificationTriggerService = {
     let failCount = 0;
 
     for (const item of items) {
+      const settings = await notificationTriggerService.getSettings(item.lab_id);
+      if (settings && !isWithinSendWindow(settings)) {
+        if (settings.queue_outside_window === false) {
+          await supabase
+            .from('notification_queue')
+            .update({
+              status: 'skipped',
+              last_error: 'Outside send window and queue disabled',
+            })
+            .eq('id', item.id);
+          continue;
+        }
+
+        await supabase
+          .from('notification_queue')
+          .update({
+            scheduled_for: getNextWindowStartIso(settings),
+            last_error: 'Deferred to next send window',
+          })
+          .eq('id', item.id);
+        continue;
+      }
+
+      if (item.trigger_type === 'report_ready' && item.report_id && settings?.send_report_on_status) {
+        const canSendByStatus = await matchesRequiredReportStatus(item.report_id, settings.send_report_on_status);
+        if (!canSendByStatus) {
+          await supabase
+            .from('notification_queue')
+            .update({
+              scheduled_for: new Date(Date.now() + (30 * 60 * 1000)).toISOString(),
+              last_error: `Waiting for report status ${settings.send_report_on_status}`,
+            })
+            .eq('id', item.id);
+          continue;
+        }
+      }
+
       // Mark as sending
       await supabase
         .from('notification_queue')

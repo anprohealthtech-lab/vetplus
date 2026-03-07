@@ -1917,7 +1917,7 @@ const Reports: React.FC = () => {
 
                         <span className="w-px h-4 bg-gray-300" />
 
-                        {group.is_report_ready ? (
+                        {(group.is_report_ready || (group.results[0] as ApprovedResult)?.has_final_report || (group.results[0] as ApprovedResult)?.has_draft_report) ? (
                           <>
                             {!(group.results[0] as ApprovedResult)?.has_final_report ? (
                               /* Not generated yet */
@@ -2139,7 +2139,7 @@ const Reports: React.FC = () => {
                             <span>View</span>
                           </button>
 
-                          {group.is_report_ready ? (
+                          {(group.is_report_ready || (group.results[0] as ApprovedResult)?.has_final_report || (group.results[0] as ApprovedResult)?.has_draft_report) ? (
                             <>
                               {!(group.results[0] as ApprovedResult)?.has_final_report ? (
                                 <>

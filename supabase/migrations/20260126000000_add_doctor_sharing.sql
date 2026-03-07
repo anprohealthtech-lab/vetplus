@@ -18,20 +18,19 @@ CREATE TABLE IF NOT EXISTS public.doctor_sharing (
   default_sharing_percent numeric(5,2) DEFAULT 0
     CHECK (default_sharing_percent BETWEEN 0 AND 100),
   
-  -- Doctor Discount Options
-  -- Mode: 'none' = no adjustment, 'exclude_from_base' = reduce shareable amount, 'deduct_from_commission' = deduct from final commission
-  dr_discount_mode text NOT NULL DEFAULT 'deduct_from_commission'
-    CHECK (dr_discount_mode IN ('none', 'exclude_from_base', 'deduct_from_commission', 'split_50_50')),
+  -- Doctor Discount Options (boolean flags)
+  -- exclude_dr_discount: if true, don't calculate commission on discounted amount
+  -- share_discount_50_50: if true, split discount 50-50 with doctor
+  exclude_dr_discount boolean NOT NULL DEFAULT true,
+  share_discount_50_50 boolean NOT NULL DEFAULT false,
   
-  -- Outsource Cost Options  
-  -- Mode: 'none' = no adjustment, 'exclude_from_base' = reduce shareable amount, 'deduct_from_commission' = deduct from final commission
-  outsource_cost_mode text NOT NULL DEFAULT 'exclude_from_base'
-    CHECK (outsource_cost_mode IN ('none', 'exclude_from_base', 'deduct_from_commission')),
+  -- Outsource Cost Options
+  -- exclude_outsource_cost: if true, don't include outsourced cost in shareable base
+  exclude_outsource_cost boolean NOT NULL DEFAULT false,
   
   -- Package Diff Options
-  -- Mode: 'none' = no adjustment, 'exclude_from_base' = reduce shareable amount, 'deduct_from_commission' = deduct from final commission  
-  package_diff_mode text NOT NULL DEFAULT 'none'
-    CHECK (package_diff_mode IN ('none', 'exclude_from_base', 'deduct_from_commission')),
+  -- exclude_package_diff: if true, don't include package difference in shareable base
+  exclude_package_diff boolean NOT NULL DEFAULT false,
   
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),

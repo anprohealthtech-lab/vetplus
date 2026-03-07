@@ -1,9 +1,18 @@
 import React from 'react';
-import { AlertTriangle, Phone, Mail, LogOut, RefreshCw } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { AlertTriangle, Phone, Mail, LogOut, RefreshCw, Clock, Crown } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 const InactiveLab: React.FC = () => {
-    const { labName, signOut, refreshLabStatus, labStatusLoading } = useAuth();
+    const { labName, labStatus, labActiveUpto, trialDaysRemaining, signOut, refreshLabStatus, labStatusLoading } = useAuth();
+    const navigate = useNavigate();
+
+    const isTrialExpired = labStatus === 'inactive' || labStatus === 'suspended';
+
+    const formatDate = (d: Date | null) => {
+        if (!d) return '';
+        return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+    };
 
     const handleRetry = async () => {
         await refreshLabStatus();
@@ -18,28 +27,49 @@ const InactiveLab: React.FC = () => {
             <div className="max-w-md w-full space-y-6">
                 {/* Warning Card */}
                 <div className="bg-white rounded-2xl shadow-xl p-8 text-center">
-                    {/* Warning Icon */}
-                    <div className="mx-auto w-20 h-20 bg-amber-100 rounded-full flex items-center justify-center mb-6">
-                        <AlertTriangle className="w-10 h-10 text-amber-600" />
+                    {/* Icon */}
+                    <div className={`mx-auto w-20 h-20 rounded-full flex items-center justify-center mb-6 ${
+                        isTrialExpired ? 'bg-red-100' : 'bg-amber-100'
+                    }`}>
+                        {isTrialExpired
+                            ? <AlertTriangle className="w-10 h-10 text-red-500" />
+                            : <Clock className="w-10 h-10 text-amber-600" />}
                     </div>
 
                     {/* Title */}
                     <h1 className="text-2xl font-bold text-gray-900 mb-2">
-                        Lab Account Inactive
+                        {isTrialExpired ? 'Subscription Expired' : 'Lab Account Inactive'}
                     </h1>
 
                     {/* Lab Name */}
                     {labName && (
-                        <p className="text-lg text-gray-600 mb-4">
+                        <p className="text-lg text-gray-600 mb-2">
                             <span className="font-semibold">{labName}</span>
+                        </p>
+                    )}
+
+                    {/* Expiry date */}
+                    {labActiveUpto && (
+                        <p className="text-sm text-gray-400 mb-4">
+                            {isTrialExpired ? 'Expired on' : 'Expires'} {formatDate(labActiveUpto)}
                         </p>
                     )}
 
                     {/* Message */}
                     <p className="text-gray-600 mb-6">
-                        Your lab account is currently inactive. Please contact your administrator
-                        to activate your subscription and regain access to the system.
+                        {isTrialExpired
+                            ? 'Your subscription has ended. Subscribe to a plan to restore full access to all LIMS features.'
+                            : 'Your account is currently inactive. Please contact your administrator or subscribe to a plan.'}
                     </p>
+
+                    {/* View Plans CTA */}
+                    <button
+                        onClick={() => navigate('/subscription')}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-xl font-semibold hover:opacity-90 transition-opacity mb-4"
+                    >
+                        <Crown className="w-5 h-5" />
+                        <span>View Subscription Plans</span>
+                    </button>
 
                     {/* Contact Section */}
                     <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
@@ -67,7 +97,7 @@ const InactiveLab: React.FC = () => {
                         <button
                             onClick={handleRetry}
                             disabled={labStatusLoading}
-                            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full flex items-center justify-center gap-2 px-4 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             {labStatusLoading ? (
                                 <>

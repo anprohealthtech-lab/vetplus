@@ -19,6 +19,65 @@ interface OrderRequest {
   test_outsourcing?: Record<string, string>;
 }
 
+// Edge functions run in UTC. Send window times are configured in IST (UTC+5:30).
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+function isWithinWindow(sendWindowStart?: string, sendWindowEnd?: string): boolean {
+  const utcNow = Date.now();
+  const istDate = new Date(utcNow + IST_OFFSET_MS);
+  const currentMinutes = istDate.getUTCHours() * 60 + istDate.getUTCMinutes();
+
+  const [startHour, startMinute] = (sendWindowStart || '09:00:00').split(':').map(Number);
+  const [endHour, endMinute] = (sendWindowEnd || '21:00:00').split(':').map(Number);
+  const startMinutes = (startHour * 60) + startMinute;
+  const endMinutes = (endHour * 60) + endMinute;
+
+  console.log(`⏰ Window check: IST ${istDate.getUTCHours()}:${String(istDate.getUTCMinutes()).padStart(2,'0')}, minutes=${currentMinutes}, window=${startMinutes}-${endMinutes}`);
+
+  if (startMinutes <= endMinutes) {
+    return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+  }
+
+  return currentMinutes >= startMinutes || currentMinutes <= endMinutes;
+}
+
+function nextWindowStartIso(sendWindowStart?: string): string {
+  const utcNow = Date.now();
+  const [startHour, startMinute] = (sendWindowStart || '09:00:00').split(':').map(Number);
+  // Calculate next window start in IST, then convert to UTC
+  const nextIst = new Date(utcNow + IST_OFFSET_MS);
+  nextIst.setUTCHours(startHour, startMinute, 0, 0);
+  if (nextIst.getTime() <= utcNow + IST_OFFSET_MS) {
+    nextIst.setUTCDate(nextIst.getUTCDate() + 1);
+  }
+  const nextUtc = new Date(nextIst.getTime() - IST_OFFSET_MS);
+
+  return nextUtc.toISOString();
+}
+
+function formatPhoneWithCountryCode(phone: string, countryCode: string): string {
+  let cleanPhone = phone.replace(/\D/g, '');
+  if (cleanPhone.startsWith('0')) {
+    cleanPhone = cleanPhone.substring(1);
+  }
+
+  const countryCodeDigits = countryCode.replace(/\D/g, '');
+
+  if (cleanPhone.length === 10) {
+    return `${countryCode}${cleanPhone}`;
+  }
+
+  if (cleanPhone.startsWith(countryCodeDigits) && cleanPhone.length === (10 + countryCodeDigits.length)) {
+    return `+${cleanPhone}`;
+  }
+
+  if (cleanPhone.length > 10) {
+    return `+${cleanPhone}`;
+  }
+
+  return `${countryCode}${cleanPhone}`;
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -210,9 +269,85 @@ Deno.serve(async (req) => {
     // Get patient name for invoice
     const { data: patient } = await supabaseClient
       .from('patients')
-      .select('name')
+      .select('id, name, phone')
       .eq('id', orderData.patient_id)
       .single();
+
+    const { data: orderTestsForNotification } = await supabaseClient
+      .from('order_tests')
+      .select('test_name')
+      .eq('order_id', order.id);
+
+    // Trigger registration confirmation notification (non-blocking)
+    try {
+      const { data: notifSettings } = await supabaseClient
+        .from('lab_notification_settings')
+        .select('*')
+        .eq('lab_id', labId)
+        .maybeSingle();
+
+      if (notifSettings?.auto_send_registration_confirmation && patient?.phone) {
+        const withinWindow = isWithinWindow(notifSettings.send_window_start, notifSettings.send_window_end);
+        const shouldQueueOutsideWindow = notifSettings.queue_outside_window !== false;
+        const scheduledFor = withinWindow ? new Date().toISOString() : nextWindowStartIso(notifSettings.send_window_start);
+        const testNames = orderTestsForNotification?.map((t) => t.test_name).join(', ') || 'Lab Tests';
+
+        const { data: labForMessage } = await supabaseClient
+          .from('labs')
+          .select('name, whatsapp_user_id, country_code')
+          .eq('id', labId)
+          .single();
+
+        const message = `Hello ${patient.name || 'Patient'}, your order ${order.order_display || order.id.slice(-6)} has been registered for ${testNames}. Thank you.`;
+        let sent = false;
+        let sendError = '';
+
+        if (withinWindow && labForMessage?.whatsapp_user_id) {
+          const NETLIFY_SEND_MESSAGE_URL = 'https://app.limsapp.in/.netlify/functions/whatsapp-send-message';
+          const formattedPhone = formatPhoneWithCountryCode(patient.phone, labForMessage.country_code || '+91');
+
+          const response = await fetch(NETLIFY_SEND_MESSAGE_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId: labForMessage.whatsapp_user_id,
+              phoneNumber: formattedPhone,
+              message,
+            }),
+          });
+
+          const resultText = await response.text();
+          sent = response.ok;
+          if (!sent) {
+            sendError = resultText || `HTTP ${response.status}`;
+          }
+        } else if (!withinWindow) {
+          sendError = 'Outside send window';
+        } else {
+          sendError = 'No whatsapp_user_id configured for lab';
+        }
+
+        if (!sent && (withinWindow || shouldQueueOutsideWindow)) {
+          await supabaseClient
+            .from('notification_queue')
+            .insert({
+              lab_id: labId,
+              recipient_type: 'patient',
+              recipient_phone: patient.phone,
+              recipient_name: patient.name,
+              recipient_id: patient.id,
+              trigger_type: 'order_registered',
+              order_id: order.id,
+              message_content: message,
+              status: 'pending',
+              scheduled_for: scheduledFor,
+              last_error: sendError || 'Initial send failed',
+            });
+        }
+      }
+    } catch (notifError) {
+      console.error('Registration notification trigger failed (non-blocking):', notifError);
+    }
 
     // 3. Generate Invoice Number
     const invoiceNumber = `INV-${Date.now()}-${order.id.substring(0, 8)}`;

@@ -1,14 +1,24 @@
 /**
  * trendChartGenerator.ts
- * 
+ *
  * Generates trend charts as PNG images for inclusion in PDF reports.
  * Uses Recharts for rendering and converts to image via canvas.
  * Supports both image output (for E-Copy/WhatsApp) and data-only output (for Print PDF).
  */
 
-import { supabase } from './supabase';
+import { supabase } from "./supabase";
 
 // ============ Types ============
+
+const isHighFlag = (flag: string | null | undefined) =>
+  flag &&
+  ["h", "high", "critical_h", "critical_high"].includes(flag.toLowerCase());
+const isLowFlag = (flag: string | null | undefined) =>
+  flag &&
+  ["l", "low", "critical_l", "critical_low"].includes(flag.toLowerCase());
+const isCriticalFlag = (flag: string | null | undefined) =>
+  flag &&
+  (flag.toLowerCase() === "c" || flag.toLowerCase().includes("critical"));
 
 export interface TrendDataPoint {
   order_date: string;
@@ -20,9 +30,9 @@ export interface TrendDataPoint {
 
 export interface TrendChartResult {
   analyte_name: string;
-  image_url: string | null;      // PNG URL for E-Copy PDF
-  image_base64: string | null;   // Base64 for inline embedding
-  data: TrendDataPoint[];        // Raw data for Print PDF table
+  image_url: string | null; // PNG URL for E-Copy PDF
+  image_base64: string | null; // Base64 for inline embedding
+  data: TrendDataPoint[]; // Raw data for Print PDF table
   reference_range?: string;
   unit?: string;
   generated_at: string;
@@ -40,8 +50,8 @@ export interface TrendChartOptions {
 const DEFAULT_OPTIONS: TrendChartOptions = {
   width: 400,
   height: 200,
-  backgroundColor: 'transparent',
-  lineColor: '#3b82f6',
+  backgroundColor: "transparent",
+  lineColor: "#3b82f6",
   showReferenceRange: true,
   maxDataPoints: 10,
 };
@@ -54,29 +64,29 @@ const DEFAULT_OPTIONS: TrendChartOptions = {
 export const fetchTrendData = async (
   patientId: string,
   parameter: string,
-  maxRecords: number = 10
+  maxRecords: number = 10,
 ): Promise<TrendDataPoint[]> => {
   try {
     // 1. Get analyte_id for the parameter name
     const { data: analyteInfo } = await supabase
-      .from('analytes')
-      .select('id')
-      .eq('name', parameter)
+      .from("analytes")
+      .select("id")
+      .eq("name", parameter)
       .maybeSingle();
 
     let query = supabase
-      .from('view_patient_history')
-      .select('result_date, value, unit, reference_range, source')
-      .eq('patient_id', patientId)
-      .order('result_date', { ascending: false })
+      .from("view_patient_history")
+      .select("result_date, value, unit, reference_range, source")
+      .eq("patient_id", patientId)
+      .order("result_date", { ascending: false })
       .limit(maxRecords);
 
     if (analyteInfo) {
-      query = query.eq('analyte_id', analyteInfo.id);
+      query = query.eq("analyte_id", analyteInfo.id);
     } else {
       // Fallback matching by name using join if ID not found directly
       const { data: nameMatchData } = await supabase
-        .from('view_patient_history')
+        .from("view_patient_history")
         .select(`
           result_date, 
           value, 
@@ -85,11 +95,11 @@ export const fetchTrendData = async (
           source,
           analytes!inner (name)
         `)
-        .eq('patient_id', patientId)
-        .eq('analytes.name', parameter)
-        .order('result_date', { ascending: false })
+        .eq("patient_id", patientId)
+        .eq("analytes.name", parameter)
+        .order("result_date", { ascending: false })
         .limit(maxRecords);
-      
+
       if (nameMatchData && nameMatchData.length > 0) {
         const trendData = nameMatchData.map((row: any) => ({
           order_date: row.result_date,
@@ -103,10 +113,10 @@ export const fetchTrendData = async (
 
       // Final fallback to legacy view for internal data only
       const { data: legacyData } = await supabase
-        .from('v_report_template_context')
-        .select('order_date, analytes')
-        .eq('patient_id', patientId)
-        .order('order_date', { ascending: false })
+        .from("v_report_template_context")
+        .select("order_date, analytes")
+        .eq("patient_id", patientId)
+        .order("order_date", { ascending: false })
         .limit(maxRecords);
 
       const trendData = legacyData?.flatMap((row: any) => {
@@ -127,7 +137,7 @@ export const fetchTrendData = async (
     const { data, error } = await query;
 
     if (error) {
-      console.error('Error fetching trend data:', error);
+      console.error("Error fetching trend data:", error);
       return [];
     }
 
@@ -142,7 +152,7 @@ export const fetchTrendData = async (
     // Reverse to show oldest first (left to right on chart)
     return trendData.reverse();
   } catch (error) {
-    console.error('Error in fetchTrendData:', error);
+    console.error("Error in fetchTrendData:", error);
     return [];
   }
 };
@@ -158,7 +168,9 @@ interface ReferenceRangeBounds {
  * Parse reference range string into min/max bounds
  * Handles formats: "10-20", "<20", ">10", "10 - 20", "< 10.0"
  */
-export const parseReferenceRange = (rangeStr?: string): ReferenceRangeBounds => {
+export const parseReferenceRange = (
+  rangeStr?: string,
+): ReferenceRangeBounds => {
   if (!rangeStr) return { min: null, max: null };
 
   const normalized = rangeStr.trim().toLowerCase();
@@ -201,14 +213,16 @@ export const parseReferenceRange = (rangeStr?: string): ReferenceRangeBounds => 
  */
 export const generateTrendSVG = (
   data: TrendDataPoint[],
-  options: TrendChartOptions = {}
+  options: TrendChartOptions = {},
 ): string => {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const { width, height, lineColor, showReferenceRange } = opts;
 
   if (!data || data.length === 0) {
     return `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-      <text x="${width! / 2}" y="${height! / 2}" text-anchor="middle" fill="#666" font-size="14">No trend data available</text>
+      <text x="${width! / 2}" y="${
+      height! / 2
+    }" text-anchor="middle" fill="#666" font-size="14">No trend data available</text>
     </svg>`;
   }
 
@@ -223,23 +237,25 @@ export const generateTrendSVG = (
 
   if (numericData.length === 0) {
     return `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-      <text x="${width! / 2}" y="${height! / 2}" text-anchor="middle" fill="#666" font-size="14">No numeric data</text>
+      <text x="${width! / 2}" y="${
+      height! / 2
+    }" text-anchor="middle" fill="#666" font-size="14">No numeric data</text>
     </svg>`;
   }
 
   // Calculate bounds
   const values = numericData.map((d) => d.numericValue);
   const refRange = parseReferenceRange(numericData[0]?.reference_range);
-  
+
   let minVal = Math.min(...values);
   let maxVal = Math.max(...values);
-  
+
   // Extend range to include reference range if shown
   if (showReferenceRange) {
     if (refRange.min !== null) minVal = Math.min(minVal, refRange.min);
     if (refRange.max !== null) maxVal = Math.max(maxVal, refRange.max);
   }
-  
+
   // Add padding
   const padding = (maxVal - minVal) * 0.1 || 1;
   minVal -= padding;
@@ -251,31 +267,53 @@ export const generateTrendSVG = (
   const chartHeight = height! - chartPadding.top - chartPadding.bottom;
 
   // Scale functions
-  const xScale = (i: number) => chartPadding.left + (i / (numericData.length - 1 || 1)) * chartWidth;
-  const yScale = (v: number) => chartPadding.top + chartHeight - ((v - minVal) / (maxVal - minVal)) * chartHeight;
+  const xScale = (i: number) =>
+    chartPadding.left + (i / (numericData.length - 1 || 1)) * chartWidth;
+  const yScale = (v: number) =>
+    chartPadding.top + chartHeight -
+    ((v - minVal) / (maxVal - minVal)) * chartHeight;
 
   // Generate path
-  const pathPoints = numericData.map((d, i) => `${i === 0 ? 'M' : 'L'} ${xScale(i)} ${yScale(d.numericValue)}`).join(' ');
+  const pathPoints = numericData.map((d, i) =>
+    `${i === 0 ? "M" : "L"} ${xScale(i)} ${yScale(d.numericValue)}`
+  ).join(" ");
 
   // Reference range band
-  let refRangeSVG = '';
+  let refRangeSVG = "";
   if (showReferenceRange && (refRange.min !== null || refRange.max !== null)) {
     const y1 = refRange.max !== null ? yScale(refRange.max) : chartPadding.top;
-    const y2 = refRange.min !== null ? yScale(refRange.min) : chartPadding.top + chartHeight;
-    refRangeSVG = `<rect x="${chartPadding.left}" y="${y1}" width="${chartWidth}" height="${y2 - y1}" fill="rgba(34, 197, 94, 0.15)" stroke="none"/>`;
+    const y2 = refRange.min !== null
+      ? yScale(refRange.min)
+      : chartPadding.top + chartHeight;
+    refRangeSVG =
+      `<rect x="${chartPadding.left}" y="${y1}" width="${chartWidth}" height="${
+        y2 - y1
+      }" fill="rgba(34, 197, 94, 0.15)" stroke="none"/>`;
   }
 
   // Data points
   const points = numericData.map((d, i) => {
-    const color = d.flag === 'H' ? '#ef4444' : d.flag === 'L' ? '#3b82f6' : '#22c55e';
-    return `<circle cx="${xScale(i)}" cy="${yScale(d.numericValue)}" r="5" fill="${color}" stroke="white" stroke-width="2"/>`;
-  }).join('');
+    const color = isHighFlag(d.flag)
+      ? "#ef4444"
+      : isLowFlag(d.flag)
+      ? "#3b82f6"
+      : "#22c55e";
+    return `<circle cx="${xScale(i)}" cy="${
+      yScale(d.numericValue)
+    }" r="5" fill="${color}" stroke="white" stroke-width="2"/>`;
+  }).join("");
 
   // Value labels
   const labels = numericData.map((d, i) => {
-    const color = d.flag === 'H' ? '#ef4444' : d.flag === 'L' ? '#3b82f6' : '#374151';
-    return `<text x="${xScale(i)}" y="${yScale(d.numericValue) - 10}" text-anchor="middle" fill="${color}" font-size="11" font-weight="600">${d.numericValue}</text>`;
-  }).join('');
+    const color = isHighFlag(d.flag)
+      ? "#ef4444"
+      : isLowFlag(d.flag)
+      ? "#3b82f6"
+      : "#374151";
+    return `<text x="${xScale(i)}" y="${
+      yScale(d.numericValue) - 10
+    }" text-anchor="middle" fill="${color}" font-size="11" font-weight="600">${d.numericValue}</text>`;
+  }).join("");
 
   // Date labels - show all dates when <= 6 points, otherwise show first, middle, last
   const dateLabels = numericData
@@ -283,31 +321,49 @@ export const generateTrendSVG = (
       // Show all dates when 6 or fewer points
       if (numericData.length <= 6) return true;
       // For more points, show first, middle, and last
-      return i === 0 || i === numericData.length - 1 || i === Math.floor(numericData.length / 2);
+      return i === 0 || i === numericData.length - 1 ||
+        i === Math.floor(numericData.length / 2);
     })
     .map((d) => {
       const i = numericData.indexOf(d);
       const date = new Date(d.order_date);
-      const formatted = date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
-      return `<text x="${xScale(i)}" y="${height! - 8}" text-anchor="middle" fill="#666" font-size="10">${formatted}</text>`;
-    }).join('');
+      const formatted = date.toLocaleDateString("en-IN", {
+        day: "2-digit",
+        month: "short",
+      });
+      return `<text x="${xScale(i)}" y="${
+        height! - 8
+      }" text-anchor="middle" fill="#666" font-size="10">${formatted}</text>`;
+    }).join("");
 
   // Y-axis labels
   const yAxisLabels = [minVal, (minVal + maxVal) / 2, maxVal].map((v) => {
-    return `<text x="${chartPadding.left - 8}" y="${yScale(v) + 4}" text-anchor="end" fill="#666" font-size="10">${v.toFixed(1)}</text>`;
-  }).join('');
+    return `<text x="${chartPadding.left - 8}" y="${
+      yScale(v) + 4
+    }" text-anchor="end" fill="#666" font-size="10">${v.toFixed(1)}</text>`;
+  }).join("");
 
   // Unit label
-  const unit = numericData[0]?.unit || '';
-  const unitLabel = unit ? `<text x="${chartPadding.left - 8}" y="14" text-anchor="end" fill="#666" font-size="10" font-style="italic">${unit}</text>` : '';
+  const unit = numericData[0]?.unit || "";
+  const unitLabel = unit
+    ? `<text x="${
+      chartPadding.left - 8
+    }" y="14" text-anchor="end" fill="#666" font-size="10" font-style="italic">${unit}</text>`
+    : "";
 
   return `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg" style="background: ${opts.backgroundColor}">
     <!-- Reference range band -->
     ${refRangeSVG}
     
     <!-- Grid lines -->
-    <line x1="${chartPadding.left}" y1="${chartPadding.top}" x2="${chartPadding.left}" y2="${chartPadding.top + chartHeight}" stroke="#e5e7eb" stroke-width="1"/>
-    <line x1="${chartPadding.left}" y1="${chartPadding.top + chartHeight}" x2="${chartPadding.left + chartWidth}" y2="${chartPadding.top + chartHeight}" stroke="#e5e7eb" stroke-width="1"/>
+    <line x1="${chartPadding.left}" y1="${chartPadding.top}" x2="${chartPadding.left}" y2="${
+    chartPadding.top + chartHeight
+  }" stroke="#e5e7eb" stroke-width="1"/>
+    <line x1="${chartPadding.left}" y1="${
+    chartPadding.top + chartHeight
+  }" x2="${chartPadding.left + chartWidth}" y2="${
+    chartPadding.top + chartHeight
+  }" stroke="#e5e7eb" stroke-width="1"/>
     
     <!-- Trend line -->
     <path d="${pathPoints}" fill="none" stroke="${lineColor}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -335,17 +391,17 @@ export const generateTrendSVG = (
 export const svgToPngBlob = async (
   svgString: string,
   width: number,
-  height: number
+  height: number,
 ): Promise<Blob | null> => {
   return new Promise((resolve) => {
     try {
-      const canvas = document.createElement('canvas');
+      const canvas = document.createElement("canvas");
       canvas.width = width * 2; // 2x for retina
       canvas.height = height * 2;
-      const ctx = canvas.getContext('2d');
-      
+      const ctx = canvas.getContext("2d");
+
       if (!ctx) {
-        console.error('Could not get canvas context');
+        console.error("Could not get canvas context");
         resolve(null);
         return;
       }
@@ -355,31 +411,37 @@ export const svgToPngBlob = async (
 
       // Create image from SVG
       const img = new Image();
-      const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+      const svgBlob = new Blob([svgString], {
+        type: "image/svg+xml;charset=utf-8",
+      });
       const url = URL.createObjectURL(svgBlob);
 
       img.onload = () => {
         // Fill white background for PNG
-        ctx.fillStyle = 'white';
+        ctx.fillStyle = "white";
         ctx.fillRect(0, 0, width, height);
-        
+
         ctx.drawImage(img, 0, 0, width, height);
         URL.revokeObjectURL(url);
 
-        canvas.toBlob((blob) => {
-          resolve(blob);
-        }, 'image/png', 0.95);
+        canvas.toBlob(
+          (blob) => {
+            resolve(blob);
+          },
+          "image/png",
+          0.95,
+        );
       };
 
       img.onerror = (e) => {
-        console.error('Error loading SVG for conversion:', e);
+        console.error("Error loading SVG for conversion:", e);
         URL.revokeObjectURL(url);
         resolve(null);
       };
 
       img.src = url;
     } catch (error) {
-      console.error('Error converting SVG to PNG:', error);
+      console.error("Error converting SVG to PNG:", error);
       resolve(null);
     }
   });
@@ -403,32 +465,34 @@ export const blobToBase64 = (blob: Blob): Promise<string> => {
 export const uploadChartImage = async (
   blob: Blob,
   orderId: string,
-  analyteName: string
+  analyteName: string,
 ): Promise<string | null> => {
   try {
-    const safeAnalyteName = analyteName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    const safeAnalyteName = analyteName.replace(/[^a-zA-Z0-9]/g, "_")
+      .toLowerCase();
     const timestamp = Date.now();
-    const filePath = `reports/${orderId}/trends/${safeAnalyteName}_${timestamp}.png`;
+    const filePath =
+      `reports/${orderId}/trends/${safeAnalyteName}_${timestamp}.png`;
 
     const { error: uploadError } = await supabase.storage
-      .from('attachments')
+      .from("attachments")
       .upload(filePath, blob, {
-        contentType: 'image/png',
+        contentType: "image/png",
         upsert: true,
       });
 
     if (uploadError) {
-      console.error('Error uploading chart image:', uploadError);
+      console.error("Error uploading chart image:", uploadError);
       return null;
     }
 
     const { data: { publicUrl } } = supabase.storage
-      .from('attachments')
+      .from("attachments")
       .getPublicUrl(filePath);
 
     return publicUrl;
   } catch (error) {
-    console.error('Error in uploadChartImage:', error);
+    console.error("Error in uploadChartImage:", error);
     return null;
   }
 };
@@ -443,13 +507,13 @@ export const generateTrendChart = async (
   patientId: string,
   analyteName: string,
   orderId: string,
-  options: TrendChartOptions = {}
+  options: TrendChartOptions = {},
 ): Promise<TrendChartResult> => {
   const opts = { ...DEFAULT_OPTIONS, ...options };
-  
+
   // Fetch trend data
   const data = await fetchTrendData(patientId, analyteName, opts.maxDataPoints);
-  
+
   const result: TrendChartResult = {
     analyte_name: analyteName,
     image_url: null,
@@ -462,22 +526,24 @@ export const generateTrendChart = async (
 
   if (data.length < 2) {
     // Not enough data points for a meaningful trend
-    console.log(`Skipping trend chart for ${analyteName}: only ${data.length} data point(s)`);
+    console.log(
+      `Skipping trend chart for ${analyteName}: only ${data.length} data point(s)`,
+    );
     return result;
   }
 
   try {
     // Generate SVG
     const svg = generateTrendSVG(data, opts);
-    
+
     // Convert to PNG
     const pngBlob = await svgToPngBlob(svg, opts.width!, opts.height!);
-    
+
     if (pngBlob) {
       // Upload to storage
       const imageUrl = await uploadChartImage(pngBlob, orderId, analyteName);
       result.image_url = imageUrl;
-      
+
       // Also store base64 for inline embedding
       result.image_base64 = await blobToBase64(pngBlob);
     }
@@ -495,20 +561,29 @@ export const generateTrendChartsForAnalytes = async (
   patientId: string,
   analytes: { name: string; flag?: string | null }[],
   orderId: string,
-  options: TrendChartOptions = {}
+  options: TrendChartOptions = {},
 ): Promise<TrendChartResult[]> => {
   const results: TrendChartResult[] = [];
-  
+
   // Filter to only flagged analytes by default
-  const flaggedAnalytes = analytes.filter(a => a.flag && ['H', 'L', 'C'].includes(a.flag));
-  
+  const flaggedAnalytes = analytes.filter((a) =>
+    a.flag &&
+    (isHighFlag(a.flag) || isLowFlag(a.flag) || isCriticalFlag(a.flag) ||
+      ["A", "a", "abnormal"].includes(a.flag.toLowerCase()))
+  );
+
   for (const analyte of flaggedAnalytes) {
-    const result = await generateTrendChart(patientId, analyte.name, orderId, options);
+    const result = await generateTrendChart(
+      patientId,
+      analyte.name,
+      orderId,
+      options,
+    );
     if (result.data.length >= 2) {
       results.push(result);
     }
   }
-  
+
   return results;
 };
 
@@ -517,33 +592,49 @@ export const generateTrendChartsForAnalytes = async (
 /**
  * Generate HTML table for trend data (for print PDF without images)
  */
-export const generateTrendTableHtml = (trendResult: TrendChartResult): string => {
+export const generateTrendTableHtml = (
+  trendResult: TrendChartResult,
+): string => {
   if (!trendResult.data || trendResult.data.length === 0) {
-    return '';
+    return "";
   }
 
   const rows = trendResult.data.map((d, i) => {
-    const date = new Date(d.order_date).toLocaleDateString('en-IN', { 
-      day: '2-digit', 
-      month: 'short', 
-      year: '2-digit' 
+    const date = new Date(d.order_date).toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "2-digit",
     });
     const isLatest = i === trendResult.data.length - 1;
-    const flagClass = d.flag === 'H' ? 'color: #dc3545;' : d.flag === 'L' ? 'color: #0066cc;' : '';
-    const latestBadge = isLatest ? ' <span style="background: #3b82f6; color: white; padding: 1px 6px; border-radius: 3px; font-size: 9px;">LATEST</span>' : '';
-    
+    const flagClass = isHighFlag(d.flag)
+      ? "color: #dc3545;"
+      : isLowFlag(d.flag)
+      ? "color: #0066cc;"
+      : "";
+    const latestBadge = isLatest
+      ? ' <span style="background: #3b82f6; color: white; padding: 1px 6px; border-radius: 3px; font-size: 9px;">LATEST</span>'
+      : "";
+
     return `<tr>
       <td style="padding: 4px 8px; border: 1px solid #ddd;">${date}${latestBadge}</td>
       <td style="padding: 4px 8px; border: 1px solid #ddd; font-weight: 600; ${flagClass}">${d.value}</td>
-      <td style="padding: 4px 8px; border: 1px solid #ddd;">${d.flag || '-'}</td>
+      <td style="padding: 4px 8px; border: 1px solid #ddd;">${
+      d.flag || "-"
+    }</td>
     </tr>`;
-  }).join('');
+  }).join("");
 
   return `
     <div style="margin-bottom: 15px;">
       <h4 style="margin: 0 0 8px 0; color: #333; font-size: 13px;">
-        ${trendResult.analyte_name} ${trendResult.unit ? `(${trendResult.unit})` : ''}
-        ${trendResult.reference_range ? `<span style="font-weight: normal; color: #666; font-size: 11px;"> | Ref: ${trendResult.reference_range}</span>` : ''}
+        ${trendResult.analyte_name} ${
+    trendResult.unit ? `(${trendResult.unit})` : ""
+  }
+        ${
+    trendResult.reference_range
+      ? `<span style="font-weight: normal; color: #666; font-size: 11px;"> | Ref: ${trendResult.reference_range}</span>`
+      : ""
+  }
       </h4>
       <table style="border-collapse: collapse; font-size: 11px; width: auto;">
         <thead>
@@ -562,33 +653,43 @@ export const generateTrendTableHtml = (trendResult: TrendChartResult): string =>
 /**
  * Generate print-friendly HTML table for trend data (black & white, no backgrounds)
  */
-export const generateTrendTableHtmlPrint = (trendResult: TrendChartResult): string => {
+export const generateTrendTableHtmlPrint = (
+  trendResult: TrendChartResult,
+): string => {
   if (!trendResult.data || trendResult.data.length === 0) {
-    return '';
+    return "";
   }
 
   const rows = trendResult.data.map((d, i) => {
-    const date = new Date(d.order_date).toLocaleDateString('en-IN', { 
-      day: '2-digit', 
-      month: 'short', 
-      year: '2-digit' 
+    const date = new Date(d.order_date).toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "2-digit",
     });
     const isLatest = i === trendResult.data.length - 1;
-    const flagStyle = d.flag ? 'font-weight: bold;' : '';
-    const latestMarker = isLatest ? ' *' : '';
-    
+    const flagStyle = d.flag ? "font-weight: bold;" : "";
+    const latestMarker = isLatest ? " *" : "";
+
     return `<tr>
       <td style="padding: 4px 8px; border: 1px solid #333;">${date}${latestMarker}</td>
       <td style="padding: 4px 8px; border: 1px solid #333; font-weight: 600; ${flagStyle}">${d.value}</td>
-      <td style="padding: 4px 8px; border: 1px solid #333;">${d.flag || '-'}</td>
+      <td style="padding: 4px 8px; border: 1px solid #333;">${
+      d.flag || "-"
+    }</td>
     </tr>`;
-  }).join('');
+  }).join("");
 
   return `
     <div style="margin-bottom: 15px;">
       <h4 style="margin: 0 0 8px 0; color: #000; font-size: 12px;">
-        ${trendResult.analyte_name} ${trendResult.unit ? `(${trendResult.unit})` : ''}
-        ${trendResult.reference_range ? `<span style="font-weight: normal; font-size: 10px;"> | Ref: ${trendResult.reference_range}</span>` : ''}
+        ${trendResult.analyte_name} ${
+    trendResult.unit ? `(${trendResult.unit})` : ""
+  }
+        ${
+    trendResult.reference_range
+      ? `<span style="font-weight: normal; font-size: 10px;"> | Ref: ${trendResult.reference_range}</span>`
+      : ""
+  }
       </h4>
       <table style="border-collapse: collapse; font-size: 10px; width: auto;">
         <thead>
@@ -611,34 +712,38 @@ export const generateTrendTableHtmlPrint = (trendResult: TrendChartResult): stri
  */
 export const generateTrendSectionHtml = (
   trends: TrendChartResult[],
-  forPrint: boolean = false
+  forPrint: boolean = false,
 ): string => {
   if (!trends || trends.length === 0) {
-    return '';
+    return "";
   }
 
-  const content = trends.map(trend => {
+  const content = trends.map((trend) => {
     // If no image URL available, fall back to table
     if (!trend.image_url) {
-      return forPrint ? generateTrendTableHtmlPrint(trend) : generateTrendTableHtml(trend);
+      return forPrint
+        ? generateTrendTableHtmlPrint(trend)
+        : generateTrendTableHtml(trend);
     }
-    
+
     // Use image for both print and e-copy
-    const borderStyle = forPrint ? 'border: 1px solid #333;' : 'border: 1px solid #e5e7eb; border-radius: 4px;';
-    const titleColor = forPrint ? 'color: #000;' : 'color: #333;';
+    const borderStyle = forPrint
+      ? "border: 1px solid #333;"
+      : "border: 1px solid #e5e7eb; border-radius: 4px;";
+    const titleColor = forPrint ? "color: #000;" : "color: #333;";
     // Add grayscale filter for print version
-    const imageFilter = forPrint ? 'filter: grayscale(1);' : '';
-    
+    const imageFilter = forPrint ? "filter: grayscale(1);" : "";
+
     return `
       <div style="margin-bottom: 20px; text-align: center;">
         <h4 style="margin: 0 0 8px 0; ${titleColor} font-size: 13px;">
           ${trend.analyte_name} Trend
-          ${trend.unit ? `(${trend.unit})` : ''}
+          ${trend.unit ? `(${trend.unit})` : ""}
         </h4>
         <img src="${trend.image_url}" alt="${trend.analyte_name} Trend" style="max-width: 100%; height: auto; ${borderStyle} ${imageFilter}"/>
       </div>
     `;
-  }).join('');
+  }).join("");
 
   // Print version: black & white header, no emoji
   if (forPrint) {
