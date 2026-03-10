@@ -236,6 +236,9 @@ serve(async (req) => {
       }
 
       // --- BATCH INSERT analyte links for newly created groups ---
+      // NOTE: trg_auto_link_new_test_group fires on INSERT and may have already linked
+      // analytes from global_test_catalog. We use upsert (ignoreDuplicates) to avoid
+      // errors when the trigger already inserted the same rows.
       const analyteLinksPayload: { test_group_id: string; analyte_id: string; is_visible: boolean }[] = [];
       for (const gtg of toCreate) {
         const newId = createdMap.get(gtg.code);
@@ -251,7 +254,7 @@ serve(async (req) => {
         for (let i = 0; i < analyteLinksPayload.length; i += 500) {
           const { error: laErr } = await supabaseClient
             .from('test_group_analytes')
-            .insert(analyteLinksPayload.slice(i, i + 500));
+            .upsert(analyteLinksPayload.slice(i, i + 500), { onConflict: 'test_group_id,analyte_id', ignoreDuplicates: true });
           if (laErr) console.error(`Analyte link batch error (chunk ${i}):`, laErr);
         }
         console.log(`   🔗 Linked ${analyteLinksPayload.length} analyte associations`);

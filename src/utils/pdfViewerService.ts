@@ -107,6 +107,46 @@ const truncateText = (text: string, maxLength: number): string => {
   return text.substring(0, maxLength - 3) + '...';
 };
 
+const getViewerFlagInfo = (flag?: string): {
+  label: string;
+  isAbnormal: boolean;
+  color: { r: number; g: number; b: number };
+} => {
+  const raw = String(flag || '').trim();
+  if (!raw) {
+    return { label: '', isAbnormal: false, color: { r: 100, g: 100, b: 100 } };
+  }
+
+  const norm = raw
+    .toLowerCase()
+    .replace(/[-\s]/g, '_')
+    .replace(/[^a-z0-9_*]/g, '');
+
+  if (['n', 'normal', 'ok', 'wnl', 'within_range'].includes(norm)) {
+    return { label: '', isAbnormal: false, color: { r: 100, g: 100, b: 100 } };
+  }
+  if (['critical_high', 'critical_h', 'criticalh', 'high_critical', 'criticalhigh', 'h*', 'ch'].includes(norm) || (norm.includes('critical') && norm.includes('high'))) {
+    return { label: 'Critical High', isAbnormal: true, color: { r: 220, g: 38, b: 38 } };
+  }
+  if (['h', 'high', 'hh', 'hi'].includes(norm)) {
+    return { label: 'High', isAbnormal: true, color: { r: 220, g: 38, b: 38 } };
+  }
+  if (['critical_low', 'critical_l', 'criticall', 'low_critical', 'criticallow', 'l*', 'cl'].includes(norm) || (norm.includes('critical') && norm.includes('low'))) {
+    return { label: 'Critical Low', isAbnormal: true, color: { r: 30, g: 64, b: 175 } };
+  }
+  if (['l', 'low', 'll'].includes(norm)) {
+    return { label: 'Low', isAbnormal: true, color: { r: 30, g: 64, b: 175 } };
+  }
+  if (['c', 'critical', 'crit', 'c*'].includes(norm) || norm.includes('critical')) {
+    return { label: 'Critical', isAbnormal: true, color: { r: 180, g: 100, b: 50 } };
+  }
+  if (['a', 'abnormal', 'abn'].includes(norm)) {
+    return { label: 'Abnormal', isAbnormal: true, color: { r: 180, g: 100, b: 50 } };
+  }
+
+  return { label: raw, isAbnormal: true, color: { r: 180, g: 100, b: 50 } };
+};
+
 // ============ Data Preparation ============
 
 /**
@@ -608,8 +648,8 @@ export const generateViewerPDF = async (
             }
 
             // Normalize flag for styling
-      const flagNorm = result.flag ? result.flag.toUpperCase() : '';
-      const isAbnormal = ['H', 'L', 'C', 'HIGH', 'LOW', 'CRITICAL', 'ABNORMAL'].includes(flagNorm);
+          const flagInfo = getViewerFlagInfo(result.flag);
+          const isAbnormal = flagInfo.isAbnormal;
       
       // Row content
       colX = margin + 2;
@@ -620,13 +660,8 @@ export const generateViewerPDF = async (
       // Highlight abnormal results
       if (isAbnormal) {
         doc.setFont('helvetica', 'bold');
-        
-        let r, g, b;
-        if (flagNorm === 'H' || flagNorm === 'HIGH') { r=220; g=38; b=38; }
-        else if (flagNorm === 'L' || flagNorm === 'LOW') { r=30; g=64; b=175; }
-        else { r=180; g=100; b=50; } // Critical or other
-        
-        doc.setTextColor(r, g, b);
+
+        doc.setTextColor(flagInfo.color.r, flagInfo.color.g, flagInfo.color.b);
       }
       doc.text(result.result, colX, yPos + 5);
       doc.setFont('helvetica', 'normal');
@@ -639,18 +674,16 @@ export const generateViewerPDF = async (
       doc.text(truncateText(result.referenceRange, 18), colX, yPos + 5);
       
       colX += colWidths.range;
-      if (result.flag) {
+      if (flagInfo.label) {
         // Redetermine color for flag column
         let r=100, g=100, b=100;
         if (isAbnormal) {
-             if (flagNorm === 'H' || flagNorm === 'HIGH') { r=220; g=38; b=38; }
-             else if (flagNorm === 'L' || flagNorm === 'LOW') { r=30; g=64; b=175; }
-             else { r=180; g=100; b=50; }
+             r = flagInfo.color.r; g = flagInfo.color.g; b = flagInfo.color.b;
         }
 
         doc.setTextColor(r, g, b);
         if (isAbnormal) doc.setFont('helvetica', 'bold');
-        doc.text(result.flag, colX + 5, yPos + 5);
+        doc.text(flagInfo.label, colX + 5, yPos + 5);
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(50, 50, 50);
       }

@@ -52,7 +52,7 @@ import PopoutInput from "./PopoutInput";
 import PhlebotomistSelector from "../Users/PhlebotomistSelector";
 import { OrderStatusDisplay } from "./OrderStatusDisplay";
 import { capturePhoto, isNative } from "../../utils/androidFileUpload";
-import { calculateFlagsForResults } from "../../utils/flagCalculation";
+import { calculateFlagsForResults, calculateFlag } from "../../utils/flagCalculation";
 import VoiceRecorder from "../Voice/VoiceRecorder";
 
 interface WorkflowStep {
@@ -1673,18 +1673,23 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         (selectedTestId && testGroups.find((tg) => tg.order_test_id === selectedTestId)) ||
         testGroups[0];
 
-      // Build analyte catalog for matching
+      // Build analyte catalog for matching (all non-calculated analytes)
       const analyteCatalog = manualValues
         .filter((v) => !v.is_calculated)
         .map((v) => ({
-        id: v.analyte_id,
-        name: v.parameter,
-        unit: v.unit || "",
-        reference_range: v.reference || "",
-      }));
+          id: v.analyte_id,
+          name: v.parameter,
+          unit: v.unit || "",
+          reference_range: v.reference || "",
+        }));
 
+      // Only extract analytes that don't have values yet (same as image AI)
       const analytesToExtract = manualValues
-        .filter((v) => !v.is_calculated)
+        .filter(
+          (v) =>
+            !v.is_calculated &&
+            (!v.value || (typeof v.value === 'string' && v.value.trim() === ""))
+        )
         .map((v) => v.parameter);
 
       // Call voice-to-results edge function
@@ -1717,17 +1722,26 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       setVoiceTranscript(voiceResult.transcript || "");
 
-      // Process extracted parameters (same logic as image AI)
-      const extractedParams = (voiceResult.extractedParameters || []).map((p: any) => ({
-        parameter: p.parameter,
-        value: p.value,
-        unit: p.unit || "",
-        reference: p.reference_range || "",
-        flag: p.flag || undefined,
-        matched: !!p.matched,
-        analyte_id: p.analyte_id || null,
-        confidence: p.confidence || 0.95,
-      }));
+      // Process extracted parameters - ensure value is always a string (same as image AI)
+      const extractedParams = (voiceResult.extractedParameters || [])
+        .filter((p: any) => {
+          // Filter out null/empty values (same as image AI)
+          const rawValue = p.value;
+          return rawValue != null &&
+            rawValue !== 'null' &&
+            rawValue !== 'NULL' &&
+            (typeof rawValue === 'string' ? rawValue.trim() !== '' : true);
+        })
+        .map((p: any) => ({
+          parameter: p.parameter,
+          value: String(p.value),  // Always convert to string
+          unit: p.unit || "",
+          reference: p.reference_range || "",
+          flag: p.flag || undefined,
+          matched: !!p.matched,
+          analyte_id: p.analyte_id || null,
+          confidence: p.confidence || 0.95,
+        }));
 
       aiMark("match", {
         status: "doing",
@@ -1736,34 +1750,102 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       setExtractedValues(extractedParams);
 
-      // Auto-fill manualValues with extracted data
+      // Auto-fill manualValues with extracted data (same robust matching as image AI)
       setManualValues((prev) => {
+        console.log('🎤 Voice Extraction - Matching parameters:');
+        console.log('  Current manualValues:', prev);
+        console.log('  Extracted params:', extractedParams);
+
         const updated = [...prev];
         let matchedCount = 0;
 
+        // Get the raw extracted parameters with all fields
+        const rawExtractedParams = voiceResult.extractedParameters || [];
+
         extractedParams.forEach((ep: ExtractedValue) => {
-          const epNameLower = ep.parameter.toLowerCase();
-          const epAnalyteId = ep.analyte_id;
+          const rawEp = rawExtractedParams.find(
+            (r: any) => r.parameter === ep.parameter
+          ) || {};
+          const epNameLower = ep.parameter.toLowerCase().trim();
+          const epAnalyteId = ep.analyte_id || rawEp.analyte_id;
 
-          // Try multiple matching strategies
+          // Try multiple matching strategies (same as image AI)
           const idx = updated.findIndex((v) => {
-            const vNameLower = v.parameter.toLowerCase();
+            const vNameLower = v.parameter.toLowerCase().trim();
 
-            // 1. Match by analyte_id
-            if (v.analyte_id && epAnalyteId && v.analyte_id === epAnalyteId) return true;
-            // 2. Match by exact name
-            if (vNameLower === epNameLower) return true;
-            // 3. Partial match
-            if (vNameLower.includes(epNameLower) || epNameLower.includes(vNameLower)) return true;
+            // 1. Match by analyte_id (most accurate)
+            if (v.analyte_id && epAnalyteId && v.analyte_id === epAnalyteId) {
+              return true;
+            }
+
+            // 2. Match by exact parameter name
+            if (vNameLower === epNameLower) {
+              return true;
+            }
+
+            // 3. Match if parameter names share significant overlap
+            if (vNameLower.includes(epNameLower) || epNameLower.includes(vNameLower)) {
+              return true;
+            }
+
+            // 4. Match abbreviation in parentheses, e.g. "Mean Corpuscular Hemoglobin (MCH)"
+            if (vNameLower.includes(`(${epNameLower})`) || vNameLower.includes(` ${epNameLower} `)) {
+              return true;
+            }
+
+            // 5. Match common abbreviation patterns
+            const abbreviations: Record<string, string[]> = {
+              'wbc': ['white blood cell', 'leukocyte'],
+              'rbc': ['red blood cell', 'erythrocyte'],
+              'hgb': ['hemoglobin', 'haemoglobin'],
+              'hb': ['hemoglobin', 'haemoglobin'],
+              'hct': ['hematocrit', 'haematocrit'],
+              'plt': ['platelet'],
+              'mcv': ['mean corpuscular volume', 'mean cell volume'],
+              'mch': ['mean corpuscular hemoglobin'],
+              'mchc': ['mean corpuscular hemoglobin concentration'],
+              'neu': ['neutrophil', 'absolute neutrophil'],
+              'lym': ['lymphocyte', 'absolute lymphocyte'],
+              'mon': ['monocyte'],
+              'eos': ['eosinophil', 'absolute eosinophil'],
+              'bas': ['basophil', 'absolute basophil'],
+              'mpv': ['mean platelet volume'],
+              'rdw': ['red cell distribution width'],
+              'pdw': ['platelet distribution width'],
+              'pct': ['plateletcrit', 'thrombocrit'],
+              'esr': ['erythrocyte sedimentation rate'],
+              'tsh': ['thyroid stimulating hormone'],
+              'alt': ['alanine transaminase', 'sgpt'],
+              'ast': ['aspartate transaminase', 'sgot'],
+              'alp': ['alkaline phosphatase'],
+              'ggt': ['gamma glutamyl transferase'],
+            };
+
+            const abbrevMatches = abbreviations[epNameLower] || abbreviations[epNameLower.replace(/[%#]$/, '')];
+            if (abbrevMatches) {
+              return abbrevMatches.some(full => vNameLower.includes(full));
+            }
 
             return false;
           });
 
-          if (idx !== -1 && ep.value && !updated[idx].is_calculated) {
-            updated[idx] = { ...updated[idx], value: ep.value, flag: ep.flag };
+          if (idx !== -1 && !updated[idx].is_calculated) {
+            // Recalculate flag client-side instead of trusting AI-returned flag
+            // AI can return wrong flags (e.g. "Low" for a value above range)
+            const recalculatedFlag = calculateFlag(
+              String(ep.value),
+              updated[idx].reference || ep.reference || ''
+            );
+            const finalFlag = recalculatedFlag || ep.flag || undefined;
+            console.log(`  ✅ Voice Matched: ${ep.parameter} (${ep.value}) → ${updated[idx].parameter} | AI flag: ${ep.flag} → Recalculated: ${recalculatedFlag || 'Normal'}`);
+            updated[idx] = { ...updated[idx], value: ep.value, flag: finalFlag };
             matchedCount++;
+          } else {
+            console.log(`  ⚠️ Voice Unmatched: ${ep.parameter} (${ep.value})`);
           }
         });
+
+        console.log(`📊 Voice Match summary: ${matchedCount} of ${extractedParams.length} parameters matched`);
 
         aiMark("match", {
           status: "done",
@@ -2194,8 +2276,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               });
 
               if (idx !== -1 && !updated[idx].is_calculated) {
-                console.log(`  ✅ Matched: ${ep.parameter} (${ep.value}) → ${updated[idx].parameter}`);
-                updated[idx] = { ...updated[idx], value: ep.value, flag: ep.flag };
+                // Recalculate flag client-side instead of trusting AI-returned flag
+                const recalculatedFlag = calculateFlag(
+                  String(ep.value),
+                  updated[idx].reference || ep.reference || ''
+                );
+                const finalFlag = recalculatedFlag || ep.flag || undefined;
+                console.log(`  ✅ Matched: ${ep.parameter} (${ep.value}) → ${updated[idx].parameter} | AI flag: ${ep.flag} → Recalculated: ${recalculatedFlag || 'Normal'}`);
+                updated[idx] = { ...updated[idx], value: ep.value, flag: finalFlag };
                 currentMatchedCount++;
               } else if (idx === -1) {
                 const normalizedEpName = ep.parameter?.toLowerCase().trim();
@@ -2204,6 +2292,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   (normalizedEpName && strictTargetSet.has(normalizedEpName));
 
                 if (canAppendUnknown) {
+                  const addedFlag = calculateFlag(String(ep.value), ep.reference || '') || ep.flag;
                   console.log(`  ➕ Adding new parameter: ${ep.parameter} (${ep.value})`);
                   addedParameters.push({
                     analyte_id: epAnalyteId,
@@ -2211,7 +2300,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     value: ep.value,
                     unit: ep.unit,
                     reference: ep.reference,
-                    flag: ep.flag
+                    flag: addedFlag
                   });
                 } else {
                   console.log(`  ⚠️ Ignored non-target parameter from AI: ${ep.parameter}`);

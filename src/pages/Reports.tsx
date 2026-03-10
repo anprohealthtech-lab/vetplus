@@ -511,20 +511,31 @@ const Reports: React.FC = () => {
     // Auto-trigger generation for first pending job (one at a time)
     if (pendingJobs.length > 0) {
       const [orderId] = pendingJobs[0];
-      console.log('🤖 Auto-triggering PDF generation for:', orderId);
 
-      // Trigger and poll when complete
-      database.pdfQueue.triggerGeneration(orderId).then(({ data, error }) => {
-        if (error) {
-          console.error('❌ Auto-generation failed:', error);
-        } else {
-          console.log('✅ PDF generation complete, refreshing status...', data);
+      // ✅ Pre-check: Verify ALL panels are ready before triggering
+      // This prevents premature PDF generation for multi-group orders
+      // where only some test groups have been approved.
+      isOrderReportReady(orderId).then((ready) => {
+        if (!ready) {
+          console.log('⏳ Skipping auto-trigger for', orderId, '— not all panels ready yet');
+          return;
         }
-        // Always poll after generation attempt (success or fail)
-        const orderIds = Array.from(new Set(approvedResults.map(r => r.order_id)));
-        pollPDFQueueStatus(orderIds);
-        // Also reload results to get updated report info
-        loadApprovedResults();
+
+        console.log('🤖 Auto-triggering PDF generation for:', orderId);
+
+        // Trigger and poll when complete
+        database.pdfQueue.triggerGeneration(orderId).then(({ data, error }) => {
+          if (error) {
+            console.error('❌ Auto-generation failed:', error);
+          } else {
+            console.log('✅ PDF generation complete, refreshing status...', data);
+          }
+          // Always poll after generation attempt (success or fail)
+          const orderIds = Array.from(new Set(approvedResults.map(r => r.order_id)));
+          pollPDFQueueStatus(orderIds);
+          // Also reload results to get updated report info
+          loadApprovedResults();
+        });
       });
     }
   }, [pdfQueueStatus, approvedResults, pollPDFQueueStatus, loadApprovedResults]);

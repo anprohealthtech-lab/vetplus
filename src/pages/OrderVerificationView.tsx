@@ -175,27 +175,53 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
   const [isAdmin, setIsAdmin] = useState(false);
 
-  // Lab flag options for editable flag dropdowns
-  const [labFlagOptions, setLabFlagOptions] = useState([
+  // Canonical flag options — always the full 7; never replaced by DB flag_options
+  const labFlagOptions = [
     { value: '', label: 'Normal' },
     { value: 'H', label: 'High' },
     { value: 'L', label: 'Low' },
+    { value: 'C', label: 'Critical' },
     { value: 'critical_h', label: 'Critical High' },
     { value: 'critical_l', label: 'Critical Low' },
     { value: 'A', label: 'Abnormal' },
-    { value: 'C', label: 'Critical' },
-  ]);
+  ];
 
-  const getNormalizedFlag = (flag: string | null | undefined) => {
+  // Maps any raw DB flag variant → one of the 7 labFlagOptions values
+  const getNormalizedFlag = (flag: string | null | undefined): string => {
     if (!flag) return '';
-    const f = flag.toLowerCase();
-    if (f === 'normal' || f === 'n') return '';
-    if (f === 'high') return 'H';
-    if (f === 'low') return 'L';
-    if (f === 'abnormal') return 'A';
-    if (f === 'critical_high') return 'critical_h';
-    if (f === 'critical_low') return 'critical_l';
-    return flag;
+    const f = flag.trim().toLowerCase().replace(/[-\s]/g, '_');
+    // Normal
+    if (f === '' || f === 'normal' || f === 'n' || f === 'neg' || f === 'negative') return '';
+    // High
+    if (f === 'h' || f === 'high' || f === 'hi' || f === 'hh') return 'H';
+    // Low
+    if (f === 'l' || f === 'low' || f === 'll') return 'L';
+    // Critical High (before generic "critical" check)
+    if (f === 'critical_h' || f === 'critical_high' || f === 'criticalh' ||
+        f === 'ch' || f === 'high_critical') return 'critical_h';
+    // Critical Low (before generic "critical" check)
+    if (f === 'critical_l' || f === 'critical_low' || f === 'criticall' ||
+        f === 'cl' || f === 'low_critical') return 'critical_l';
+    // Generic Critical
+    if (f === 'c' || f === 'critical' || f === 'crit' || f === 'crit.' ||
+        f === 'panic' || f === 'pnc') return 'C';
+    // Abnormal
+    if (f === 'a' || f === 'abnormal' || f === 'abn' || f === 'pos' || f === 'positive') return 'A';
+    // Fallback: return as-is (may still match a dropdown value like 'H','L','C','A','critical_h','critical_l')
+    return flag.trim();
+  };
+
+  // Returns Tailwind CSS classes for the flag select element background/text/border
+  const getFlagSelectClass = (normalizedFlag: string): string => {
+    if (normalizedFlag === 'H' || normalizedFlag === 'critical_h')
+      return 'bg-red-100 text-red-800 border-red-300';
+    if (normalizedFlag === 'L' || normalizedFlag === 'critical_l')
+      return 'bg-blue-100 text-blue-800 border-blue-300';
+    if (normalizedFlag === 'C')
+      return 'bg-red-200 text-red-900 border-red-400';
+    if (normalizedFlag === 'A')
+      return 'bg-amber-100 text-amber-800 border-amber-300';
+    return 'bg-gray-50 text-gray-600 border-gray-300';
   };
 
   const aiIntelligence = useAIResultIntelligence();
@@ -222,15 +248,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     const fetchLabId = async () => {
       const labId = await database.getCurrentUserLabId();
       setCurrentLabId(labId);
-      // Also fetch lab flag options
-      if (labId) {
-        try {
-          const { data } = await supabase.from('labs').select('flag_options').eq('id', labId).single();
-          if (data?.flag_options && Array.isArray(data.flag_options) && data.flag_options.length > 0) {
-            setLabFlagOptions(data.flag_options);
-          }
-        } catch { /* use defaults */ }
-      }
+      // Lab flag_options from DB is intentionally ignored — canonical 7-option list is always used
     };
     fetchLabId();
   }, []);
@@ -609,7 +627,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       }));
 
       if (includeTrendsInReport[panel.order_id]) {
-        const flagged = analytes.filter(a => a.flag && ["H", "L", "C", "Critical"].includes(a.flag));
+        const flagged = analytes.filter(a => a.flag && getNormalizedFlag(a.flag) !== '');
         if (flagged.length) {
           await generateAndSaveTrendCharts(
             panel.result_id,
@@ -1013,7 +1031,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
             value: a.value || "",
             unit: a.unit,
             reference_range: a.reference_range,
-            flag: (a.flag as "H" | "L" | "C" | null) || null,
+            flag: (getNormalizedFlag(a.flag) || null) as string | null,
             interpretation: a.verify_note,
             // Include historical values if available
             historical_values: a.analyte_id ? historicalData[a.analyte_id] : undefined
@@ -1187,7 +1205,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           value: String(analyte.value || ""),
           unit: analyte.unit,
           reference_range: analyte.reference_range,
-          flag: (analyte.flag as "H" | "L" | "C" | null) || null,
+          flag: (getNormalizedFlag(analyte.flag) || null) as string | null,
           interpretation: analyte.verify_note
         }))
       );
@@ -2031,17 +2049,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                               <select
                                                 value={getNormalizedFlag(analyte.flag)}
                                                 onChange={(e) => handleFlagChange(panel.result_id, analyte.id, e.target.value)}
-                                                className={`px-2 py-1 border rounded text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                                  ['H', 'high', 'critical_h', 'critical_high'].includes(getNormalizedFlag(analyte.flag) || '')
-                                                    ? 'bg-red-100 text-red-800 border-red-300'
-                                                    : ['L', 'low', 'critical_l', 'critical_low'].includes(getNormalizedFlag(analyte.flag) || '')
-                                                      ? 'bg-blue-100 text-blue-800 border-blue-300'
-                                                      : ['A', 'abnormal'].includes(getNormalizedFlag(analyte.flag) || '')
-                                                        ? 'bg-amber-100 text-amber-800 border-amber-300'
-                                                        : ['C', 'critical'].includes(getNormalizedFlag(analyte.flag) || '')
-                                                          ? 'bg-red-200 text-red-900 border-red-400'
-                                                          : 'bg-gray-50 text-gray-600 border-gray-300'
-                                                }`}
+                                                className={`px-2 py-1 border rounded text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 ${getFlagSelectClass(getNormalizedFlag(analyte.flag))}`}
                                               >
                                                 {labFlagOptions.map((opt, i) => (
                                                   <option key={i} value={opt.value}>{opt.label}</option>

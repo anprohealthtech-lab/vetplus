@@ -48,6 +48,7 @@ interface TestGroup {
   startFromNextPage?: boolean;
   ref_range_ai_config?: any;
   required_patient_inputs?: string[];
+  default_template_style?: string | null;
 }
 
 const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGroup }) => {
@@ -82,6 +83,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     onlyMale: testGroup?.onlyMale ?? false,
     onlyBilling: testGroup?.onlyBilling ?? false,
     startFromNextPage: testGroup?.startFromNextPage ?? false,
+    default_template_style: testGroup?.default_template_style || '',
     is_outsourced: testGroup?.is_outsourced ?? false,
     default_outsourced_lab_id: testGroup?.default_outsourced_lab_id || '',
     ref_range_ai_config: testGroup?.ref_range_ai_config || { enabled: false, consider_age: true },
@@ -345,6 +347,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         default_outsourced_lab_id: formData.default_outsourced_lab_id || null,
         ref_range_ai_config: formData.ref_range_ai_config,
         required_patient_inputs: formData.required_patient_inputs,
+        default_template_style: formData.default_template_style || null,
         // Auto-sync legacy boolean fields from required_patient_inputs
         lmpRequired: rpi.includes('lmp'),
         idRequired: rpi.includes('id_document'),
@@ -814,6 +817,25 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   />
                   <span className="ml-2 text-sm text-gray-700">Start from Next Page</span>
                 </label>
+              </div>
+              {/* Per-test-group PDF layout override */}
+              <div className="mt-3">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Report Layout Style
+                </label>
+                <select
+                  name="default_template_style"
+                  value={formData.default_template_style}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-amber-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                >
+                  <option value="">Lab Default</option>
+                  <option value="beautiful">Beautiful (3-Column Color Matrix)</option>
+                  <option value="classic">Classic (Plain Table)</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Forces this layout for this test group, overriding both the lab default and any linked custom template.
+                </p>
               </div>
             </div>
 

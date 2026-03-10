@@ -1398,6 +1398,66 @@ const createTestResultLabel = (row: ReportTemplateAnalyteRow): string => {
   return parameter || testName || "Analyte";
 };
 
+type CanonicalPdfFlag =
+  | "normal"
+  | "high"
+  | "low"
+  | "critical"
+  | "critical_high"
+  | "critical_low"
+  | "abnormal"
+  | null;
+
+const normalizePdfFlag = (flag: string | null | undefined): { canonical: CanonicalPdfFlag; label: string; classSuffix: string } => {
+  const raw = String(flag || "").trim();
+  if (!raw) return { canonical: null, label: "", classSuffix: "" };
+
+  const norm = raw
+    .toLowerCase()
+    .replace(/[-\s]/g, "_")
+    .replace(/[^a-z0-9_*]/g, "");
+
+  if (["n", "normal", "ok", "wnl", "within_range"].includes(norm)) {
+    return { canonical: "normal", label: "", classSuffix: "normal" };
+  }
+  if (["h", "high", "hh", "hi"].includes(norm)) {
+    return { canonical: "high", label: "High", classSuffix: "h" };
+  }
+  if (["l", "low", "ll"].includes(norm)) {
+    return { canonical: "low", label: "Low", classSuffix: "l" };
+  }
+  if (["c", "critical", "crit", "c*"].includes(norm)) {
+    return { canonical: "critical", label: "Critical", classSuffix: "c" };
+  }
+  if (["critical_high", "critical_h", "criticalh", "high_critical", "criticalhigh", "h*", "ch"].includes(norm)) {
+    return { canonical: "critical_high", label: "Critical High", classSuffix: "h" };
+  }
+  if (["critical_low", "critical_l", "criticall", "low_critical", "criticallow", "l*", "cl"].includes(norm)) {
+    return { canonical: "critical_low", label: "Critical Low", classSuffix: "l" };
+  }
+  if (["a", "abnormal", "abn"].includes(norm)) {
+    return { canonical: "abnormal", label: "Abnormal", classSuffix: "c" };
+  }
+
+  if (norm.includes("critical") && norm.includes("high")) {
+    return { canonical: "critical_high", label: "Critical High", classSuffix: "h" };
+  }
+  if (norm.includes("critical") && norm.includes("low")) {
+    return { canonical: "critical_low", label: "Critical Low", classSuffix: "l" };
+  }
+  if (norm.includes("critical")) {
+    return { canonical: "critical", label: "Critical", classSuffix: "c" };
+  }
+  if (norm.includes("high")) {
+    return { canonical: "high", label: "High", classSuffix: "h" };
+  }
+  if (norm.includes("low")) {
+    return { canonical: "low", label: "Low", classSuffix: "l" };
+  }
+
+  return { canonical: "abnormal", label: raw, classSuffix: "c" };
+};
+
 /**
  * Determine flag for a result value using the comprehensive flag determination system
  * Falls back to stored flag if determination fails
@@ -1412,7 +1472,7 @@ const determineResultFlag = (
 ): string => {
   // If we already have a stored flag, use it
   if (storedFlag && storedFlag.trim()) {
-    return storedFlag;
+    return normalizePdfFlag(storedFlag).label;
   }
 
   // If no value, no flag needed
@@ -1431,7 +1491,7 @@ const determineResultFlag = (
     patientGender ? { gender: patientGender } : undefined,
   );
 
-  return flagToDisplayString(flagResult.flag);
+  return normalizePdfFlag(flagToDisplayString(flagResult.flag)).label;
 };
 
 const buildTestResultsFromAnalytes = (
@@ -1485,12 +1545,14 @@ const buildTestResultsFromAnalytes = (
       );
     }
 
+    const normalizedFlag = normalizePdfFlag(flag).label;
+
     results.push({
       parameter: label,
       result: row.value ?? "—",
       unit: row.unit ?? "",
       referenceRange: row.reference_range ?? "",
-      flag,
+      flag: normalizedFlag,
       isCalculated: !!(row.is_auto_calculated || row.is_calculated),
       // Include additional flag metadata if available
       ...(row.flag_source && { flagSource: row.flag_source }),
@@ -2035,13 +2097,13 @@ const generateUniversalHTMLTemplate = (
               ${result.isCalculated ? `<sup style="font-size:8px;color:#6b7280;margin-left:2px;font-style:italic;">*calc</sup>` : ""}
             </td>
             <td class="result-value ${
-      result.flag ? `flag-${result.flag.toLowerCase()}` : ""
+      result.flag ? `flag-${normalizePdfFlag(result.flag).classSuffix}` : ""
     }">${result.result}</td>
             <td>${result.unit || "-"}</td>
             <td>${result.referenceRange || "-"}</td>
             <td>${
       result.flag
-        ? `<span class="flag-${result.flag.toLowerCase()}">${result.flag}</span>`
+        ? `<span class="flag-${normalizePdfFlag(result.flag).classSuffix}">${result.flag}</span>`
         : "-"
     }</td>
           </tr>

@@ -126,6 +126,122 @@ const fmtDate = (iso: string) =>
 
 const normalizeIdForSearch = (value: string) => value.replace(/-/g, "").toLowerCase();
 
+type CanonicalFlag =
+  | "normal"
+  | "high"
+  | "low"
+  | "abnormal"
+  | "critical"
+  | "critical_high"
+  | "critical_low";
+
+const FLAG_DROPDOWN_OPTIONS: Array<{ value: CanonicalFlag; label: string }> = [
+  { value: "normal", label: "Normal" },
+  { value: "high", label: "High" },
+  { value: "low", label: "Low" },
+  { value: "abnormal", label: "Abnormal" },
+  { value: "critical", label: "Critical" },
+  { value: "critical_high", label: "Critical High" },
+  { value: "critical_low", label: "Critical Low" },
+];
+
+const normalizeFlagToken = (flag: string | null | undefined) =>
+  (flag || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]/g, "_")
+    .replace(/[^a-z0-9_]/g, "");
+
+const getCanonicalFlag = (flag: string | null | undefined): CanonicalFlag | null => {
+  const token = normalizeFlagToken(flag);
+  if (!token) return null;
+
+  if (["n", "normal", "ok", "within_range", "withinnormal", "wnl"].includes(token)) return "normal";
+  if (["h", "high", "hh", "hi"].includes(token)) return "high";
+  if (["l", "low", "ll"].includes(token)) return "low";
+  if (["a", "abnormal", "abn"].includes(token)) return "abnormal";
+  if (["c", "critical", "crit", "panic"].includes(token)) return "critical";
+  if (["critical_high", "criticalh", "critical_h", "high_critical", "criticalhigh", "ch"].includes(token)) return "critical_high";
+  if (["critical_low", "criticall", "critical_l", "low_critical", "criticallow", "cl"].includes(token)) return "critical_low";
+
+  if (token.includes("critical") && token.includes("high")) return "critical_high";
+  if (token.includes("critical") && token.includes("low")) return "critical_low";
+  if (token.includes("critical")) return "critical";
+  if (token.includes("high")) return "high";
+  if (token.includes("low")) return "low";
+
+  return null;
+};
+
+const getDisplayFlagLabel = (flag: string | null | undefined): string | null => {
+  const canonical = getCanonicalFlag(flag);
+  if (!canonical) return flag || null;
+
+  const option = FLAG_DROPDOWN_OPTIONS.find((opt) => opt.value === canonical);
+  return option?.label || flag || null;
+};
+
+const getFlagBadgeStyles = (flag: string | null | undefined) => {
+  const canonical = getCanonicalFlag(flag);
+
+  if (canonical === "high" || canonical === "critical_high") {
+    return { bg: "bg-red-100", text: "text-red-800" };
+  }
+  if (canonical === "low" || canonical === "critical_low") {
+    return { bg: "bg-blue-100", text: "text-blue-800" };
+  }
+  if (canonical === "critical" || canonical === "abnormal") {
+    return { bg: "bg-orange-100", text: "text-orange-800" };
+  }
+  if (canonical === "normal") {
+    return { bg: "bg-emerald-100", text: "text-emerald-800" };
+  }
+
+  return { bg: "bg-gray-100", text: "text-gray-800" };
+};
+
+const toStoredFlagValue = (canonicalFlag: string | null | undefined): string | null => {
+  const canonical = getCanonicalFlag(canonicalFlag);
+  if (!canonical || canonical === "normal") return null;
+
+  switch (canonical) {
+    case "high":
+      return "H";
+    case "low":
+      return "L";
+    case "critical":
+      return "C";
+    case "critical_high":
+      return "critical_high";
+    case "critical_low":
+      return "critical_low";
+    case "abnormal":
+      return "abnormal";
+    default:
+      return canonicalFlag || null;
+  }
+};
+
+const toSelectFlagValue = (flag: string | null | undefined): CanonicalFlag => getCanonicalFlag(flag) || "normal";
+
+const isCriticalFlag = (flag: string | null | undefined) => {
+  const canonical = getCanonicalFlag(flag);
+  return canonical === "critical" || canonical === "critical_high" || canonical === "critical_low";
+};
+
+const isAbnormalFlag = (flag: string | null | undefined) => {
+  const canonical = getCanonicalFlag(flag);
+  return !!canonical && canonical !== "normal";
+};
+
+const toAISuggestionFlag = (flag: string | null | undefined): "H" | "L" | "C" | null => {
+  const canonical = getCanonicalFlag(flag);
+  if (canonical === "high") return "H";
+  if (canonical === "low") return "L";
+  if (canonical === "critical" || canonical === "critical_high" || canonical === "critical_low") return "C";
+  return null;
+};
+
 /* =========================================
    Attachment Item Component
 ========================================= */
@@ -822,7 +938,7 @@ const ResultVerificationConsole: React.FC = () => {
       value: analyte.value || "",
       unit: analyte.unit,
       reference_range: analyte.reference_range,
-      flag: analyte.flag,
+      flag: toSelectFlagValue(analyte.flag),
     });
   };
 
@@ -837,6 +953,8 @@ const ResultVerificationConsole: React.FC = () => {
       return;
     }
 
+    const updatedFlag = toStoredFlagValue(editValues.flag);
+
     setBusyFor(rv_id, true);
     const { error } = await supabase
       .from("result_values")
@@ -844,7 +962,7 @@ const ResultVerificationConsole: React.FC = () => {
         value: editValues.value,
         unit: editValues.unit,
         reference_range: editValues.reference_range,
-        flag: editValues.flag,
+        flag: updatedFlag,
         verify_status: "pending", // Reset to pending after edit
         verify_note: "Value edited by verifier",
         verified_at: null,
@@ -864,7 +982,7 @@ const ResultVerificationConsole: React.FC = () => {
                 value: editValues.value,
                 unit: editValues.unit,
                 reference_range: editValues.reference_range,
-                flag: editValues.flag,
+                flag: updatedFlag,
                 verify_status: "pending",
                 verify_note: "Value edited by verifier",
                 verified_at: null,
@@ -902,7 +1020,7 @@ const ResultVerificationConsole: React.FC = () => {
         try {
           // Save trend charts if enabled and there are flagged analytes
           if (includeTrendsInReport[row.order_id]) {
-            const flaggedAnalytes = list.filter(a => a.flag && ['H', 'L', 'C', 'Critical'].includes(a.flag));
+            const flaggedAnalytes = list.filter(a => isAbnormalFlag(a.flag));
             if (flaggedAnalytes.length > 0) {
               console.log(`Generating trend charts for ${flaggedAnalytes.length} flagged analytes...`);
               await generateAndSaveTrendCharts(
@@ -1163,7 +1281,7 @@ const ResultVerificationConsole: React.FC = () => {
     ).length;
     const partial = total - ready - pending;
     const critical = panels.filter(p =>
-      rowsByResult[p.result_id]?.some(a => a.flag === 'C' || a.flag === 'Critical')
+      rowsByResult[p.result_id]?.some(a => isCriticalFlag(a.flag))
     ).length;
 
     return { total, ready, partial, pending, critical };
@@ -1227,26 +1345,6 @@ const ResultVerificationConsole: React.FC = () => {
     const [showAISuggestion, setShowAISuggestion] = useState(false);
     const isEditing = editingAnalyteId === a.id;
     const isRerunRequest = a.verify_note && a.verify_note.toUpperCase().includes("RE-RUN");
-
-    const getFlagBadge = (flag: string | null) => {
-      if (!flag) return null;
-
-      const flagConfig = {
-        'H': { bg: 'bg-red-100', text: 'text-red-800', label: 'High' },
-        'L': { bg: 'bg-blue-100', text: 'text-blue-800', label: 'Low' },
-        'C': { bg: 'bg-orange-100', text: 'text-orange-800', label: 'Critical' },
-        'Critical': { bg: 'bg-red-100', text: 'text-red-800', label: 'Critical' }
-      };
-
-      const config = flagConfig[flag as keyof typeof flagConfig] ||
-        { bg: 'bg-gray-100', text: 'text-gray-800', label: flag };
-
-      return (
-        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${config.bg} ${config.text} border`}>
-          {config.label}
-        </span>
-      );
-    };
 
     return (
       <>
@@ -1372,17 +1470,25 @@ const ResultVerificationConsole: React.FC = () => {
           <td className="px-4 py-4">
             {isEditing ? (
               <select
-                value={editValues.flag || ""}
-                onChange={(e) => setEditValues(prev => ({ ...prev, flag: e.target.value || null }))}
+                value={toSelectFlagValue(editValues.flag)}
+                onChange={(e) => setEditValues(prev => ({ ...prev, flag: e.target.value || "normal" }))}
                 className="px-2 py-1 border border-blue-300 rounded focus:ring-2 focus:ring-blue-500"
               >
-                <option value="">Normal</option>
-                <option value="H">High</option>
-                <option value="L">Low</option>
-                <option value="C">Critical</option>
+                {FLAG_DROPDOWN_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
               </select>
             ) : (
-              getFlagBadge(a.flag)
+              (() => {
+                const flagLabel = getDisplayFlagLabel(a.flag);
+                if (!flagLabel || getCanonicalFlag(a.flag) === "normal") return null;
+                const styles = getFlagBadgeStyles(a.flag);
+                return (
+                  <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${styles.bg} ${styles.text} border`}>
+                    {flagLabel}
+                  </span>
+                );
+              })()
             )}
           </td>
           <td className="px-4 py-4">
@@ -1528,7 +1634,7 @@ const ResultVerificationConsole: React.FC = () => {
                   value: a.value || '',
                   unit: a.unit,
                   reference_range: a.reference_range,
-                  flag: a.flag as 'H' | 'L' | 'C' | null,
+                  flag: toAISuggestionFlag(a.flag),
                   ai_suggested_flag: null,
                   ai_suggested_interpretation: null,
                   trend_interpretation: null
@@ -1840,7 +1946,7 @@ const ResultVerificationConsole: React.FC = () => {
                               value: a.value || '',
                               unit: a.unit,
                               reference_range: a.reference_range,
-                              flag: a.flag as 'H' | 'L' | 'C' | null,
+                              flag: toAISuggestionFlag(a.flag),
                               historical_values: historicalValues,
                             };
                           })
@@ -2186,14 +2292,9 @@ const ResultVerificationConsole: React.FC = () => {
                             <td className="px-4 py-3">
                               {trend.flag && (
                                 <span
-                                  className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${trend.flag === 'H' || trend.flag === 'Critical'
-                                    ? 'bg-red-100 text-red-800'
-                                    : trend.flag === 'L'
-                                      ? 'bg-blue-100 text-blue-800'
-                                      : 'bg-orange-100 text-orange-800'
-                                    }`}
+                                  className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${getFlagBadgeStyles(trend.flag).bg} ${getFlagBadgeStyles(trend.flag).text}`}
                                 >
-                                  {trend.flag}
+                                  {getDisplayFlagLabel(trend.flag)}
                                 </span>
                               )}
                             </td>

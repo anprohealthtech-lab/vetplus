@@ -25,8 +25,8 @@ interface SimpleAnalyteEditorProps {
     is_critical?: boolean;
     normal_range_min?: number;
     normal_range_max?: number;
-    low_critical?: number | null;
-    high_critical?: number | null;
+    low_critical?: string | number | null;
+    high_critical?: string | number | null;
     interpretation_low?: string;
     interpretation_normal?: string;
     interpretation_high?: string;
@@ -483,29 +483,27 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                   <div>
                     <label className="block text-xs text-gray-600 mb-1">Low Critical Value</label>
                     <input
-                      type="number"
-                      step="0.001"
-                      value={formData.low_critical || ''}
+                      type="text"
+                      value={formData.low_critical ?? ''}
                       onChange={(e) => setFormData(prev => ({
                         ...prev,
-                        low_critical: e.target.value ? parseFloat(e.target.value) : null
+                        low_critical: e.target.value || null
                       }))}
                       className="w-full px-3 py-2 border border-red-300 rounded-md focus:ring-2 focus:ring-red-500 focus:border-transparent"
-                      placeholder="e.g., 5.0"
+                      placeholder="e.g., 5.0 or <5 or ≤5"
                     />
                   </div>
                   <div>
                     <label className="block text-xs text-gray-600 mb-1">High Critical Value</label>
                     <input
-                      type="number"
-                      step="0.001"
-                      value={formData.high_critical || ''}
+                      type="text"
+                      value={formData.high_critical ?? ''}
                       onChange={(e) => setFormData(prev => ({
                         ...prev,
-                        high_critical: e.target.value ? parseFloat(e.target.value) : null
+                        high_critical: e.target.value || null
                       }))}
                       className="w-full px-3 py-2 border border-red-300 rounded-md focus:ring-2 focus:ring-red-500 focus:border-transparent"
-                      placeholder="e.g., 200.0"
+                      placeholder="e.g., 200.0 or >200 or ≥300"
                     />
                   </div>
                 </div>

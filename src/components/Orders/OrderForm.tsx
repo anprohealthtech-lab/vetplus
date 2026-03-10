@@ -2236,12 +2236,17 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     onFocus={(e) => { e.target.select(); setShowDoctorDropdown(true); }}
                     onBlur={() => setTimeout(() => {
                       setShowDoctorDropdown(false);
-                      // If field is empty on blur and no real doctor selected, reset to Self
-                      if (!doctorSearch.trim() || selectedDoctor === 'SELF') {
-                        setSelectedDoctor('SELF');
-                        setDoctorSearch('Self / Walk-in');
-                      }
-                    }, 200)}
+                      // Only reset to Self/Walk-in if the search field was completely emptied
+                      // Do NOT reset when selectedDoctor is SELF but user typed a search query
+                      // (they may just be searching for a doctor to pick)
+                      setDoctorSearch((currentSearch) => {
+                        if (!currentSearch.trim()) {
+                          setSelectedDoctor('SELF');
+                          return 'Self / Walk-in';
+                        }
+                        return currentSearch;
+                      });
+                    }, 250)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
                   />
                   {showDoctorDropdown && (

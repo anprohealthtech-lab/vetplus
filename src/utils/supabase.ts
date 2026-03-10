@@ -471,6 +471,7 @@ export const auth = {
 // ============================================================================
 let _cachedLabId: string | null = null;
 let _cachedLabIdUserId: string | null = null; // Track which user the cache is for
+let _labIdInflightPromise: Promise<string | null> | null = null; // Deduplicates concurrent calls
 
 // ============================================================================
 // User Cache - prevents repeated auth.getUser() calls
@@ -484,6 +485,7 @@ supabase.auth.onAuthStateChange((event) => {
   if (event === "SIGNED_OUT" || event === "USER_UPDATED") {
     _cachedLabId = null;
     _cachedLabIdUserId = null;
+    _labIdInflightPromise = null;
     _cachedUser = null;
     _cachedUserTimestamp = 0;
   }
@@ -498,20 +500,24 @@ export const database = {
   clearLabIdCache: () => {
     _cachedLabId = null;
     _cachedLabIdUserId = null;
+    _labIdInflightPromise = null;
   },
 
   // Helper to get current user's lab ID (with caching)
   getCurrentUserLabId: async () => {
-    const { data: { user }, error } = await supabase.auth.getUser();
+    // Return cached value immediately if available
+    if (_cachedLabId) return _cachedLabId;
 
-    // Return cached value if still valid for the same user
-    if (_cachedLabId && _cachedLabIdUserId === user?.id) {
-      return _cachedLabId;
-    }
-    if (error || !user) {
-      console.error("Error fetching user:", error);
-      return null;
-    }
+    // Deduplicate concurrent calls — all share one in-flight promise
+    if (_labIdInflightPromise) return _labIdInflightPromise;
+
+    _labIdInflightPromise = (async () => {
+      try {
+        const { data: { user }, error } = await supabase.auth.getUser();
+        if (error || !user) {
+          console.error("Error fetching user:", error);
+          return null;
+        }
 
     // Primary: Check users table for lab_id (most reliable)
     try {
@@ -592,8 +598,13 @@ export const database = {
       console.warn("Could not fetch default lab:", err);
     }
 
-    console.error("No lab_id found for user and no default lab available");
-    return null;
+        console.error("No lab_id found for user and no default lab available");
+        return null;
+      } finally {
+        _labIdInflightPromise = null;
+      }
+    })();
+    return _labIdInflightPromise;
   },
 
   // Helper to get current user's assigned location IDs
@@ -6279,6 +6290,7 @@ export const database = {
             only_male,
             only_billing,
             start_from_next_page,
+            default_template_style,
             is_outsourced,
             default_outsourced_lab_id,
             required_patient_inputs,
@@ -6341,6 +6353,7 @@ export const database = {
             only_male,
             only_billing,
             start_from_next_page,
+            default_template_style,
             is_outsourced,
             default_outsourced_lab_id,
             required_patient_inputs,
@@ -6402,6 +6415,7 @@ export const database = {
             only_male,
             only_billing,
             start_from_next_page,
+            default_template_style,
             is_outsourced,
             default_outsourced_lab_id,
             required_patient_inputs,
@@ -6476,8 +6490,8 @@ export const database = {
           ref_range_ai_config: testGroupData.ref_range_ai_config || null,
           required_patient_inputs: testGroupData.required_patient_inputs || [],
           is_outsourced: testGroupData.is_outsourced || false,
-          default_outsourced_lab_id: testGroupData.default_outsourced_lab_id ||
-            null,
+          default_outsourced_lab_id: testGroupData.default_outsourced_lab_id || null,
+          default_template_style: testGroupData.default_template_style || null,
         };
 
         console.log("Creating test group with data:", sanitizedData);
@@ -6571,6 +6585,7 @@ export const database = {
             required_patient_inputs: updates.required_patient_inputs,
             is_outsourced: updates.is_outsourced,
             default_outsourced_lab_id: updates.default_outsourced_lab_id,
+            default_template_style: updates.default_template_style || null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", id)
@@ -6584,32 +6599,22 @@ export const database = {
 
         // Step 2: Update analyte relationships if analytes are provided
         if (updates.analytes && Array.isArray(updates.analytes)) {
-          // First delete existing analyte relationships
-          const { error: deleteError } = await supabase
-            .from("test_group_analytes")
-            .delete()
-            .eq("test_group_id", id);
+          const newAnalyteIds: string[] = updates.analytes;
 
-          if (deleteError) {
-            console.error(
-              "Error deleting existing analyte relationships:",
-              deleteError,
-            );
-            return { data, error: deleteError };
-          }
-
-          // Then insert new analyte relationships
-          if (updates.analytes.length > 0) {
-            const analyteRelations = updates.analytes.map((
-              analyteId: string,
-            ) => ({
+          // Insert new analytes first (keeps count > 0, preventing the orphan
+          // auto-link trigger from firing during the subsequent delete step)
+          if (newAnalyteIds.length > 0) {
+            const analyteRelations = newAnalyteIds.map((analyteId: string) => ({
               test_group_id: id,
               analyte_id: analyteId,
             }));
 
             const { error: insertError } = await supabase
               .from("test_group_analytes")
-              .insert(analyteRelations);
+              .upsert(analyteRelations, {
+                onConflict: "test_group_id,analyte_id",
+                ignoreDuplicates: true,
+              });
 
             if (insertError) {
               console.error(
@@ -6618,6 +6623,30 @@ export const database = {
               );
               return { data, error: insertError };
             }
+          }
+
+          // Then delete analytes that are no longer in the new set
+          let deleteQuery = supabase
+            .from("test_group_analytes")
+            .delete()
+            .eq("test_group_id", id);
+
+          if (newAnalyteIds.length > 0) {
+            deleteQuery = deleteQuery.not(
+              "analyte_id",
+              "in",
+              `(${newAnalyteIds.join(",")})`,
+            );
+          }
+
+          const { error: deleteError } = await deleteQuery;
+
+          if (deleteError) {
+            console.error(
+              "Error deleting removed analyte relationships:",
+              deleteError,
+            );
+            return { data, error: deleteError };
           }
         }
 

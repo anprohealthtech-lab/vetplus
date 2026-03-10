@@ -30,8 +30,11 @@ interface Analyte {
   name: string;
   unit: string;
   referenceRange: string;
-  lowCritical?: string;
-  highCritical?: string;
+  lowCritical?: string | number;
+  highCritical?: string | number;
+  // Snake-case fallbacks for raw DB objects
+  low_critical?: string | number | null;
+  high_critical?: string | number | null;
   interpretation: {
     low: string;
     normal: string;
@@ -79,8 +82,8 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
     name: analyte?.name || '',
     unit: analyte?.unit || '',
     referenceRange: analyte?.referenceRange || '',
-    lowCritical: analyte?.lowCritical || '',
-    highCritical: analyte?.highCritical || '',
+    lowCritical: analyte?.lowCritical ?? analyte?.low_critical ?? '',
+    highCritical: analyte?.highCritical ?? analyte?.high_critical ?? '',
     category: analyte?.category || '',
     interpretationLow: analyte?.interpretation?.low || '',
     interpretationNormal: analyte?.interpretation?.normal || '',

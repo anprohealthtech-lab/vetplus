@@ -254,15 +254,17 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                             )}
                           </div>
                         </div>
-                        {/* TAT Badge (New) */}
-                        <div className="mt-1">
-                          <TATStatusBadge
-                            hoursUntilBreach={(order as any).hours_until_tat_breach}
-                            isBreached={(order as any).is_tat_breached}
-                            tatHours={(order as any).tat_hours}
-                            compact={true}
-                          />
-                        </div>
+                        {/* TAT Badge — only show for in-progress orders */}
+                        {!['Report Ready', 'Completed', 'Delivered'].includes(order.status) && (
+                          <div className="mt-1">
+                            <TATStatusBadge
+                              hoursUntilBreach={(order as any).hours_until_tat_breach}
+                              isBreached={(order as any).is_tat_breached}
+                              tatHours={(order as any).tat_hours}
+                              compact={true}
+                            />
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>

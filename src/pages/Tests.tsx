@@ -36,8 +36,8 @@ interface Analyte {
   name: string;
   unit: string;
   referenceRange?: string;
-  lowCritical?: number;
-  highCritical?: number;
+  lowCritical?: string | number;
+  highCritical?: string | number;
   interpretation?: {
     low?: string;
     normal?: string;
@@ -99,6 +99,7 @@ interface TestGroup {
   onlyMale?: boolean;
   onlyBilling?: boolean;
   startFromNextPage?: boolean;
+  default_template_style?: string | null;
   analytes?: string[];
   ref_range_ai_config?: any;
   required_patient_inputs?: string[];
@@ -381,9 +382,16 @@ const Tests: React.FC = () => {
     console.log('📊 Loading data from database...');
     const loadData = async () => {
       try {
-        console.log('🔄 Starting data load sequence');
-        // Load analytes from database
-        const { data: dbAnalytesData, error: analytesError } = await database.analytes.getAll();
+        console.log('🔄 Starting parallel data load');
+
+        const [analytesResult, testGroupsResult, packagesResult] = await Promise.all([
+          database.analytes.getAll(),
+          database.testGroups.getAll(),
+          database.packages.getAll(),
+        ]);
+
+        // Process analytes
+        const { data: dbAnalytesData, error: analytesError } = analytesResult;
         if (analytesError) {
           console.error('❌ Error loading analytes from database:', analytesError);
           setAnalytes([]);
@@ -404,12 +412,10 @@ const Tests: React.FC = () => {
             category: analyte.category,
             isActive: analyte.is_active ?? true,
             createdDate: analyte.created_at || new Date().toISOString(),
-            // Calculated fields
             isCalculated: analyte.is_calculated || false,
             formula: analyte.formula || '',
             formulaVariables: analyte.formula_variables || [],
             formulaDescription: analyte.formula_description || '',
-            // Extended fields
             normalRangeMin: analyte.normal_range_min ?? undefined,
             normalRangeMax: analyte.normal_range_max ?? undefined,
             interpretationLow: analyte.interpretation_low,
@@ -424,15 +430,14 @@ const Tests: React.FC = () => {
             isGlobal: analyte.is_global ?? false,
             toBeCopied: analyte.to_be_copied ?? false,
             ref_range_knowledge: analyte.ref_range_knowledge,
-            // Dropdown options for qualitative values
             expected_normal_values: analyte.expected_normal_values || [],
             expected_value_flag_map: analyte.expected_value_flag_map || {},
           }));
           setAnalytes(transformedAnalytes);
         }
 
-        // Load test groups from database
-        const { data: dbTestGroupsData, error: testGroupsError } = await database.testGroups.getAll();
+        // Process test groups
+        const { data: dbTestGroupsData, error: testGroupsError } = testGroupsResult;
         if (testGroupsError) {
           console.error('❌ Error loading test groups from database:', testGroupsError);
           setTestGroups([]);
@@ -467,26 +472,26 @@ const Tests: React.FC = () => {
             onlyMale: group.only_male || false,
             onlyBilling: group.only_billing || false,
             startFromNextPage: group.start_from_next_page || false,
+            default_template_style: group.default_template_style || null,
             is_outsourced: group.is_outsourced || false,
             default_outsourced_lab_id: group.default_outsourced_lab_id,
             ref_range_ai_config: group.ref_range_ai_config,
             required_patient_inputs: group.required_patient_inputs || [],
-            analytes: group.test_group_analytes ? group.test_group_analytes.map(tga => tga.analyte_id) : []
+            analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
           }));
           setTestGroups(transformedTestGroups);
         }
 
-        // Load packages from database
-        const { data: dbPackagesData, error: packagesError } = await database.packages.getAll();
+        // Process packages
+        const { data: dbPackagesData, error: packagesError } = packagesResult;
         if (packagesError) {
           console.error('❌ Error loading packages from database:', packagesError);
           setPackages([]);
         } else {
           console.log('✅ Packages loaded:', dbPackagesData?.length || 0, 'records');
           const transformedPackages = (dbPackagesData || []).map(pkg => {
-            // Handle package_test_groups relation - ensure it's an array
             const ptg = pkg.package_test_groups || [];
-            const testGroupIds = Array.isArray(ptg) 
+            const testGroupIds = Array.isArray(ptg)
               ? ptg.map((item: any) => item.test_group_id).filter(Boolean)
               : [];
             return {
@@ -984,7 +989,8 @@ const Tests: React.FC = () => {
           ref_range_ai_config: updatedTestGroup.ref_range_ai_config,
           required_patient_inputs: updatedTestGroup.required_patient_inputs,
           is_outsourced: updatedTestGroup.is_outsourced,
-          default_outsourced_lab_id: updatedTestGroup.default_outsourced_lab_id
+          default_outsourced_lab_id: updatedTestGroup.default_outsourced_lab_id,
+          default_template_style: updatedTestGroup.default_template_style || null
         };
         setTestGroups(prev => prev.map(tg => tg.id === editingTestGroup.id ? transformedGroup : tg));
         setShowTestGroupForm(false);
@@ -1248,6 +1254,7 @@ const Tests: React.FC = () => {
           onlyMale: group.only_male || false,
           onlyBilling: group.only_billing || false,
           startFromNextPage: group.start_from_next_page || false,
+          default_template_style: group.default_template_style || null,
           analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
         }));
         setTestGroups(transformedTestGroups);
@@ -1395,6 +1402,7 @@ const Tests: React.FC = () => {
           onlyMale: group.only_male || false,
           onlyBilling: group.only_billing || false,
           startFromNextPage: group.start_from_next_page || false,
+          default_template_style: group.default_template_style || null,
           analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
         }));
         setTestGroups(transformedTestGroups);

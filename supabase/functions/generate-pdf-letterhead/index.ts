@@ -705,17 +705,86 @@ function determineFlag(
   // Convert to display string
   const displayMap: Record<string, string> = {
     "normal": "",
-    "high": "H",
-    "low": "L",
-    "critical_high": "H*",
-    "critical_low": "L*",
-    "abnormal": "A",
+    "high": "High",
+    "low": "Low",
+    "critical_high": "Critical High",
+    "critical_low": "Critical Low",
+    "abnormal": "Abnormal",
   };
 
   return {
     flag,
     displayFlag: flag ? (displayMap[flag] || "") : "",
   };
+}
+
+type CanonicalReportFlag =
+  | "normal"
+  | "high"
+  | "low"
+  | "critical"
+  | "critical_high"
+  | "critical_low"
+  | "abnormal"
+  | null;
+
+function normalizeReportFlag(flag?: string | null): {
+  canonical: CanonicalReportFlag;
+  label: string;
+} {
+  const raw = String(flag || "").trim();
+  if (!raw) {
+    return { canonical: null, label: "" };
+  }
+
+  const norm = raw
+    .toLowerCase()
+    .replace(/[-\s]/g, "_")
+    .replace(/[^a-z0-9_*]/g, "");
+
+  if (["n", "normal", "ok", "wnl", "within_range"].includes(norm)) {
+    return { canonical: "normal", label: "" };
+  }
+  if (["h", "high", "hh", "hi"].includes(norm)) {
+    return { canonical: "high", label: "High" };
+  }
+  if (["l", "low", "ll"].includes(norm)) {
+    return { canonical: "low", label: "Low" };
+  }
+  if (["c", "critical", "crit", "c*"].includes(norm)) {
+    return { canonical: "critical", label: "Critical" };
+  }
+  if (
+    ["critical_high", "critical_h", "criticalh", "high_critical", "criticalhigh", "h*", "ch"].includes(norm)
+  ) {
+    return { canonical: "critical_high", label: "Critical High" };
+  }
+  if (
+    ["critical_low", "critical_l", "criticall", "low_critical", "criticallow", "l*", "cl"].includes(norm)
+  ) {
+    return { canonical: "critical_low", label: "Critical Low" };
+  }
+  if (["a", "abnormal", "abn"].includes(norm)) {
+    return { canonical: "abnormal", label: "Abnormal" };
+  }
+
+  if (norm.includes("critical") && norm.includes("high")) {
+    return { canonical: "critical_high", label: "Critical High" };
+  }
+  if (norm.includes("critical") && norm.includes("low")) {
+    return { canonical: "critical_low", label: "Critical Low" };
+  }
+  if (norm.includes("critical")) {
+    return { canonical: "critical", label: "Critical" };
+  }
+  if (norm.includes("high")) {
+    return { canonical: "high", label: "High" };
+  }
+  if (norm.includes("low")) {
+    return { canonical: "low", label: "Low" };
+  }
+
+  return { canonical: "abnormal", label: raw };
 }
 
 // ============================================================
@@ -729,6 +798,7 @@ function generateAnalyteShortKey(name: string): string {
   if (!name) return "";
 
   // Common abbreviations mapping
+
   const abbreviations: Record<string, string> = {
     "C-Reactive Protein (CRP), Quantitative": "CREACT",
     "C-Reactive Protein (CRP)": "CREACT",
@@ -737,11 +807,24 @@ function generateAnalyteShortKey(name: string): string {
     "Hb (Hemoglobin)": "HB",
     "Hematocrit": "HCT",
     "Total White Blood Cell Count": "WBC",
+    "Total Leukocyte Count": "TLC",
     "Red Blood Cell Count": "RBC",
     "Platelet Count": "PLT",
     "Mean Corpuscular Volume": "MCV",
     "Alanine Aminotransferase (ALT/SGPT)": "ALT",
     "ALT (SGPT)": "ALT",
+    // 5-Part CBC differential — canonical names
+    "Neutrophils (%)": "NEUT_PCT",
+    "Neutrophils (Abs)": "NEUT_ABS",
+    "Lymphocytes (%)": "LYMPH_PCT",
+    "Lymphocytes (Abs)": "LYMPH_ABS",
+    "Monocytes (%)": "MONO_PCT",
+    "Monocytes (Abs)": "MONO_ABS",
+    "Eosinophils (%)": "EOS_PCT",
+    "Eosinophils (Abs)": "EOS_ABS",
+    "Basophils (%)": "BASO_PCT",
+    "Basophils (Abs)": "BASO_ABS",
+    "ESR (After 1 hour)": "ESR",
   };
 
   if (abbreviations[name]) return abbreviations[name];
@@ -772,8 +855,10 @@ function generateAnalyteShortKey(name: string): string {
  * Returns valueClass, flagClass, and normalized flagText
  */
 function toFlagClass(flag?: string | null) {
-  const f = String(flag || "").trim().toLowerCase();
-  if (!f) {
+  const normalized = normalizeReportFlag(flag);
+  const canonical = normalized.canonical;
+
+  if (!canonical || canonical === "normal") {
     return {
       valueClass: "value-normal",
       flagClass: "flag-normal",
@@ -781,47 +866,43 @@ function toFlagClass(flag?: string | null) {
     };
   }
 
-  // normalize possible variants
-  const norm = f
-    .replace(/\s+/g, "_")
-    .replace(/-/g, "_");
-
-  if (norm === "normal" || norm === "n") {
-    return {
-      valueClass: "value-normal",
-      flagClass: "flag-normal",
-      flagText: "normal",
-    };
+  if (canonical === "low") {
+    return { valueClass: "value-low", flagClass: "flag-low", flagText: "Low" };
   }
-  if (norm === "low" || norm === "l" || norm === "ll") {
-    return { valueClass: "value-low", flagClass: "flag-low", flagText: "low" };
-  }
-  if (norm === "high" || norm === "h" || norm === "hh") {
+  if (canonical === "high") {
     return {
       valueClass: "value-high",
       flagClass: "flag-high",
-      flagText: "high",
+      flagText: "High",
     };
   }
 
-  if (
-    norm === "critical_h" || norm === "critical_high" || norm === "h*" ||
-    norm === "criticalh"
-  ) {
+  if (canonical === "critical_high") {
     return {
       valueClass: "value-critical_h",
       flagClass: "flag-critical_h",
-      flagText: "critical_h",
+      flagText: "Critical High",
     };
   }
-  if (
-    norm === "critical_l" || norm === "critical_low" || norm === "l*" ||
-    norm === "criticall"
-  ) {
+  if (canonical === "critical_low") {
     return {
       valueClass: "value-critical_l",
       flagClass: "flag-critical_l",
-      flagText: "critical_l",
+      flagText: "Critical Low",
+    };
+  }
+  if (canonical === "critical") {
+    return {
+      valueClass: "value-abnormal",
+      flagClass: "flag-abnormal",
+      flagText: "Critical",
+    };
+  }
+  if (canonical === "abnormal") {
+    return {
+      valueClass: "value-abnormal",
+      flagClass: "flag-abnormal",
+      flagText: normalized.label || "Abnormal",
     };
   }
 
@@ -829,7 +910,7 @@ function toFlagClass(flag?: string | null) {
   return {
     valueClass: "value-abnormal",
     flagClass: "flag-abnormal",
-    flagText: f,
+    flagText: normalized.label,
   };
 }
 
@@ -849,6 +930,8 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
 
     // Get CSS classes from flag
     const { valueClass, flagClass, flagText } = toFlagClass(analyte.flag);
+    const normalizedFlag = normalizeReportFlag(analyte.flag);
+    const normalizedFlagLabel = normalizedFlag.label;
 
     // 1. Existing Short Key Logic (ANALYTE_HB_VALUE)
     const shortKey = generateAnalyteShortKey(name);
@@ -857,10 +940,11 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
       placeholders[`ANALYTE_${shortKey}_UNIT`] = analyte.unit || "";
       placeholders[`ANALYTE_${shortKey}_REFERENCE`] = analyte.reference_range ||
         "";
-      placeholders[`ANALYTE_${shortKey}_FLAG`] = analyte.flag || "";
+      placeholders[`ANALYTE_${shortKey}_FLAG`] = normalizedFlagLabel;
+      placeholders[`ANALYTE_${shortKey}_FLAG_RAW`] = analyte.flag || "";
       placeholders[`ANALYTE_${shortKey}_METHOD`] = analyte.method || "";
       placeholders[`ANALYTE_${shortKey}_DISPLAYFLAG`] = analyte.displayFlag ||
-        "";
+        normalizedFlagLabel;
       // NEW: CSS class placeholders
       placeholders[`ANALYTE_${shortKey}_FLAG_TEXT`] = flagText;
       placeholders[`ANALYTE_${shortKey}_FLAG_CLASS`] = flagClass;
@@ -879,8 +963,9 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
       placeholders[`${slug}_UNIT`] = analyte.unit || "";
       placeholders[`${slug}_REF_RANGE`] = analyte.reference_range || ""; // Matching _REF_RANGE from frontend
       placeholders[`${slug}_REFERENCE`] = analyte.reference_range || ""; // Alias
-      placeholders[`${slug}_FLAG`] = analyte.flag || "";
-      placeholders[`${slug}_DISPLAYFLAG`] = analyte.displayFlag || "";
+      placeholders[`${slug}_FLAG`] = normalizedFlagLabel;
+      placeholders[`${slug}_FLAG_RAW`] = analyte.flag || "";
+      placeholders[`${slug}_DISPLAYFLAG`] = analyte.displayFlag || normalizedFlagLabel;
       placeholders[`${slug}_NOTE`] = analyte.notes || analyte.comments || "";
       placeholders[`${slug}_METHOD`] = analyte.method || "";
       // NEW: CSS class placeholders
@@ -902,9 +987,10 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
       placeholders[`ANALYTE_${upperSnakeKey}_UNIT`] = analyte.unit || "";
       placeholders[`ANALYTE_${upperSnakeKey}_REFERENCE`] =
         analyte.reference_range || "";
-      placeholders[`ANALYTE_${upperSnakeKey}_FLAG`] = analyte.flag || "";
+      placeholders[`ANALYTE_${upperSnakeKey}_FLAG`] = normalizedFlagLabel;
+      placeholders[`ANALYTE_${upperSnakeKey}_FLAG_RAW`] = analyte.flag || "";
       placeholders[`ANALYTE_${upperSnakeKey}_DISPLAYFLAG`] =
-        analyte.displayFlag || "";
+        analyte.displayFlag || normalizedFlagLabel;
       placeholders[`ANALYTE_${upperSnakeKey}_METHOD`] = analyte.method || "";
       placeholders[`ANALYTE_${upperSnakeKey}_FLAG_TEXT`] = flagText;
       placeholders[`ANALYTE_${upperSnakeKey}_FLAG_CLASS`] = flagClass;
@@ -1399,6 +1485,9 @@ function generateClassicDefaultTemplateHtml(
       const unit = analyte.unit || "";
       const refRange = analyte.reference_range || "";
       const flag = analyte.flag || "";
+      const normalizedFlag = normalizeReportFlag(flag);
+      const canonicalFlag = normalizedFlag.canonical;
+      const displayFlag = normalizedFlag.label;
 
       const unitText = String(unit || "").trim().toLowerCase();
       const refText = String(refRange || "").trim();
@@ -1408,23 +1497,22 @@ function generateClassicDefaultTemplateHtml(
         unitText === "none" || unitText === "not applicable" ||
         (!unitText && refText && !hasNumericRef);
 
-      const flagLower = (flag || "").toString().toLowerCase().trim();
       let flagStyle = "";
       let flagClass = "";
 
-      if (["h", "high", "critical_high", "critical_h", "h*", "hh"].includes(flagLower)) {
+      if (canonicalFlag === "high" || canonicalFlag === "critical_high") {
         flagStyle = "color: #dc2626; font-weight: bold;";
         flagClass = "result-high flag-high";
-      } else if (["l", "low", "critical_low", "critical_l", "l*", "ll"].includes(flagLower)) {
+      } else if (canonicalFlag === "low" || canonicalFlag === "critical_low") {
         flagStyle = "color: #ea580c; font-weight: bold;";
         flagClass = "result-low flag-low";
-      } else if (flagLower === "n" || flagLower === "normal") {
+      } else if (canonicalFlag === "normal") {
         flagStyle = "color: #16a34a;";
         flagClass = "result-normal flag-normal";
-      } else if (["c", "critical", "c*"].includes(flagLower)) {
+      } else if (canonicalFlag === "critical") {
         flagStyle = "color: #7c2d12; font-weight: bold;";
         flagClass = "result-critical flag-critical";
-      } else if (flagLower === "a" || flagLower === "abnormal") {
+      } else if (canonicalFlag === "abnormal") {
         flagStyle = "color: #dc2626; font-weight: bold;";
         flagClass = "result-abnormal flag-abnormal";
       }
@@ -1449,16 +1537,16 @@ function generateClassicDefaultTemplateHtml(
               <td class="${flagClass}" style="padding: 8px 12px; border: 1px solid #e5e7eb; ${flagStyle}">${value}</td>
               <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">${unit}</td>
               <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">${refRange}</td>
-              <td class="${flagClass}" style="padding: 8px 12px; border: 1px solid #e5e7eb; text-align: center; ${flagStyle}">${flag}</td>
+              <td class="${flagClass}" style="padding: 8px 12px; border: 1px solid #e5e7eb; text-align: center; ${flagStyle}">${displayFlag}</td>
             </tr>
       `;
 
       // Interpretation row (shown below the analyte row if enabled)
       if (showInterpretation) {
         let classicInterpretation = "";
-        if (["h", "high", "critical_high", "critical_h", "h*", "hh"].includes(flagLower)) {
+        if (canonicalFlag === "high" || canonicalFlag === "critical_high") {
           classicInterpretation = analyte.interpretation_high || "";
-        } else if (["l", "low", "critical_low", "critical_l", "l*", "ll"].includes(flagLower)) {
+        } else if (canonicalFlag === "low" || canonicalFlag === "critical_low") {
           classicInterpretation = analyte.interpretation_low || "";
         } else {
           classicInterpretation = analyte.interpretation_normal || "";
@@ -1620,6 +1708,26 @@ function generateDefaultTemplateHtml(
       }
     }
 
+    // One-sided upper limit: "< X" or "≤ X" (e.g. Total Cholesterol < 200)
+    const upperMatch = refText.match(/^[<≤]\s*([\d.]+)/);
+    if (upperMatch) {
+      const hi = parseFloat(upperMatch[1]);
+      if (!isNaN(hi)) {
+        if (numVal <= hi) return { column: 2, semantic: "good" };
+        return { column: 3, semantic: "bad" };
+      }
+    }
+
+    // One-sided lower limit: "> X" or "≥ X" (e.g. HDL > 40)
+    const lowerMatch = refText.match(/^[>≥]\s*([\d.]+)/);
+    if (lowerMatch) {
+      const lo = parseFloat(lowerMatch[1]);
+      if (!isNaN(lo)) {
+        if (numVal >= lo) return { column: 2, semantic: "good" };
+        return { column: 1, semantic: "bad" };
+      }
+    }
+
     return null; // no structured range available
   }
 
@@ -1661,6 +1769,22 @@ function generateDefaultTemplateHtml(
       return `> ${hi}`;
     }
 
+    // One-sided upper limit: "< X" — LOW col empty, NORMAL = "< X", HIGH = "> X"
+    const upperMatch = refText.match(/^[<≤]\s*([\d.]+)/);
+    if (upperMatch) {
+      if (position === 1) return "";
+      if (position === 2) return `< ${upperMatch[1]}`;
+      return `> ${upperMatch[1]}`;
+    }
+
+    // One-sided lower limit: "> X" — LOW = "< X", NORMAL = "> X", HIGH col empty
+    const lowerMatch = refText.match(/^[>≥]\s*([\d.]+)/);
+    if (lowerMatch) {
+      if (position === 1) return `< ${lowerMatch[1]}`;
+      if (position === 2) return `> ${lowerMatch[1]}`;
+      return "";
+    }
+
     if (position === 2) return refText || "";
     return "";
   }
@@ -1671,7 +1795,11 @@ function generateDefaultTemplateHtml(
       analyte.normal_range_min != null && analyte.normal_range_max != null
     ) return true;
     const refText = String(analyte.reference_range || "").trim();
-    return /[\d.]+\s*[-–]\s*[\d.]+/.test(refText);
+    // Two-sided: "10 - 20"
+    if (/[\d.]+\s*[-–]\s*[\d.]+/.test(refText)) return true;
+    // One-sided: "< 200" or "> 40"
+    if (/^[<>≤≥]\s*[\d.]+/.test(refText)) return true;
+    return false;
   }
 
   // ── Helper: check if value is numeric ──
@@ -1699,29 +1827,30 @@ function generateDefaultTemplateHtml(
       vt === "descriptive" ||
       unitText === "n/a" || unitText === "na" || unitText === "-" ||
       unitText === "none" || unitText === "not applicable" ||
-      (!unitText && refText && !hasNumericRef && vt !== "numeric")
+      (!unitText && !!refText && !hasNumericRef && vt !== "numeric")
     );
   }
 
   // ── Helper: get flag display + color for flat table badge ──
   function getFlagBadge(flag: string): { text: string; bg: string } {
-    const f = (flag || "").toString().toLowerCase().trim();
-    if (f === "h" || f === "high" || f === "h*" || f === "hh" || f === "critical_high") {
-      return { text: f === "critical_high" || f === "h*" ? "H*" : "HIGH", bg: THEME.abnormalBg };
+    const normalized = normalizeReportFlag(flag);
+
+    if (normalized.canonical === "high" || normalized.canonical === "critical_high") {
+      return { text: normalized.label.toUpperCase(), bg: THEME.abnormalBg };
     }
-    if (f === "l" || f === "low" || f === "l*" || f === "ll" || f === "critical_low") {
-      return { text: f === "critical_low" || f === "l*" ? "L*" : "LOW", bg: "#ea580c" };
+    if (normalized.canonical === "low" || normalized.canonical === "critical_low") {
+      return { text: normalized.label.toUpperCase(), bg: "#ea580c" };
     }
-    if (f === "n" || f === "normal") {
+    if (normalized.canonical === "normal") {
       return { text: "NORMAL", bg: THEME.normalBg };
     }
-    if (f === "a" || f === "abnormal") {
+    if (normalized.canonical === "abnormal") {
       return { text: "ABNORMAL", bg: THEME.abnormalBg };
     }
-    if (f === "c" || f === "critical" || f === "c*") {
+    if (normalized.canonical === "critical") {
       return { text: "CRITICAL", bg: "#7c2d12" };
     }
-    return { text: flag || "", bg: "#6b7280" };
+    return { text: (normalized.label || flag || "").toUpperCase(), bg: "#6b7280" };
   }
 
   // ── Patient Information Section ──
@@ -1839,11 +1968,11 @@ function generateDefaultTemplateHtml(
 
         // Interpretation row (shown below the analyte row if enabled)
         if (showInterpretation) {
-          const flagLower = (analyte.flag || "").toString().toLowerCase().trim();
+          const canonicalFlag = normalizeReportFlag(analyte.flag).canonical;
           let interpretationText = "";
-          if (["h", "high", "critical_high", "h*", "hh"].includes(flagLower)) {
+          if (canonicalFlag === "high" || canonicalFlag === "critical_high") {
             interpretationText = analyte.interpretation_high || "";
-          } else if (["l", "low", "critical_low", "l*", "ll"].includes(flagLower)) {
+          } else if (canonicalFlag === "low" || canonicalFlag === "critical_low") {
             interpretationText = analyte.interpretation_low || "";
           } else {
             interpretationText = analyte.interpretation_normal || "";
@@ -1891,7 +2020,8 @@ function generateDefaultTemplateHtml(
         const flag = analyte.flag || "";
         const method = analyte.method || "";
         const badge = getFlagBadge(flag);
-        const isAbnormal = flag && !["n", "normal", ""].includes(flag.toString().toLowerCase().trim());
+        const canonicalFlag = normalizeReportFlag(flag).canonical;
+        const isAbnormal = !!canonicalFlag && canonicalFlag !== "normal";
 
         testResultsHtml += `
             <tr style="page-break-inside: avoid;">
@@ -1910,11 +2040,10 @@ function generateDefaultTemplateHtml(
 
         // Interpretation row (shown below the analyte row if enabled)
         if (showInterpretation) {
-          const flagLowerFlat = (flag || "").toString().toLowerCase().trim();
           let interpretationTextFlat = "";
-          if (["h", "high", "critical_high", "h*", "hh"].includes(flagLowerFlat)) {
+          if (canonicalFlag === "high" || canonicalFlag === "critical_high") {
             interpretationTextFlat = analyte.interpretation_high || "";
-          } else if (["l", "low", "critical_low", "l*", "ll"].includes(flagLowerFlat)) {
+          } else if (canonicalFlag === "low" || canonicalFlag === "critical_low") {
             interpretationTextFlat = analyte.interpretation_low || "";
           } else {
             interpretationTextFlat = analyte.interpretation_normal || "";
@@ -2048,7 +2177,7 @@ function buildPdfBodyDocumentV2(
   pdfSettings?: any,
   verificationUrl?: string | null,
 ): string {
-  console.log("🚀🚀🚀 VERSION 3.2 - QR AUTH SUPPORT ADDED 🚀🚀🚀");
+  console.log("🚀🚀🚀 VERSION 3.3 - PER-GROUP TEMPLATE STYLE 🚀🚀🚀");
   console.log("🏗️ buildPdfBodyDocumentV2 called with:", {
     bodyHtmlLength: bodyHtml?.length || 0,
     customCssLength: customCss?.length || 0,
@@ -4475,6 +4604,24 @@ serve(async (req) => {
         console.log("✅ No canceled tests found - including all analytes");
       }
 
+      // Deduplicate analytes by (test_group_id, analyte_id) — guards against
+      // duplicate result_values rows from multiple results records for same test group
+      {
+        const seen = new Set<string>();
+        const deduped: any[] = [];
+        for (const a of (context.analytes || [])) {
+          const key = `${a.test_group_id ?? ""}|${a.analyte_id ?? ""}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            deduped.push(a);
+          }
+        }
+        if (deduped.length < (context.analytes?.length ?? 0)) {
+          console.log(`⚠️ Removed ${(context.analytes?.length ?? 0) - deduped.length} duplicate analyte(s) from context`);
+          context.analytes = deduped;
+        }
+      }
+
       // ========================================
       // Step 3a.1: Enrich section content with image URLs (ecopy only)
       // ========================================
@@ -5342,8 +5489,9 @@ serve(async (req) => {
         effectiveGroupCount,
       });
 
-      // Fetch test group names for default template (used when no custom template exists)
+      // Fetch test group names + per-group PDF style overrides
       const testGroupNames = new Map<string, string>();
+      const testGroupStyles = new Map<string, string>(); // groupId → 'beautiful'|'classic'
       const testGroupIdsToFetch = [
         ...new Set(
           [...contextTestGroupIds, ...analytesByGroup.keys()].filter((id) =>
@@ -5369,19 +5517,20 @@ serve(async (req) => {
         }
 
         // For any groups not found in order_tests, try the test_groups table
-        const missingGroups = testGroupIdsToFetch.filter((id) =>
-          !testGroupNames.has(id)
-        );
-        if (missingGroups.length > 0) {
-          const { data: testGroupsData } = await supabaseClient
-            .from("test_groups")
-            .select("id, name")
-            .in("id", missingGroups);
+        // Also fetch default_template_style for all groups (style override per test group)
+        const { data: testGroupsData } = await supabaseClient
+          .from("test_groups")
+          .select("id, name, default_template_style")
+          .in("id", testGroupIdsToFetch);
 
-          if (testGroupsData) {
-            for (const tg of testGroupsData) {
-              if (tg.id && tg.name) {
+        if (testGroupsData) {
+          for (const tg of testGroupsData) {
+            if (tg.id) {
+              if (tg.name && !testGroupNames.has(tg.id)) {
                 testGroupNames.set(tg.id, tg.name);
+              }
+              if (tg.default_template_style) {
+                testGroupStyles.set(tg.id, tg.default_template_style);
               }
             }
           }
@@ -5444,7 +5593,11 @@ serve(async (req) => {
 
       const selectTemplate = (ctx: any) => {
         const testGroupId = ctx.testGroupIds?.[0];
-        if (!testGroupId) {
+        if (!testGroupId) return null;
+
+        // If this test group has a forced style override, skip custom template entirely
+        if (testGroupStyles.has(testGroupId)) {
+          console.log(`🎨 Test group ${testGroupId} has style override '${testGroupStyles.get(testGroupId)}' — skipping custom template`);
           return null;
         }
 
@@ -5578,7 +5731,7 @@ serve(async (req) => {
             signatoryInfo,
             fullContext?.sectionContent,
             true,
-            labSettings?.default_template_style || 'beautiful',
+            (singleGroupId && testGroupStyles.get(singleGroupId)) || labSettings?.default_template_style || 'beautiful',
             labSettings?.show_methodology ?? true,
             labSettings?.show_interpretation ?? false,
             labSettings?.report_patient_info_config,
@@ -5714,22 +5867,30 @@ serve(async (req) => {
           };
 
           // Find specific template for this group
-          let groupTemplate = templatesWithHtml.find((t: any) =>
-            t.test_group_id === testGroupId
-          );
-          if (groupTemplate?.is_interpretation_only) {
-            groupTemplate = null;
-          }
+          // But first check if this group has a forced style override
+          let groupTemplate = null;
           let useGenericTemplate = false;
 
-          if (!groupTemplate) {
+          if (testGroupStyles.has(testGroupId)) {
+            console.log(`🎨 Test group ${testGroupId} has style override '${testGroupStyles.get(testGroupId)}' — skipping custom template`);
+            useGenericTemplate = true;
+          } else {
+            groupTemplate = templatesWithHtml.find((t: { test_group_id?: string; is_interpretation_only?: boolean; [key: string]: unknown }) =>
+              t.test_group_id === testGroupId
+            ) || null;
+            if (groupTemplate?.is_interpretation_only) {
+              groupTemplate = null;
+            }
+          }
+
+          if (!groupTemplate && !useGenericTemplate) {
             console.log(
               `⚠️ No specific template for ${testGroupId}, will use generic table template`,
             );
             // Don't use selectTemplate fallback - it would use another test group's template
             // Instead, flag to use generic template for this group's analytes
             useGenericTemplate = true;
-          } else {
+          } else if (groupTemplate) {
             console.log(
               `✅ Found specific template for ${testGroupId}: ${groupTemplate.template_name}`,
             );
@@ -5785,7 +5946,7 @@ serve(async (req) => {
               signatoryInfo,
               groupFullContext?.sectionContent,
               renderedSections.length === 0,
-              labSettings?.default_template_style || 'beautiful',
+              testGroupStyles.get(testGroupId) || labSettings?.default_template_style || 'beautiful',
               labSettings?.show_methodology ?? true,
               labSettings?.show_interpretation ?? false,
               labSettings?.report_patient_info_config,
@@ -6918,6 +7079,20 @@ serve(async (req) => {
                 }
               };
 
+              // Check per-order due block (shared by patient + doctor notification)
+              let blockedByDue = false;
+              if (lab?.block_send_on_due) {
+                const { data: dueStatus } = await supabaseClient
+                  .from("order_due_status")
+                  .select("has_due")
+                  .eq("order_id", orderId)
+                  .maybeSingle();
+                if (dueStatus?.has_due) {
+                  console.log("⛔ Auto-send blocked — order has outstanding balance:", orderId);
+                  blockedByDue = true;
+                }
+              }
+
               // Send to patient - use WhatsApp template if available (same as Dashboard)
               if (
                 notifSettings.auto_send_report_to_patient &&
@@ -6974,20 +7149,6 @@ serve(async (req) => {
                   !patientMessage.includes("thank you")
                 ) {
                   patientMessage += "\n\nThank you.";
-                }
-
-                // Check per-order due block
-                let blockedByDue = false;
-                if (lab?.block_send_on_due) {
-                  const { data: dueStatus } = await supabaseClient
-                    .from("order_due_status")
-                    .select("has_due")
-                    .eq("order_id", orderId)
-                    .maybeSingle();
-                  if (dueStatus?.has_due) {
-                    console.log("⛔ Auto-send blocked — order has outstanding balance:", orderId);
-                    blockedByDue = true;
-                  }
                 }
 
                 const sent = !blockedByDue && canAttemptImmediate
