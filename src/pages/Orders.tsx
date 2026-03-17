@@ -559,22 +559,18 @@ const Orders: React.FC = () => {
       byOrder.set(r.order_id, arr);
     });
 
-    // 3) invoice aggregation (aligned with Dashboard amount logic)
-    const invoicePromises = orderIds.map(async (orderId) => {
-      const { data: invoices } = await database.invoices.getAllByOrderId(orderId);
-      if (!invoices || invoices.length === 0) {
-        return { orderId, totalInvoiced: 0 };
-      }
+    // 3) invoice aggregation — single batched query instead of one per order
+    const { data: allInvoices } = await supabase
+      .from("invoices")
+      .select("order_id, total_after_discount, total, subtotal")
+      .in("order_id", orderIds);
 
-      let totalInvoiced = 0;
-      for (const inv of invoices) {
-        totalInvoiced += Number(inv.total_after_discount || inv.total || inv.subtotal || 0);
-      }
-
-      return { orderId, totalInvoiced };
-    });
-    const invoiceData = await Promise.all(invoicePromises);
-    const invoiceMap = new Map(invoiceData.map((d) => [d.orderId, d]));
+    const invoiceMap = new Map<string, { orderId: string; totalInvoiced: number }>();
+    for (const inv of allInvoices || []) {
+      const existing = invoiceMap.get(inv.order_id) || { orderId: inv.order_id, totalInvoiced: 0 };
+      existing.totalInvoiced += Number(inv.total_after_discount || inv.total || inv.subtotal || 0);
+      invoiceMap.set(inv.order_id, existing);
+    }
 
     // 4) shape cards with new buckets
     const cards: CardOrder[] = orderRows.map((o) => {

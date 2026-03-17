@@ -11,7 +11,7 @@
 // - (ADDED) Duplicate-safe submit (reuse results row, upsert values)
 // ===========================================================
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import ReactDOM from "react-dom";
 import {
   X,
@@ -36,6 +36,8 @@ import {
   Maximize2,
   ExternalLink,
   Download,
+  Lock,
+  Unlock,
   Crop,
   Mic,
 } from "lucide-react";
@@ -83,6 +85,7 @@ interface ExtractedValue {
   value: string;
   unit: string;
   reference: string;
+  reference_locked?: boolean;
   flag?: string;
   analyte_id?: string | null;
   is_calculated?: boolean;
@@ -90,6 +93,7 @@ interface ExtractedValue {
   expected_value_flag_map?: Record<string, string>;
   verify_note?: string; // Re-run request note from verifier
   is_rerun?: boolean; // Indicates this is a re-run request
+  ai_color_observation?: string; // Color strip: observed pad color + reason for selected value
 }
 
 interface Order {
@@ -128,6 +132,7 @@ interface TestGroupResult {
   test_group_id: string;
   test_group_name: string;
   group_level_prompt?: string | null;
+  default_ai_processing_type?: string | null;
   order_test_group_id?: string | null;
   order_test_id?: string | null;
   source?: "order_test_groups" | "order_tests";
@@ -624,6 +629,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   const [selectedAnalyteForAI, setSelectedAnalyteForAI] = useState<any | null>(null);
   const [aiProcessingConfig, setAiProcessingConfig] = useState<{ type: string; prompt?: string } | null>(null);
 
+  // Modal scroll preservation
+  const modalScrollRef = useRef<HTMLDivElement>(null);
+
   // UX states
   const [savingDraft, setSavingDraft] = useState(false);
   const [submittingResults, setSubmittingResults] = useState(false);
@@ -836,6 +844,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               name,
               code,
               group_level_prompt,
+              default_ai_processing_type,
               lab_id,
               test_group_analytes(
                 analyte_id,
@@ -866,6 +875,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               name,
               code,
               group_level_prompt,
+              default_ai_processing_type,
               lab_id,
               test_group_analytes(
                 analyte_id,
@@ -923,6 +933,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           test_group_id: otg.test_groups.id,
           test_group_name: otg.test_groups.name,
           group_level_prompt: otg.test_groups.group_level_prompt || null,
+          default_ai_processing_type: otg.test_groups.default_ai_processing_type || null,
           order_test_group_id: otg.id,
           order_test_id: null,
           source: "order_test_groups" as const,
@@ -931,10 +942,19 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               ...tga.analytes,
               code: tga.analytes.code || otg.test_groups.code,
               units: tga.analytes.unit,
-              existing_result:
-                data.results
-                  ?.find((r: any) => r.order_test_group_id === otg.id)
-                  ?.result_values?.find((rv: any) => rv.analyte_id === tga.analytes.id) || null,
+              existing_result: (() => {
+                  const byOtgId = data.results?.find((r: any) => r.order_test_group_id === otg.id);
+                  const fromPrimary = byOtgId?.result_values?.find((rv: any) =>
+                    rv.analyte_id === tga.analytes.id || (!rv.analyte_id && rv.analyte_name === tga.analytes.name));
+                  if (fromPrimary) return fromPrimary;
+                  for (const r of data.results || []) {
+                    if (r.test_group_id !== otg.test_groups.id) continue;
+                    const rv = r.result_values?.find((rv: any) =>
+                      rv.analyte_id === tga.analytes.id || (!rv.analyte_id && rv.analyte_name === tga.analytes.name));
+                    if (rv) return rv;
+                  }
+                  return null;
+                })(),
             })) || [],
         })) || [];
 
@@ -945,6 +965,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             test_group_id: ot.test_groups.id,
             test_group_name: ot.test_groups.name,
             group_level_prompt: ot.test_groups.group_level_prompt || null,
+            default_ai_processing_type: ot.test_groups.default_ai_processing_type || null,
             order_test_group_id: null,
             order_test_id: ot.id,
             source: "order_tests" as const,
@@ -953,10 +974,22 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 ...tga.analytes,
                 code: tga.analytes.code || ot.test_groups.code,
                 units: tga.analytes.unit,
-                existing_result:
-                  data.results
-                    ?.find((r: any) => r.order_test_id === ot.id)
-                    ?.result_values?.find((rv: any) => rv.analyte_id === tga.analytes.id) || null,
+                existing_result: (() => {
+                    // Primary: result row explicitly linked to this order_test
+                    const byOrderTestId = data.results?.find((r: any) => r.order_test_id === ot.id);
+                    const fromPrimary = byOrderTestId?.result_values?.find((rv: any) =>
+                      rv.analyte_id === tga.analytes.id || (!rv.analyte_id && rv.analyte_name === tga.analytes.name));
+                    if (fromPrimary) return fromPrimary;
+                    // Fallback: any result row for this order/test_group that has the analyte value
+                    // (handles orphaned result rows where results.order_test_id was not set)
+                    for (const r of data.results || []) {
+                      if (r.test_group_id !== ot.test_group_id) continue;
+                      const rv = r.result_values?.find((rv: any) =>
+                        rv.analyte_id === tga.analytes.id || (!rv.analyte_id && rv.analyte_name === tga.analytes.name));
+                      if (rv) return rv;
+                    }
+                    return null;
+                  })(),
               })) || [],
           })) || [];
 
@@ -1766,10 +1799,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         const rawExtractedParams = voiceResult.extractedParameters || [];
 
         extractedParams.forEach((ep: ExtractedValue) => {
+          const epParamName = ep.parameter || (ep as any).parameterName || '';
           const rawEp = rawExtractedParams.find(
-            (r: any) => r.parameter === ep.parameter
+            (r: any) => (r.parameter || r.parameterName) === epParamName
           ) || {};
-          const epNameLower = ep.parameter.toLowerCase().trim();
+          const epNameLower = epParamName.toLowerCase().trim();
           const epAnalyteId = ep.analyte_id || rawEp.analyte_id;
 
           // Try multiple matching strategies (same as image AI)
@@ -1955,7 +1989,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       aiMark("attach", { status: "done", detail: attachmentDetail });
 
       aiMark("vision", { status: "doing" });
-      const processingType = analyteConfig?.type || aiProcessingConfig?.type || "ocr_report";
+      const processingType = analyteConfig?.type || aiProcessingConfig?.type || targetTestGroup?.default_ai_processing_type || "ocr_report";
       const customPrompt = analyteConfig?.prompt || aiProcessingConfig?.prompt;
 
       const activeTestGroupKey = targetTestGroupId || 'order';
@@ -2059,7 +2093,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       const visionPayload = {
         attachmentId: primaryAttachmentId,
         aiProcessingType: processingType,
-        analysisType: processingType === "ocr_report" ? "text" : "all",
+        analysisType: (processingType === "ocr_report" || processingType === "THERMAL_SLIP_OCR" || processingType === "INSTRUMENT_SCREEN_OCR") ? "text"
+          : (processingType === "COLOR_STRIP_MULTIPARAM" || processingType === "SINGLE_WELL_COLORIMETRIC" || processingType === "vision_color") ? "colors"
+          : "all",
         orderId: order.id,
         testGroupId: targetTestGroupId || undefined,
         analyteIds: analyteIdsForVision.length ? analyteIdsForVision : undefined,
@@ -2213,11 +2249,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               // ✅ FIX: Find the matching raw param by parameter name, not by index
               // This is needed because extractedParams is filtered (removes empty values)
               // but rawExtractedParams is unfiltered
+              const epParamName = ep.parameter || (ep as any).parameterName || '';
               const rawEp = rawExtractedParams.find(
-                (r: any) => r.parameter === ep.parameter
+                (r: any) => (r.parameter || r.parameterName) === epParamName
               ) || {};
               const matchedTo = (rawEp.matched_to || '').toLowerCase().trim();
-              const epNameLower = ep.parameter.toLowerCase().trim();
+              const epNameLower = epParamName.toLowerCase().trim();
               const epAnalyteId = ep.analyte_id || rawEp.analyte_id;
 
               // Try multiple matching strategies
@@ -2279,14 +2316,25 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               });
 
               if (idx !== -1 && !updated[idx].is_calculated) {
+                // For dropdown analytes: snap AI value to the closest matching option
+                let resolvedValue = ep.value;
+                const opts = updated[idx].expected_normal_values;
+                if (opts && opts.length > 0 && ep.value) {
+                  const aiVal = String(ep.value).trim().toLowerCase();
+                  const exact = opts.find((o: string) => o === ep.value);
+                  if (!exact) {
+                    const caseInsensitive = opts.find((o: string) => o.toLowerCase() === aiVal);
+                    resolvedValue = caseInsensitive ?? ep.value;
+                  }
+                }
                 // Recalculate flag client-side instead of trusting AI-returned flag
                 const recalculatedFlag = calculateFlag(
-                  String(ep.value),
+                  String(resolvedValue),
                   updated[idx].reference || ep.reference || ''
                 );
                 const finalFlag = recalculatedFlag || ep.flag || undefined;
-                console.log(`  ✅ Matched: ${ep.parameter} (${ep.value}) → ${updated[idx].parameter} | AI flag: ${ep.flag} → Recalculated: ${recalculatedFlag || 'Normal'}`);
-                updated[idx] = { ...updated[idx], value: ep.value, flag: finalFlag };
+                console.log(`  ✅ Matched: ${ep.parameter} (${resolvedValue}) → ${updated[idx].parameter} | AI flag: ${ep.flag} → Recalculated: ${recalculatedFlag || 'Normal'}`);
+                updated[idx] = { ...updated[idx], value: resolvedValue, flag: finalFlag, ai_color_observation: rawEp.color_observation || undefined };
                 currentMatchedCount++;
               } else if (idx === -1) {
                 const normalizedEpName = ep.parameter?.toLowerCase().trim();
@@ -2560,10 +2608,52 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     });
   };
 
+  const getDefaultReferenceRangeForValue = React.useCallback((value: Pick<ExtractedValue, "analyte_id" | "parameter">) => {
+    const analyteMatch = orderAnalytes.find((analyte: any) =>
+      (value.analyte_id && analyte.id === value.analyte_id) || analyte.name === value.parameter
+    );
+    if (analyteMatch?.reference_range) return analyteMatch.reference_range;
+
+    for (const group of testGroups) {
+      const testAnalyte = group.analytes.find((analyte) =>
+        (value.analyte_id && analyte.id === value.analyte_id) || analyte.name === value.parameter
+      );
+      if (testAnalyte?.reference_range) return testAnalyte.reference_range;
+    }
+
+    return "";
+  }, [orderAnalytes, testGroups]);
+
+  const unlockReferenceRange = React.useCallback((index: number) => {
+    setManualValues((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        return {
+          ...item,
+          reference: getDefaultReferenceRangeForValue(item),
+          reference_locked: false,
+        };
+      })
+    );
+  }, [getDefaultReferenceRangeForValue]);
+
   const handlePopoutSave = (value: string) => {
     if (!popoutInput) return;
     const { index, fieldName } = popoutInput.field;
-    handleManualValueChange(index, fieldName, value);
+    if (fieldName === "reference") {
+      setManualValues((prev) =>
+        prev.map((item, i) => {
+          if (i !== index) return item;
+          return {
+            ...item,
+            reference: value,
+            reference_locked: true,
+          };
+        })
+      );
+    } else {
+      handleManualValueChange(index, fieldName, value);
+    }
     setPopoutInput(null);
   };
 
@@ -2574,6 +2664,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       alert("Please enter at least one test result before saving draft.");
       return;
     }
+
+    const savedScrollTop = modalScrollRef.current?.scrollTop ?? 0;
 
     setSavingDraft(true);
     setSaveMessage(null);
@@ -2615,10 +2707,22 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         await onAfterSaveDraft();
       }
 
+      // Restore scroll position after state updates
+      requestAnimationFrame(() => {
+        if (modalScrollRef.current) {
+          modalScrollRef.current.scrollTop = savedScrollTop;
+        }
+      });
+
       setTimeout(() => setSaveMessage(null), 3000);
     } catch (err) {
       console.error("Error saving draft:", err);
       setSaveMessage("Failed to save draft. Please try again.");
+      requestAnimationFrame(() => {
+        if (modalScrollRef.current) {
+          modalScrollRef.current.scrollTop = savedScrollTop;
+        }
+      });
       setTimeout(() => setSaveMessage(null), 5000);
     } finally {
       setSavingDraft(false);
@@ -2628,6 +2732,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   const handleSubmitResults = async () => {
     const actionableRows = manualValues.filter((v) => !v.is_calculated);
     const validResults = actionableRows.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "");
+    const savedScrollTop = modalScrollRef.current?.scrollTop ?? 0;
 
     // If only calculated rows are pending (no manual-entry analytes), allow workflow to continue.
     if (!validResults.length && actionableRows.length > 0) {
@@ -2667,7 +2772,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             resolved?.forEach(r => {
               if (r.used_reference_range) {
                 const target = finalResults.find(v => v.parameter === r.name);
-                if (target) {
+                if (target && !target.reference_locked) {
                   target.reference = r.used_reference_range;
                   if (r.flag && ['H', 'L', 'C', 'LL', 'HH', 'H*', 'L*', 'high', 'low', 'critical_h', 'critical_l', 'critical_high', 'critical_low'].includes(r.flag)) target.flag = r.flag;
                 }
@@ -2962,19 +3067,22 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           .in("analyte_name", names);
 
         const resultValuesData = rowsToPersist.map((r) => {
-          const analyte = testGroup.analytes.find((a) => a.name === r.parameter);
+          const analyte = testGroup.analytes.find((a) => a.name === r.parameter)
+            || testGroup.analytes.find((a) => a.name?.trim().toLowerCase() === r.parameter?.trim().toLowerCase())
+            || (r.analyte_id ? testGroup.analytes.find((a) => a.id === r.analyte_id) : undefined);
           // If user explicitly set a flag (via dropdown or flag mapping), mark as manual so AI won't overwrite
           const hasUserFlag = !!r.flag;
+          const autoFlag = r.flag || calculateFlag(r.value, r.reference || '');
           return {
             result_id: resultRowId!,
-            analyte_id: analyte?.id,
+            analyte_id: analyte?.id || r.analyte_id || undefined,
             analyte_name: r.parameter,
             parameter: r.parameter,
             value: r.value && r.value.trim() !== "" ? r.value : null,
             unit: r.unit || "",
             reference_range: r.reference || "",
-            flag: r.flag || null,
-            ...(hasUserFlag && { flag_source: 'manual' }),
+            flag: autoFlag || null,
+            flag_source: hasUserFlag ? 'manual' : (autoFlag ? 'auto_numeric' : undefined),
             is_auto_calculated: !!r.is_calculated,
             order_id: order.id,
             test_group_id: testGroup.test_group_id,
@@ -3020,6 +3128,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       fetchProgressView();
 
       setSaveMessage("Successfully saved test results!");
+
+      // Restore scroll position after state updates from fetchReadonlyResults/fetchProgressView
+      requestAnimationFrame(() => {
+        if (modalScrollRef.current) {
+          modalScrollRef.current.scrollTop = savedScrollTop;
+        }
+      });
 
       // Notify parent and close modal shortly after success
       setTimeout(() => {
@@ -3283,7 +3398,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           resolved.forEach((r) => {
             if (r.used_reference_range) {
               const idx = next.findIndex((n) => n.parameter === r.name);
-              if (idx !== -1) {
+              if (idx !== -1 && !next[idx].reference_locked) {
                 next[idx] = {
                   ...next[idx],
                   reference: r.used_reference_range,
@@ -3518,6 +3633,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
                     {/* ✅ Value Input - Dropdown if expected_normal_values, else Pop-out */}
                     <td className="px-4 py-3 min-w-[140px]">
+                      {value.ai_color_observation && (
+                        <div className="mb-1 flex items-start gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                          <span className="mt-0.5 shrink-0">🎨</span>
+                          <span>{value.ai_color_observation}</span>
+                        </div>
+                      )}
                       {value.expected_normal_values && value.expected_normal_values.length > 0 ? (
                         <select
                           value={value.value || ""}
@@ -3575,15 +3696,37 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
                     {/* ✅ Pop-out Reference Input */}
                     <td className="px-4 py-3 min-w-[180px]">
-                      <button
-                        onClick={() => openPopoutInput(globalIndex, 'reference', value.reference, value.parameter)}
-                        className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${value.reference && typeof value.reference === 'string' && value.reference.trim()
-                          ? 'border-purple-300 bg-purple-50 hover:bg-purple-100 text-purple-800'
-                          : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
+                      <div className="relative">
+                        <button
+                          onClick={() => openPopoutInput(globalIndex, 'reference', value.reference, value.parameter)}
+                          className={`w-full rounded-lg border px-3 py-2 pr-16 text-left transition-colors ${
+                            value.reference_locked
+                              ? 'border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800'
+                              : value.reference && typeof value.reference === 'string' && value.reference.trim()
+                                ? 'border-purple-300 bg-purple-50 hover:bg-purple-100 text-purple-800'
+                                : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
                           }`}
-                      >
-                        {value.reference || 'Reference range...'}
-                      </button>
+                        >
+                          <span className="flex items-center gap-2">
+                            {value.reference_locked ? <Lock className="h-3.5 w-3.5 flex-shrink-0" /> : null}
+                            <span>{value.reference || 'Reference range...'}</span>
+                          </span>
+                        </button>
+                        {value.reference_locked ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              unlockReferenceRange(globalIndex);
+                            }}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-amber-700 transition-colors hover:bg-amber-200 hover:text-amber-900"
+                            title="Unlock reference range and restore default"
+                            aria-label="Unlock reference range"
+                          >
+                            <Unlock className="h-3.5 w-3.5" />
+                          </button>
+                        ) : null}
+                      </div>
                     </td>
 
                     {/* ✅ Keep Flag as Select (no pop-out needed) */}
@@ -3638,7 +3781,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
   return ReactDOM.createPortal(
     <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-2 sm:p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[92vh] sm:max-h-[90vh] overflow-y-auto">
+      <div ref={modalScrollRef} className="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[92vh] sm:max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between p-4 sm:p-6 border-b border-gray-200 sticky top-0 bg-white z-10">
           <div className="min-w-0">

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Eye, Printer, Monitor, X, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Eye, Printer, Monitor, X, Loader2, ChevronLeft, ChevronRight, Download } from 'lucide-react';
 import clsx from 'clsx';
 import { supabase } from '../../utils/supabase';
 
@@ -180,8 +180,6 @@ const BASELINE_CSS = `
 }
 
 .report-table thead th, .tbl-results thead th, .tbl-interpretation thead th {
-  background: #0b4aa2 !important;
-  color: #fff !important;
   font-weight: 600;
   padding: 10px 12px;
 }
@@ -222,6 +220,156 @@ const BASELINE_CSS = `
 }
 `;
 
+// ── Dummy value injection for preview ────────────────────────────────────────
+
+const DUMMY_PATIENT: Record<string, string> = {
+  patientName:         'Anand Priyadarshi',
+  patientId:           'LB-2026-00142',
+  patientAge:          '35Y',
+  patientGender:       'Male',
+  collectionDate:      '17-Mar-2026',
+  orderDate:           '17-Mar-2026',
+  registrationDate:    '17-Mar-2026',
+  reportDate:          '17-Mar-2026 02:07 PM',
+  sampleId:            'SMPL-2026-00142',
+  referringDoctorName: 'Dr. A. Sharma',
+  approvedAt:          '17-Mar-2026 02:07 PM',
+  reportDate:          '17-Mar-2026 02:07 PM',
+  patientPhone:        '+91 98765 43210',
+  sampleCollectedBy:   'Ravi Kumar',
+  orderId:             'ORD-2026-00142',
+  orderDate2:          '17-Mar-2026',
+  patientDob:          '15-Jun-1990',
+  patientAddress:      '123, Sample Street, City',
+  labName:             'City Diagnostics Lab',
+  signatoryName:       'Dr. Signatory Name',
+  signatoryDesignation:'MD Pathology',
+  approverName:        'Dr. Approver',
+};
+
+// Known analyte code → realistic value mapping
+const KNOWN_ANALYTE_VALUES: Record<string, { value: string; unit: string; range: string; flag: string }> = {
+  HGB:         { value: '14.5', unit: 'g/dL',   range: '13.5–17.5',    flag: '' },
+  HB:          { value: '14.5', unit: 'g/dL',   range: '13.5–17.5',    flag: '' },
+  HEMOGLOBIN:  { value: '14.5', unit: 'g/dL',   range: '13.5–17.5',    flag: '' },
+  HAEMOGLOBIN: { value: '14.5', unit: 'g/dL',   range: '13.5–17.5',    flag: '' },
+  HCT:         { value: '43.2', unit: '%',       range: '42–52',        flag: '' },
+  HAEMATOCRIT: { value: '43.2', unit: '%',       range: '42–52',        flag: '' },
+  HEMATOCRIT:  { value: '43.2', unit: '%',       range: '42–52',        flag: '' },
+  RBC:         { value: '4.80', unit: '10⁶/µL', range: '4.5–5.9',      flag: '' },
+  WBC:         { value: '7400', unit: '/cmm',    range: '4000–10500',   flag: '' },
+  TLC:         { value: '7400', unit: '/cmm',    range: '4000–10500',   flag: '' },
+  PLT:         { value: '230000', unit: '/cmm',  range: '150000–450000',flag: '' },
+  PLATELET:    { value: '230000', unit: '/cmm',  range: '150000–450000',flag: '' },
+  MCV:         { value: '87.0', unit: 'fL',      range: '78–100',       flag: '' },
+  MCH:         { value: '29.0', unit: 'pg',      range: '27–31',        flag: '' },
+  MCHC:        { value: '33.5', unit: 'g/dL',   range: '32–36',        flag: '' },
+  RDWCV:       { value: '13.2', unit: '%',       range: '11.5–14.0',    flag: '' },
+  RDW:         { value: '13.2', unit: '%',       range: '11.5–14.0',    flag: '' },
+  NEUT:        { value: '65',   unit: '%',       range: '50–80',        flag: '' },
+  NEUTROPHILS: { value: '65',   unit: '%',       range: '50–80',        flag: '' },
+  LYMPH:       { value: '28',   unit: '%',       range: '25–50',        flag: '' },
+  LYMPHOCYTES: { value: '28',   unit: '%',       range: '25–50',        flag: '' },
+  MONO:        { value: '5',    unit: '%',       range: '2–10',         flag: '' },
+  MONOCYTES:   { value: '5',    unit: '%',       range: '2–10',         flag: '' },
+  EOS:         { value: '2',    unit: '%',       range: '0.0–5.0',      flag: '' },
+  EOSINOPHILS: { value: '2',    unit: '%',       range: '0.0–5.0',      flag: '' },
+  BASO:        { value: '0',    unit: '%',       range: '0–2',          flag: '' },
+  BASOPHILS:   { value: '0',    unit: '%',       range: '0–2',          flag: '' },
+  ESR:         { value: '8',    unit: 'mm/hr',   range: '0–13',         flag: '' },
+  CRP:         { value: '0.4',  unit: 'mg/L',    range: '< 5.0',        flag: '' },
+  GLUCOSE:     { value: '92',   unit: 'mg/dL',   range: '70–100',       flag: '' },
+  UREA:        { value: '28',   unit: 'mg/dL',   range: '15–45',        flag: '' },
+  CREATININE:  { value: '0.9',  unit: 'mg/dL',   range: '0.7–1.2',      flag: '' },
+  SODIUM:      { value: '140',  unit: 'mEq/L',   range: '135–145',      flag: '' },
+  POTASSIUM:   { value: '4.2',  unit: 'mEq/L',   range: '3.5–5.0',      flag: '' },
+  TSH:         { value: '2.10', unit: 'µIU/mL',  range: '0.5–5.0',      flag: '' },
+  T3:          { value: '1.2',  unit: 'ng/mL',   range: '0.8–2.0',      flag: '' },
+  T4:          { value: '8.5',  unit: 'µg/dL',   range: '5.0–12.0',     flag: '' },
+  FT3:         { value: '3.1',  unit: 'pg/mL',   range: '2.3–4.2',      flag: '' },
+  FT4:         { value: '1.2',  unit: 'ng/dL',   range: '0.8–1.8',      flag: '' },
+  BILI:        { value: '0.8',  unit: 'mg/dL',   range: '0.2–1.2',      flag: '' },
+  SGOT:        { value: '30',   unit: 'U/L',     range: '10–40',        flag: '' },
+  AST:         { value: '30',   unit: 'U/L',     range: '10–40',        flag: '' },
+  SGPT:        { value: '28',   unit: 'U/L',     range: '7–56',         flag: '' },
+  ALT:         { value: '28',   unit: 'U/L',     range: '7–56',         flag: '' },
+  ALP:         { value: '72',   unit: 'U/L',     range: '40–130',       flag: '' },
+  URICACID:    { value: '5.4',  unit: 'mg/dL',   range: '3.5–7.2',      flag: '' },
+  UA:          { value: '5.4',  unit: 'mg/dL',   range: '3.5–7.2',      flag: '' },
+  CHOL:        { value: '180',  unit: 'mg/dL',   range: '< 200',        flag: '' },
+  CHOLESTEROL: { value: '180',  unit: 'mg/dL',   range: '< 200',        flag: '' },
+  HDL:         { value: '52',   unit: 'mg/dL',   range: '> 40',         flag: '' },
+  LDL:         { value: '110',  unit: 'mg/dL',   range: '< 130',        flag: '' },
+  TG:          { value: '130',  unit: 'mg/dL',   range: '< 150',        flag: '' },
+  TRIGLYCERIDES:{ value: '130', unit: 'mg/dL',   range: '< 150',        flag: '' },
+};
+
+// Qualitative / morphology analytes → descriptive dummy
+const QUALITATIVE_SUFFIXES = ['MORPHOLOGY', 'APPEARANCE', 'COLOUR', 'COLOR', 'REACTION', 'CAST', 'RESULT', 'RESULTS'];
+const QUALITATIVE_DUMMY = 'Normal';
+
+function injectDummyValues(html: string): string {
+  return html.replace(/\{\{([^}]+)\}\}/g, (_match, key: string) => {
+    const k = key.trim();
+
+    // 1. Known patient/order fields
+    if (DUMMY_PATIENT[k]) return DUMMY_PATIENT[k];
+
+    // 2. Custom patient fields → generic dummy
+    if (k.startsWith('custom_')) return 'N/A';
+
+    // 3. Section content blocks → collapse to empty
+    if (k.startsWith('section:')) return '';
+
+    // 4. Analyte placeholders: ANALYTE_<CODE>_<SUFFIX>
+    const analyteMatch = k.match(/^ANALYTE_(.+?)_(VALUE|UNIT|REFERENCE|REF_RANGE|RANGE|FLAG|FLAG_RAW|FLAG_CLASS|VALUE_CLASS|FLAG_TEXT|DISPLAYFLAG|METHOD|NOTE)$/);
+    if (analyteMatch) {
+      const code = analyteMatch[1];
+      const suffix = analyteMatch[2];
+      const known = KNOWN_ANALYTE_VALUES[code] || KNOWN_ANALYTE_VALUES[code.replace(/_/g, '')];
+      switch (suffix) {
+        case 'VALUE':       return known ? known.value : '12.5';
+        case 'UNIT':        return known ? known.unit  : 'units';
+        case 'REFERENCE':
+        case 'REF_RANGE':
+        case 'RANGE':       return known ? known.range : '10.0–15.0';
+        case 'FLAG':        return known ? known.flag  : '';
+        case 'FLAG_RAW':    return '';
+        case 'FLAG_CLASS':  return '';
+        case 'VALUE_CLASS': return '';
+        case 'FLAG_TEXT':   return '';
+        case 'DISPLAYFLAG': return '';
+        case 'METHOD':      return '';
+        case 'NOTE':        return '';
+      }
+    }
+
+    // 4b. Slug-style analyte placeholders: <AnalyteName>_VALUE etc. (no ANALYTE_ prefix)
+    const slugMatch = k.match(/^(.+?)_(VALUE|UNIT|REFERENCE|REF_RANGE|FLAG|FLAG_RAW|FLAG_CLASS|VALUE_CLASS|FLAG_TEXT|DISPLAYFLAG|METHOD|NOTE)$/);
+    if (slugMatch) {
+      const code = slugMatch[1].toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const suffix = slugMatch[2];
+      const known = KNOWN_ANALYTE_VALUES[code];
+      switch (suffix) {
+        case 'VALUE':       return known ? known.value : '12.5';
+        case 'UNIT':        return known ? known.unit  : 'units';
+        case 'REFERENCE':
+        case 'REF_RANGE':   return known ? known.range : '10.0–15.0';
+        case 'FLAG':        return known ? known.flag  : '';
+        default:            return '';
+      }
+    }
+
+    // 5. Any remaining ANALYTE_* with qualitative suffixes
+    if (QUALITATIVE_SUFFIXES.some(s => k.endsWith(`_${s}`))) return QUALITATIVE_DUMMY;
+
+    // 6. Fallback: leave visually clean — show the key name in muted style
+    return `<span style="color:#aaa;font-style:italic;">[${k}]</span>`;
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 const PDFPreviewModal: React.FC<PDFPreviewModalProps> = ({
   open,
   onClose,
@@ -234,6 +382,50 @@ const PDFPreviewModal: React.FC<PDFPreviewModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+
+  const handleDownload = () => {
+    const margins = settings.margins || DEFAULT_PDF_SETTINGS.margins;
+    const topSpacer = mode === 'ecopy' ? margins.top : 20;
+    const bottomSpacer = mode === 'ecopy' ? margins.bottom : 20;
+    const letterheadBg = mode === 'ecopy' && settings.letterheadUrl
+      ? `background-image: url('${settings.letterheadUrl}'); background-size: 210mm 297mm; background-repeat: no-repeat; background-position: top left;`
+      : '';
+
+    const fullHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Report Preview</title>
+  <style>
+    @page { size: A4; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; width: 210mm; }
+    body {
+      position: relative;
+      ${letterheadBg}
+    }
+    .content-wrap {
+      padding: ${topSpacer}px ${margins.right}px ${bottomSpacer}px ${margins.left}px;
+    }
+    ${BASELINE_CSS}
+    ${cssContent || ''}
+  </style>
+</head>
+<body>
+  <div class="content-wrap">
+    ${injectDummyValues(htmlContent)}
+  </div>
+  <script>window.onload = function(){ window.print(); }<\/script>
+</body>
+</html>`;
+
+    const blob = new Blob([fullHtml], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, '_blank');
+    if (win) {
+      win.onafterprint = () => URL.revokeObjectURL(url);
+    }
+  };
 
   // Fetch lab letterhead and PDF settings
   useEffect(() => {
@@ -443,17 +635,30 @@ const PDFPreviewModal: React.FC<PDFPreviewModalProps> = ({
             </button>
           </div>
 
-          <button
-            onClick={onClose}
-            className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
-          >
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleDownload}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition-colors"
+              title="Opens print dialog — choose 'Save as PDF' to download A4"
+            >
+              <Download className="h-4 w-4" />
+              Download PDF
+            </button>
+            <button
+              onClick={onClose}
+              className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         {/* Info Bar */}
         <div className="px-6 py-3 bg-blue-50 border-b border-blue-100 flex items-center justify-between">
           <div className="flex items-center gap-6 text-sm">
+            <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded font-medium text-xs">
+              Sample Data
+            </span>
             <span className="text-blue-700">
               <strong>Mode:</strong> {mode === 'ecopy' ? 'E-Copy (Digital)' : 'Print Version'}
             </span>
@@ -561,7 +766,7 @@ const PDFPreviewModal: React.FC<PDFPreviewModalProps> = ({
                             }
                           ` : ''}
                         </style>
-                        ${htmlContent}
+                        ${injectDummyValues(htmlContent)}
                       `
                     }}
                   />

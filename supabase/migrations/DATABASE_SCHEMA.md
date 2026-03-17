@@ -716,6 +716,9 @@ CREATE TABLE public.doctor_sharing (
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  dr_discount_mode text NOT NULL DEFAULT 'deduct_from_commission'::text CHECK (dr_discount_mode = ANY (ARRAY['none'::text, 'exclude_from_base'::text, 'deduct_from_commission'::text, 'split_50_50'::text])),
+  outsource_cost_mode text NOT NULL DEFAULT 'exclude_from_base'::text CHECK (outsource_cost_mode = ANY (ARRAY['none'::text, 'exclude_from_base'::text, 'deduct_from_commission'::text])),
+  package_diff_mode text NOT NULL DEFAULT 'none'::text CHECK (package_diff_mode = ANY (ARRAY['none'::text, 'exclude_from_base'::text, 'deduct_from_commission'::text])),
   CONSTRAINT doctor_sharing_pkey PRIMARY KEY (id),
   CONSTRAINT doctor_sharing_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT doctor_sharing_doctor_id_fkey FOREIGN KEY (doctor_id) REFERENCES public.doctors(id)
@@ -1149,6 +1152,7 @@ CREATE TABLE public.invoices (
   last_reminder_at timestamp with time zone,
   reminder_sent_by uuid,
   discount_source text CHECK (discount_source = ANY (ARRAY['doctor'::text, 'lab'::text, 'location'::text, 'account'::text])),
+  collection_charge numeric DEFAULT NULL::numeric,
   CONSTRAINT invoices_pkey PRIMARY KEY (id),
   CONSTRAINT invoices_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT invoices_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
@@ -1201,6 +1205,7 @@ CREATE TABLE public.lab_analytes (
   ref_range_knowledge jsonb DEFAULT '{}'::jsonb,
   lab_specific_method text,
   expected_value_flag_map jsonb DEFAULT '{}'::jsonb,
+  display_name text,
   CONSTRAINT lab_analytes_pkey PRIMARY KEY (id),
   CONSTRAINT lab_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
   CONSTRAINT lab_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
@@ -1272,6 +1277,21 @@ CREATE TABLE public.lab_outsourcing_settings (
   updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT lab_outsourcing_settings_pkey PRIMARY KEY (id),
   CONSTRAINT lab_outsourcing_settings_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
+CREATE TABLE public.lab_patient_field_configs (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  field_key text NOT NULL,
+  label text NOT NULL,
+  field_type text NOT NULL DEFAULT 'text'::text,
+  options jsonb,
+  searchable boolean NOT NULL DEFAULT false,
+  required boolean NOT NULL DEFAULT false,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  use_for_ai_ref_range boolean NOT NULL DEFAULT false,
+  CONSTRAINT lab_patient_field_configs_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_patient_field_configs_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
 CREATE TABLE public.lab_subscriptions (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1449,7 +1469,7 @@ CREATE TABLE public.labs (
   upi_id text,
   bank_details jsonb,
   method_options jsonb DEFAULT '["Manual", "Automated", "Semi-Automated", "Spectrophotometry", "Flow Cytometry", "Immunoassay", "ELISA", "Chemiluminescence", "PCR", "Microscopy", "Culture", "Electrophoresis", "Chromatography", "Mass Spectrometry"]'::jsonb,
-  default_template_style text DEFAULT 'beautiful'::text,
+  default_template_style text DEFAULT 'beautiful'::text CHECK (default_template_style = ANY (ARRAY['beautiful'::text, 'classic'::text, 'basic'::text])),
   flag_options jsonb DEFAULT '[{"label": "Normal", "value": ""}, {"label": "High", "value": "H"}, {"label": "Low", "value": "L"}, {"label": "Abnormal", "value": "A"}, {"label": "Critical", "value": "C"}]'::jsonb,
   show_methodology boolean DEFAULT true,
   show_interpretation boolean DEFAULT false,
@@ -1458,6 +1478,8 @@ CREATE TABLE public.labs (
   loyalty_conversion_rate numeric NOT NULL DEFAULT 0.1,
   loyalty_min_redeem_points integer NOT NULL DEFAULT 100,
   loyalty_point_value numeric NOT NULL DEFAULT 1.0,
+  block_send_on_due boolean NOT NULL DEFAULT false,
+  report_patient_info_config jsonb,
   CONSTRAINT labs_pkey PRIMARY KEY (id),
   CONSTRAINT labs_default_processing_location_id_fkey FOREIGN KEY (default_processing_location_id) REFERENCES public.locations(id)
 );
@@ -1721,6 +1743,7 @@ CREATE TABLE public.orders (
   send_clinical_summary_to_doctor boolean DEFAULT false,
   loyalty_points_redeemed integer DEFAULT 0,
   loyalty_discount_amount numeric DEFAULT 0,
+  collection_charge numeric DEFAULT NULL::numeric,
   CONSTRAINT orders_pkey PRIMARY KEY (id),
   CONSTRAINT orders_sample_collector_id_fkey FOREIGN KEY (sample_collector_id) REFERENCES public.users(id),
   CONSTRAINT orders_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
@@ -1888,6 +1911,8 @@ CREATE TABLE public.patients (
   merged_by uuid,
   dob date DEFAULT date_of_birth,
   age_unit text DEFAULT 'years'::text CHECK (age_unit = ANY (ARRAY['years'::text, 'months'::text, 'days'::text])),
+  custom_fields jsonb DEFAULT '{}'::jsonb,
+  custom_fields_text text DEFAULT (custom_fields)::text,
   CONSTRAINT patients_pkey PRIMARY KEY (id),
   CONSTRAINT patients_default_doctor_id_fkey FOREIGN KEY (default_doctor_id) REFERENCES public.doctors(id),
   CONSTRAINT patients_default_location_id_fkey FOREIGN KEY (default_location_id) REFERENCES public.locations(id),
@@ -2794,6 +2819,8 @@ CREATE TABLE public.test_group_analytes (
   custom_reference_range text,
   is_header boolean DEFAULT false,
   header_name text,
+  sort_order integer DEFAULT 0,
+  section_heading text,
   CONSTRAINT test_group_analytes_pkey PRIMARY KEY (id),
   CONSTRAINT test_group_analytes_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
   CONSTRAINT test_group_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
@@ -2837,6 +2864,10 @@ CREATE TABLE public.test_groups (
   ref_range_ai_config jsonb DEFAULT '{}'::jsonb,
   required_patient_inputs jsonb DEFAULT '[]'::jsonb,
   methodology text,
+  analyte_count integer NOT NULL DEFAULT 0,
+  default_template_style text CHECK (default_template_style = ANY (ARRAY['beautiful'::text, 'classic'::text, 'basic'::text])),
+  print_options jsonb,
+  collection_charge numeric DEFAULT NULL::numeric,
   CONSTRAINT test_groups_pkey PRIMARY KEY (id),
   CONSTRAINT test_groups_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT test_groups_default_outsourced_lab_id_fkey FOREIGN KEY (default_outsourced_lab_id) REFERENCES public.outsourced_labs(id)

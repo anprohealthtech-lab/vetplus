@@ -127,104 +127,6 @@ const BASELINE_CSS = `
   display: block;
 }
 
-/* Tables */
-.limsv2-report table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 0.75rem 0;
-  font-size: 0.95rem;
-  border: none;
-  background: #fff;
-}
-
-.limsv2-report table thead th {
-  background-color: #fff;
-  color: var(--report-heading-color);
-  border: none;
-  border-top: 2px solid #000;
-  border-bottom: 2px solid #000;
-}
-
-.limsv2-report table th,
-.limsv2-report table td {
-  border: none;
-  padding: 10px 12px;
-  text-align: left;
-  vertical-align: top;
-  background: #fff;
-}
-
-/* Abnormal values highlighting & Flags */
-.result-abnormal, .abnormal, .flag-abnormal,
-.result-high, .flag-high, .result-critical_high, .result-critical_h,
-.result-low, .flag-low, .result-critical_low, .result-critical_l {
-  color: #000000 !important;
-  font-weight: bold;
-}
-
-.result-normal, .normal, .flag-normal {
-  color: inherit;
-  font-weight: normal;
-}
-
-/* Report Header & Titles */
-/* Ensures headers on dark backgrounds are white */
-.report-header-title,
-.report-title,
-.header-dark h1,
-.header-dark h2,
-.header-dark h3,
-[style*="background-color: #"] h1,
-[style*="background-color: rgb"] h1 {
-  color: #ffffff !important;
-}
-
-/* Info grid for patient/order details */
-.limsv2-report .info-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 0.75rem 1.25rem;
-  margin-bottom: 1.5rem;
-}
-
-.limsv2-report .info-grid .label {
-  display: block;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--report-muted-color);
-}
-
-.limsv2-report .info-grid .value {
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--report-heading-color);
-}
-
-/* Signature section styling - no forced spacing, let templates control */
-.limsv2-report .signature-section,
-.limsv2-report [class*="signature"],
-.limsv2-report [id*="signature"] {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  text-align: right;
-}
-
-.limsv2-report .signature-section img,
-.limsv2-report [class*="signature"] img,
-.limsv2-report [id*="signature"] img {
-  max-width: 150px;
-  max-height: 50px;
-  height: auto;
-  margin-left: auto;
-  display: block;
-}
-
-/* Section helpers */
-.limsv2-report .report-section {
-  margin-bottom: 1.5rem;
-}
 
 .limsv2-report hr {
   border: 0;
@@ -449,6 +351,109 @@ figure.table {
 .section-content h4 { font-size: 14px; }
 .section-content h5 { font-size: 13px; }
 .section-content h6 { font-size: 12px; }
+`;
+
+// CSS injected only for CKEditor custom templates (not basic/beautiful default templates).
+// These rules are intentionally excluded from BASELINE_CSS to avoid cascade conflicts
+// with generated structured templates that own their own table/flag/signature styling.
+const CKEDITOR_CSS = `
+/* Tables — CKEditor template default table styling */
+.limsv2-report table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.95rem;
+  border: none;
+  background: #fff;
+}
+
+.limsv2-report table thead th {
+  background-color: #fff;
+  color: var(--report-heading-color);
+  border: none;
+  border-top: 2px solid #000;
+  border-bottom: 2px solid #000;
+}
+
+.limsv2-report table th,
+.limsv2-report table td {
+  border: none;
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+  background: #fff;
+}
+
+/* Abnormal flag classes used by CKEditor template placeholders */
+.result-abnormal, .abnormal, .flag-abnormal,
+.result-high, .flag-high, .result-critical_high, .result-critical_h,
+.result-low, .flag-low, .result-critical_low, .result-critical_l {
+  color: #000000 !important;
+  font-weight: bold;
+}
+
+.result-normal, .normal, .flag-normal {
+  color: inherit;
+  font-weight: normal;
+}
+
+/* Header title contrast — dark-background sections */
+.report-header-title,
+.report-title,
+.header-dark h1,
+.header-dark h2,
+.header-dark h3,
+[style*="background-color: #"] h1,
+[style*="background-color: rgb"] h1 {
+  color: #ffffff !important;
+}
+
+/* Info grid for patient/order details */
+.limsv2-report .info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.limsv2-report .info-grid .label {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--report-muted-color);
+}
+
+.limsv2-report .info-grid .value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--report-heading-color);
+}
+
+/* Signature section */
+.limsv2-report .signature-section,
+.limsv2-report [class*="signature"],
+.limsv2-report [id*="signature"] {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+}
+
+.limsv2-report .signature-section img,
+.limsv2-report [class*="signature"] img,
+.limsv2-report [id*="signature"] img {
+  max-width: 150px;
+  max-height: 50px;
+  height: auto;
+  margin-left: auto;
+  display: block;
+}
+
+/* Section spacing */
+.limsv2-report .report-section {
+  margin-bottom: 1.5rem;
+}
 `;
 
 // ============================================================
@@ -1377,7 +1382,7 @@ function generateDynamicCss(settings: any, printOptions?: any): string {
 
     // Base font size
     if (printOptions.baseFontSize && typeof printOptions.baseFontSize === "number") {
-      const fs = Math.min(Math.max(printOptions.baseFontSize, 8), 16);
+      const fs = Math.min(Math.max(printOptions.baseFontSize, 8), 24);
       css += `
 .limsv2-report, .report-table td, .report-table th,
 .patient-info td, .patient-info th { font-size: ${fs}px !important; }
@@ -1399,8 +1404,334 @@ function mergePrintOptions(
 ): any | null {
   const labOpts = labLayoutSettings?.printOptions || null;
   const groupOpts = testGroupPrintOptions || null;
-  if (!labOpts && !groupOpts) return null;
-  return { ...(labOpts || {}), ...(groupOpts || {}) };
+  if (!labOpts && !groupOpts && !labLayoutSettings?.resultColors) return null;
+  const merged = { ...(labOpts || {}), ...(groupOpts || {}) };
+  // Carry top-level resultColors into merged options so basic template can use them
+  if (labLayoutSettings?.resultColors) {
+    merged.resultColors = labLayoutSettings.resultColors;
+  }
+  return merged;
+}
+
+type PrintLayoutMode = "standard" | "compact";
+type PrintPlanSource = "manual" | "deterministic" | "ai" | "fallback";
+
+interface CompactPlanGroupDescriptor {
+  groupId: string;
+  groupName: string;
+  analyteCount: number;
+  reportPriority: number | null;
+  manualOrderIndex?: number | null;
+  printOrder: number;
+  createdAt?: string | null;
+  category?: string | null;
+  department?: string | null;
+  hasImages?: boolean;
+  hasLongText?: boolean;
+  estimatedHeight: number;
+}
+
+interface CompactPrintPlan {
+  layoutMode: PrintLayoutMode;
+  source: PrintPlanSource;
+  orderedGroupIds: string[];
+  clusters: Array<{ id: string; groupIds: string[]; reason?: string }>;
+  notes?: string[];
+}
+
+function normalizePrintLayoutMode(value: unknown): PrintLayoutMode {
+  return value === "compact" ? "compact" : "standard";
+}
+
+function getCompactPrintConfig(pdfLayoutSettings: any) {
+  const compactPrint = pdfLayoutSettings?.compactPrint || {};
+  const toInt = (value: unknown, fallback: number) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+
+  const bannedKeywords = Array.isArray(compactPrint?.bannedKeywords)
+    ? compactPrint.bannedKeywords.map((item: unknown) => String(item || "").toLowerCase()).filter(Boolean)
+    : ["culture", "microbiology", "histopathology", "biopsy", "cytology", "immunohistochemistry"];
+
+  return {
+    enabled: compactPrint?.enabled !== false,
+    aiEnabled: compactPrint?.aiEnabled !== false,
+    policyText: typeof compactPrint?.policyText === "string"
+      ? compactPrint.policyText.trim()
+      : "",
+    smallGroupThreshold: Math.max(1, toInt(compactPrint?.smallGroupThreshold, 6)),
+    maxClusterAnalytes: Math.max(2, toInt(compactPrint?.maxClusterAnalytes, 14)),
+    maxClusterGroups: Math.max(2, toInt(compactPrint?.maxClusterGroups, 2)),
+    compactTemplateStyle: ["beautiful", "classic", "basic"].includes(compactPrint?.templateStyle)
+      ? compactPrint.templateStyle as "beautiful" | "classic" | "basic"
+      : "basic",
+    bannedKeywords,
+  };
+}
+
+function estimateCompactGroupHeight(analytes: any[]): number {
+  const rows = analytes.length;
+  const descriptiveRows = analytes.filter((item: any) => {
+    const value = String(item?.value || "");
+    return value.length > 24 || /\s{2,}|[A-Za-z]{10,}/.test(value);
+  }).length;
+  return 96 + (rows * 26) + (descriptiveRows * 10);
+}
+
+function isCompactEligible(
+  descriptor: CompactPlanGroupDescriptor,
+  compactConfig: ReturnType<typeof getCompactPrintConfig>,
+): boolean {
+  const haystack = `${descriptor.groupName} ${descriptor.category || ""} ${descriptor.department || ""}`.toLowerCase();
+  if (descriptor.hasImages || descriptor.hasLongText) return false;
+  if (compactConfig.bannedKeywords.some((keyword: string) => haystack.includes(keyword))) return false;
+  return descriptor.analyteCount <= compactConfig.smallGroupThreshold;
+}
+
+function buildDeterministicCompactPlan(
+  descriptors: CompactPlanGroupDescriptor[],
+  layoutMode: PrintLayoutMode,
+  compactConfig: ReturnType<typeof getCompactPrintConfig>,
+): CompactPrintPlan {
+  const ordered = [...descriptors].sort((a, b) => {
+    const aManual = a.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
+    const bManual = b.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
+    if (aManual !== bManual) return aManual - bManual;
+    const aPriority = a.reportPriority ?? Number.MAX_SAFE_INTEGER;
+    const bPriority = b.reportPriority ?? Number.MAX_SAFE_INTEGER;
+    if (aPriority !== bPriority) return aPriority - bPriority;
+    if (a.printOrder !== b.printOrder) return a.printOrder - b.printOrder;
+    return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+  });
+
+  if (layoutMode !== "compact") {
+    return {
+      layoutMode: "standard",
+      source: "deterministic",
+      orderedGroupIds: ordered.map((item) => item.groupId),
+      clusters: ordered.map((item, index) => ({
+        id: `cluster_${index + 1}`,
+        groupIds: [item.groupId],
+        reason: "Standard print layout keeps each group independent.",
+      })),
+      notes: ["Standard print layout requested."],
+    };
+  }
+
+  const clusters: Array<{ id: string; groupIds: string[]; reason?: string }> = [];
+  let i = 0;
+  while (i < ordered.length) {
+    const current = ordered[i];
+    const currentEligible = isCompactEligible(current, compactConfig);
+    const next = ordered[i + 1];
+    const nextEligible = next ? isCompactEligible(next, compactConfig) : false;
+
+    if (
+      currentEligible &&
+      nextEligible &&
+      current.analyteCount + next.analyteCount <= compactConfig.maxClusterAnalytes
+    ) {
+      clusters.push({
+        id: `cluster_${clusters.length + 1}`,
+        groupIds: [current.groupId, next.groupId],
+        reason: "Adjacent small compatible groups merged by deterministic planner.",
+      });
+      i += 2;
+      continue;
+    }
+
+    clusters.push({
+      id: `cluster_${clusters.length + 1}`,
+      groupIds: [current.groupId],
+      reason: currentEligible
+        ? "Single small group retained because no safe adjacent pair fit."
+        : "Group retained alone due to size or clinical category.",
+    });
+    i += 1;
+  }
+
+  return {
+    layoutMode: "compact",
+    source: "deterministic",
+    orderedGroupIds: clusters.flatMap((cluster) => cluster.groupIds),
+    clusters,
+    notes: ["Deterministic compact print planner used."],
+  };
+}
+
+function extractGeminiResponseText(payload: any): string {
+  return payload?.candidates?.[0]?.content?.parts?.map((part: any) => part?.text || "").join("\n")
+    || payload?.candidates?.[0]?.content?.parts?.[0]?.text
+    || "";
+}
+
+function parseJsonFromModelText(text: string): any | null {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return null;
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced?.[1] || trimmed;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeCompactPlan(
+  rawPlan: any,
+  descriptors: CompactPlanGroupDescriptor[],
+  requestedLayoutMode: PrintLayoutMode,
+): CompactPrintPlan | null {
+  if (!rawPlan || requestedLayoutMode !== "compact") return null;
+
+  const descriptorIds = descriptors.map((item) => item.groupId);
+  const descriptorIdSet = new Set(descriptorIds);
+  const seen = new Set<string>();
+  const orderedGroupIds: string[] = [];
+
+  for (const rawId of rawPlan.orderedGroupIds || []) {
+    const id = String(rawId || "");
+    if (!descriptorIdSet.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    orderedGroupIds.push(id);
+  }
+
+  for (const id of descriptorIds) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      orderedGroupIds.push(id);
+    }
+  }
+
+  const clusters: Array<{ id: string; groupIds: string[]; reason?: string }> = [];
+  const clustered = new Set<string>();
+  for (const cluster of rawPlan.clusters || []) {
+    const groupIds = (cluster?.groupIds || [])
+      .map((value: unknown) => String(value || ""))
+      .filter((id: string) => descriptorIdSet.has(id) && !clustered.has(id));
+    if (!groupIds.length) continue;
+    groupIds.forEach((id: string) => clustered.add(id));
+    clusters.push({
+      id: String(cluster?.id || `cluster_${clusters.length + 1}`),
+      groupIds,
+      reason: typeof cluster?.reason === "string" ? cluster.reason : undefined,
+    });
+  }
+
+  for (const id of orderedGroupIds) {
+    if (!clustered.has(id)) {
+      clusters.push({
+        id: `cluster_${clusters.length + 1}`,
+        groupIds: [id],
+        reason: "Added during validation to preserve all groups.",
+      });
+    }
+  }
+
+  return {
+    layoutMode: "compact",
+    source: "ai",
+    orderedGroupIds,
+    clusters,
+    notes: Array.isArray(rawPlan?.notes)
+      ? rawPlan.notes.map((note: unknown) => String(note || "")).filter(Boolean)
+      : undefined,
+  };
+}
+
+async function callGeminiCompactPlanner(
+  apiKey: string,
+  policyText: string,
+  descriptors: CompactPlanGroupDescriptor[],
+): Promise<any | null> {
+  const model = "gemini-2.5-flash";
+  const prompt = [
+    "You are planning a paper-saving compact print layout for a lab report.",
+    "Return ONLY valid JSON.",
+    "Keep every test group exactly once.",
+    "Preserve clinical readability.",
+    "Prefer grouping adjacent small compatible panels.",
+    "Never merge banned or unsafe categories if present in names/categories.",
+    "",
+    "Policy text:",
+    policyText || "Compact print should save paper while preserving readability. Prefer small compatible panel combinations.",
+    "",
+    "Input groups:",
+    JSON.stringify(descriptors, null, 2),
+    "",
+    'Output schema: {"orderedGroupIds":["id1","id2"],"clusters":[{"id":"cluster_1","groupIds":["id1","id2"],"reason":"..."}],"notes":["..."]}',
+  ].join("\n");
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: "application/json",
+        },
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini compact planner failed: ${response.status} ${errorText}`);
+  }
+
+  const payload = await response.json();
+  const text = extractGeminiResponseText(payload);
+  return parseJsonFromModelText(text);
+}
+
+function reorderContextByGroupIds(context: any, orderedGroupIds: string[]): any {
+  const orderIndex = new Map<string, number>(
+    orderedGroupIds.map((id, index) => [id, index]),
+  );
+  const fallbackBase = orderedGroupIds.length + 1000;
+
+  if (Array.isArray(context?.testGroupIds)) {
+    const uniqueIds = Array.from(new Set(context.testGroupIds.map((id: unknown) => String(id || "")).filter(Boolean)));
+    context.testGroupIds = uniqueIds.sort((a, b) => {
+      const ai = orderIndex.get(a) ?? fallbackBase;
+      const bi = orderIndex.get(b) ?? fallbackBase;
+      return ai - bi || a.localeCompare(b);
+    });
+  }
+
+  if (Array.isArray(context?.analytes)) {
+    context.analytes = [...context.analytes].sort((a: any, b: any) => {
+      const aGroup = String(a?.test_group_id || a?.testGroupId || "");
+      const bGroup = String(b?.test_group_id || b?.testGroupId || "");
+      const ai = orderIndex.get(aGroup) ?? fallbackBase;
+      const bi = orderIndex.get(bGroup) ?? fallbackBase;
+      if (ai !== bi) return ai - bi;
+      const aSort = Number(a?.sort_order ?? 0);
+      const bSort = Number(b?.sort_order ?? 0);
+      return aSort - bSort || String(a?.parameter || "").localeCompare(String(b?.parameter || ""));
+    });
+  }
+
+  return context;
+}
+
+function buildOrderedAnalytesByGroup(
+  analytesByGroup: Map<string, any[]>,
+  orderedGroupIds: string[],
+): Map<string, any[]> {
+  const ordered = new Map<string, any[]>();
+  for (const groupId of orderedGroupIds) {
+    const analytes = analytesByGroup.get(groupId);
+    if (analytes) ordered.set(groupId, analytes);
+  }
+  for (const [groupId, analytes] of analytesByGroup.entries()) {
+    if (!ordered.has(groupId)) ordered.set(groupId, analytes);
+  }
+  return ordered;
 }
 
 // ── Configurable Patient Info Section Builder ──
@@ -1795,7 +2126,7 @@ function generateClassicDefaultTemplateHtml(
  * Design rules:
  *  - "TEST REPORT" title bar with 1.5px border top/bottom
  *  - Patient info as figure.table with <th> labels (15%) + <td> values (35%)
- *  - 4 columns: TEST NAME (55%) | VALUE (15%) | UNITS (10%) | Bio. Ref. Interval (20%)
+ *  - 4 columns: TEST NAME (55%) | VALUE (15%) | UNITS (15%) | Bio. Ref. Interval (15%)
  *  - Column header row: 1.5px solid border top/bottom only — no cell borders
  *  - Group name as center-title (underlined, uppercase) inside main-group-row
  *  - Section headings: sub-section-header class (uppercase, small, bold)
@@ -1816,184 +2147,357 @@ function generateBasicDefaultTemplateHtml(
   patientInfoConfig?: PatientInfoConfig | null,
   printOptions?: Record<string, unknown>,
   extraFieldConfigs?: Array<{ field_key: string; label: string }>,
+  groupId?: string,
 ): string {
   const normalizedSectionContent =
     sectionContent && typeof sectionContent === "object" ? sectionContent : {};
 
-  // Font size: honour lab-level baseFontSize if set, otherwise 11px
   const basePx = typeof printOptions?.baseFontSize === "number"
-    ? Math.max(8, Math.min(16, printOptions.baseFontSize as number))
+    ? Math.max(8, Math.min(24, printOptions.baseFontSize as number))
     : 11;
-  const smallPx = Math.max(7, basePx - 3);   // method / ref range
-  const titlePx = basePx + 2;                 // group heading
-  const sigPx   = basePx + 1;                 // signatory name
+  const smallPx = Math.max(7, basePx - 3);
+  const titlePx = basePx + 2;
+  const sigPx = basePx + 1;
+  const testNameWeight = (printOptions?.testNameBold ?? true) ? "600" : "normal";
+  const calcMarker = (printOptions?.calcMarker as string) ?? "asterisk";
+  const sectionHeaderInline = (printOptions?.sectionHeaderInline as boolean) ?? false;
+  const resultColors = printOptions?.resultColors as Record<string, string> | undefined;
+  const highColor = resultColors?.high || "#dc2626";
+  const lowColor = resultColors?.low || "#000000";
 
   const noColorCss = `
 <style>
 .basic-report-template {
   font-size: ${basePx}px;
-  line-height: 1.3;
+  line-height: 1.32;
   color: #000;
+  font-family: Arial, Helvetica, sans-serif;
 }
+
+.basic-report-template table {
+  border: none !important;
+  border-collapse: collapse !important;
+}
+
 .basic-report-template td,
 .basic-report-template th {
   color: #000 !important;
   font-weight: normal;
   background-color: #fff !important;
+  vertical-align: top !important;
 }
-/* Strip every colour flag-class BASELINE_CSS would inject */
-.basic-report-template .result-normal, .basic-report-template .flag-normal,
-.basic-report-template .value-normal, .basic-report-template .result-high,
-.basic-report-template .flag-high, .basic-report-template .value-high,
-.basic-report-template .result-low, .basic-report-template .flag-low,
-.basic-report-template .value-low, .basic-report-template .result-critical,
-.basic-report-template .flag-critical, .basic-report-template .value-critical,
-.basic-report-template .result-abnormal, .basic-report-template .flag-abnormal,
-.basic-report-template .value-abnormal, .basic-report-template .flag-trace,
+
+.basic-report-template td {
+  padding: 2px 4px !important;
+}
+
+.basic-report-template th {
+  padding: 3px 4px !important;
+}
+
+.basic-report-template .result-normal,
+.basic-report-template .flag-normal,
+.basic-report-template .value-normal,
+.basic-report-template .result-high,
+.basic-report-template .flag-high,
+.basic-report-template .value-high,
+.basic-report-template .result-low,
+.basic-report-template .flag-low,
+.basic-report-template .value-low,
+.basic-report-template .result-critical,
+.basic-report-template .flag-critical,
+.basic-report-template .value-critical,
+.basic-report-template .result-abnormal,
+.basic-report-template .flag-abnormal,
+.basic-report-template .value-abnormal,
+.basic-report-template .flag-trace,
 .basic-report-template .value-trace {
   color: #000 !important;
   font-weight: normal;
 }
-/* TEST REPORT title bar */
+
 .basic-report-template .report-main-title {
   text-align: center !important;
-  font-size: ${titlePx + 2}px !important;
+  font-size: ${titlePx + 1}px !important;
   border-top: 1.5px solid #000 !important;
   border-bottom: 1.5px solid #000 !important;
-  padding: 6px 0 !important;
-  margin: 8px 0 12px !important;
-  font-weight: bold !important;
+  padding: 5px 0 !important;
+  margin: 6px 0 10px !important;
+  font-weight: 700 !important;
   color: #000 !important;
+  line-height: 1.2 !important;
 }
-/* Prevent print CSS injecting borders on our tables */
-.basic-report-template table {
-  border: none !important;
-}
-/* Patient header table */
+
 .basic-report-template .patient-header-table {
   width: 100% !important;
   table-layout: fixed !important;
-  margin-bottom: 12px !important;
+  margin-bottom: 8px !important;
   border: none !important;
 }
+
 .basic-report-template .patient-header-table th {
   width: 15% !important;
-  font-weight: bold !important;
+  font-weight: 700 !important;
   text-align: left !important;
   color: #000 !important;
-  padding: 2px 4px !important;
+  padding: 2px 3px !important;
   white-space: nowrap !important;
   border: none !important;
 }
+
 .basic-report-template .patient-header-table td {
   width: 35% !important;
-  padding: 2px 4px !important;
+  padding: 2px 3px !important;
   border: none !important;
+  color: #111 !important;
+  word-break: break-word !important;
+  font-size: ${basePx}px !important;
 }
-/* Results table — no cell borders, only header rule */
+
+.basic-report-template .patient-header-table th {
+  font-size: ${basePx}px !important;
+}
+
 .basic-report-template .tbl-results {
   width: 100% !important;
   table-layout: fixed !important;
   border-collapse: collapse !important;
   border: none !important;
+  margin-top: 4px !important;
 }
+
 .basic-report-template .tbl-results thead th {
   border-top: 1.5px solid #000 !important;
   border-bottom: 1.5px solid #000 !important;
   border-left: none !important;
   border-right: none !important;
-  font-weight: bold !important;
+  font-weight: 700 !important;
+  color: #000 !important;
+  padding: 4px 4px !important;
+  font-size: ${Math.max(10, basePx - 0.5)}px !important;
+  vertical-align: middle !important;
+}
+
+.basic-report-template .tbl-results thead th:nth-child(1) {
+  width: 50% !important;
   text-align: left !important;
-  padding: 4px 6px !important;
 }
-.basic-report-template .tbl-results thead th:nth-child(1) { width: 55% !important; }
-.basic-report-template .tbl-results thead th:nth-child(2) { width: 15% !important; text-align: center !important; }
-.basic-report-template .tbl-results thead th:nth-child(3) { width: 10% !important; }
-.basic-report-template .tbl-results thead th:nth-child(4) { width: 20% !important; }
-.basic-report-template .tbl-results td {
+
+.basic-report-template .tbl-results thead th:nth-child(2) {
+  width: 15% !important;
+  text-align: right !important;
+}
+
+.basic-report-template .tbl-results thead th:nth-child(3) {
+  width: 10% !important;
+  text-align: left !important;
+}
+
+.basic-report-template .tbl-results thead th:nth-child(4) {
+  width: 25% !important;
+  text-align: right !important;
+}
+
+.basic-report-template .tbl-results tbody td:nth-child(1) {
+  width: 50% !important;
+  text-align: left !important;
+  color: #111 !important;
+}
+
+.basic-report-template .tbl-results tbody td:nth-child(2) {
+  width: 15% !important;
+  text-align: right !important;
+}
+
+.basic-report-template .tbl-results tbody td:nth-child(3) {
+  width: 10% !important;
+  text-align: left !important;
+  color: #444 !important;
+  white-space: nowrap !important;
+}
+
+.basic-report-template .tbl-results tbody td:nth-child(4) {
+  width: 25% !important;
+  text-align: right !important;
+  color: #666 !important;
+}
+
+.basic-report-template .tbl-results td,
+.basic-report-template .tbl-results th {
   border: none !important;
-  padding: 3px 6px !important;
+  padding: 2px 4px !important;
+  line-height: 1.28 !important;
+  font-size: ${basePx}px !important;
 }
-/* Value cell — high: red, low: black bold, abnormal: black bold */
-.basic-report-template .val {
-  text-align: center !important;
+
+.basic-report-template .tbl-results tbody tr:not(.main-group-row):not(.sub-section-header):not(.interpretation-row):not(.descriptive-row) td {
+  border-bottom: 0.5px dotted #e5e5e5 !important;
+}
+
+.basic-report-template .test-name-cell {
   vertical-align: top !important;
 }
+
+.basic-report-template .test-name {
+  font-size: ${basePx}px !important;
+  font-weight: ${testNameWeight} !important;
+  color: #111 !important;
+  line-height: 1.22 !important;
+}
+
+.basic-report-template .test-method {
+  font-size: ${smallPx}px !important;
+  color: #444 !important;
+  font-style: italic !important;
+  margin-top: 1px !important;
+  line-height: 1.2 !important;
+}
+
+.basic-report-template .val {
+  text-align: right !important;
+  vertical-align: top !important;
+  font-size: ${basePx}px !important;
+  font-weight: 600 !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
 .basic-report-template .val.high,
 .basic-report-template .val.critical_high,
-.basic-report-template .val.critical_h {
-  color: #dc2626 !important;
-  font-weight: bold !important;
+.basic-report-template .val.critical_h,
+.basic-report-template .val.H,
+.basic-report-template .val.High {
+  color: ${highColor} !important;
+  font-weight: 700 !important;
 }
+
 .basic-report-template .val.low,
 .basic-report-template .val.critical_low,
 .basic-report-template .val.critical_l,
-.basic-report-template .val.abnormal {
-  color: #000 !important;
-  font-weight: bold !important;
+.basic-report-template .val.abnormal,
+.basic-report-template .val.L,
+.basic-report-template .val.Low {
+  color: ${lowColor} !important;
+  font-weight: 700 !important;
 }
-/* Main group name row */
+
 .basic-report-template .main-group-row td {
   padding: 0 !important;
   border: none !important;
 }
+
 .basic-report-template .center-title {
   text-align: center !important;
-  font-weight: bold !important;
+  font-weight: 700 !important;
   text-decoration: underline !important;
-  font-size: ${titlePx}px !important;
-  margin: 10px 0 0 !important;
+  font-size: ${basePx + 1}px !important;
+  margin: 8px 0 0 !important;
   text-transform: uppercase !important;
+  line-height: 1.2 !important;
+  color: #000 !important;
 }
+
 .basic-report-template .center-subtitle {
   text-align: center !important;
   font-size: ${smallPx + 1}px !important;
-  margin: 2px 0 5px !important;
+  margin: 2px 0 6px !important;
   color: #444 !important;
+  font-weight: 600 !important;
 }
-/* Sub-section heading row */
+
 .basic-report-template .sub-section-header td {
-  font-weight: bold !important;
-  padding-top: 10px !important;
-  padding-bottom: 2px !important;
+  font-weight: 700 !important;
+  padding-top: ${sectionHeaderInline ? 6 : 12}px !important;
+  padding-bottom: 3px !important;
   text-transform: uppercase !important;
-  font-size: ${smallPx + 1}px !important;
-  letter-spacing: 0.3px !important;
+  font-size: ${sectionHeaderInline ? basePx - 1 : smallPx + 1}px !important;
+  letter-spacing: ${sectionHeaderInline ? 0 : 0.25}px !important;
   border: none !important;
+  color: #000 !important;
+  ${sectionHeaderInline ? `border-bottom: 0.5px solid #ccc !important; background-color: #f5f5f5 !important;` : ""}
 }
-/* Footer — flex, auth text left, signature right */
-.basic-report-template .report-footer {
-  margin-top: 30px !important;
-  border-top: 1.5px solid #000 !important;
-  padding-top: 10px !important;
-  display: flex !important;
-  justify-content: space-between !important;
-  align-items: flex-start !important;
-  page-break-inside: avoid !important;
+
+.basic-report-template .descriptive-row td {
+  border-bottom: 0.5px dotted #e5e5e5 !important;
+  color: #111 !important;
 }
-.basic-report-template .auth-text {
-  font-size: ${smallPx + 1}px !important;
-  color: #555 !important;
+
+.basic-report-template .interpretation-row td {
+  padding: 1px 6px 4px 20px !important;
+  font-size: ${smallPx}px !important;
+  color: #333 !important;
+  font-style: italic !important;
+  border-bottom: none !important;
+}
+
+.basic-report-template .calculated-note {
+  font-size: ${smallPx}px !important;
+  color: #444 !important;
+  margin: 3px 0 6px !important;
   font-style: italic !important;
 }
+
+.basic-report-template .report-sections {
+  margin-top: 14px !important;
+  border-top: 1px solid #000 !important;
+  padding-top: 6px !important;
+}
+
+.basic-report-template .report-footer {
+  margin-top: 20px !important;
+  padding-top: 8px !important;
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: flex-end !important;
+  page-break-inside: avoid !important;
+  border-top: none !important;
+}
+
+.basic-report-template .auth-text {
+  font-size: ${smallPx}px !important;
+  color: #444 !important;
+  font-style: italic !important;
+}
+
 .basic-report-template .signature-box {
   text-align: right !important;
 }
-/* Undo hide-last-column rule for tbl-results */
+
 .basic-report-template .tbl-results th:last-child,
 .basic-report-template .tbl-results td:last-child {
   display: table-cell !important;
 }
+
+@media print {
+  .basic-report-template {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .basic-report-template .tbl-results thead th {
+    border-top: 1.4px solid #000 !important;
+    border-bottom: 1.4px solid #000 !important;
+  }
+
+  .basic-report-template .tbl-results tbody tr:not(.main-group-row):not(.sub-section-header):not(.interpretation-row):not(.descriptive-row) td {
+    border-bottom: 0.4px dotted #e2e2e2 !important;
+  }
+}
 </style>`;
 
-  // Patient info — figure.table wrapper with <th> labels
+  // Scope CSS to this specific test group so per-group font sizes don't bleed into other groups.
+  // Without scoping, the last injected <style> block (which uses the same global `.basic-report-template`
+  // class name) wins the CSS cascade and overrides all previous groups' font sizes.
+  const scopedCss = groupId
+    ? noColorCss.replace(/\.basic-report-template/g, `[data-test-group-id="${groupId}"] .basic-report-template`)
+    : noColorCss;
+
   const patientInfoHtml = patientInfoConfig
     ? buildPatientInfoHtml(patientInfoConfig, '#5a7f3a', extraFieldConfigs)
     : `
     <div class="report-header-top">
       <h2 class="report-main-title">TEST REPORT</h2>
     </div>
-    <figure class="table" style="margin: 0 0 12px;">
+    <figure class="table" style="margin: 0 0 10px;">
       <table class="patient-header-table">
         <tbody>
           <tr>
@@ -2002,7 +2506,7 @@ function generateBasicDefaultTemplateHtml(
           </tr>
           <tr>
             <th>Age / Sex</th><td>: {{patientAge}} / {{patientGender}}</td>
-            <th>Reg. Date</th><td>: {{collectionDate}}</td>
+            <th>Reg. Date</th><td>: {{orderDate}}</td>
           </tr>
           <tr>
             <th>Ref. By</th><td>: {{referringDoctorName}}</td>
@@ -2018,7 +2522,13 @@ function generateBasicDefaultTemplateHtml(
     if (!analytes || analytes.length === 0) continue;
 
     const groupName = testGroupNames.get(groupId) || analytes[0]?.test_name || "Test Results";
-    const hasCalcInGroup = analytes.some((a: { is_auto_calculated?: boolean; is_calculated?: boolean }) => a.is_auto_calculated || a.is_calculated);
+    const hasCalcInGroup = analytes.some((a: { is_auto_calculated?: boolean; is_calculated?: boolean }) =>
+      a.is_auto_calculated || a.is_calculated
+    );
+
+    const specimenText = analytes[0]?.specimen
+      ? `<div class="center-subtitle">Specimen: ${analytes[0].specimen}</div>`
+      : "";
 
     testResultsHtml += `
       <figure class="table" style="margin: 0 0 14px;">
@@ -2026,7 +2536,7 @@ function generateBasicDefaultTemplateHtml(
           <thead>
             <tr>
               <th>TEST NAME</th>
-              <th style="text-align:center;">VALUE</th>
+              <th>VALUE</th>
               <th>UNITS</th>
               <th>Bio. Ref. Interval</th>
             </tr>
@@ -2035,6 +2545,7 @@ function generateBasicDefaultTemplateHtml(
             <tr class="main-group-row">
               <td colspan="4">
                 <div class="center-title">${groupName}</div>
+                ${specimenText}
               </td>
             </tr>
     `;
@@ -2048,18 +2559,26 @@ function generateBasicDefaultTemplateHtml(
             </tr>
         `;
       }
+
       for (const analyte of block.analytes) {
         const parameterName = analyte.parameter || analyte.name || analyte.test_name || "";
-        const value        = analyte.value ?? "";
-        const unit         = analyte.unit || "";
-        const refRange     = analyte.reference_range || "";
-        const flag         = analyte.flag || "";
-        const normalizedFlag  = normalizeReportFlag(flag);
-        const canonicalFlag   = normalizedFlag.canonical;
-        const isCalculated    = analyte.is_auto_calculated || analyte.is_calculated;
+        const value = analyte.value ?? "";
+        const unit = analyte.unit || "";
+        const refRange = analyte.reference_range || "";
+        const flag = analyte.flag || "";
+        const normalizedFlag = normalizeReportFlag(flag);
+        const canonicalFlag = normalizedFlag.canonical;
+        const isCalculated = analyte.is_auto_calculated || analyte.is_calculated;
+        const calcSuffix = isCalculated
+          ? calcMarker === "asterisk"
+            ? `<sup style="font-size:${smallPx - 1}px; color:#444; margin-left:1px;">*</sup>`
+            : calcMarker === "cal"
+            ? `<span style="font-size:${smallPx - 1}px; color:#888; margin-left:2px; font-style:italic;">*cal</span>`
+            : ""
+          : "";
 
-        const unitText      = String(unit || "").trim().toLowerCase();
-        const refText       = String(refRange || "").trim();
+        const unitText = String(unit || "").trim().toLowerCase();
+        const refText = String(refRange || "").trim();
         const hasNumericRef = /\d/.test(refText);
         const isDescriptive =
           unitText === "n/a" || unitText === "na" || unitText === "-" ||
@@ -2067,36 +2586,42 @@ function generateBasicDefaultTemplateHtml(
           (!unitText && refText && !hasNumericRef);
 
         const isNumericHigh = canonicalFlag === "high" || canonicalFlag === "critical_high";
-        const isNumericLow  = canonicalFlag === "low"  || canonicalFlag === "critical_low";
+        const isNumericLow = canonicalFlag === "low" || canonicalFlag === "critical_low";
 
         const asteriskSuffix = (printOptions?.flagAsterisk && (isNumericHigh || isNumericLow))
-          ? (printOptions?.flagAsteriskCritical && (canonicalFlag === 'critical_high' || canonicalFlag === 'critical_low') ? '**' : '*')
-          : '';
+          ? (printOptions?.flagAsteriskCritical &&
+              (canonicalFlag === "critical_high" || canonicalFlag === "critical_low")
+              ? "***"
+              : "**")
+          : "";
         const displayValue = value + asteriskSuffix;
 
         if (isDescriptive) {
           testResultsHtml += `
-              <tr>
-                <td colspan="4" style="padding: 3px 6px; font-size: ${basePx}px;">
-                  <strong>${parameterName}:</strong> ${value || refText || ""}
+              <tr class="descriptive-row">
+                <td colspan="4" style="font-size: ${basePx}px;">
+                  <span style="font-weight:600;">${parameterName}</span>: ${value || refText || ""}
                 </td>
               </tr>
           `;
           continue;
         }
 
-        // val class drives colour: high → red, low/abnormal → black bold
         const valClass = canonicalFlag ? `val ${canonicalFlag}` : "val";
 
         testResultsHtml += `
               <tr>
-                <td style="padding: 3px 6px; vertical-align: top;">
-                  <strong style="font-size: ${basePx}px;">${parameterName}</strong>${isCalculated ? `<sup style="font-size:${smallPx - 1}px; color:#444; margin-left:1px;">*</sup>` : ''}
-                  ${showMethodology && analyte.method ? `<div style="font-size: ${smallPx}px; color: #444; font-style: italic; margin-top: 1px;">${analyte.method}</div>` : ""}
+                <td class="test-name-cell">
+                  <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">
+                    ${parameterName}${calcSuffix}
+                  </div>
+                  ${showMethodology && analyte.method
+                    ? `<div class="test-method">${analyte.method}</div>`
+                    : ""}
                 </td>
-                <td class="${valClass}" style="font-size: ${basePx}px;">${displayValue}</td>
-                <td style="text-align: center; vertical-align: top; font-size: ${basePx}px;">${unit}</td>
-                <td style="vertical-align: top; font-size: ${smallPx + 1}px;">${refRange}</td>
+                <td class="${valClass}">${displayValue}</td>
+                <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
+                <td style="text-align:right; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
               </tr>
         `;
 
@@ -2105,39 +2630,41 @@ function generateBasicDefaultTemplateHtml(
           if (isNumericHigh) interp = analyte.interpretation_high || "";
           else if (isNumericLow) interp = analyte.interpretation_low || "";
           else interp = analyte.interpretation_normal || "";
+
           if (interp) {
             testResultsHtml += `
-              <tr>
-                <td colspan="4" style="padding: 1px 6px 4px 20px; font-size: ${smallPx}px; color: #333; font-style: italic;">${interp}</td>
+              <tr class="interpretation-row">
+                <td colspan="4">${interp}</td>
               </tr>
             `;
           }
         }
-      } // end for analyte
-    } // end for block
+      }
+    }
 
     testResultsHtml += `
           </tbody>
         </table>
-        ${hasCalcInGroup ? `<p style="font-size:${smallPx}px;color:#444;margin:2px 0 6px;font-style:italic;">* Calculated parameter</p>` : ''}
+        ${hasCalcInGroup ? `<p class="calculated-note">* Calculated parameter &nbsp;|&nbsp; ** Abnormal value &nbsp;|&nbsp; *** Critical value</p>` : ""}
       </figure>
     `;
   }
 
   testResultsHtml += "</div>";
 
-  // Footer — flex: auth text left, signatory right
-  const sigName        = signatoryInfo?.signatoryName || "";
+  const sigName = signatoryInfo?.signatoryName || "";
   const sigDesignation = signatoryInfo?.signatoryDesignation || "";
-  const sigImageUrl    = signatoryInfo?.signatoryImageUrl || "";
+  const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
 
   const signatoryHtml = `
     <div class="report-footer">
       <div class="auth-text">Authenticated Electronic Report</div>
       <div class="signature-box">
-        ${sigImageUrl ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 45px; max-width: 130px; margin-bottom: 4px; display: block; margin-left: auto;" />` : ""}
-        ${sigName        ? `<div style="font-weight: bold; font-size: ${sigPx}px;">${sigName}</div>` : ""}
-        ${sigDesignation ? `<div style="font-size: ${basePx - 1}px; margin-top: 2px;">${sigDesignation}</div>` : ""}
+        ${sigImageUrl
+          ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 45px; max-width: 130px; margin-bottom: 4px; display: block; margin-left: auto;" />`
+          : ""}
+        ${sigName ? `<div style="font-weight:700; font-size:${sigPx}px;">${sigName}</div>` : ""}
+        ${sigDesignation ? `<div style="font-size:${basePx - 1}px; margin-top:2px;">${sigDesignation}</div>` : ""}
       </div>
     </div>
   `;
@@ -2162,7 +2689,7 @@ function generateBasicDefaultTemplateHtml(
         if (!formatted) return "";
         return `
           <div style="margin-top: 10px; font-size: ${basePx}px;">
-            <div style="font-weight: bold; margin-bottom: 3px;">${buildSectionLabel(key)}</div>
+            <div style="font-weight:700; margin-bottom:3px;">${buildSectionLabel(key)}</div>
             ${formatted}
           </div>
         `;
@@ -2172,7 +2699,7 @@ function generateBasicDefaultTemplateHtml(
 
     if (sectionItems) {
       reportSectionsHtml = `
-        <div class="report-sections" style="margin-top: 14px; border-top: 1px solid #000; padding-top: 6px;">
+        <div class="report-sections">
           ${sectionItems}
         </div>
       `;
@@ -2180,7 +2707,7 @@ function generateBasicDefaultTemplateHtml(
   }
 
   return `
-    ${noColorCss}
+    ${scopedCss}
     <div class="basic-report-template" style="font-family: Arial, Helvetica, sans-serif; font-size: ${basePx}px; color: #000;">
       ${patientInfoHtml}
       ${testResultsHtml}
@@ -2211,6 +2738,7 @@ function generateDefaultTemplateHtml(
   patientInfoConfig?: PatientInfoConfig | null,
   printOptions?: Record<string, unknown>,
   extraFieldConfigs?: Array<{ field_key: string; label: string }>,
+  groupId?: string,
 ): string {
   // Branch to classic template if requested
   if (templateStyle === 'classic') {
@@ -2227,6 +2755,7 @@ function generateDefaultTemplateHtml(
       context, testGroupNames, analytesByGroup, signatoryInfo,
       sectionContent, includeSections, showMethodology, showInterpretation,
       patientInfoConfig, printOptions, extraFieldConfigs,
+      groupId,
     );
   }
 
@@ -2979,6 +3508,7 @@ function buildPdfBodyDocumentV2(
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;700&family=Noto+Sans+Bengali:wght@400;700&family=Noto+Sans+Devanagari:wght@400;700&family=Noto+Sans+Gujarati:wght@400;700&family=Noto+Sans+Gurmukhi:wght@400;700&family=Noto+Sans+Kannada:wght@400;700&family=Noto+Sans+Malayalam:wght@400;700&family=Noto+Sans+Oriya:wght@400;700&family=Noto+Sans+Tamil:wght@400;700&family=Noto+Sans+Telugu:wght@400;700&display=swap" rel="stylesheet">
 <style id="lims-report-baseline">${BASELINE_CSS}</style>
+${(!bodyHtml.includes('basic-report-template') && !bodyHtml.includes('report-table')) ? `<style id="lims-report-ckeditor">${CKEDITOR_CSS}</style>` : ''}
 ${
     normalizedCss
       ? `<style id="lims-report-custom">${normalizedCss}</style>`
@@ -4724,6 +5254,16 @@ serve(async (req) => {
       const isManualDesign = requestBody.isManualDesign;
       const isWebhook = !!requestBody.record;
       const triggeredByUserId = requestBody.triggeredByUserId; // User ID who triggered this request (for WhatsApp integration)
+      const { data: orderSettingsRow } = orderId
+        ? await supabaseClient
+          .from("orders")
+          .select("report_settings")
+          .eq("id", orderId)
+          .maybeSingle()
+        : { data: null };
+      const orderReportSettings = (orderSettingsRow as any)?.report_settings || {};
+      const requestedPrintLayoutMode = requestBody.printLayoutMode ?? orderReportSettings?.printLayoutMode;
+      const printLayoutMode = normalizePrintLayoutMode(requestedPrintLayoutMode);
 
       console.log(
         "═══════════════════════════════════════════════════════════",
@@ -4734,6 +5274,7 @@ serve(async (req) => {
       );
       console.log("Order ID:", orderId);
       console.log("Is Draft:", !!isDraft);
+      console.log("Print Layout Mode:", printLayoutMode);
       console.log("Is Manual Design:", !!isManualDesign);
       console.log("Is Webhook Trigger:", isWebhook);
       console.log("Triggered By User ID:", triggeredByUserId || "N/A");
@@ -6067,7 +6608,7 @@ serve(async (req) => {
       let mergedPrintOptions: Record<string, unknown> | null = null; // Lifted to outer scope for print version
 
       // Group analytes by test_group_id
-      const contextTestGroupIds = context.testGroupIds || [];
+      let contextTestGroupIds = context.testGroupIds || [];
       const analytesByGroup = groupAnalytesByTestGroup(
         context.analytes || [],
         contextTestGroupIds,
@@ -6138,6 +6679,163 @@ serve(async (req) => {
           "📋 Test group names fetched:",
           Object.fromEntries(testGroupNames),
         );
+      }
+
+      const compactPrintConfig = getCompactPrintConfig(pdfSettings);
+      let compactPrintPlan: CompactPrintPlan | null = null;
+      let orderedGroupIdsForPrint = [...contextTestGroupIds];
+      let orderedAnalytesByGroupForPrint = analytesByGroup;
+
+      if (testGroupIdsToFetch.length > 0) {
+        const descriptorById = new Map<string, CompactPlanGroupDescriptor>();
+        const manualGroupOrder = Array.isArray(orderReportSettings?.groupOrder)
+          ? orderReportSettings.groupOrder.map((value: unknown) => String(value || "")).filter(Boolean)
+          : [];
+        const manualOrderEnabled = orderReportSettings?.groupOrderOverrideEnabled === true && manualGroupOrder.length > 0;
+        const manualOrderIndexMap = new Map(manualGroupOrder.map((id: string, index: number) => [id, index]));
+
+        const { data: orderTestGroupRows } = await supabaseClient
+          .from("order_test_groups")
+          .select("test_group_id, test_name, print_order, created_at, test_groups(category, department, report_priority)")
+          .eq("order_id", orderId)
+          .in("test_group_id", testGroupIdsToFetch);
+
+        for (const row of orderTestGroupRows || []) {
+          if (!row.test_group_id || descriptorById.has(row.test_group_id)) continue;
+          const analytes = analytesByGroup.get(row.test_group_id) || [];
+          descriptorById.set(row.test_group_id, {
+            groupId: row.test_group_id,
+            groupName: row.test_name || testGroupNames.get(row.test_group_id) || "Test Results",
+            analyteCount: analytes.length,
+            reportPriority: Number.isFinite(Number((row.test_groups as any)?.report_priority))
+              ? Number((row.test_groups as any)?.report_priority)
+              : null,
+            manualOrderIndex: manualOrderEnabled && manualOrderIndexMap.has(row.test_group_id)
+              ? manualOrderIndexMap.get(row.test_group_id)!
+              : null,
+            printOrder: Number(row.print_order ?? 0),
+            createdAt: row.created_at || null,
+            category: (row.test_groups as any)?.category || null,
+            department: (row.test_groups as any)?.department || null,
+            estimatedHeight: estimateCompactGroupHeight(analytes),
+            hasImages: false,
+            hasLongText: analytes.some((item: any) => String(item?.value || "").length > 48),
+          });
+        }
+
+        const { data: orderTestRows } = await supabaseClient
+          .from("order_tests")
+          .select("test_group_id, test_name, print_order, created_at, test_groups(category, department, report_priority)")
+          .eq("order_id", orderId)
+          .in("test_group_id", testGroupIdsToFetch)
+          .neq("is_canceled", true);
+
+        for (const row of orderTestRows || []) {
+          if (!row.test_group_id || descriptorById.has(row.test_group_id)) continue;
+          const analytes = analytesByGroup.get(row.test_group_id) || [];
+          descriptorById.set(row.test_group_id, {
+            groupId: row.test_group_id,
+            groupName: row.test_name || testGroupNames.get(row.test_group_id) || "Test Results",
+            analyteCount: analytes.length,
+            reportPriority: Number.isFinite(Number((row.test_groups as any)?.report_priority))
+              ? Number((row.test_groups as any)?.report_priority)
+              : null,
+            manualOrderIndex: manualOrderEnabled && manualOrderIndexMap.has(row.test_group_id)
+              ? manualOrderIndexMap.get(row.test_group_id)!
+              : null,
+            printOrder: Number(row.print_order ?? 0),
+            createdAt: row.created_at || null,
+            category: (row.test_groups as any)?.category || null,
+            department: (row.test_groups as any)?.department || null,
+            estimatedHeight: estimateCompactGroupHeight(analytes),
+            hasImages: false,
+            hasLongText: analytes.some((item: any) => String(item?.value || "").length > 48),
+          });
+        }
+
+        for (const groupId of testGroupIdsToFetch) {
+          if (descriptorById.has(groupId)) continue;
+          const analytes = analytesByGroup.get(groupId) || [];
+          descriptorById.set(groupId, {
+            groupId,
+            groupName: testGroupNames.get(groupId) || "Test Results",
+            analyteCount: analytes.length,
+            reportPriority: null,
+            manualOrderIndex: manualOrderEnabled && manualOrderIndexMap.has(groupId)
+              ? manualOrderIndexMap.get(groupId)!
+              : null,
+            printOrder: 999,
+            createdAt: null,
+            estimatedHeight: estimateCompactGroupHeight(analytes),
+            hasImages: false,
+            hasLongText: analytes.some((item: any) => String(item?.value || "").length > 48),
+          });
+        }
+
+        const descriptors = [...descriptorById.values()].sort((a, b) => {
+          const aManual = a.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
+          const bManual = b.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
+          if (aManual !== bManual) return aManual - bManual;
+          const aPriority = a.reportPriority ?? Number.MAX_SAFE_INTEGER;
+          const bPriority = b.reportPriority ?? Number.MAX_SAFE_INTEGER;
+          if (aPriority !== bPriority) return aPriority - bPriority;
+          if (a.printOrder !== b.printOrder) return a.printOrder - b.printOrder;
+          return a.groupName.localeCompare(b.groupName);
+        });
+
+        const requestedCompactMode = printLayoutMode === "compact" && compactPrintConfig.enabled
+          ? "compact"
+          : "standard";
+
+        compactPrintPlan = buildDeterministicCompactPlan(
+          descriptors,
+          requestedCompactMode,
+          compactPrintConfig,
+        );
+
+        const geminiApiKey = Deno.env.get("ALLGOOGLE_KEY") || Deno.env.get("GEMINI_API_KEY") || "";
+        if (
+          requestedCompactMode === "compact" &&
+          compactPrintConfig.aiEnabled &&
+          geminiApiKey &&
+          descriptors.length > 1
+        ) {
+          try {
+            const aiRawPlan = await callGeminiCompactPlanner(
+              geminiApiKey,
+              compactPrintConfig.policyText,
+              descriptors,
+            );
+            const aiPlan = sanitizeCompactPlan(aiRawPlan, descriptors, requestedCompactMode);
+            if (aiPlan) {
+              compactPrintPlan = aiPlan;
+            }
+          } catch (compactAiError) {
+            console.warn("Compact print AI planner failed, using deterministic fallback:", compactAiError);
+            compactPrintPlan = compactPrintPlan
+              ? {
+                ...compactPrintPlan,
+                source: "fallback",
+                notes: [...(compactPrintPlan.notes || []), "AI planning failed, deterministic fallback used."],
+              }
+              : null;
+          }
+        }
+
+        orderedGroupIdsForPrint = compactPrintPlan?.orderedGroupIds?.length
+          ? compactPrintPlan.orderedGroupIds
+          : descriptors.map((item) => item.groupId);
+        reorderContextByGroupIds(context, orderedGroupIdsForPrint);
+        contextTestGroupIds = context.testGroupIds || orderedGroupIdsForPrint;
+        orderedAnalytesByGroupForPrint = buildOrderedAnalytesByGroup(analytesByGroup, orderedGroupIdsForPrint);
+
+        console.log("ðŸ“ Compact print planning:", {
+          requestedMode: printLayoutMode,
+          resolvedMode: compactPrintPlan?.layoutMode || "standard",
+          source: compactPrintPlan?.source || "deterministic",
+          orderedGroupIds: orderedGroupIdsForPrint,
+          clusters: compactPrintPlan?.clusters || [],
+        });
       }
 
       // Helper: Select appropriate template
@@ -6253,6 +6951,13 @@ serve(async (req) => {
           sampleCollectedBy: baseContext.order?.sampleCollectedBy || "",
           referringDoctorName: baseContext.order?.referringDoctorName || "",
           approvedAt: baseContext.order?.approvedAtFormatted ||
+            baseContext.order?.approved_at || baseContext.meta?.approvedAt ||
+            "",
+
+          // Friendly aliases used by CKE templates
+          registrationDate: baseContext.order?.orderDate ||
+            baseContext.meta?.orderDate || "",
+          reportDate: baseContext.order?.approvedAtFormatted ||
             baseContext.order?.approved_at || baseContext.meta?.approvedAt ||
             "",
 
@@ -6459,6 +7164,9 @@ serve(async (req) => {
         let firstGroupTemplate = null;
         const multiInterpretationCssChunks: string[] = [];
 
+        // Lift lab-level print options for print version (no single group to merge with)
+        mergedPrintOptions = mergePrintOptions(pdfSettings, undefined);
+
         // Set base context for print version (even if not perfect for all groups)
         fullContext = prepareFullContext(context);
 
@@ -6585,8 +7293,9 @@ serve(async (req) => {
               labSettings?.show_methodology ?? true,
               labSettings?.show_interpretation ?? false,
               labSettings?.report_patient_info_config,
-              undefined,
+              mergePrintOptions(pdfSettings, testGroupPrintOptions.get(testGroupId)) ?? undefined,
               customPatientFieldConfigs ?? [],
+              testGroupId,
             );
             renderedHtml = renderTemplate(renderedHtml, groupFullContext);
 
@@ -6843,8 +7552,75 @@ serve(async (req) => {
 
       if (generatePrintVersion) {
         let printHtml = "";
+        let effectivePrintOptionsForCss: Record<string, unknown> | null =
+          mergedPrintOptions;
+        const useCompactPrint =
+          printLayoutMode === "compact" &&
+          compactPrintPlan?.layoutMode === "compact";
 
-        if (rawHtmlForPrint) {
+        if (useCompactPrint) {
+          const printSectionContent = (fullContext as any)
+            ?.sectionContentNoImages || (fullContext as any)?.sectionContent || {};
+          const compactPrintContext = {
+            ...fullContext,
+            ...context,
+            ...printSectionContent,
+            testGroupIds: orderedGroupIdsForPrint,
+            sectionContent: printSectionContent,
+            placeholderValues: {
+              ...(fullContext?.placeholderValues || {}),
+              ...printSectionContent,
+            },
+            isForPrint: true,
+            hideWatermark: true,
+            watermarkText: "",
+            showWatermark: false,
+          };
+          const compactPrintOptions = {
+            ...(mergedPrintOptions || {}),
+            baseFontSize: Math.min(
+              Number((mergedPrintOptions as any)?.baseFontSize || 11),
+              11,
+            ),
+            alternateRows: false,
+          };
+          effectivePrintOptionsForCss = compactPrintOptions;
+
+          let compactRenderedHtml = generateDefaultTemplateHtml(
+            compactPrintContext,
+            testGroupNames,
+            orderedAnalytesByGroupForPrint,
+            signatoryInfo,
+            printSectionContent,
+            true,
+            compactPrintConfig.compactTemplateStyle,
+            labSettings?.show_methodology ?? true,
+            false,
+            labSettings?.report_patient_info_config,
+            compactPrintOptions,
+            customPatientFieldConfigs ?? [],
+          );
+          compactRenderedHtml = renderTemplate(
+            compactRenderedHtml,
+            compactPrintContext,
+          );
+          compactRenderedHtml = injectQrCode(
+            compactRenderedHtml,
+            printVerifyUrl,
+          );
+          compactRenderedHtml = addFlagClassesToHtml(compactRenderedHtml);
+
+          printHtml = buildPdfBodyDocumentV2(
+            compactRenderedHtml,
+            "",
+            null,
+            pdfSettings,
+            printVerifyUrl,
+          );
+          console.log(
+            "✅ Built compact print HTML from validated compact plan",
+          );
+        } else if (rawHtmlForPrint) {
           // rawHtmlForPrint contains the full E-Copy HTML with letterhead styles and spacers
           // For print version, we need to extract just the CONTENT and rebuild with null letterhead
 
@@ -7026,8 +7802,8 @@ serve(async (req) => {
         );
         {
           const gjsCssPart = template?.gjs_css || "";
-          const printOptionsCss = (mergedPrintOptions && Object.keys(mergedPrintOptions).length > 0)
-            ? generateDynamicCss(pdfSettings, mergedPrintOptions)
+          const printOptionsCss = (effectivePrintOptionsForCss && Object.keys(effectivePrintOptionsForCss).length > 0)
+            ? generateDynamicCss(pdfSettings, effectivePrintOptionsForCss)
             : generateDynamicCss(pdfSettings);
           const combinedCss = [gjsCssPart, printOptionsCss].filter(Boolean).join("\n");
           if (combinedCss) {
@@ -7039,7 +7815,7 @@ serve(async (req) => {
         }
 
         // Inject report extras - INSIDE </main> not </body> for proper layout
-        const printExtrasHtml = generateReportExtrasHtml(reportExtras);
+        const printExtrasHtml = useCompactPrint ? "" : generateReportExtrasHtml(reportExtras);
         if (printExtrasHtml) {
           printHtml = printHtml.replace("</main>", `${printExtrasHtml}</main>`);
         }
@@ -7372,6 +8148,9 @@ serve(async (req) => {
           status: "completed",
           report_status: "completed",
           report_type: "final",
+          print_layout_mode: printLayoutMode,
+          print_plan_json: compactPrintPlan,
+          print_plan_source: compactPrintPlan?.source || null,
           updated_at: now,
           ...(printStorageUrl && {
             print_pdf_url: printStorageUrl,

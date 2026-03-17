@@ -506,7 +506,17 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     gender: string;
     phone: string;
     email: string;
-  }>({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '' });
+    dob: string;
+  }>({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', dob: '' });
+
+  const calcAgeFromDob = (dob: string): { age: string; age_unit: 'years' | 'months' | 'days' } => {
+    const birth = new Date(dob);
+    const today = new Date();
+    const diffDays = Math.floor((today.getTime() - birth.getTime()) / 86400000);
+    if (diffDays < 30) return { age: String(diffDays), age_unit: 'days' };
+    if (diffDays < 365) return { age: String(Math.floor(diffDays / 30.44)), age_unit: 'months' };
+    return { age: String(Math.floor(diffDays / 365.25)), age_unit: 'years' };
+  };
 
   // Pre-fill from Booking Data
   useEffect(() => {
@@ -2955,6 +2965,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     gender: newPatient.gender,
                     phone: newPatient.phone.trim(),
                     email: newPatient.email?.trim() || null,
+                    date_of_birth: newPatient.dob || null,
                     custom_fields: Object.keys(newPatientCustomFields).length > 0 ? newPatientCustomFields : null,
                     // sensible defaults
                     address: '',
@@ -2984,7 +2995,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     setPatients((prev) => [...prev, data]);
                     setSelectedPatient(data);
                     setShowNewPatientModal(false);
-                    setNewPatient({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '' });
+                    setNewPatient({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', dob: '' });
                     setNewPatientCustomFields({});
                   }
                 } catch (err) {
@@ -3008,7 +3019,27 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Age *</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Date of Birth</label>
+                  <input
+                    type="date"
+                    max={new Date().toISOString().split('T')[0]}
+                    value={newPatient.dob}
+                    onChange={(e) => {
+                      const dob = e.target.value;
+                      if (dob) {
+                        const calc = calcAgeFromDob(dob);
+                        setNewPatient((p) => ({ ...p, dob, age: calc.age, age_unit: calc.age_unit }));
+                      } else {
+                        setNewPatient((p) => ({ ...p, dob: '' }));
+                      }
+                    }}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Age *{newPatient.dob && <span className="ml-1 text-xs text-blue-500 font-normal">(auto-calculated)</span>}
+                  </label>
                   <div className="flex gap-2">
                     <input
                       type="number"

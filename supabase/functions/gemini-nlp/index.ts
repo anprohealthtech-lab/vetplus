@@ -95,8 +95,15 @@ Deno.serve(async (req) => {
       geminiResponse = await callGemini(prompt, geminiApiKey, originalBase64Image);
     } else if (aiPromptOverride && aiPromptOverride.trim().length > 0) {
       console.log('Using custom AI prompt override');
-      // Enforce JSON-only response for custom prompts with analyte name guidance
-      const enforcedPrompt = enforceJsonResponse(aiPromptOverride, extractionTargets);
+      let basePromptText = aiPromptOverride;
+      // If Google Vision color data is available (color strip analysis), prepend it as additional context
+      const colorData = visionResults?.colors;
+      if (Array.isArray(colorData) && colorData.length > 0) {
+        console.log(`Prepending ${colorData.length} dominant colors from Google Vision to prompt`);
+        const colorContext = `[Google Vision Dominant Colors Detected in Image]\n${JSON.stringify(colorData.slice(0, 10), null, 2)}\nUse these dominant color observations together with the manufacturer color chart below to guide your pad-by-pad reading.\n\n`;
+        basePromptText = colorContext + basePromptText;
+      }
+      const enforcedPrompt = enforceJsonResponse(basePromptText, extractionTargets);
       prompt = applyAnalyteFocus(enforcedPrompt, focusAnalyteNames, extractionTargets);
       geminiResponse = await callGemini(prompt, geminiApiKey, originalBase64Image);
     } else if (aiProcessingType) {
@@ -126,19 +133,51 @@ Deno.serve(async (req) => {
           extractionTargets,
         );
         geminiResponse = await callGemini(prompt, geminiApiKey, base64Image || originalBase64Image);
-      } else if (aiProcessingType === 'vision_color') {
+      } else if (
+        aiProcessingType === 'vision_color' ||
+        aiProcessingType === 'COLOR_STRIP_MULTIPARAM' ||
+        aiProcessingType === 'SINGLE_WELL_COLORIMETRIC'
+      ) {
         prompt = applyAnalyteFocus(
           generatePrompt('vision', 'color-analysis', JSON.stringify(visionResults)),
           focusAnalyteNames,
           extractionTargets,
         );
         geminiResponse = await callGemini(prompt, geminiApiKey, base64Image || originalBase64Image);
+      } else if (
+        aiProcessingType === 'RAPID_CARD_LFA' ||
+        aiProcessingType === 'AGGLUTINATION_CARD' ||
+        aiProcessingType === 'MICROSCOPY_MORPHOLOGY' ||
+        aiProcessingType === 'ZONE_OF_INHIBITION'
+      ) {
+        prompt = applyAnalyteFocus(
+          generatePrompt('vision', 'test-card', JSON.stringify(visionResults)),
+          focusAnalyteNames,
+          extractionTargets,
+        );
+        geminiResponse = await callGemini(prompt, geminiApiKey, base64Image || originalBase64Image);
+      } else if (
+        aiProcessingType === 'THERMAL_SLIP_OCR' ||
+        aiProcessingType === 'INSTRUMENT_SCREEN_OCR'
+      ) {
+        if (!rawText) {
+          return new Response(
+            JSON.stringify({ error: 'Missing rawText for OCR processing' }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+        prompt = applyAnalyteFocus(
+          generatePrompt('ocr', 'printed-report', rawText),
+          focusAnalyteNames,
+          extractionTargets,
+        );
+        geminiResponse = await callGemini(prompt, geminiApiKey);
       } else {
         return new Response(
           JSON.stringify({ error: `Unsupported aiProcessingType: ${aiProcessingType}` }),
-          { 
-            status: 400, 
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
           }
         );
       }
@@ -315,12 +354,16 @@ Deno.serve(async (req) => {
         
       } else {
         // Default processing - lab results
+        // Unwrap if Gemini returned { extractedParameters: [...] } wrapper format
+        const parametersInput = Array.isArray(jsonResponse.extractedParameters)
+          ? jsonResponse.extractedParameters
+          : jsonResponse;
         // Initial matching for Gemini extraction
-        let enhancedParameters = await matchParametersToAnalytes(jsonResponse);
+        let enhancedParameters = await matchParametersToAnalytes(parametersInput);
         
         // Optional: Validate and enhance with Claude Haiku 4.5 for OCR reports
         let validationApplied = false;
-        if ((aiProcessingType === 'ocr_report' || documentType) && rawText && rawText.length > 10) {
+        if ((aiProcessingType === 'ocr_report' || aiProcessingType === 'THERMAL_SLIP_OCR' || aiProcessingType === 'INSTRUMENT_SCREEN_OCR' || documentType) && rawText && rawText.length > 10) {
           const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY');
           if (anthropicKey) {
             try {
@@ -469,7 +512,7 @@ Deno.serve(async (req) => {
         // Run the same matching + validation pipeline as the happy path
         let enhancedParameters = await matchParametersToAnalytes(repaired);
 
-        if ((aiProcessingType === 'ocr_report' || documentType) && rawText && rawText.length > 10) {
+        if ((aiProcessingType === 'ocr_report' || aiProcessingType === 'THERMAL_SLIP_OCR' || aiProcessingType === 'INSTRUMENT_SCREEN_OCR' || documentType) && rawText && rawText.length > 10) {
           const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY');
           if (anthropicKey) {
             try {
@@ -798,6 +841,7 @@ VALUE EXTRACTION RULES:
 - "value" must contain ONLY the numeric portion (e.g., "7.4" NOT "7.4 x10^3/uL")
 - "unit" must contain the complete unit INCLUDING multipliers (e.g., "x10^3/µL", "g/dL")
 - Never combine numeric values with units in the value field
+- For color strip / dipstick image analysis: include a "color_observation" field per parameter with a brief description of the observed pad color and why that value was selected (e.g., "Observed orange-yellow pad → pH 6.0 (orange=5.0, yellow-orange=6.0 on manufacturer chart)"). Leave empty string "" for non-color analytes.
 
 `;
 
@@ -1277,12 +1321,37 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
 
     // Match each extracted parameter to analytes
     const enhancedParameters = extractedParameters.map(param => {
+      // Normalize parameterName → parameter (some prompts/models use different field name)
+      if (!param.parameter && param.parameterName) {
+        param = { ...param, parameter: param.parameterName };
+      }
+
       // Parse value to extract flag if present in value string
       let cleanValue = param.value;
       let extractedFlag = param.flag;
-      
-      if (typeof param.value === 'string') {
-        const parsed = parseValueAndFlag(param.value);
+      let hoistedColorObservation = param.color_observation;
+
+      // Unwrap when Gemini serialized a {value, unit, color_observation} object into the value field
+      if (typeof param.value === 'string' && param.value.trim().startsWith('{')) {
+        try {
+          const inner = JSON.parse(param.value);
+          if (inner && typeof inner === 'object' && 'value' in inner) {
+            cleanValue = inner.value ?? '';
+            if (!hoistedColorObservation && inner.color_observation) {
+              hoistedColorObservation = inner.color_observation;
+            }
+            // Prefer inner unit/flag if outer is generic placeholder
+            if (inner.unit && (!param.unit || param.unit === 'qualitative')) {
+              param = { ...param, unit: inner.unit };
+            }
+          }
+        } catch (_) {
+          // not JSON — fall through to normal parsing
+        }
+      }
+
+      if (typeof cleanValue === 'string') {
+        const parsed = parseValueAndFlag(cleanValue);
         cleanValue = parsed.value;
         // Use extracted flag if no explicit flag was provided
         if (!extractedFlag || extractedFlag === 'Normal') {
@@ -1297,9 +1366,10 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
           ...param,
           value: cleanValue,
           flag: extractedFlag,
+          color_observation: hoistedColorObservation || param.color_observation,
           analyte_id: matchedAnalyte.id,
           matched: true,
-          matched_to: matchedAnalyte.name, // Track what it matched to
+          matched_to: matchedAnalyte.name,
           reference_range: param.reference_range || matchedAnalyte.reference_range,
           unit: param.unit || matchedAnalyte.unit
         };
@@ -1309,6 +1379,7 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
         ...param,
         value: cleanValue,
         flag: extractedFlag,
+        color_observation: hoistedColorObservation || param.color_observation,
         matched: false
       };
     });

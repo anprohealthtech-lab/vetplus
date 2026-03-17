@@ -5,6 +5,8 @@ import EditUserModal from '../components/Users/EditUserModal';
 import { NotificationSettings } from '../components/Settings/NotificationSettings';
 import { NotificationTriggerSettings } from '../components/Settings/NotificationTriggerSettings';
 import InvoiceTemplateManager from '../components/Billing/InvoiceTemplateManager';
+import BasicTemplateFormatBuilder from '../components/Reports/BasicTemplateFormatBuilder';
+import AnalyzerAPIKeys from '../components/Settings/AnalyzerAPIKeys';
 import {
   Users,
   Shield,
@@ -502,7 +504,7 @@ const UserFormComponent: React.FC<{
 
 const Settings: React.FC = () => {
   const { user: authUser } = useAuth();
-  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices'>('team');
+  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -782,6 +784,7 @@ const Settings: React.FC = () => {
     { id: 'lab', name: 'Lab Settings', icon: Building },
     { id: 'notifications', name: 'Notifications', icon: Bell },
     { id: 'invoices', name: 'Invoice Templates', icon: FileText },
+    { id: 'analyzer', name: 'Analyzer Interface', icon: Activity },
   ];
 
   const roles = availableRoles.length > 0
@@ -1806,6 +1809,28 @@ const Settings: React.FC = () => {
                       </label>
                     </div>
 
+                    {/* Basic (Old School) format builder — shown only when basic is selected */}
+                    {labSettings.default_template_style === 'basic' && (
+                      <div className="mt-5">
+                        <BasicTemplateFormatBuilder
+                          printOptions={labSettings.print_options ?? {}}
+                          showMethodology={labSettings.show_methodology ?? true}
+                          showInterpretation={labSettings.show_interpretation ?? false}
+                          onChange={({ printOptions, showMethodology, showInterpretation }) => {
+                            setLabSettings(prev => {
+                              if (!prev) return prev;
+                              return {
+                                ...prev,
+                                ...(printOptions !== undefined && { print_options: { ...(prev.print_options || {}), ...printOptions } }),
+                                ...(showMethodology !== undefined && { show_methodology: showMethodology }),
+                                ...(showInterpretation !== undefined && { show_interpretation: showInterpretation }),
+                              };
+                            });
+                          }}
+                        />
+                      </div>
+                    )}
+
                     {/* Additional Template Display Options */}
                     <div className="mt-6 pt-4 border-t border-gray-200">
                       <h4 className="text-sm font-semibold text-gray-700 mb-3">Additional Display Options</h4>
@@ -1940,7 +1965,7 @@ const Settings: React.FC = () => {
                           <input
                             type="number"
                             min={8}
-                            max={16}
+                            max={24}
                             value={labSettings.print_options?.baseFontSize ?? 12}
                             onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), baseFontSize: parseInt(e.target.value) || 12 } } : prev)}
                             className="w-16 px-2 py-1 border border-gray-300 rounded text-sm"
@@ -2670,6 +2695,19 @@ const Settings: React.FC = () => {
         {/* Invoice Templates Tab */}
         {activeTab === 'invoices' && (
           <InvoiceTemplateManager />
+        )}
+
+        {/* Analyzer Interface Tab */}
+        {activeTab === 'analyzer' && (
+          <div className="p-6">
+            <div className="mb-5">
+              <h2 className="text-lg font-semibold text-gray-800">Analyzer Interface</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Manage API keys for LIS bridge apps connecting physical analyzers to LIMS.
+              </p>
+            </div>
+            <AnalyzerAPIKeys />
+          </div>
         )}
 
       </div>

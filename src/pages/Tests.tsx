@@ -102,6 +102,7 @@ interface TestGroup {
   startFromNextPage?: boolean;
   default_template_style?: string | null;
   print_options?: Record<string, unknown> | null;
+  report_priority?: number | null;
   analytes?: string[];
   ref_range_ai_config?: any;
   required_patient_inputs?: string[];
@@ -476,8 +477,9 @@ const Tests: React.FC = () => {
             onlyFemale: group.only_female || false,
             onlyMale: group.only_male || false,
             onlyBilling: group.only_billing || false,
-            startFromNextPage: group.start_from_next_page || false,
-            default_template_style: group.default_template_style || null,
+	            startFromNextPage: group.start_from_next_page || false,
+	            report_priority: group.report_priority ?? null,
+	            default_template_style: group.default_template_style || null,
             print_options: group.print_options ?? null,
             is_outsourced: group.is_outsourced || false,
             default_outsourced_lab_id: group.default_outsourced_lab_id,
@@ -992,8 +994,9 @@ const Tests: React.FC = () => {
           onlyFemale: updatedTestGroup.only_female || false,
           onlyMale: updatedTestGroup.only_male || false,
           onlyBilling: updatedTestGroup.only_billing || false,
-          startFromNextPage: updatedTestGroup.start_from_next_page || false,
-          analytes: formData.analytes || [],
+	          startFromNextPage: updatedTestGroup.start_from_next_page || false,
+	          report_priority: updatedTestGroup.report_priority ?? null,
+	          analytes: formData.analytes || [],
           ref_range_ai_config: updatedTestGroup.ref_range_ai_config,
           required_patient_inputs: updatedTestGroup.required_patient_inputs,
           is_outsourced: updatedTestGroup.is_outsourced,
@@ -1262,8 +1265,9 @@ const Tests: React.FC = () => {
           onlyFemale: group.only_female || false,
           onlyMale: group.only_male || false,
           onlyBilling: group.only_billing || false,
-          startFromNextPage: group.start_from_next_page || false,
-          default_template_style: group.default_template_style || null,
+	          startFromNextPage: group.start_from_next_page || false,
+	          report_priority: group.report_priority ?? null,
+	          default_template_style: group.default_template_style || null,
           print_options: group.print_options ?? null,
           analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
         }));
@@ -1411,8 +1415,9 @@ const Tests: React.FC = () => {
           onlyFemale: group.only_female || false,
           onlyMale: group.only_male || false,
           onlyBilling: group.only_billing || false,
-          startFromNextPage: group.start_from_next_page || false,
-          default_template_style: group.default_template_style || null,
+	          startFromNextPage: group.start_from_next_page || false,
+	          report_priority: group.report_priority ?? null,
+	          default_template_style: group.default_template_style || null,
           print_options: group.print_options ?? null,
           analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
         }));

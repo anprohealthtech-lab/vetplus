@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCircle, Brain, Building2, Edit } from 'lucide-react';
+import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCircle, Brain, Building2, Edit, Sparkles } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
 import AnalyteForm from './AnalyteForm';
 import { SimpleAnalyteEditor } from '../TestGroups/SimpleAnalyteEditor';
+import ReportImportWizard from './ReportImportWizard';
 
 interface TestGroupFormProps {
   onClose: () => void;
@@ -50,6 +51,7 @@ interface TestGroup {
   required_patient_inputs?: string[];
   default_template_style?: string | null;
   collection_charge?: number | null;
+  report_priority?: number | null;
   print_options?: {
     tableBorders?: boolean;
     flagColumn?: boolean;
@@ -95,6 +97,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     onlyBilling: testGroup?.onlyBilling ?? false,
     startFromNextPage: testGroup?.startFromNextPage ?? false,
     default_template_style: testGroup?.default_template_style || '',
+    report_priority: testGroup?.report_priority?.toString() || '',
     print_options: testGroup?.print_options ?? null,
     is_outsourced: testGroup?.is_outsourced ?? false,
     default_outsourced_lab_id: testGroup?.default_outsourced_lab_id || '',
@@ -113,6 +116,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const [methodError, setMethodError] = useState<string | null>(null);
   // Per-analyte metadata for sort_order and section_heading (keyed by analyte_id)
   const [analyteMetadata, setAnalyteMetadata] = useState<Record<string, { sort_order: number; section_heading: string }>>({});
+  const [showImportWizard, setShowImportWizard] = useState(false);
 
   // Load analytes and outsourced labs
   useEffect(() => {
@@ -385,6 +389,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         ref_range_ai_config: formData.ref_range_ai_config,
         required_patient_inputs: formData.required_patient_inputs,
         default_template_style: formData.default_template_style || null,
+        report_priority: formData.report_priority ? parseInt(formData.report_priority, 10) : null,
         print_options: formData.print_options || null,
         // Auto-sync legacy boolean fields from required_patient_inputs
         lmpRequired: rpi.includes('lmp'),
@@ -874,11 +879,29 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   <span className="ml-2 text-sm text-gray-700">Start from Next Page</span>
                 </label>
               </div>
-              {/* Per-test-group PDF layout override */}
-              <div className="mt-3">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Report Layout Style
-                </label>
+	              {/* Per-test-group PDF layout override */}
+	              <div className="mt-3">
+	                <label className="block text-sm font-medium text-gray-700 mb-1">
+	                  Report Priority
+	                </label>
+	                <input
+	                  type="number"
+	                  name="report_priority"
+	                  min="0"
+	                  step="1"
+	                  value={formData.report_priority}
+	                  onChange={handleChange}
+	                  placeholder="Leave blank for normal/default"
+	                  className="w-full px-3 py-2 border border-amber-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+	                />
+	                <p className="text-xs text-gray-500 mt-1">
+	                  Lower numbers print earlier. Example: CBC `10`, Lipid `20`, Culture `900`.
+	                </p>
+	              </div>
+	              <div className="mt-3">
+	                <label className="block text-sm font-medium text-gray-700 mb-1">
+	                  Report Layout Style
+	                </label>
                 <select
                   name="default_template_style"
                   value={formData.default_template_style}
@@ -986,7 +1009,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                           ↩ Lab
                         </button>
                       )}
-                      <input type="number" min={8} max={16}
+                      <input type="number" min={8} max={24}
                         value={(formData.print_options as any)?.baseFontSize ?? ''}
                         placeholder="Lab default"
                         onChange={(e) => setFormData(prev => ({ ...prev, print_options: { ...(prev.print_options || {}), baseFontSize: e.target.value ? parseInt(e.target.value) : undefined } }))}
@@ -1375,21 +1398,35 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
           )}
 
           {/* Form Actions */}
-          <div className="flex items-center justify-end space-x-4 pt-6 border-t border-gray-200">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={formData.selectedAnalytes.length === 0}
-              className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-            >
-              {testGroup ? 'Update Test Group' : 'Create Test Group'}
-            </button>
+          <div className="flex items-center justify-between pt-6 border-t border-gray-200">
+            <div>
+              {testGroup?.id && (
+                <button
+                  type="button"
+                  onClick={() => setShowImportWizard(true)}
+                  className="flex items-center gap-2 px-4 py-2 border border-purple-300 text-purple-700 rounded-md hover:bg-purple-50 transition-colors text-sm"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Import from Report
+                </button>
+              )}
+            </div>
+            <div className="flex items-center space-x-4">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={formData.selectedAnalytes.length === 0}
+                className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+              >
+                {testGroup ? 'Update Test Group' : 'Create Test Group'}
+              </button>
+            </div>
           </div>
         </form>
       </div >
@@ -1414,6 +1451,39 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 onSave={handleUpdateAttachedAnalyte}
                 onCancel={() => setEditingAttachedAnalyte(null)}
             />
+        )}
+
+        {/* AI Report Import Wizard */}
+        {showImportWizard && testGroup?.id && (
+          <ReportImportWizard
+            testGroupId={testGroup.id}
+            testGroup={{
+              methodology: formData.methodology,
+              sampleType: formData.sampleType,
+            }}
+            existingAnalytes={analytes
+              .filter(a => formData.selectedAnalytes.includes(a.id))
+              .map(a => ({
+                id: a.id,
+                lab_analyte_id: a.lab_analyte_id ?? a.id,
+                name: a.name,
+                code: a.code ?? '',
+                unit: a.unit ?? '',
+                reference_range: a.reference_range ?? '',
+                reference_range_male: a.reference_range_male ?? null,
+                reference_range_female: a.reference_range_female ?? null,
+              }))}
+            existingTga={Object.entries(analyteMetadata).map(([analyte_id, meta]) => ({
+              analyte_id,
+              sort_order: meta.sort_order,
+              section_heading: meta.section_heading,
+            }))}
+            onClose={() => setShowImportWizard(false)}
+            onApplied={() => {
+              setShowImportWizard(false);
+              loadData(); // reload analytes + TGA metadata
+            }}
+          />
         )}
     </div >
   );

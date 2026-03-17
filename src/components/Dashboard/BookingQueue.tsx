@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Calendar, Clock, User, Phone, ArrowRight, Home, Building2, Globe, FileText, Plus, X, Eye, Trash2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { database } from '../../utils/supabase';
 import { Booking } from '../../types';
 import { format } from 'date-fns';
@@ -7,9 +8,11 @@ import CreateBookingModal from './CreateBookingModal';
 
 interface BookingQueueProps {
     onProcessBooking?: (booking: Booking) => void;
+    onViewAll?: () => void;
 }
 
-const BookingQueue: React.FC<BookingQueueProps> = ({ onProcessBooking }) => {
+const BookingQueue: React.FC<BookingQueueProps> = ({ onProcessBooking, onViewAll }) => {
+    const navigate = useNavigate();
     const [bookings, setBookings] = useState<Booking[]>([]);
     const [loading, setLoading] = useState(true);
     const [showCreateModal, setShowCreateModal] = useState(false);
@@ -200,7 +203,10 @@ const BookingQueue: React.FC<BookingQueueProps> = ({ onProcessBooking }) => {
                 </div>
 
                 <div className="p-3 border-t border-gray-100 bg-gray-50 rounded-b-xl">
-                    <button className="w-full text-center text-xs font-medium text-gray-600 hover:text-primary-600 transition-colors">
+                    <button
+                        onClick={() => onViewAll ? onViewAll() : navigate('/orders')}
+                        className="w-full text-center text-xs font-medium text-gray-600 hover:text-primary-600 transition-colors"
+                    >
                         View All Bookings
                     </button>
                 </div>

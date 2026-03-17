@@ -20,6 +20,7 @@ interface AnalyteRow {
   reference: string;
   flag: string;
   is_calculated: boolean;
+  is_existing: boolean;
   expected_normal_values: string[];
   expected_value_flag_map: Record<string, string>;
   formula?: string | null;
@@ -263,6 +264,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             reference: a.existing_result?.reference_range || a.reference_range || "",
             flag: a.existing_result?.flag || "",
             is_calculated: !!a.is_calculated,
+            is_existing: !!(a.existing_result?.value),
             expected_normal_values: envValues,
             expected_value_flag_map: envMap,
             formula: a.formula,
@@ -473,7 +475,13 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         const names = toPersist.map(r => r.parameter);
         await supabase.from("result_values").delete().eq("result_id", resultRowId).in("analyte_name", names);
 
-        const valueRows = toPersist.map(r => ({
+        const valueRows = toPersist.map(r => {
+          const autoFlag = r.flag || calculateFlag(
+            r.value,
+            r.reference,
+            order.patient?.gender ?? undefined,
+          );
+          return {
           result_id: resultRowId!,
           analyte_id: r.analyte_id || null,
           analyte_name: r.parameter,
@@ -481,15 +489,16 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           value: r.value || null,
           unit: r.unit || "",
           reference_range: r.reference || "",
-          flag: r.flag || null,
-          ...(r.flag && { flag_source: "manual" }),
+          flag: autoFlag || null,
+          flag_source: r.flag ? "manual" : (autoFlag ? "auto_numeric" : undefined),
           is_auto_calculated: r.is_calculated,
           order_id: order.id,
           test_group_id: tg.test_group_id,
           lab_id: userLabId,
           ...(tg.order_test_group_id && { order_test_group_id: tg.order_test_group_id }),
           ...(tg.order_test_id && { order_test_id: tg.order_test_id }),
-        }));
+          };
+        });
 
         const { error: ve } = await supabase.from("result_values").insert(valueRows);
         if (ve) throw ve;
@@ -516,17 +525,18 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
-  const filledCount = rows.filter(r => !r.is_calculated && r.value.trim()).length;
-  const totalInputable = rows.filter(r => !r.is_calculated).length;
+  const filledCount = rows.filter(r => !r.is_calculated && !r.is_existing && r.value.trim()).length;
+  const totalInputable = rows.filter(r => !r.is_calculated && !r.is_existing).length;
+  const existingCount = rows.filter(r => !r.is_calculated && r.is_existing).length;
 
-  // Group rows by test group for display
+  // Group rows by test group for display — hide already-saved analytes
   const rowsByGroup: { tg: TestGroup; rows: { row: AnalyteRow; globalIdx: number }[] }[] = testGroups.map(tg => ({
     tg,
     rows: tg.analytes.map(a => {
       const globalIdx = rows.findIndex(r => r.analyte_id === a.id);
       return { row: rows[globalIdx] || null, globalIdx };
-    }).filter(x => x.row !== null),
-  }));
+    }).filter(x => x.row !== null && !x.row.is_existing),
+  })).filter(g => g.rows.length > 0);
 
   // Re-index valueRefs array size
   valueRefs.current = valueRefs.current.slice(0, rows.length);
@@ -550,6 +560,11 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             <span className="text-sm bg-white/20 px-3 py-1 rounded-full font-medium">
               {filledCount}/{totalInputable} entered
             </span>
+            {existingCount > 0 && (
+              <span className="text-xs bg-white/10 px-2 py-1 rounded-full text-green-200">
+                {existingCount} saved
+              </span>
+            )}
             <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/20 transition-colors">
               <X className="h-5 w-5" />
             </button>
@@ -569,6 +584,12 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             <div className="flex items-center justify-center py-16 gap-3 text-gray-500">
               <Loader2 className="h-6 w-6 animate-spin" />
               <span>Loading analytes...</span>
+            </div>
+          ) : rowsByGroup.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 gap-3 text-gray-500">
+              <CheckCircle className="h-10 w-10 text-green-500" />
+              <p className="text-base font-medium text-green-700">All results already saved</p>
+              <p className="text-sm text-gray-400">{existingCount} analyte{existingCount !== 1 ? "s" : ""} submitted previously</p>
             </div>
           ) : (
             rowsByGroup.map(({ tg, rows: groupRows }) => (
