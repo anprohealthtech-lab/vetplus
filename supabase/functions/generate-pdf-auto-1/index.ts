@@ -54,10 +54,10 @@ const BASELINE_CSS = `
 
 :root {
   --report-font-family: "Inter", "Noto Sans", "Noto Sans Gujarati", "Noto Sans Devanagari", "Noto Sans Tamil", "Noto Sans Telugu", "Noto Sans Kannada", "Noto Sans Bengali", "Noto Sans Gurmukhi", "Noto Sans Malayalam", "Noto Sans Oriya", Arial, sans-serif;
-  --report-text-color: #1f2937;
-  --report-muted-color: #4b5563;
-  --report-heading-color: #111827;
-  --report-border-color: #d1d5db;
+  --report-text-color: #000000;
+  --report-muted-color: #333333;
+  --report-heading-color: #000000;
+  --report-border-color: #999999;
   --report-accent-color: #2563eb;
   --report-background-color: #ffffff;
 }
@@ -536,7 +536,7 @@ function determineFlag(
       // Critical checks first
       if (highCrit !== null && numValue >= highCrit) {
         flag = 'critical_high'
-      } else if (lowCrit !== null && numValue <= lowCrit) {
+      } else if (lowCrit !== null && numValue < lowCrit) {
         flag = 'critical_low'
       } else if (type === 'range' && low !== null && high !== null) {
         if (numValue < low) flag = 'low'

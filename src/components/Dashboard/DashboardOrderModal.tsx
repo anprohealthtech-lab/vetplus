@@ -30,6 +30,7 @@ import {
   Search,
   Ban,
   RotateCcw,
+  Lock,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { database, supabase, formatAge } from "../../utils/supabase";
@@ -173,8 +174,11 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   // Editing
   const [isEditingPatient, setIsEditingPatient] = useState(false);
   const [isEditingDoctor, setIsEditingDoctor] = useState(false);
+  const [isEditingAccount, setIsEditingAccount] = useState(false);
   const [editPatientName, setEditPatientName] = useState(order.patient_name);
   const [editPatientPhone, setEditPatientPhone] = useState(order.patient_phone || '');
+  const [accounts, setAccounts] = useState<any[]>([]);
+  const [editAccountId, setEditAccountId] = useState<string>('');
   const [editDoctorId, setEditDoctorId] = useState<string>('');
   const [tests, setTests] = useState(order.tests);
   const [viewInvoiceLoading, setViewInvoiceLoading] = useState(false);
@@ -608,6 +612,9 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         const { data: doctorsData } = await (database as any).doctors.getAll();
         setDoctors(doctorsData || []);
 
+        const { data: accountsData } = await (database as any).accounts.getAll();
+        setAccounts(accountsData || []);
+
         // Fetch all locations (filtered by user access if restricted)
         const filterCheck = await database.shouldFilterByLocation();
 
@@ -850,6 +857,25 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     } catch (e: any) {
       console.error(e);
       alert('Failed to update doctor: ' + (e.message || 'Unknown error'));
+    }
+  };
+
+  const handleSaveAccount = async () => {
+    try {
+      const selectedAcc = editAccountId ? accounts.find(a => a.id === editAccountId) : null;
+
+      const { error } = await supabase
+        .from('orders')
+        .update({ account_id: selectedAcc?.id || null })
+        .eq('id', order.id);
+
+      if (error) throw error;
+
+      setIsEditingAccount(false);
+      await onUpdateStatus(order.id, order.status);
+    } catch (e: any) {
+      console.error(e);
+      alert('Failed to update account: ' + (e.message || 'Unknown error'));
     }
   };
 
@@ -1114,8 +1140,8 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
             </div>
           </section>
 
-          {/* Top Grid: Doctor, Sample, Location */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          {/* Top Grid: Doctor, Sample, Location, Account */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
 
             {/* Doctor Info */}
             <div className="p-4 bg-white rounded-xl border border-purple-100 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
@@ -1252,6 +1278,63 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                 )}
                 {order.sample_collected_at && dispatchLocations.length === 0 && (
                   <div className="text-xs text-gray-400 mt-2 italic">No routes configured</div>
+                )}
+              </div>
+            </div>
+
+            {/* B2B Account / Billing */}
+            <div className="p-4 bg-white rounded-xl border border-indigo-100 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
+              <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-50 rounded-bl-full -mr-10 -mt-10 transition-transform group-hover:scale-110"></div>
+              <div className="relative z-10">
+                <div className="flex justify-between items-start mb-3">
+                  <div className="text-xs font-bold text-indigo-600 uppercase tracking-wider flex items-center gap-1.5">
+                    <Building className="h-3.5 w-3.5" /> Billing Account
+                  </div>
+                  {!isEditingAccount && (
+                    order.invoice_id || order.is_billed ? (
+                      <span title="Invoice already generated — account cannot be changed" className="text-gray-300 cursor-not-allowed bg-white/50 rounded-full p-1">
+                        <Lock className="h-3 w-3" />
+                      </span>
+                    ) : (
+                      <button onClick={() => { setEditAccountId(''); setIsEditingAccount(true); }} className="text-gray-400 hover:text-indigo-600 transition-colors bg-white/50 rounded-full p-1 hover:bg-white">
+                        <Edit2 className="h-3 w-3" />
+                      </button>
+                    )
+                  )}
+                </div>
+
+                {isEditingAccount ? (
+                  <div className="space-y-3 bg-white/80 backdrop-blur-sm rounded-lg">
+                    <select
+                      value={editAccountId}
+                      onChange={(e) => setEditAccountId(e.target.value)}
+                      className="w-full text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    >
+                      <option value="">No Account (Self-Pay)</option>
+                      {accounts.map(a => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                    </select>
+                    <div className="flex gap-2 justify-end">
+                      <button onClick={handleSaveAccount} className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 font-medium">Save</button>
+                      <button onClick={() => setIsEditingAccount(false)} className="text-xs bg-gray-100 text-gray-700 px-3 py-1.5 rounded-lg hover:bg-gray-200">Cancel</button>
+                    </div>
+                  </div>
+                ) : order.account_name ? (
+                  <div>
+                    <div className="font-bold text-gray-900 text-base">{order.account_name}</div>
+                    {order.account_billing_mode && (
+                      <div className={`text-xs mt-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${
+                        order.account_billing_mode === 'monthly'
+                          ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                          : 'bg-gray-100 text-gray-600 border border-gray-200'
+                      }`}>
+                        {order.account_billing_mode === 'monthly' ? 'Monthly Billing' : 'Standard Billing'}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-400 italic mt-1">No account assigned</div>
                 )}
               </div>
             </div>
@@ -1607,12 +1690,13 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                               try {
                                 const { data: invoice } = await supabase
                                   .from('invoices')
-                                  .select('pdf_url')
+                                  .select('pdf_url, pdf_generated_at')
                                   .eq('id', order.invoice_id)
                                   .single();
 
                                 if (invoice?.pdf_url) {
-                                  window.open(invoice.pdf_url, '_blank');
+                                  const cacheBuster = invoice.pdf_generated_at ? new Date(invoice.pdf_generated_at).getTime() : Date.now();
+                                  window.open(`${invoice.pdf_url}?t=${cacheBuster}`, '_blank');
                                 } else {
                                   alert('PDF not generated yet. Use Generate PDF button.');
                                 }

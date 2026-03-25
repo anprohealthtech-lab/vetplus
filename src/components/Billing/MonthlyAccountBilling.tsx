@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-
-import { Search, FileText, Plus, Building, Eye, CreditCard, Download } from 'lucide-react';
-import { database } from '../../utils/supabase';
-import type { Invoice, Account, ConsolidatedInvoice } from '../../types';
+import { Search, Plus, Building, Eye, CreditCard, Download, History, FileText, AlertCircle } from 'lucide-react';
+import { database, supabase } from '../../utils/supabase';
+import type { ConsolidatedInvoice } from '../../types';
 import ReceivePaymentModal from './ReceivePaymentModal';
 import { generateConsolidatedInvoicePDF } from '../../utils/invoicePdfService';
 
@@ -10,220 +9,257 @@ interface MonthlyAccountBillingProps {
   onClose?: () => void;
 }
 
-interface BillingPeriodSummary {
-  period: string;
-  accountCount: number;
-  totalAmount: number;
-  invoiceCount: number;
-  patientCount: number;
+interface OrderSummary {
+  id: string;
+  order_number: string;
+  order_date: string;
+  patient_id: string | null;
+  patient_name: string;
+  total_amount: number;
+  billing_status: string | null;
+  consolidated_invoice_id: string | null;
 }
 
 interface AccountBillingSummary {
-  account: Account;
-  invoices: Invoice[];
+  account: any;
+  orders: OrderSummary[];          // Only unbilled orders for selected period
   totalAmount: number;
-  invoiceCount: number;
+  orderCount: number;
   patientCount: number;
   hasConsolidated: boolean;
   consolidatedInvoice?: ConsolidatedInvoice;
+  allConsolidated: ConsolidatedInvoice[]; // Full history for this account
 }
+
+const STATUS_COLORS: Record<string, string> = {
+  sent:      'bg-blue-100 text-blue-800',
+  paid:      'bg-green-100 text-green-800',
+  partial:   'bg-yellow-100 text-yellow-800',
+  overdue:   'bg-red-100 text-red-800',
+  draft:     'bg-gray-100 text-gray-600',
+  cancelled: 'bg-gray-100 text-gray-400',
+};
 
 const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }) => {
   const [loading, setLoading] = useState(true);
   const [selectedPeriod, setSelectedPeriod] = useState('');
-  const [availablePeriods, setAvailablePeriods] = useState<BillingPeriodSummary[]>([]);
   const [accountSummaries, setAccountSummaries] = useState<AccountBillingSummary[]>([]);
-  const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
+  const [previewAccount, setPreviewAccount] = useState<AccountBillingSummary | null>(null);
+  const [historyAccount, setHistoryAccount] = useState<AccountBillingSummary | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [consolidating, setConsolidating] = useState<string | null>(null);
-  const [previewInvoices, setPreviewInvoices] = useState<Invoice[]>([]);
+  const [pdfLoading, setPdfLoading] = useState<string | null>(null);
   const [showPaymentModal, setShowPaymentModal] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadAvailablePeriods();
+  // Last 6 months always available
+  const periods = React.useMemo(() => {
+    const now = new Date();
+    return Array.from({ length: 6 }, (_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    });
   }, []);
 
   useEffect(() => {
-    if (selectedPeriod) {
-      loadPeriodData();
-    }
+    const now = new Date();
+    setSelectedPeriod(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`);
+  }, []);
+
+  useEffect(() => {
+    if (selectedPeriod) loadPeriodData();
   }, [selectedPeriod]);
-
-  const loadAvailablePeriods = async () => {
-    try {
-      setLoading(true);
-      // Get all account invoices grouped by billing period
-      const { data: invoices, error } = await database.invoices.getByBillingPeriod('');
-      if (error) throw error;
-
-      // Group by billing period
-      const periodMap = new Map<string, Invoice[]>();
-      (invoices || []).forEach((invoice) => {
-        if (invoice.invoice_type === 'account' && invoice.billing_period) {
-          const period = invoice.billing_period;
-          if (!periodMap.has(period)) {
-            periodMap.set(period, []);
-          }
-          periodMap.get(period)!.push(invoice);
-        }
-      });
-
-      // Convert to summaries
-      const periods = Array.from(periodMap.entries()).map(([period, periodInvoices]) => {
-        const accounts = new Set(periodInvoices.map(inv => inv.account_id).filter(Boolean));
-        const patients = new Set(periodInvoices.map(inv => inv.patient_id));
-        const totalAmount = periodInvoices.reduce((sum, inv) => sum + (inv.total_after_discount || inv.total), 0);
-
-        return {
-          period,
-          accountCount: accounts.size,
-          totalAmount,
-          invoiceCount: periodInvoices.length,
-          patientCount: patients.size
-        };
-      }).sort((a, b) => b.period.localeCompare(a.period));
-
-      setAvailablePeriods(periods);
-
-      // Auto-select current month if available
-      const currentMonth = new Date().toISOString().slice(0, 7);
-      if (periods.find(p => p.period === currentMonth)) {
-        setSelectedPeriod(currentMonth);
-      } else if (periods.length > 0) {
-        setSelectedPeriod(periods[0].period);
-      }
-    } catch (error) {
-      console.error('Error loading periods:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const loadPeriodData = async () => {
     try {
       setLoading(true);
-      const { data: invoices, error: invoicesError } = await database.invoices.getByBillingPeriod(selectedPeriod);
-      if (invoicesError) throw invoicesError;
+      const [{ data: accounts, error: accErr }, { data: consolidatedAll }] = await Promise.all([
+        (database as any).accounts.getAll(),
+        database.consolidatedInvoices.getAll().catch(() => ({ data: [], error: null })),
+      ]);
+      if (accErr) throw accErr;
 
-      // Get accounts using the correct API path  
-      const { data: accounts, error: accountsError } = await (database as any).accounts?.getAll?.() || { data: [], error: null };
-      if (accountsError) throw accountsError;
+      const monthlyAccounts = (accounts || []).filter(
+        (a: any) => a.billing_mode === 'monthly' && a.is_active !== false
+      );
 
-      const { data: consolidatedInvoices, error: consolidatedError } = await database.consolidatedInvoices.getAll();
-      if (consolidatedError) throw consolidatedError;
+      const periodStart = `${selectedPeriod}-01`;
+      const allConsolidated: ConsolidatedInvoice[] = consolidatedAll || [];
 
-      // Group invoices by account
-      const accountMap = new Map<string, Invoice[]>();
-      (invoices || []).forEach((invoice) => {
-        if (invoice.invoice_type === 'account' && invoice.account_id) {
-          if (!accountMap.has(invoice.account_id)) {
-            accountMap.set(invoice.account_id, []);
-          }
-          accountMap.get(invoice.account_id)!.push(invoice);
-        }
-      });
+      const summaries: AccountBillingSummary[] = await Promise.all(
+        monthlyAccounts.map(async (account: any) => {
+          const { data: orders } = await (database as any).orders.getByAccountAndPeriod(account.id, selectedPeriod);
 
-      // Create account summaries
-      const summaries: AccountBillingSummary[] = Array.from(accountMap.entries()).map(([accountId, accountInvoices]) => {
-        const account = (accounts || []).find((acc: any) => acc.id === accountId);
-        if (!account) return null;
+          const orderList: OrderSummary[] = (orders || []).map((o: any) => ({
+            id: o.id,
+            order_number: o.order_number,
+            order_date: o.order_date,
+            patient_id: o.patient_id || null,
+            patient_name: o.patients?.name || 'Unknown',
+            total_amount: o.final_amount || o.total_amount || 0,
+            billing_status: o.billing_status,
+            consolidated_invoice_id: o.consolidated_invoice_items?.[0]?.consolidated_invoice_id || null,
+          }));
 
-        const totalAmount = accountInvoices.reduce((sum, inv) => sum + (inv.total_after_discount || inv.total), 0);
-        const patients = new Set(accountInvoices.map(inv => inv.patient_id));
+          // Only count unbilled orders toward totals
+          const unbilledOrders = orderList.filter(o => o.billing_status !== 'billed' && !o.consolidated_invoice_id);
+          const totalAmount = unbilledOrders.reduce((s, o) => s + o.total_amount, 0);
+          const patientNames = new Set(unbilledOrders.map(o => o.patient_name));
 
-        // Check if already consolidated
-        const consolidatedInvoice = (consolidatedInvoices || []).find(
-          ci => ci.account_id === accountId && ci.billing_period === selectedPeriod
-        );
+          const thisConsolidated = allConsolidated.find(
+            (ci: any) => ci.account_id === account.id && ci.billing_period_start === periodStart
+          );
+          const accountHistory = allConsolidated
+            .filter((ci: any) => ci.account_id === account.id)
+            .sort((a: any, b: any) => b.billing_period_start.localeCompare(a.billing_period_start));
 
-        return {
-          account,
-          invoices: accountInvoices,
-          totalAmount,
-          invoiceCount: accountInvoices.length,
-          patientCount: patients.size,
-          hasConsolidated: !!consolidatedInvoice,
-          consolidatedInvoice
-        };
-      }).filter(Boolean) as AccountBillingSummary[];
+          return {
+            account,
+            orders: orderList,
+            totalAmount,
+            orderCount: unbilledOrders.length,
+            patientCount: patientNames.size,
+            hasConsolidated: !!thisConsolidated,
+            consolidatedInvoice: thisConsolidated,
+            allConsolidated: accountHistory,
+          };
+        })
+      );
 
       setAccountSummaries(summaries.sort((a, b) => a.account.name.localeCompare(b.account.name)));
-    } catch (error) {
-      console.error('Error loading period data:', error);
+    } catch (err) {
+      console.error('Error loading period data:', err);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handlePreviewInvoices = (accountId: string) => {
-    const summary = accountSummaries.find(s => s.account.id === accountId);
-    if (summary) {
-      setPreviewInvoices(summary.invoices);
-      setSelectedAccount(accountId);
     }
   };
 
   const handleCreateConsolidatedInvoice = async (accountId: string) => {
     const summary = accountSummaries.find(s => s.account.id === accountId);
-    if (!summary) return;
+    if (!summary || summary.orderCount === 0) {
+      alert('No unbilled orders found for this account in the selected period.');
+      return;
+    }
 
     setConsolidating(accountId);
     try {
-      // Create consolidated invoice
-      const consolidatedData = {
+      const [year, month] = selectedPeriod.split('-').map(Number);
+      const periodStart = `${selectedPeriod}-01`;
+      const lastDay = new Date(year, month, 0).getDate();
+      const periodEnd = `${selectedPeriod}-${String(lastDay).padStart(2, '0')}`;
+      const dueDate = new Date(
+        Date.now() + (summary.account.payment_terms || 30) * 24 * 60 * 60 * 1000
+      ).toISOString().split('T')[0];
+      const invoiceNumber = `CI-${selectedPeriod.replace('-', '')}-${accountId.slice(0, 6).toUpperCase()}`;
+      const lab_id = await database.getCurrentUserLabId();
+
+      const unbilledOrders = summary.orders.filter(
+        o => o.billing_status !== 'billed' && !o.consolidated_invoice_id
+      );
+
+      // Step 1: Create individual account invoices per order
+      const createdInvoiceIds: string[] = [];
+      for (const order of unbilledOrders) {
+        const { data: inv, error: invErr } = await database.invoices.create({
+          lab_id,
+          patient_id: order.patient_id,
+          order_id: order.id,
+          patient_name: order.patient_name,
+          subtotal: order.total_amount,
+          total_before_discount: order.total_amount,
+          total_discount: 0,
+          total_after_discount: order.total_amount,
+          discount: 0,
+          tax: 0,
+          total: order.total_amount,
+          status: 'Sent',
+          invoice_date: new Date().toISOString(),
+          due_date: new Date(Date.now() + (summary.account.payment_terms || 30) * 24 * 60 * 60 * 1000).toISOString(),
+          account_id: accountId,
+          invoice_type: 'account',
+          billing_period: selectedPeriod,
+          consolidated_invoice_id: null,
+        });
+        if (invErr) console.warn('Invoice create failed for order', order.id, invErr);
+        else if (inv) createdInvoiceIds.push(inv.id);
+      }
+
+      // Step 2: Create consolidated invoice
+      const { data: consolidated, error: ciErr } = await database.consolidatedInvoices.create({
         account_id: accountId,
-        account_name: summary.account.name,
-        billing_period: selectedPeriod,
-        subtotal: summary.invoices.reduce((sum, inv) => sum + inv.subtotal, 0),
-        total_discount: summary.invoices.reduce((sum, inv) => sum + inv.total_discount, 0),
-        tax: summary.invoices.reduce((sum, inv) => sum + (inv.tax || 0), 0),
-        total: summary.totalAmount,
-        status: 'Sent' as const,
-        invoice_date: new Date().toISOString(),
-        due_date: new Date(Date.now() + (summary.account.payment_terms || 30) * 24 * 60 * 60 * 1000).toISOString(),
-        notes: `Consolidated invoice for ${summary.invoiceCount} orders covering ${summary.patientCount} patients`,
-        invoice_count: summary.invoiceCount,
-        patient_count: summary.patientCount
-      };
+        invoice_number: invoiceNumber,
+        billing_period_start: periodStart,
+        billing_period_end: periodEnd,
+        subtotal: summary.totalAmount,
+        discount_amount: 0,
+        tax_amount: 0,
+        total_amount: summary.totalAmount,
+        status: 'sent' as const,
+        due_date: dueDate,
+        notes: `${summary.orderCount} orders · ${summary.patientCount} patients`,
+      });
+      if (ciErr) throw ciErr;
 
-      const { data: consolidatedInvoice, error: createError } = await database.consolidatedInvoices.create(consolidatedData);
-      if (createError) throw createError;
+      // Step 3: Link individual invoices → consolidated
+      if (createdInvoiceIds.length > 0) {
+        await database.invoices.markAsConsolidated(createdInvoiceIds, consolidated.id);
+      }
 
-      // Mark individual invoices as consolidated
-      const invoiceIds = summary.invoices.map(inv => inv.id);
-      const { error: markError } = await database.invoices.markAsConsolidated(invoiceIds, consolidatedInvoice.id);
-      if (markError) throw markError;
+      // Step 4: Insert consolidated_invoice_items (order → consolidated link)
+      await supabase.from('consolidated_invoice_items').insert(
+        unbilledOrders.map(o => ({
+          consolidated_invoice_id: consolidated.id,
+          order_id: o.id,
+          amount: o.total_amount,
+        }))
+      );
 
-      // Reload data
+      // Step 5: Mark orders as billed so they never appear again
+      const orderIds = unbilledOrders.map(o => o.id);
+      await supabase
+        .from('orders')
+        .update({ billing_status: 'billed', is_billed: true })
+        .in('id', orderIds);
+
       await loadPeriodData();
-      alert(`Consolidated invoice created successfully for ${summary.account.name}`);
-    } catch (error) {
-      console.error('Error creating consolidated invoice:', error);
+      alert(`✓ Consolidated invoice ${invoiceNumber} generated for ${summary.account.name}`);
+    } catch (err) {
+      console.error('Error creating consolidated invoice:', err);
       alert('Failed to create consolidated invoice. Please try again.');
     } finally {
       setConsolidating(null);
     }
   };
 
-  const formatCurrency = (amount: number) => `₹${amount.toFixed(2)}`;
-  const formatPeriod = (period: string) => {
-    const [year, month] = period.split('-');
-    const date = new Date(parseInt(year), parseInt(month) - 1);
-    return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+  const handleDownloadPDF = async (consolidatedInvoice: ConsolidatedInvoice, accountName: string) => {
+    setPdfLoading(consolidatedInvoice.id);
+    try {
+      const labId = await database.getCurrentUserLabId();
+      const url = await generateConsolidatedInvoicePDF(consolidatedInvoice.id, labId);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `Invoice_${(consolidatedInvoice as any).invoice_number || consolidatedInvoice.id}_${accountName}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (e) {
+      console.error('PDF error:', e);
+      alert('Failed to generate PDF. Check console for details.');
+    } finally {
+      setPdfLoading(null);
+    }
   };
 
-  const filteredSummaries = accountSummaries.filter(summary =>
-    summary.account.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    summary.account.type.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const formatCurrency = (amount: number) => `₹${(amount || 0).toFixed(2)}`;
+  const formatPeriod = (period: string) => {
+    const [year, month] = period.split('-');
+    return new Date(parseInt(year), parseInt(month) - 1).toLocaleDateString('en-IN', { year: 'numeric', month: 'long' });
+  };
+  const formatDate = (d: string) => new Date(d).toLocaleDateString('en-IN');
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center p-8">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    );
-  }
+  const filteredSummaries = accountSummaries.filter(s =>
+    s.account.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    s.account.type?.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
   return (
     <div className="space-y-6">
@@ -234,54 +270,47 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
           <p className="text-gray-600">Generate consolidated invoices for B2B accounts</p>
         </div>
         {onClose && (
-          <button
-            onClick={onClose}
-            className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-          >
+          <button onClick={onClose} className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">
             Close
           </button>
         )}
       </div>
 
-      {/* Period Selector */}
+      {/* Period + Summary bar */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
         <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
-          <div className="flex-1">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Select Billing Period
-            </label>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Billing Period</label>
             <select
               value={selectedPeriod}
               onChange={(e) => setSelectedPeriod(e.target.value)}
-              className="w-full sm:w-48 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-48 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="">Select period...</option>
-              {availablePeriods.map(period => (
-                <option key={period.period} value={period.period}>
-                  {formatPeriod(period.period)} ({period.accountCount} accounts)
-                </option>
+              {periods.map(p => (
+                <option key={p} value={p}>{formatPeriod(p)}</option>
               ))}
             </select>
           </div>
-
-          {selectedPeriod && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+          {!loading && accountSummaries.length > 0 && (
+            <div className="flex gap-8 text-sm mt-1">
               <div>
-                <div className="text-gray-600">Accounts</div>
-                <div className="font-bold">{availablePeriods.find(p => p.period === selectedPeriod)?.accountCount || 0}</div>
+                <div className="text-gray-500">Accounts</div>
+                <div className="font-bold text-lg">{accountSummaries.length}</div>
               </div>
               <div>
-                <div className="text-gray-600">Invoices</div>
-                <div className="font-bold">{availablePeriods.find(p => p.period === selectedPeriod)?.invoiceCount || 0}</div>
+                <div className="text-gray-500">Unbilled Orders</div>
+                <div className="font-bold text-lg">{accountSummaries.reduce((s, a) => s + a.orderCount, 0)}</div>
               </div>
               <div>
-                <div className="text-gray-600">Patients</div>
-                <div className="font-bold">{availablePeriods.find(p => p.period === selectedPeriod)?.patientCount || 0}</div>
+                <div className="text-gray-500">Pending Amount</div>
+                <div className="font-bold text-lg text-orange-600">
+                  {formatCurrency(accountSummaries.filter(a => !a.hasConsolidated).reduce((s, a) => s + a.totalAmount, 0))}
+                </div>
               </div>
               <div>
-                <div className="text-gray-600">Total Amount</div>
-                <div className="font-bold text-green-600">
-                  {formatCurrency(availablePeriods.find(p => p.period === selectedPeriod)?.totalAmount || 0)}
+                <div className="text-gray-500">Already Billed</div>
+                <div className="font-bold text-lg text-green-600">
+                  {accountSummaries.filter(a => a.hasConsolidated).length} accounts
                 </div>
               </div>
             </div>
@@ -289,221 +318,309 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
         </div>
       </div>
 
-      {/* Search and Filters */}
-      {selectedPeriod && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-          <div className="flex gap-4">
-            <div className="flex-1">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
-                <input
-                  type="text"
-                  placeholder="Search accounts..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                />
+      {/* Search */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+          <input
+            type="text"
+            placeholder="Search accounts..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-9 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+      </div>
+
+      {/* Account list */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+        <div className="px-6 py-3 border-b border-gray-200 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">{formatPeriod(selectedPeriod)}</h3>
+          <span className="text-xs text-gray-400">Orders with billing_status = billed are excluded</span>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center p-12">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+          </div>
+        ) : filteredSummaries.length === 0 ? (
+          <div className="p-10 text-center">
+            {searchTerm ? (
+              <p className="text-gray-500">No accounts match your search</p>
+            ) : (
+              <div>
+                <p className="font-semibold text-gray-700 mb-1">No B2B monthly accounts configured</p>
+                <p className="text-sm text-gray-500">
+                  Go to <strong>Masters → Accounts</strong>, create an account and set
+                  <strong> Billing Mode = Monthly</strong>. Orders linked to that account
+                  will appear here automatically each month.
+                </p>
               </div>
+            )}
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {filteredSummaries.map(summary => (
+              <div key={summary.account.id} className="p-5">
+                <div className="flex items-start justify-between gap-4">
+                  {/* Left: account info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Building className="w-4 h-4 text-gray-400 shrink-0" />
+                      <span className="font-semibold text-gray-900">{summary.account.name}</span>
+                      <span className="text-xs text-gray-400 capitalize">{summary.account.type}</span>
+                      {summary.hasConsolidated && (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700">
+                          ✓ Billed
+                        </span>
+                      )}
+                      {summary.allConsolidated.length > 0 && (
+                        <button
+                          onClick={() => setHistoryAccount(summary)}
+                          className="flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                        >
+                          <History className="w-3 h-3" />
+                          {summary.allConsolidated.length} invoice{summary.allConsolidated.length !== 1 ? 's' : ''}
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap gap-5 text-sm">
+                      <div>
+                        <span className="text-gray-500">Unbilled orders:</span>
+                        <span className={`ml-1 font-semibold ${summary.orderCount === 0 ? 'text-gray-400' : 'text-gray-900'}`}>
+                          {summary.orderCount}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Patients:</span>
+                        <span className="ml-1 font-semibold">{summary.patientCount}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Amount:</span>
+                        <span className={`ml-1 font-semibold ${summary.totalAmount > 0 ? 'text-orange-600' : 'text-gray-400'}`}>
+                          {formatCurrency(summary.totalAmount)}
+                        </span>
+                      </div>
+                      {summary.hasConsolidated && summary.consolidatedInvoice && (
+                        <div>
+                          <span className="text-gray-500">Invoice:</span>
+                          <span className="ml-1 font-mono text-xs text-gray-700">
+                            {(summary.consolidatedInvoice as any).invoice_number}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {summary.orderCount === 0 && !summary.hasConsolidated && (
+                      <p className="mt-2 text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded px-2 py-1 inline-flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3" /> No orders in this period yet
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Right: action buttons */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {summary.orderCount > 0 && (
+                      <button
+                        onClick={() => setPreviewAccount(summary)}
+                        className="px-3 py-1.5 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1"
+                      >
+                        <Eye className="w-4 h-4" />
+                        Preview
+                      </button>
+                    )}
+
+                    {summary.hasConsolidated && summary.consolidatedInvoice ? (
+                      <>
+                        <button
+                          onClick={() => handleDownloadPDF(summary.consolidatedInvoice!, summary.account.name)}
+                          disabled={pdfLoading === summary.consolidatedInvoice.id}
+                          className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-md flex items-center gap-1 disabled:opacity-50"
+                        >
+                          <Download className="w-4 h-4" />
+                          {pdfLoading === summary.consolidatedInvoice.id ? 'Generating...' : 'PDF'}
+                        </button>
+                        <button
+                          onClick={() => setShowPaymentModal(summary.account.id)}
+                          className="px-3 py-1.5 text-sm border border-green-200 text-green-700 bg-green-50 hover:bg-green-100 rounded-md flex items-center gap-1"
+                        >
+                          <CreditCard className="w-4 h-4" />
+                          Payment
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => handleCreateConsolidatedInvoice(summary.account.id)}
+                        disabled={consolidating === summary.account.id || summary.orderCount === 0}
+                        className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-40 flex items-center gap-1"
+                      >
+                        <Plus className="w-4 h-4" />
+                        {consolidating === summary.account.id ? 'Generating...' : 'Generate Monthly Bill'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Order Preview Modal ── */}
+      {previewAccount && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+            <div className="flex justify-between items-start p-5 border-b border-gray-200">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">{previewAccount.account.name}</h3>
+                <p className="text-sm text-gray-500">{formatPeriod(selectedPeriod)} — {previewAccount.orderCount} unbilled orders</p>
+              </div>
+              <button onClick={() => setPreviewAccount(null)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+            </div>
+
+            <div className="overflow-y-auto flex-1 p-5">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase">
+                    <th className="pb-2">Order #</th>
+                    <th className="pb-2">Patient</th>
+                    <th className="pb-2">Date</th>
+                    <th className="pb-2 text-right">Amount</th>
+                    <th className="pb-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {previewAccount.orders.map(o => (
+                    <tr key={o.id} className={o.billing_status === 'billed' || o.consolidated_invoice_id ? 'opacity-40' : ''}>
+                      <td className="py-2 font-mono text-xs">{o.order_number || o.id.slice(0, 8)}</td>
+                      <td className="py-2">{o.patient_name}</td>
+                      <td className="py-2 text-gray-500">{formatDate(o.order_date)}</td>
+                      <td className="py-2 text-right font-medium text-green-700">{formatCurrency(o.total_amount)}</td>
+                      <td className="py-2">
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                          o.consolidated_invoice_id ? 'bg-green-100 text-green-700' :
+                          o.billing_status === 'billed' ? 'bg-blue-100 text-blue-700' :
+                          'bg-yellow-100 text-yellow-700'
+                        }`}>
+                          {o.consolidated_invoice_id ? 'Consolidated' : o.billing_status || 'Pending'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t-2 border-gray-300">
+                    <td colSpan={3} className="pt-3 font-semibold text-right pr-4 text-sm">Unbilled Total</td>
+                    <td className="pt-3 font-bold text-right text-green-700">{formatCurrency(previewAccount.totalAmount)}</td>
+                    <td />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+
+            <div className="flex justify-end gap-3 p-4 border-t border-gray-100">
+              <button onClick={() => setPreviewAccount(null)} className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 text-sm">
+                Close
+              </button>
+              {!previewAccount.hasConsolidated && previewAccount.orderCount > 0 && (
+                <button
+                  onClick={() => { setPreviewAccount(null); handleCreateConsolidatedInvoice(previewAccount.account.id); }}
+                  disabled={consolidating === previewAccount.account.id}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 text-sm"
+                >
+                  <Plus className="w-4 h-4" />
+                  Generate Monthly Bill
+                </button>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* Account Summaries */}
-      {selectedPeriod && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <h3 className="text-lg font-medium text-gray-900">
-              Account Billing for {formatPeriod(selectedPeriod)}
-            </h3>
-          </div>
-
-          <div className="divide-y divide-gray-200">
-            {filteredSummaries.map(summary => (
-              <div key={summary.account.id} className="p-6">
-                <div className="flex items-center justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3">
-                      <Building className="w-5 h-5 text-gray-400" />
-                      <div>
-                        <h4 className="font-medium text-gray-900">{summary.account.name}</h4>
-                        <p className="text-sm text-gray-500 capitalize">{summary.account.type}</p>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
-                      <div>
-                        <span className="text-gray-600">Invoices:</span>
-                        <span className="ml-1 font-medium">{summary.invoiceCount}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Patients:</span>
-                        <span className="ml-1 font-medium">{summary.patientCount}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Total Amount:</span>
-                        <span className="ml-1 font-medium text-green-600">
-                          {formatCurrency(summary.totalAmount)}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Status:</span>
-                        <span className={`ml-1 px-2 py-0.5 rounded-full text-xs font-medium ${summary.hasConsolidated
-                          ? 'bg-green-100 text-green-800'
-                          : 'bg-yellow-100 text-yellow-800'
-                          }`}>
-                          {summary.hasConsolidated ? 'Consolidated' : 'Pending'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handlePreviewInvoices(summary.account.id)}
-                      className="px-3 py-2 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1"
-                    >
-                      <Eye className="w-4 h-4" />
-                      Preview
-                    </button>
-
-                    {summary.hasConsolidated ? (
-                      <button
-                        onClick={async () => {
-                          if (!summary.consolidatedInvoice) return;
-                          try {
-                            const url = await generateConsolidatedInvoicePDF(summary.consolidatedInvoice.id, await database.getCurrentUserLabId());
-                            const link = document.createElement('a');
-                            link.href = url;
-                            link.download = `Consolidated_Invoice_${summary.account.name}.pdf`;
-                            document.body.appendChild(link);
-                            link.click();
-                            document.body.removeChild(link);
-                          } catch (e) {
-                            alert('Failed to generate PDF');
-                            console.error(e);
-                          }
-                        }}
-                        className="px-3 py-2 text-sm bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-md flex items-center gap-1"
-                      >
-                        <Download className="w-4 h-4" />
-                        PDF
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => handleCreateConsolidatedInvoice(summary.account.id)}
-                        disabled={consolidating === summary.account.id}
-                        className="px-3 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
-                      >
-                        <Plus className="w-4 h-4" />
-                        {consolidating === summary.account.id ? 'Creating...' : 'Create Consolidated'}
-                      </button>
-                    )}
-
-                    <button
-                      onClick={() => setShowPaymentModal(summary.account.id)}
-                      className="px-3 py-2 text-sm border border-green-200 text-green-700 bg-green-50 rounded-md hover:bg-green-100 flex items-center gap-1"
-                    >
-                      <CreditCard className="w-4 h-4" />
-                      Receive Payment
-                    </button>
-                  </div>
+      {/* ── Invoice History Modal ── */}
+      {historyAccount && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+            <div className="flex justify-between items-center p-5 border-b border-gray-200">
+              <div className="flex items-center gap-2">
+                <FileText className="w-5 h-5 text-blue-600" />
+                <div>
+                  <h3 className="font-bold text-gray-900">{historyAccount.account.name}</h3>
+                  <p className="text-xs text-gray-500">Consolidated Invoice History</p>
                 </div>
               </div>
-            ))}
+              <button onClick={() => setHistoryAccount(null)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+            </div>
 
-            {filteredSummaries.length === 0 && (
-              <div className="p-8 text-center text-gray-500">
-                {searchTerm
-                  ? 'No accounts found matching your search'
-                  : 'No account invoices found for this period'
-                }
-              </div>
-            )}
-          </div>
-        </div>
-      )
-      }
+            <div className="overflow-y-auto flex-1 p-5">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 text-xs text-gray-500 uppercase text-left">
+                    <th className="pb-2">Invoice #</th>
+                    <th className="pb-2">Period</th>
+                    <th className="pb-2">Due Date</th>
+                    <th className="pb-2 text-right">Amount</th>
+                    <th className="pb-2">Status</th>
+                    <th className="pb-2"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {historyAccount.allConsolidated.map((ci: any) => (
+                    <tr key={ci.id}>
+                      <td className="py-3 font-mono text-xs font-medium">{ci.invoice_number}</td>
+                      <td className="py-3">
+                        {formatDate(ci.billing_period_start)} – {formatDate(ci.billing_period_end)}
+                      </td>
+                      <td className="py-3 text-gray-500">{ci.due_date ? formatDate(ci.due_date) : '—'}</td>
+                      <td className="py-3 text-right font-semibold">{formatCurrency(ci.total_amount)}</td>
+                      <td className="py-3">
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[ci.status] || 'bg-gray-100 text-gray-600'}`}>
+                          {ci.status}
+                        </span>
+                      </td>
+                      <td className="py-3">
+                        <button
+                          onClick={() => handleDownloadPDF(ci, historyAccount.account.name)}
+                          disabled={pdfLoading === ci.id}
+                          className="text-blue-600 hover:text-blue-800 text-xs flex items-center gap-1 disabled:opacity-50"
+                        >
+                          <Download className="w-3 h-3" />
+                          {pdfLoading === ci.id ? '...' : 'PDF'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
 
-      {/* Invoice Preview Modal */}
-      {
-        selectedAccount && previewInvoices.length > 0 && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-bold text-gray-900">
-                  Preview Invoices - {accountSummaries.find(s => s.account.id === selectedAccount)?.account.name}
-                </h3>
-                <button
-                  onClick={() => {
-                    setSelectedAccount(null);
-                    setPreviewInvoices([]);
-                  }}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  ×
-                </button>
-              </div>
-
-              <div className="space-y-4">
-                {previewInvoices.map(invoice => (
-                  <div key={invoice.id} className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <div className="font-medium">Invoice #{invoice.id.slice(0, 8)}</div>
-                        <div className="text-sm text-gray-600">{invoice.patient_name}</div>
-                        <div className="text-sm text-gray-500">
-                          {new Date(invoice.invoice_date).toLocaleDateString()}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="font-bold text-green-600">
-                          {formatCurrency(invoice.total_after_discount || invoice.total)}
-                        </div>
-                        <div className="text-sm text-gray-500">
-                          Status: {invoice.status}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-6 pt-4 border-t border-gray-200">
-                <div className="flex justify-between items-center">
-                  <div className="font-medium">
-                    Total: {previewInvoices.length} invoices
-                  </div>
-                  <div className="font-bold text-lg text-green-600">
-                    {formatCurrency(
-                      previewInvoices.reduce((sum, inv) => sum + (inv.total_after_discount || inv.total), 0)
-                    )}
-                  </div>
-                </div>
-              </div>
+            <div className="flex justify-between items-center px-5 py-3 border-t border-gray-100 text-sm">
+              <span className="text-gray-500">
+                Total billed: <strong>{formatCurrency(historyAccount.allConsolidated.reduce((s: number, ci: any) => s + ci.total_amount, 0))}</strong>
+              </span>
+              <button onClick={() => setHistoryAccount(null)} className="px-4 py-1.5 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">
+                Close
+              </button>
             </div>
           </div>
-        )
-      }
-      {/* Payment Modal */}
-      {
-        showPaymentModal && (() => {
-          const summary = accountSummaries.find(s => s.account.id === showPaymentModal);
-          return summary ? (
-            <ReceivePaymentModal
-              accountId={summary.account.id}
-              accountName={summary.account.name}
-              currentBalance={summary.totalAmount} // Note: Real balance should come from ledger, here using current period due
-              onClose={() => setShowPaymentModal(null)}
-              onSuccess={() => {
-                loadPeriodData();
-                alert('Payment recorded successfully');
-              }}
-            />
-          ) : null;
-        })()
-      }
-    </div >
+        </div>
+      )}
+
+      {/* ── Payment Modal ── */}
+      {showPaymentModal && (() => {
+        const summary = accountSummaries.find(s => s.account.id === showPaymentModal);
+        return summary ? (
+          <ReceivePaymentModal
+            accountId={summary.account.id}
+            accountName={summary.account.name}
+            currentBalance={summary.consolidatedInvoice ? (summary.consolidatedInvoice as any).total_amount : summary.totalAmount}
+            onClose={() => setShowPaymentModal(null)}
+            onSuccess={() => { loadPeriodData(); setShowPaymentModal(null); }}
+          />
+        ) : null;
+      })()}
+    </div>
   );
 };
 

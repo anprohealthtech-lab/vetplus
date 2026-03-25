@@ -88,6 +88,28 @@ const parseFormulaVars = (fv: string[] | string | null | undefined): string[] =>
   try { return JSON.parse(fv).filter(Boolean); } catch { return []; }
 };
 
+// Derives a short variable slug from an analyte name (mirrors SimpleAnalyteEditor logic).
+// Used as a fallback lookup key so formulas still resolve even if the dependency
+// was linked to a different analyte UUID with the same name.
+const toVariableSlug = (name: string): string => {
+  const abbrevMap: Record<string, string> = {
+    'total cholesterol': 'TC', 'hdl cholesterol': 'HDL', 'ldl cholesterol': 'LDL',
+    'triglycerides': 'TG', 'hemoglobin': 'HGB', 'hematocrit': 'HCT',
+    'red blood cell': 'RBC', 'white blood cell': 'WBC', 'platelet': 'PLT',
+    'mean corpuscular volume': 'MCV', 'mean corpuscular hemoglobin': 'MCH',
+    'albumin': 'ALB', 'globulin': 'GLOB', 'total protein': 'TP',
+    'creatinine': 'CREAT', 'blood urea nitrogen': 'BUN', 'urea': 'UREA',
+    'glucose': 'GLU', 'calcium': 'CA', 'sodium': 'NA', 'potassium': 'K',
+  };
+  const lower = name.toLowerCase();
+  for (const [full, abbrev] of Object.entries(abbrevMap)) {
+    if (lower.includes(full)) return abbrev.toLowerCase();
+  }
+  const words = name.replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/);
+  if (words.length === 1) return words[0].substring(0, 4).toLowerCase();
+  return words.map(w => w.substring(0, 3)).join('').toLowerCase().substring(0, 6);
+};
+
 function evalFormula(
   formula: string,
   vars: string[],
@@ -140,8 +162,6 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
   // result row IDs per test_group_id — needed to render SectionEditor
   const [resultIds, setResultIds] = useState<Map<string, string>>(new Map());
-  // test_group_ids whose sections already have saved content (hide from modal)
-  const [sectionsAlreadySaved, setSectionsAlreadySaved] = useState<Set<string>>(new Set());
 
   // Flat refs for every value input/select in render order (for keyboard nav)
   const valueRefs = useRef<(HTMLInputElement | HTMLSelectElement | null)[]>([]);
@@ -330,21 +350,6 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 
       setResultIds(resultIdMap);
 
-      // Check which groups already have saved section content — hide those from modal
-      if (resultIdMap.size > 0) {
-        const { data: existingContent } = await supabase
-          .from('result_section_content')
-          .select('result_id')
-          .in('result_id', Array.from(resultIdMap.values()));
-        if (existingContent?.length) {
-          const savedResultIds = new Set(existingContent.map((c: any) => c.result_id));
-          const alreadySaved = new Set<string>();
-          for (const [tgId, rId] of resultIdMap.entries()) {
-            if (savedResultIds.has(rId)) alreadySaved.add(tgId);
-          }
-          setSectionsAlreadySaved(alreadySaved);
-        }
-      }
 
       // Build flat rows
       const flat: AnalyteRow[] = merged.flatMap(tg =>
@@ -416,6 +421,10 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         if (num !== null) {
           if (r.analyte_id) lookup.set(r.analyte_id, num);
           lookup.set(r.parameter.toLowerCase(), num);
+          // Slug-based key (e.g. "Total Cholesterol" → "tc") so formula
+          // variables still resolve even when the dependency UUID points to
+          // a different copy of an analyte with the same name.
+          lookup.set(toVariableSlug(r.parameter), num);
         }
       }
 
@@ -513,14 +522,28 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       // Prefetch existing result rows for key-based dedup
       const { data: existingRows } = await supabase
         .from("results")
-        .select("id, test_group_id, order_test_group_id, order_test_id")
+        .select("id, test_group_id, order_test_group_id, order_test_id, status, verification_status")
         .eq("order_id", order.id);
 
       const existingByKey = new Map<string, string>();
+      const existingStatusByKey = new Map<string, string>();
+      const isLockedStatus = (status: string | null, verificationStatus: string | null) =>
+        ['Approved', 'Reviewed', 'Reported', 'approved', 'verified'].includes(status || '') ||
+        ['verified'].includes(verificationStatus || '');
       for (const row of existingRows || []) {
-        if (row.order_test_group_id) existingByKey.set(`otg:${row.order_test_group_id}`, row.id);
-        if (row.order_test_id) existingByKey.set(`ot:${row.order_test_id}`, row.id);
-        if (row.test_group_id) existingByKey.set(`tg:${row.test_group_id}`, row.id);
+        const locked = isLockedStatus(row.status, row.verification_status) ? 'LOCKED' : row.status;
+        if (row.order_test_group_id) {
+          existingByKey.set(`otg:${row.order_test_group_id}`, row.id);
+          existingStatusByKey.set(`otg:${row.order_test_group_id}`, locked);
+        }
+        if (row.order_test_id) {
+          existingByKey.set(`ot:${row.order_test_id}`, row.id);
+          existingStatusByKey.set(`ot:${row.order_test_id}`, locked);
+        }
+        if (row.test_group_id) {
+          existingByKey.set(`tg:${row.test_group_id}`, row.id);
+          existingStatusByKey.set(`tg:${row.test_group_id}`, locked);
+        }
       }
 
       // Use pre-loaded analyte_dependencies (loaded at initial data fetch)
@@ -611,6 +634,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         const groupKey = getGroupKey(tg);
         let resultRowId = existingByKey.get(groupKey) || null;
 
+
         if (!resultRowId) {
           const { data: saved, error: re } = await supabase
             .from("results")
@@ -628,12 +652,18 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
               ...(tg.order_test_group_id && { order_test_group_id: tg.order_test_group_id }),
               ...(tg.order_test_id && { order_test_id: tg.order_test_id }),
             }, { onConflict: "order_id,test_name", ignoreDuplicates: false })
-            .select()
+            .select("id, status, verification_status")
             .single();
           if (re) throw re;
           resultRowId = saved.id;
           existingByKey.set(groupKey, resultRowId);
+          const savedLocked = isLockedStatus(saved.status, saved.verification_status) ? 'LOCKED' : saved.status;
+          existingStatusByKey.set(groupKey, savedLocked);
         }
+
+        // Skip groups whose result is already approved/verified — do not overwrite locked results
+        const existingStatus = existingStatusByKey.get(groupKey);
+        if (existingStatus === 'LOCKED') continue;
 
         // Delete + re-insert result_values for these analytes
         // Use analyte_id (UUID) for the filter — analyte names may contain characters like "(%)"
@@ -883,8 +913,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                   </tbody>
                 </table>
 
-                {/* Report Sections (technician-editable) — hidden if already saved from a previous session */}
-                {resultIds.get(tg.test_group_id) && !sectionsAlreadySaved.has(tg.test_group_id) && (
+                {/* Report Sections (technician-editable) */}
+                {resultIds.get(tg.test_group_id) && (
                   <div className="border-t border-blue-100 bg-blue-50/30 px-4 py-3">
                     <SectionEditor
                       ref={getSectionEditorRef(tg.test_group_id)}

@@ -324,7 +324,7 @@ function determineNumericFlag(
     };
   }
 
-  if (lowCritical !== null && numValue <= lowCritical) {
+  if (lowCritical !== null && numValue < lowCritical) {
     return {
       flag: "critical_low",
       source: "auto_numeric",

@@ -23,6 +23,7 @@ import {
   Truck
 } from 'lucide-react';
 import { database, supabase, formatAge, LabPatientFieldConfig } from '../../utils/supabase';
+import { notificationTriggerService, formatName } from '../../utils/notificationTriggerService';
 import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
 import { getLabCurrency } from '../../utils/currency';
 import {
@@ -499,6 +500,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   // New patient modal
   const [showNewPatientModal, setShowNewPatientModal] = useState<boolean>(false);
   const [creatingPatient, setCreatingPatient] = useState<boolean>(false);
+  const [nameCaseFormat, setNameCaseFormat] = useState<'proper' | 'upper'>('proper');
   const [newPatient, setNewPatient] = useState<{
     name: string;
     age: string;
@@ -561,6 +563,16 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     return { age: String(Math.floor(diffDays / 365.25)), age_unit: 'years' };
   };
 
+  // Load name case format from lab notification settings
+  useEffect(() => {
+    database.getCurrentUserLabId().then(labId => {
+      if (!labId) return;
+      notificationTriggerService.getSettings(labId).then(s => {
+        if (s?.name_case_format) setNameCaseFormat(s.name_case_format);
+      });
+    }).catch(() => {});
+  }, []);
+
   // Pre-fill from Booking Data
   useEffect(() => {
     if (initialBookingData) {
@@ -593,8 +605,18 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         // You might set a note or handle home collection specific logic here if fields exist
         setNotes(`Home Collection Address: ${initialBookingData.home_collection_address.address}, ${initialBookingData.home_collection_address.city}`);
       }
+
+      // 4. B2B Account — auto-select bill-to account and set payment type to credit
+      if (initialBookingData.account_id && accounts.length > 0) {
+        const matchedAccount = accounts.find((a) => a.id === initialBookingData.account_id);
+        if (matchedAccount) {
+          setSelectedAccount(matchedAccount.id);
+          setAccountSearch(matchedAccount.name);
+          setPaymentType('credit');
+        }
+      }
     }
-  }, [initialBookingData]);
+  }, [initialBookingData, accounts]);
 
   // ✅ OPTIMIZED: Search patients on-demand instead of preloading all
   const searchPatients = async (query: string) => {
@@ -1935,7 +1957,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     {!selectedPatient && (
                       <button
                         type="button"
-                        onClick={() => setShowNewPatientModal(true)}
+                        onClick={() => { npResetNameFields(); setNewPatient({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', dob: '' }); setShowNewPatientModal(true); }}
                         className="px-3 py-2 text-sm bg-blue-50 text-blue-700 rounded-md hover:bg-blue-100 whitespace-nowrap"
                       >
                         <span className="inline-flex items-center gap-1">
@@ -3030,7 +3052,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 try {
                   setCreatingPatient(true);
                   const payload: any = {
-                    name: (npGetFullName() || newPatient.name).trim(),
+                    name: formatName((npGetFullName() || newPatient.name).trim(), nameCaseFormat),
                     age: parseInt(newPatient.age, 10),
                     age_unit: newPatient.age_unit,
                     gender: newPatient.gender,

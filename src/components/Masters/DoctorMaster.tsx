@@ -2,12 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Search, Edit, Trash2, Save, X, UserCheck, Building, Phone, Mail, FileText } from 'lucide-react';
 import { database } from '../../utils/supabase';
 import { Doctor } from '../../types';
+import { notificationTriggerService, formatName } from '../../utils/notificationTriggerService';
 
 interface DoctorFormData {
   name: string;
   license_number: string;
   specialization: string;
   phone: string;
+  hospital_phone: string;
   email: string;
   hospital: string;
   address: string;
@@ -20,6 +22,7 @@ const initialFormData: DoctorFormData = {
   license_number: '',
   specialization: '',
   phone: '',
+  hospital_phone: '',
   email: '',
   hospital: '',
   address: '',
@@ -36,11 +39,22 @@ const DoctorMaster: React.FC = () => {
   const [formData, setFormData] = useState<DoctorFormData>(initialFormData);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [nameCaseFormat, setNameCaseFormat] = useState<'proper' | 'upper'>('proper');
 
   // Load doctors on component mount
   useEffect(() => {
     loadDoctors();
+    loadNameFormat();
   }, []);
+
+  const loadNameFormat = async () => {
+    try {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) return;
+      const s = await notificationTriggerService.getSettings(labId);
+      if (s?.name_case_format) setNameCaseFormat(s.name_case_format);
+    } catch { /* non-critical */ }
+  };
 
   const loadDoctors = async () => {
     setLoading(true);
@@ -90,6 +104,7 @@ const DoctorMaster: React.FC = () => {
       license_number: doctor.license_number || '',
       specialization: doctor.specialization || '',
       phone: doctor.phone || '',
+      hospital_phone: doctor.hospital_phone || '',
       email: doctor.email || '',
       hospital: doctor.hospital || '',
       address: doctor.address || '',
@@ -106,16 +121,17 @@ const DoctorMaster: React.FC = () => {
     setError(null);
 
     try {
+      const submitData = { ...formData, name: formatName(formData.name, nameCaseFormat) };
       if (editingDoctor) {
         // Update existing doctor
-        const { data, error } = await database.doctors.update(editingDoctor.id, formData);
+        const { data, error } = await database.doctors.update(editingDoctor.id, submitData);
         if (error) throw error;
         
         // Update local state
         setDoctors(prev => prev.map(d => d.id === editingDoctor.id ? { ...d, ...data } : d));
       } else {
         // Create new doctor
-        const { data, error } = await database.doctors.create(formData);
+        const { data, error } = await database.doctors.create(submitData);
         if (error) throw error;
         
         // Add to local state
@@ -277,12 +293,26 @@ const DoctorMaster: React.FC = () => {
                 {/* Phone */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Phone Number
+                    Doctor's Phone Number
                   </label>
                   <input
                     type="tel"
                     value={formData.phone}
                     onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="+91 98765 43210"
+                  />
+                </div>
+
+                {/* Hospital Phone */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Hospital Phone Number
+                  </label>
+                  <input
+                    type="tel"
+                    value={formData.hospital_phone}
+                    onChange={(e) => setFormData({ ...formData, hospital_phone: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     placeholder="+91 98765 43210"
                   />
@@ -453,7 +483,13 @@ const DoctorMaster: React.FC = () => {
                           {doctor.phone && (
                             <div className="flex items-center gap-1 mb-1">
                               <Phone className="h-3 w-3 text-gray-400" />
-                              {doctor.phone}
+                              <span title="Doctor">{doctor.phone}</span>
+                            </div>
+                          )}
+                          {doctor.hospital_phone && (
+                            <div className="flex items-center gap-1 mb-1">
+                              <Phone className="h-3 w-3 text-blue-400" />
+                              <span className="text-gray-500" title="Hospital">{doctor.hospital_phone}</span>
                             </div>
                           )}
                           {doctor.email && (

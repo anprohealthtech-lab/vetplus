@@ -7,6 +7,7 @@ import InvoiceForm from '../components/Billing/InvoiceForm';
 import MarkAsPaidModal from '../components/Billing/MarkAsPaidModal';
 import CashReconciliation from '../components/Billing/CashReconciliation';
 import MonthlyAccountBilling from '../components/Billing/MonthlyAccountBilling';
+import B2BAccountDashboard from '../components/Billing/B2BAccountDashboard';
 import RefundRequestModal from '../components/Billing/RefundRequestModal';
 import RefundApprovalConsole from '../components/Billing/RefundApprovalConsole';
 import InvoiceGenerationModal from '../components/Billing/InvoiceGenerationModal';
@@ -56,6 +57,8 @@ interface Invoice {
   dueDate?: string;
   tests?: { name: string; price: number }[];
   orders?: { sample_id: string } | null;
+  pdf_url?: string;
+  pdf_generated_at?: string;
 }
 
 const Billing: React.FC = () => {
@@ -360,6 +363,7 @@ const Billing: React.FC = () => {
   const renderContent = () => {
     if (view === 'cash-reconciliation') return <CashReconciliation />;
     if (view === 'b2b-monthly') return <MonthlyAccountBilling />;
+    if (view === 'b2b-accounts') return <B2BAccountDashboard />;
     if (view === 'refund-approvals') return <RefundApprovalConsole />;
 
     // Render the existing invoices UI
@@ -687,7 +691,7 @@ const Billing: React.FC = () => {
                             {/* View PDF (if exists) */}
                             {invoice.pdf_url && (
                               <button
-                                onClick={() => window.open(invoice.pdf_url, '_blank')}
+                                onClick={() => window.open(`${invoice.pdf_url}?t=${invoice.pdf_generated_at ? new Date(invoice.pdf_generated_at).getTime() : Date.now()}`, '_blank')}
                                 className="text-indigo-600 hover:text-indigo-900 p-1 rounded"
                                 title="View Generated PDF"
                               >
@@ -784,6 +788,18 @@ const Billing: React.FC = () => {
           >
             <Building className="w-4 h-4" />
             B2B Monthly
+          </button>
+          <button
+            onClick={() => {
+              const params = new URLSearchParams(searchParams);
+              params.set('view', 'b2b-accounts');
+              setSearchParams(params);
+            }}
+            className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${view === 'b2b-accounts' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+          >
+            <TrendingUp className="w-4 h-4" />
+            B2B Accounts
           </button>
           <button
             onClick={() => {

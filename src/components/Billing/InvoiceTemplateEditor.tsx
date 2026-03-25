@@ -28,6 +28,7 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
     category: '',
     gjs_html: '',
     gjs_css: '',
+    page_size: 'A4' as 'A4' | 'A5' | 'Letter',
   });
 
   // Load CKEditor from CDN
@@ -187,6 +188,7 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
         category: data.category || '',
         gjs_html: data.gjs_html || '',
         gjs_css: data.gjs_css || '',
+        page_size: (data.page_size as 'A4' | 'A5' | 'Letter') || 'A4',
       });
     } catch (err: any) {
       console.error('Error loading template:', err);
@@ -204,6 +206,7 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
       const { error: err } = await database.invoiceTemplates.update(templateId, {
         gjs_html: templateData.gjs_html,
         gjs_css: templateData.gjs_css,
+        page_size: templateData.page_size,
         updated_at: new Date().toISOString(),
       });
 
@@ -410,6 +413,20 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
             <Eye className="w-4 h-4" />
             <span>Preview with Data</span>
           </button>
+
+          {/* Page Size selector — lives in the tab bar, right side */}
+          <div className="ml-auto flex items-center gap-2 pb-1">
+            <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Page Size:</label>
+            <select
+              value={templateData.page_size}
+              onChange={(e) => setTemplateData(prev => ({ ...prev, page_size: e.target.value as 'A4' | 'A5' | 'Letter' }))}
+              className="text-sm border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="A4">A4 — Full Page</option>
+              <option value="A5">A5 — Half Page</option>
+              <option value="Letter">Letter (US)</option>
+            </select>
+          </div>
         </div>
 
         {/* Editor Content */}

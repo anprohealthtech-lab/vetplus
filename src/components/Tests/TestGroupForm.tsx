@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCircle, Brain, Building2, Edit, Sparkles, FileText, Code, RefreshCw } from 'lucide-react';
+import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCircle, Brain, Building2, Edit, Sparkles, FileText, Code, RefreshCw, Calculator } from 'lucide-react';
 
 const CKEDITOR_VERSION = '47.1.0';
 const CKEDITOR_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.umd.js`;
@@ -445,8 +445,14 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       });
       if (fnError) throw new Error(fnError.message);
       if (!data?.success) throw new Error(data?.error || 'Sync failed');
-      const msg = `Synced: ${data.analytesAdded} analytes added${data.interpretationSynced ? ', interpretation updated' : ''}`;
+      const parts = [];
+      if (data.analytesAdded) parts.push(`${data.analytesAdded} added`);
+      if (data.analytesUpdated) parts.push(`${data.analytesUpdated} updated`);
+      if (data.interpretationSynced) parts.push('interpretation updated');
+      const msg = parts.length ? `Synced: ${parts.join(', ')}` : 'Synced: already up to date';
       setSyncGlobalResult(msg);
+      // Refresh metadata so sort_order and section_heading populate from the DB
+      await loadData();
     } catch (err: any) {
       setSyncGlobalResult(`Error: ${err.message}`);
     } finally {
@@ -1166,15 +1172,13 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                       <Code className="h-3 w-3" /> HTML
                     </button>
                   </div>
-                  {/* Visual (CKEditor) tab */}
-                  {interpTab === 'visual' && (
-                    <div className="border border-purple-200 rounded bg-white">
-                      {!interpCkLoaded && (
-                        <div className="flex items-center justify-center h-24 text-sm text-gray-400">Loading editor…</div>
-                      )}
-                      <div ref={interpEditorRef} style={{ display: interpCkLoaded ? 'block' : 'none' }} />
-                    </div>
-                  )}
+                  {/* Visual (CKEditor) tab — always mounted so CKEditor stays bound to its DOM node */}
+                  <div style={{ display: interpTab === 'visual' ? 'block' : 'none' }} className="border border-purple-200 rounded bg-white">
+                    {!interpCkLoaded && (
+                      <div className="flex items-center justify-center h-24 text-sm text-gray-400">Loading editor…</div>
+                    )}
+                    <div ref={interpEditorRef} style={{ display: interpCkLoaded ? 'block' : 'none' }} />
+                  </div>
                   {/* HTML tab */}
                   {interpTab === 'html' && (
                     <textarea
@@ -1422,7 +1426,15 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                       className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded mt-1"
                     />
                     <div className="ml-3 flex-1">
-                      <div className="text-sm font-medium text-gray-900">{analyte.name}</div>
+                      <div className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                        {analyte.name}
+                        {analyte.is_calculated && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-100 text-amber-700 text-xs font-medium rounded border border-amber-300">
+                            <Calculator className="w-3 h-3" />
+                            Calc
+                          </span>
+                        )}
+                      </div>
                       <div className="text-xs text-gray-500 mt-1">
                         Unit: {analyte.unit} • Range: {analyte.referenceRange}
                       </div>
@@ -1438,7 +1450,44 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             {/* Selected Analytes Summary */}
             {formData.selectedAnalytes.length > 0 && (
               <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                <h4 className="font-medium text-green-900 mb-2">Selected Analytes ({formData.selectedAnalytes.length})</h4>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="font-medium text-green-900">Selected Analytes ({formData.selectedAnalytes.length})</h4>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirm(`Remove all ${formData.selectedAnalytes.length} analytes from this test group?`)) {
+                          setFormData(prev => ({ ...prev, selectedAnalytes: [] }));
+                          setAnalyteMetadata({});
+                        }
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 border border-red-300 text-red-600 rounded hover:bg-red-50 transition-colors text-xs"
+                      title="Remove all analytes from this test group"
+                    >
+                      <X className="h-3 w-3" />
+                      Remove All
+                    </button>
+                    {testGroup?.id && (
+                      <div className="flex flex-col items-end">
+                        <button
+                          type="button"
+                          onClick={handleSyncFromGlobal}
+                          disabled={syncingGlobal}
+                          className="flex items-center gap-1 px-2 py-1 border border-blue-300 text-blue-700 rounded hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-xs"
+                          title="Pull sort order & section headings from global catalog"
+                        >
+                          <RefreshCw className={`h-3 w-3 ${syncingGlobal ? 'animate-spin' : ''}`} />
+                          {syncingGlobal ? 'Syncing...' : 'Sync from Global'}
+                        </button>
+                        {syncGlobalResult && (
+                          <span className={`text-xs mt-1 ${syncGlobalResult.startsWith('Error') ? 'text-red-500' : 'text-green-600'}`}>
+                            {syncGlobalResult}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <p className="text-xs text-gray-500 mb-3">Set sort order and optional section sub-headings for PDF report grouping.</p>
                 <div className="space-y-2">
                   {selectedAnalyteDetails.map((analyte) => {
@@ -1658,6 +1707,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 availableAnalytes={analytes
                   .filter(a => !a.is_calculated && a.id !== editingAttachedAnalyte.id)
                   .map(a => ({ id: a.id, name: a.name, unit: a.unit || '', category: a.category }))}
+                testGroupAnalyteIds={formData.selectedAnalytes.filter((id: string) => id !== editingAttachedAnalyte.id)}
                 onSave={handleUpdateAttachedAnalyte}
                 onCancel={() => setEditingAttachedAnalyte(null)}
             />

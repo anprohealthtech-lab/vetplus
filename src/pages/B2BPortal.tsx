@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle, X, Clock, User, Phone, Trash2 } from 'lucide-react';
+import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle, X, Clock, User, Phone, Trash2, Printer, FileText } from 'lucide-react';
 import { supabase } from '../utils/supabase';
 import { getCurrentB2BAccount } from '../utils/b2bAuth';
 import AccountInfoCard from '../components/B2B/AccountInfoCard';
@@ -19,12 +19,13 @@ interface Order {
     sample_id?: string;
     color_code?: string;
     color_name?: string;
-    reports?: Array<{
+    reports?: {
         id: string;
         pdf_url?: string;
+        print_pdf_url?: string;
         status: string;
         generated_date?: string;
-    }>;
+    } | null;
 }
 
 const B2BPortal: React.FC = () => {
@@ -70,7 +71,7 @@ const B2BPortal: React.FC = () => {
                 .from('orders')
                 .select(`
                     *,
-                    reports(id, pdf_url, status, generated_date)
+                    reports(id, pdf_url, print_pdf_url, status, generated_date)
                 `)
                 .eq('account_id', accountData.id)
                 .order('order_date', { ascending: false });
@@ -439,17 +440,32 @@ const B2BPortal: React.FC = () => {
                                                 </div>
                                             </td>
                                             <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                                <div className="flex items-center space-x-2">
-                                                    {order.reports && order.reports.length > 0 && order.reports[0].pdf_url ? (
-                                                        <button
-                                                            onClick={() => handleDownloadReport(order.reports![0].pdf_url!)}
-                                                            className="flex items-center px-3 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200 transition-colors"
-                                                        >
-                                                            <Download className="h-4 w-4 mr-1" />
-                                                            Report
-                                                        </button>
+                                                <div className="flex items-center space-x-1.5">
+                                                    {order.reports?.pdf_url ? (
+                                                        <>
+                                                            {/* E-Copy (digital PDF) */}
+                                                            <button
+                                                                onClick={() => handleDownloadReport(order.reports!.pdf_url!)}
+                                                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 transition-colors"
+                                                                title="Download E-Copy (digital PDF)"
+                                                            >
+                                                                <FileText className="h-3.5 w-3.5" />
+                                                                E-Copy
+                                                            </button>
+                                                            {/* Print version */}
+                                                            <button
+                                                                onClick={() => {
+                                                                    const url = order.reports!.print_pdf_url || order.reports!.pdf_url!;
+                                                                    handleDownloadReport(url);
+                                                                }}
+                                                                className="inline-flex items-center justify-center p-1.5 text-xs font-medium rounded-lg text-white bg-emerald-700 hover:bg-emerald-800 transition-colors"
+                                                                title={order.reports!.print_pdf_url ? "Print Version (letterhead)" : "Print (opens report PDF)"}
+                                                            >
+                                                                <Printer className="h-3.5 w-3.5" />
+                                                            </button>
+                                                        </>
                                                     ) : (
-                                                        <span className="text-gray-400 text-xs">Report pending</span>
+                                                        <span className="text-gray-400 text-xs italic">Report pending</span>
                                                     )}
                                                 </div>
                                             </td>
@@ -465,6 +481,7 @@ const B2BPortal: React.FC = () => {
             {showBookingModal && account && (
                 <B2BBookingModal
                     accountId={account.id}
+                    labId={account.lab_id}
                     onClose={() => setShowBookingModal(false)}
                     onSuccess={() => {
                         loadData();

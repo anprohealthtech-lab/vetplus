@@ -88,6 +88,7 @@ export interface InvoiceTemplate {
     upi_id?: string;
   };
   tax_disclaimer?: string;
+  page_size?: 'A4' | 'A5' | 'Letter';
   // Thermal printer support
   format_type?: 'a4' | 'thermal_80mm' | 'thermal_58mm';
   print_mode?: 'pdf' | 'thermal' | 'both';
@@ -147,7 +148,8 @@ export async function generateInvoicePDF(
       htmlBundle,
       invoice.invoice_number,
       invoiceId,
-      invoice.lab_id
+      invoice.lab_id,
+      template.page_size || 'A4'
     );
 
     // 7. Update invoice record
@@ -179,7 +181,7 @@ export async function generateConsolidatedInvoicePDF(
     const html = buildConsolidatedInvoiceHtml(data, lab);
 
     // 4. Generate PDF via Edge Function
-    const filename = `CONSOLIDATED-${data.billing_period}-${data.account_name.replace(/\s+/g, '-')}`;
+    const filename = `CONSOLIDATED-${data.billing_period}-${(data.account_name || 'Account').replace(/\s+/g, '-')}`;
     const pdfUrl = await callEdgeFunctionPdfGeneration(
       html,
       filename,
@@ -199,10 +201,10 @@ export async function generateConsolidatedInvoicePDF(
 async function fetchConsolidatedInvoiceData(id: string) {
   const { data: consolidated, error } = await supabase
     .from('consolidated_invoices')
-    .select('*')
+    .select('*, account:accounts(name, address, phone, email, gst_number)')
     .eq('id', id)
     .single();
-  
+
   if (error || !consolidated) return null;
 
   // Fetch linked invoices
@@ -210,94 +212,144 @@ async function fetchConsolidatedInvoiceData(id: string) {
     .from('invoices')
     .select('*, patient:patients(name)')
     .eq('consolidated_invoice_id', id)
-    .order('created_at');
+    .order('invoice_date');
 
-  return { ...consolidated, invoices: invoices || [] };
+  // Normalize field names for template consumption
+  const normalized = {
+    ...consolidated,
+    account_name: consolidated.account?.name || 'Account',
+    account_address: consolidated.account?.address || '',
+    account_phone: consolidated.account?.phone || '',
+    account_gst: consolidated.account?.gst_number || '',
+    // billing_period_start is YYYY-MM-DD, derive readable period
+    billing_period: (() => {
+      const d = new Date(consolidated.billing_period_start);
+      return d.toLocaleDateString('en-IN', { year: 'numeric', month: 'long' });
+    })(),
+    // Map DB column names to template names
+    total_discount: consolidated.discount_amount || 0,
+    tax: consolidated.tax_amount || 0,
+    total: consolidated.total_amount || 0,
+    invoices: invoices || [],
+  };
+
+  return normalized;
 }
 
 function buildConsolidatedInvoiceHtml(data: any, lab: any): string {
-  const rows = data.invoices.map((inv: any, index: number) => `
+  const fmt = (n: any) => `₹${(parseFloat(n) || 0).toFixed(2)}`;
+  const fmtDate = (d: string) => new Date(d).toLocaleDateString('en-IN');
+
+  const rows = (data.invoices || []).map((inv: any, index: number) => `
     <tr>
       <td>${index + 1}</td>
-      <td>${new Date(inv.invoice_date).toLocaleDateString()}</td>
+      <td>${fmtDate(inv.invoice_date)}</td>
       <td>${inv.invoice_number || '-'}</td>
-      <td>${inv.patient?.name || 'Unknown'}</td>
-      <td style="text-align: right;">₹${inv.subtotal.toFixed(2)}</td>
-      <td style="text-align: right;">₹${inv.total_discount.toFixed(2)}</td>
-      <td style="text-align: right;">₹${inv.tax.toFixed(2)}</td>
-      <td style="text-align: right;">₹${inv.total.toFixed(2)}</td>
+      <td>${inv.patient?.name || inv.patient_name || 'Unknown'}</td>
+      <td style="text-align:right">${fmt(inv.subtotal)}</td>
+      <td style="text-align:right">${fmt(inv.total_discount)}</td>
+      <td style="text-align:right">${fmt(inv.tax)}</td>
+      <td style="text-align:right"><strong>${fmt(inv.total)}</strong></td>
     </tr>
   `).join('');
 
-  return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body { font-family: Arial, sans-serif; padding: 20px; }
-        .header { text-align: center; margin-bottom: 30px; }
-        .title { text-align: right; margin-bottom: 20px; }
-        .meta { display: flex; justify-content: space-between; margin-bottom: 20px; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #f5f5f5; }
-        .totals { margin-left: auto; width: 300px; }
-        .footer { margin-top: 40px; font-size: 12px; color: #666; text-align: center; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>${lab?.name || 'Lab Report'}</h1>
-        <p>${lab?.address || ''}</p>
-        <p>Phone: ${lab?.phone || ''} | Email: ${lab?.email || ''}</p>
-      </div>
+  const periodEnd = fmtDate(data.billing_period_end);
+  const dueDate = data.due_date ? fmtDate(data.due_date) : '-';
 
-      <div class="title">
-        <h2>CONSOLIDATED INVOICE</h2>
-        <p><strong>Period:</strong> ${data.billing_period}</p>
-        <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
-      </div>
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; font-size: 13px; color: #222; padding: 32px; }
+  .top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; }
+  .lab-name { font-size: 20px; font-weight: bold; color: #1a56db; }
+  .lab-sub { font-size: 12px; color: #555; margin-top: 4px; }
+  .inv-title { text-align: right; }
+  .inv-title h2 { font-size: 18px; color: #1a56db; letter-spacing: 1px; }
+  .inv-title p { font-size: 12px; color: #555; margin-top: 3px; }
+  .parties { display: flex; justify-content: space-between; background: #f8f9fa; border: 1px solid #e5e7eb; border-radius: 6px; padding: 16px; margin-bottom: 24px; }
+  .party h4 { font-size: 11px; text-transform: uppercase; color: #888; margin-bottom: 6px; letter-spacing: 0.5px; }
+  .party p { font-size: 13px; }
+  .party .name { font-weight: bold; font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
+  thead tr { background: #1a56db; color: white; }
+  th { padding: 9px 10px; text-align: left; font-weight: 600; }
+  td { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
+  tbody tr:nth-child(even) { background: #fafafa; }
+  .totals-wrap { display: flex; justify-content: flex-end; }
+  .totals { width: 300px; border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; }
+  .totals table { margin: 0; font-size: 13px; }
+  .totals td { border-bottom: 1px solid #f0f0f0; padding: 8px 12px; }
+  .totals .grand { background: #1a56db; color: white; font-size: 14px; font-weight: bold; }
+  .footer { margin-top: 40px; text-align: center; font-size: 11px; color: #999; border-top: 1px solid #eee; padding-top: 12px; }
+  .badge { display: inline-block; background: #dcfce7; color: #166534; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: bold; }
+</style>
+</head>
+<body>
 
-      <div class="meta">
-        <div>
-          <h3>Bill To:</h3>
-          <p><strong>${data.account_name}</strong></p>
-        </div>
-      </div>
+<div class="top">
+  <div>
+    <div class="lab-name">${lab?.name || 'Laboratory'}</div>
+    <div class="lab-sub">${lab?.address || ''}</div>
+    <div class="lab-sub">Ph: ${lab?.phone || ''} &nbsp;|&nbsp; ${lab?.email || ''}</div>
+    ${lab?.gst_number ? `<div class="lab-sub">GST: ${lab.gst_number}</div>` : ''}
+  </div>
+  <div class="inv-title">
+    <h2>CONSOLIDATED INVOICE</h2>
+    <p><strong>${data.invoice_number}</strong></p>
+    <p>Period: <strong>${data.billing_period}</strong></p>
+    <p>Due: <strong>${dueDate}</strong></p>
+    <span class="badge">${(data.status || 'sent').toUpperCase()}</span>
+  </div>
+</div>
 
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Date</th>
-            <th>Invoice #</th>
-            <th>Patient</th>
-            <th>Subtotal</th>
-            <th>Discount</th>
-            <th>Tax</th>
-            <th>Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows}
-        </tbody>
-      </table>
+<div class="parties">
+  <div class="party">
+    <h4>Bill To</h4>
+    <p class="name">${data.account_name}</p>
+    ${data.account_address ? `<p>${data.account_address}</p>` : ''}
+    ${data.account_phone ? `<p>Ph: ${data.account_phone}</p>` : ''}
+    ${data.account_gst ? `<p>GST: ${data.account_gst}</p>` : ''}
+  </div>
+  <div class="party" style="text-align:right">
+    <h4>Period End</h4>
+    <p><strong>${periodEnd}</strong></p>
+    <p style="margin-top:8px;font-size:12px;color:#555">${(data.invoices || []).length} order(s)</p>
+    <p style="font-size:12px;color:#555">${data.notes || ''}</p>
+  </div>
+</div>
 
-      <div class="totals">
-        <table>
-          <tr><td><strong>Subtotal:</strong></td><td style="text-align: right;">₹${data.subtotal.toFixed(2)}</td></tr>
-          <tr><td><strong>Total Discount:</strong></td><td style="text-align: right;">-₹${data.total_discount.toFixed(2)}</td></tr>
-          <tr><td><strong>Tax:</strong></td><td style="text-align: right;">₹${data.tax.toFixed(2)}</td></tr>
-          <tr style="background: #eee; font-size: 1.2em;"><td><strong>Grand Total:</strong></td><td style="text-align: right;"><strong>₹${data.total.toFixed(2)}</strong></td></tr>
-        </table>
-      </div>
+<table>
+  <thead>
+    <tr>
+      <th>#</th><th>Date</th><th>Inv #</th><th>Patient</th>
+      <th style="text-align:right">Subtotal</th>
+      <th style="text-align:right">Discount</th>
+      <th style="text-align:right">Tax</th>
+      <th style="text-align:right">Amount</th>
+    </tr>
+  </thead>
+  <tbody>${rows}</tbody>
+</table>
 
-      <div class="footer">
-        <p>This is a computer-generated summary.</p>
-      </div>
-    </body>
-    </html>
-  `;
+<div class="totals-wrap">
+  <div class="totals">
+    <table>
+      <tr><td>Subtotal</td><td style="text-align:right">${fmt(data.subtotal)}</td></tr>
+      <tr><td>Discount</td><td style="text-align:right">- ${fmt(data.total_discount)}</td></tr>
+      <tr><td>Tax</td><td style="text-align:right">${fmt(data.tax)}</td></tr>
+      <tr class="grand"><td>Grand Total</td><td style="text-align:right">${fmt(data.total)}</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="footer">
+  <p>This is a system-generated consolidated invoice. &nbsp;|&nbsp; ${lab?.name || ''} &nbsp;|&nbsp; Generated: ${new Date().toLocaleDateString('en-IN')}</p>
+</div>
+</body>
+</html>`;
 }
 
 async function fetchInvoiceData(invoiceId: string): Promise<Invoice | null> {
@@ -612,7 +664,8 @@ async function callEdgeFunctionPdfGeneration(
   html: string,
   filename: string,
   invoiceId: string,
-  labId: string
+  labId: string,
+  pageSize: string = 'A4'
 ): Promise<string> {
   // Get auth token for edge function call
   const { data: { session } } = await supabase.auth.getSession();
@@ -632,6 +685,7 @@ async function callEdgeFunctionPdfGeneration(
       filename, // Just the invoice number (e.g., INV-20251218-O001-ABC123), edge function adds .pdf
       invoiceId,
       labId,
+      pageSize,
     }),
   });
 

@@ -13,6 +13,7 @@ import PatientTestHistory from '../components/Patients/PatientTestHistory';
 import PatientMergeModal from '../components/Patients/PatientMergeModal';
 import ViewDuplicatesModal from '../components/Patients/ViewDuplicatesModal';
 import { database, supabase, auth, formatAge } from '../utils/supabase';
+import { notificationTriggerService, formatName } from '../utils/notificationTriggerService';
 
 interface Patient {
   id: string;
@@ -65,11 +66,13 @@ const Patients: React.FC = () => {
   // UI State
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [isGeneratingCodes, setIsGeneratingCodes] = useState(false);
+  const [nameCaseFormat, setNameCaseFormat] = useState<'proper' | 'upper'>('proper');
 
   // Load Data
   React.useEffect(() => {
     loadPatients();
     checkAdminStatus();
+    loadNameFormat();
   }, []);
 
   const checkAdminStatus = async () => {
@@ -79,6 +82,15 @@ const Patients: React.FC = () => {
     } catch (err) {
       console.error('Error checking admin status:', err);
     }
+  };
+
+  const loadNameFormat = async () => {
+    try {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) return;
+      const s = await notificationTriggerService.getSettings(labId);
+      if (s?.name_case_format) setNameCaseFormat(s.name_case_format);
+    } catch { /* non-critical */ }
   };
 
   const loadPatients = async () => {
@@ -155,7 +167,7 @@ const Patients: React.FC = () => {
       const { ocrResults, attachmentId, requestedTests, selectedDoctorId, custom_fields, ...patientDetails } = formData;
 
       const patientData = {
-        name: `${patientDetails.firstName} ${patientDetails.lastName}`.trim(),
+        name: formatName(`${patientDetails.firstName} ${patientDetails.lastName}`.trim(), nameCaseFormat),
         age: parseInt(patientDetails.age),
         age_unit: patientDetails.age_unit || 'years',
         gender: patientDetails.gender,
@@ -202,7 +214,7 @@ const Patients: React.FC = () => {
     if (!selectedPatient) return;
     try {
       const patientData = {
-        name: `${formData.firstName} ${formData.lastName}`.trim(),
+        name: formatName(`${formData.firstName} ${formData.lastName}`.trim(), nameCaseFormat),
         age: parseInt(formData.age),
         age_unit: formData.age_unit || 'years',
         gender: formData.gender,

@@ -104,7 +104,45 @@ export const NotificationTriggerSettings: React.FC = () => {
         send_window_end: '21:00:00',
         queue_outside_window: true,
         max_messages_per_patient_per_day: 10,
+        name_case_format: 'proper',
+        doctor_report_recipients: 'doctor_only',
     });
+
+    // Derive recipient mode from settings (single = only one of patient/doctor; multiple = both)
+    const recipientMode: 'single' | 'multiple' = (
+        settings.auto_send_report_to_patient && settings.auto_send_report_to_doctor
+    ) ? 'multiple' : 'single';
+
+    const singleRecipient: 'patient' | 'doctor' | 'none' =
+        settings.auto_send_report_to_patient ? 'patient'
+        : settings.auto_send_report_to_doctor ? 'doctor'
+        : 'none';
+
+    const handleRecipientModeChange = (mode: 'single' | 'multiple') => {
+        if (mode === 'multiple') {
+            setSettings(prev => ({
+                ...prev,
+                auto_send_report_to_patient: true,
+                auto_send_report_to_doctor: true,
+            }));
+        } else {
+            // Keep whichever was active, default to patient if neither
+            const keepDoctor = settings.auto_send_report_to_doctor && !settings.auto_send_report_to_patient;
+            setSettings(prev => ({
+                ...prev,
+                auto_send_report_to_patient: !keepDoctor,
+                auto_send_report_to_doctor: keepDoctor,
+            }));
+        }
+    };
+
+    const handleSingleRecipientChange = (recipient: 'patient' | 'doctor') => {
+        setSettings(prev => ({
+            ...prev,
+            auto_send_report_to_patient: recipient === 'patient',
+            auto_send_report_to_doctor: recipient === 'doctor',
+        }));
+    };
 
     useEffect(() => {
         loadSettings();
@@ -237,21 +275,136 @@ export const NotificationTriggerSettings: React.FC = () => {
                     <h3 className="text-lg font-medium text-gray-900">Report Notifications</h3>
                 </div>
 
+                {/* Enable toggle */}
                 <SettingRow
                     icon={<Send className="h-5 w-5" />}
-                    title="Auto-send reports to patients"
-                    description="Automatically send the report PDF to patients via WhatsApp when generated"
-                    enabled={settings.auto_send_report_to_patient || false}
-                    onChange={(v) => updateSetting('auto_send_report_to_patient', v)}
-                />
+                    title="Auto-send reports via WhatsApp"
+                    description="Automatically send report PDFs via WhatsApp when generated"
+                    enabled={(settings.auto_send_report_to_patient || settings.auto_send_report_to_doctor) || false}
+                    onChange={(v) => {
+                        if (!v) {
+                            setSettings(prev => ({ ...prev, auto_send_report_to_patient: false, auto_send_report_to_doctor: false }));
+                        } else {
+                            setSettings(prev => ({ ...prev, auto_send_report_to_patient: true, auto_send_report_to_doctor: false }));
+                        }
+                    }}
+                >
+                    {/* Recipients radio */}
+                    <div className="mt-2 space-y-3">
+                        <p className="text-xs font-medium text-gray-700 uppercase tracking-wide">Send to</p>
 
-                <SettingRow
-                    icon={<Stethoscope className="h-5 w-5" />}
-                    title="Auto-send reports to referring doctors"
-                    description="Automatically notify referring doctors when patient reports are ready"
-                    enabled={settings.auto_send_report_to_doctor || false}
-                    onChange={(v) => updateSetting('auto_send_report_to_doctor', v)}
-                />
+                        {/* Mode: single vs multiple */}
+                        <div className="flex items-center gap-6">
+                            <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                    type="radio"
+                                    name="recipient_mode"
+                                    checked={recipientMode === 'single'}
+                                    onChange={() => handleRecipientModeChange('single')}
+                                    className="h-4 w-4 text-blue-600 border-gray-300 focus:ring-blue-500"
+                                />
+                                <span className="text-sm text-gray-700">Single recipient</span>
+                            </label>
+                            <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                    type="radio"
+                                    name="recipient_mode"
+                                    checked={recipientMode === 'multiple'}
+                                    onChange={() => handleRecipientModeChange('multiple')}
+                                    className="h-4 w-4 text-blue-600 border-gray-300 focus:ring-blue-500"
+                                />
+                                <span className="text-sm text-gray-700">Multiple recipients</span>
+                            </label>
+                        </div>
+
+                        {/* Single: pick one */}
+                        {recipientMode === 'single' && (
+                            <div className="flex items-center gap-6 pl-1">
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                    <input
+                                        type="radio"
+                                        name="single_recipient"
+                                        checked={singleRecipient === 'patient'}
+                                        onChange={() => handleSingleRecipientChange('patient')}
+                                        className="h-4 w-4 text-blue-600 border-gray-300 focus:ring-blue-500"
+                                    />
+                                    <span className="text-sm text-gray-700 flex items-center gap-1">
+                                        <Send className="h-3.5 w-3.5 text-gray-400" /> Patient
+                                    </span>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                    <input
+                                        type="radio"
+                                        name="single_recipient"
+                                        checked={singleRecipient === 'doctor'}
+                                        onChange={() => handleSingleRecipientChange('doctor')}
+                                        className="h-4 w-4 text-blue-600 border-gray-300 focus:ring-blue-500"
+                                    />
+                                    <span className="text-sm text-gray-700 flex items-center gap-1">
+                                        <Stethoscope className="h-3.5 w-3.5 text-gray-400" /> Doctor
+                                    </span>
+                                </label>
+                            </div>
+                        )}
+
+                        {/* Multiple: both checkboxes */}
+                        {recipientMode === 'multiple' && (
+                            <div className="space-y-2 pl-1">
+                                <label className="flex items-center gap-2">
+                                    <input
+                                        type="checkbox"
+                                        checked={settings.auto_send_report_to_patient || false}
+                                        onChange={(e) => updateSetting('auto_send_report_to_patient', e.target.checked)}
+                                        className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                                    />
+                                    <span className="text-sm text-gray-700 flex items-center gap-1">
+                                        <Send className="h-3.5 w-3.5 text-gray-400" /> Patient
+                                    </span>
+                                </label>
+                                <label className="flex items-center gap-2">
+                                    <input
+                                        type="checkbox"
+                                        checked={settings.auto_send_report_to_doctor || false}
+                                        onChange={(e) => updateSetting('auto_send_report_to_doctor', e.target.checked)}
+                                        className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                                    />
+                                    <span className="text-sm text-gray-700 flex items-center gap-1">
+                                        <Stethoscope className="h-3.5 w-3.5 text-gray-400" /> Doctor
+                                    </span>
+                                </label>
+                            </div>
+                        )}
+
+                        {/* Doctor number sub-option */}
+                        {settings.auto_send_report_to_doctor && (
+                            <div className="pl-1 pt-1 border-t border-gray-100">
+                                <p className="text-xs font-medium text-gray-700 mb-2">Doctor WhatsApp number</p>
+                                <div className="flex items-center gap-6">
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                        <input
+                                            type="radio"
+                                            name="doctor_recipients"
+                                            checked={(settings.doctor_report_recipients || 'doctor_only') === 'doctor_only'}
+                                            onChange={() => updateSetting('doctor_report_recipients', 'doctor_only')}
+                                            className="h-4 w-4 text-blue-600 border-gray-300 focus:ring-blue-500"
+                                        />
+                                        <span className="text-sm text-gray-700">Doctor's number only</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                        <input
+                                            type="radio"
+                                            name="doctor_recipients"
+                                            checked={settings.doctor_report_recipients === 'both'}
+                                            onChange={() => updateSetting('doctor_report_recipients', 'both')}
+                                            className="h-4 w-4 text-blue-600 border-gray-300 focus:ring-blue-500"
+                                        />
+                                        <span className="text-sm text-gray-700">Doctor + Hospital number</span>
+                                    </label>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </SettingRow>
             </div>
 
             {/* Invoice Notifications */}
@@ -348,6 +501,45 @@ export const NotificationTriggerSettings: React.FC = () => {
                             </span>
                         </label>
                     </div>
+                </div>
+            </div>
+
+            {/* Name Case Format */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <div className="flex items-center space-x-2 mb-4">
+                    <Settings className="h-5 w-5 text-gray-600" />
+                    <h3 className="text-lg font-medium text-gray-900">Name Display Format</h3>
+                </div>
+                <p className="text-sm text-gray-500 mb-4">
+                    Choose how patient and doctor names are formatted when saved.
+                </p>
+                <div className="flex items-center gap-8">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                            type="radio"
+                            name="name_case_format"
+                            checked={(settings.name_case_format || 'proper') === 'proper'}
+                            onChange={() => updateSetting('name_case_format', 'proper')}
+                            className="h-4 w-4 text-blue-600 border-gray-300 focus:ring-blue-500"
+                        />
+                        <div>
+                            <span className="text-sm font-medium text-gray-700">Proper Case</span>
+                            <p className="text-xs text-gray-500">e.g. John Smith</p>
+                        </div>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                            type="radio"
+                            name="name_case_format"
+                            checked={settings.name_case_format === 'upper'}
+                            onChange={() => updateSetting('name_case_format', 'upper')}
+                            className="h-4 w-4 text-blue-600 border-gray-300 focus:ring-blue-500"
+                        />
+                        <div>
+                            <span className="text-sm font-medium text-gray-700">ALL CAPS</span>
+                            <p className="text-xs text-gray-500">e.g. JOHN SMITH</p>
+                        </div>
+                    </label>
                 </div>
             </div>
 

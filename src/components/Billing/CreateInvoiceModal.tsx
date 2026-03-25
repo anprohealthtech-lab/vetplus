@@ -58,7 +58,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
   useEffect(() => {
     // Auto-set invoice type based on order properties
     if (order) {
-      if (order.account_id && ['credit', 'corporate', 'insurance'].includes(order.payment_type)) {
+      if (order.account_id) {
         setInvoiceType('account');
         // Set default billing period to current month
         const now = new Date();

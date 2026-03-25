@@ -22,6 +22,7 @@ export interface PreviewAnalyte {
 export interface PreviewTestGroup {
   testGroupName: string;
   analytes: PreviewAnalyte[];
+  groupInterpretation?: string | null;
 }
 
 export interface PreviewSection {
@@ -150,22 +151,22 @@ ${
 .tbl-results thead th:nth-child(2) { width: 7%;  text-align: center; }
 .tbl-results thead th:nth-child(3) { width: 14%; text-align: right; }
 .tbl-results thead th:nth-child(4) { width: 10%; text-align: left; }
-.tbl-results thead th:nth-child(5) { width: 25%; text-align: right; }
+.tbl-results thead th:nth-child(5) { width: 25%; text-align: left; }
 .tbl-results tbody td:nth-child(1) { width: 44%; text-align: left; color: #111 !important; }
 .tbl-results tbody td:nth-child(2) { width: 7%;  text-align: center; font-weight: 700; }
 .tbl-results tbody td:nth-child(3) { width: 14%; text-align: right; }
 .tbl-results tbody td:nth-child(4) { width: 10%; text-align: left; color: #444 !important; white-space: nowrap; }
-.tbl-results tbody td:nth-child(5) { width: 25%; text-align: right; color: #666 !important; }
+.tbl-results tbody td:nth-child(5) { width: 25%; text-align: left; color: #666 !important; }
 `
     : `
 .tbl-results thead th:nth-child(1) { width: 50%; text-align: left; }
 .tbl-results thead th:nth-child(2) { width: 15%; text-align: right; }
 .tbl-results thead th:nth-child(3) { width: 10%; text-align: left; }
-.tbl-results thead th:nth-child(4) { width: 25%; text-align: right; }
+.tbl-results thead th:nth-child(4) { width: 25%; text-align: left; }
 .tbl-results tbody td:nth-child(1) { width: 50%; text-align: left; color: #111 !important; }
 .tbl-results tbody td:nth-child(2) { width: 15%; text-align: right; }
 .tbl-results tbody td:nth-child(3) { width: 10%; text-align: left; color: #444 !important; white-space: nowrap; }
-.tbl-results tbody td:nth-child(4) { width: 25%; text-align: right; color: #666 !important; }
+.tbl-results tbody td:nth-child(4) { width: 25%; text-align: left; color: #666 !important; }
 `
 }
 .tbl-results td, .tbl-results th { border: none !important; padding: 2px 4px !important; line-height: 1.28; font-size: ${basePx}px !important; }
@@ -256,19 +257,20 @@ ${
           </td>
         </tr>`;
 
-    // Group analytes by section_heading
+    // Group analytes by section_heading — stable, first-appearance order so that
+    // same-section analytes are always together even if sort_order values leave gaps.
     type SectionBlock = { heading: string | null; analytes: PreviewAnalyte[] };
-    const sectionBlocks: SectionBlock[] = [];
-    let currentBlock: SectionBlock = { heading: null, analytes: [] };
+    const sectionBlockMap = new Map<string | null, PreviewAnalyte[]>();
+    const sectionOrder: (string | null)[] = [];
     for (const a of group.analytes) {
       const heading = a.section_heading ?? null;
-      if (heading !== currentBlock.heading) {
-        if (currentBlock.analytes.length > 0) sectionBlocks.push(currentBlock);
-        currentBlock = { heading, analytes: [] };
+      if (!sectionBlockMap.has(heading)) {
+        sectionBlockMap.set(heading, []);
+        sectionOrder.push(heading);
       }
-      currentBlock.analytes.push(a);
+      sectionBlockMap.get(heading)!.push(a);
     }
-    if (currentBlock.analytes.length > 0) sectionBlocks.push(currentBlock);
+    const sectionBlocks: SectionBlock[] = sectionOrder.map(h => ({ heading: h, analytes: sectionBlockMap.get(h)! }));
 
     const groupLegendParts: string[] = [];
 
@@ -283,7 +285,7 @@ ${
       for (const analyte of block.analytes) {
         const rawValue = analyte.value ?? "";
         const unit = analyte.unit || "";
-        const refRange = analyte.reference_range || "";
+        const refRange = (analyte.reference_range || "").replace(/\n/g, "<br>");
         const canonical = normalizeFlag(analyte.flag);
         const isCalc = analyte.is_auto_calculated ?? false;
         if (isCalc) hasCalcInGroup = true;
@@ -342,7 +344,7 @@ ${
           ${flagSymbol === "before" ? `<td class="${valClass}" style="text-align:center;">${sym}</td>` : ""}
           <td class="${valClass}">${displayValue}</td>
           <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
-          <td style="text-align:right; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
+          <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
         </tr>`;
       }
     }
@@ -360,6 +362,7 @@ ${
       </tbody>
     </table>
     ${groupLegendParts.length ? `<p class="calculated-note">${groupLegendParts.join(" &nbsp;|&nbsp; ")}</p>` : ""}
+    ${group.groupInterpretation ? `<div style="margin-top:6px;padding:6px 0;border-top:1px solid #ddd;font-size:${basePx}px;">${group.groupInterpretation}</div>` : ""}
   </figure>`;
   }
 

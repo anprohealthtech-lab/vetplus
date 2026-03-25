@@ -18,7 +18,7 @@ DECLARE
 BEGIN
 
   -- STEP 1: Fill analyte link metadata — match by test group name + analyte name
-  UPDATE test_group_analytes tga
+  UPDATE public.test_group_analytes tga
   SET
     section_heading        = COALESCE(tga.section_heading, gtca.section_heading),
     sort_order             = CASE WHEN tga.sort_order    IS NULL OR tga.sort_order    = 0
@@ -29,9 +29,9 @@ BEGIN
     is_header              = COALESCE(tga.is_header,   gtca.is_header, false),
     header_name            = COALESCE(tga.header_name, gtca.header_name),
     custom_reference_range = COALESCE(tga.custom_reference_range, gtca.custom_reference_range)
-  FROM test_groups tg,
-       analytes a_lab,
-       global_test_catalog_analytes gtca
+  FROM public.test_groups tg,
+       public.analytes a_lab,
+       public.global_test_catalog_analytes gtca
   WHERE tga.test_group_id              = tg.id
     AND tga.analyte_id                 = a_lab.id
     AND lower(gtca.test_group_name)    = lower(tg.name)
@@ -49,9 +49,9 @@ BEGIN
   GET DIAGNOSTICS v_metadata_updated = ROW_COUNT;
 
   -- STEP 2: Fill group_interpretation where lab has none
-  UPDATE test_groups tg
+  UPDATE public.test_groups tg
   SET    group_interpretation = gtc.group_interpretation
-  FROM   global_test_catalog gtc
+  FROM   public.global_test_catalog gtc
   WHERE  tg.lab_id = v_lab_id
     AND  lower(tg.name) = lower(gtc.name)
     AND  (tg.group_interpretation IS NULL OR tg.group_interpretation = '')

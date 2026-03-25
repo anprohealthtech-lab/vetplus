@@ -403,9 +403,9 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   }, [groupByOrder]);
 
   // Returns analytes data directly AND caches in state
-  const ensureAnalytesLoaded = async (resultId: string): Promise<Analyte[]> => {
-    // Return cached data if available
-    if (rowsByResult[resultId]) return rowsByResult[resultId];
+  const ensureAnalytesLoaded = async (resultId: string, forceRefresh = false): Promise<Analyte[]> => {
+    // Return cached data if available and not forcing refresh
+    if (!forceRefresh && rowsByResult[resultId]) return rowsByResult[resultId];
 
     const { data, error } = await supabase
       .from("result_values")
@@ -578,8 +578,10 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   };
 
   const togglePanel = async (resultId: string) => {
+    const isOpening = !openPanels[resultId];
     setOpenPanels(prev => ({ ...prev, [resultId]: !prev[resultId] }));
-    if (!rowsByResult[resultId]) await ensureAnalytesLoaded(resultId);
+    // Always re-fetch from DB when opening a panel so flag values are never stale
+    if (isOpening) await ensureAnalytesLoaded(resultId, true);
   };
 
   const setBusyFor = (key: string, val: boolean) => setBusy(prev => ({ ...prev, [key]: val }));
@@ -740,7 +742,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       const { error: resError } = await supabase
         .from("results")
         .update({
-          verification_status: "pending",
+          verification_status: "pending_verification",
           verified_at: null,
           manually_verified: false,
           report_extras: null,
@@ -776,7 +778,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         performed_by: user?.id || null,
         performed_at: now,
         previous_status: "approved",
-        new_status: "pending",
+        new_status: "pending_verification",
         comment: reason,
         metadata: {
           order_id: panel.order_id,
@@ -820,8 +822,10 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const handleQuickPreview = async (order: OrderGroup) => {
     setQuickPreviewLoading(prev => ({ ...prev, [order.orderId]: true }));
     try {
-      // 1. Ensure all analytes are loaded for every panel
-      await Promise.all(order.panels.map(p => ensureAnalytesLoaded(p.result_id)));
+      // 1. Ensure all analytes are loaded for every panel — capture returned values
+      //    to avoid reading from stale rowsByResult closure after state updates
+      const loadedAnalytes = await Promise.all(order.panels.map(p => ensureAnalytesLoaded(p.result_id)));
+      const loadedByResultId = new Map(order.panels.map((p, i) => [p.result_id, loadedAnalytes[i]]));
 
       // 2. Fetch patient + order details, plus per-panel metadata in parallel
       const groupIds = order.panels.map(p => p.test_group_id).filter(Boolean) as string[];
@@ -843,14 +847,14 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         groupIds.length > 0
           ? supabase
               .from("test_group_analytes")
-              .select("test_group_id, analyte_id, sort_order, section_heading, analytes(is_auto_calculated)")
+              .select("test_group_id, analyte_id, sort_order, section_heading, analytes(name, is_auto_calculated)")
               .in("test_group_id", groupIds)
           : Promise.resolve({ data: [] as any[], error: null }),
         // per-group print_options override
         groupIds.length > 0
           ? supabase
               .from("test_groups")
-              .select("id, print_options")
+              .select("id, print_options, group_interpretation")
               .in("id", groupIds)
           : Promise.resolve({ data: [] as any[], error: null }),
         // report sections (findings, impression, etc.)
@@ -884,17 +888,22 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         : "";
 
       // Build lookup: test_group_id → Map<analyte_id, { sort_order, section_heading, is_auto_calculated }>
+      // Also build a name-based fallback for result_values rows where analyte_id is null.
       type TgaMeta = { sort_order: number; section_heading: string | null; is_auto_calculated: boolean };
-      const tgaByGroup = new Map<string, Map<string, TgaMeta>>();
+      const tgaByGroup     = new Map<string, Map<string, TgaMeta>>();
+      const tgaByGroupName = new Map<string, Map<string, TgaMeta>>();
       for (const row of tgaRes.data || []) {
-        if (!tgaByGroup.has(row.test_group_id)) {
-          tgaByGroup.set(row.test_group_id, new Map());
-        }
-        tgaByGroup.get(row.test_group_id)!.set(row.analyte_id, {
-          sort_order: row.sort_order ?? 999,
-          section_heading: row.section_heading ?? null,
+        if (!row.test_group_id) continue;
+        if (!tgaByGroup.has(row.test_group_id))     tgaByGroup.set(row.test_group_id,     new Map());
+        if (!tgaByGroupName.has(row.test_group_id)) tgaByGroupName.set(row.test_group_id, new Map());
+        const meta: TgaMeta = {
+          sort_order:       row.sort_order ?? 999,
+          section_heading:  row.section_heading ?? null,
           is_auto_calculated: (row.analytes as any)?.is_auto_calculated ?? false,
-        });
+        };
+        if (row.analyte_id) tgaByGroup.get(row.test_group_id)!.set(row.analyte_id, meta);
+        const aName = (row.analytes as any)?.name;
+        if (aName) tgaByGroupName.get(row.test_group_id)!.set(aName.toLowerCase(), meta);
       }
 
       // Build report sections: sorted by display_order, group across all panels
@@ -921,9 +930,11 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
       // Build lookup: test_group_id → merged printOptions (lab-level overridden by group-level)
       const groupPrintOptions = new Map<string, Record<string, unknown>>();
+      const groupInterpretations = new Map<string, string>(); // test_group_id → group_interpretation HTML
       for (const tg of tgRes.data || []) {
         const groupOpts = tg.print_options || {};
         groupPrintOptions.set(tg.id, { ...labPrintOptions, ...groupOpts });
+        if (tg.group_interpretation) groupInterpretations.set(tg.id, tg.group_interpretation);
       }
 
       // 3. Determine the dominant print options (first group that has its own wins; else lab)
@@ -942,14 +953,21 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       // 4. Build test groups with sorted + section-headed analytes
       const testGroups = order.panels
         .map(panel => {
-          const raw = rowsByResult[panel.result_id] || [];
+          // Use captured return values (not stale rowsByResult closure)
+          const raw = loadedByResultId.get(panel.result_id) || [];
           const metaMap = panel.test_group_id
             ? (tgaByGroup.get(panel.test_group_id) ?? new Map<string, TgaMeta>())
             : new Map<string, TgaMeta>();
 
+          const nameMap = panel.test_group_id
+            ? (tgaByGroupName.get(panel.test_group_id) ?? new Map<string, TgaMeta>())
+            : new Map<string, TgaMeta>();
+
           const analytes = raw
             .map(a => {
-              const meta = a.analyte_id ? metaMap.get(a.analyte_id) : undefined;
+              const meta =
+                (a.analyte_id ? metaMap.get(a.analyte_id) : undefined) ??
+                nameMap.get(a.parameter?.toLowerCase() ?? "");
               return {
                 parameter: a.parameter,
                 value: a.value,
@@ -967,6 +985,9 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           return {
             testGroupName: panel.test_group_name || "Test Results",
             analytes,
+            groupInterpretation: panel.test_group_id
+              ? (groupInterpretations.get(panel.test_group_id) ?? null)
+              : null,
           };
         })
         .filter(g => g.analytes.length > 0);

@@ -80,6 +80,7 @@ export interface Doctor {
   qualification?: string;
   registration_number?: string;
   phone?: string;
+  hospital_phone?: string;
   email?: string;
   preferred_contact: 'email' | 'sms' | 'whatsapp' | 'none';
   report_delivery_method: 'email' | 'whatsapp' | 'both' | 'none';
@@ -337,22 +338,24 @@ export interface Account {
 export interface ConsolidatedInvoice {
   id: string;
   account_id: string;
-  account_name: string;
-  billing_period: string; // Format: YYYY-MM
-  subtotal: number;
-  total_discount: number;
-  tax: number;
-  total: number;
-  status: 'Draft' | 'Sent' | 'Paid' | 'Overdue';
-  invoice_date: string;
-  due_date: string;
-  payment_date?: string;
-  notes?: string;
-  invoice_count: number; // Number of individual invoices consolidated
-  patient_count: number; // Number of unique patients
   lab_id: string;
+  invoice_number: string;
+  billing_period_start: string; // date: YYYY-MM-DD (first day of billing period)
+  billing_period_end: string;   // date: YYYY-MM-DD (last day of billing period)
+  subtotal: number;
+  tax_amount: number;
+  discount_amount: number;
+  total_amount: number;
+  status: 'draft' | 'sent' | 'paid' | 'partial' | 'overdue' | 'cancelled';
+  due_date?: string;
+  pdf_url?: string;
+  sent_at?: string;
+  paid_at?: string;
+  notes?: string;
   created_at: string;
-  updated_at: string;
+  created_by?: string;
+  // Joined field from accounts relation
+  accounts?: { name: string };
 }
 
 export interface CashRegister {

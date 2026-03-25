@@ -79,8 +79,10 @@ serve(async (req) => {
 
       const existingAnalyteSet = new Set((existingLinks || []).map((l: any) => l.analyte_id));
       const toAdd = (catalogMeta || []).filter((m: any) => !existingAnalyteSet.has(m.analyte_id));
+      const toUpdate = (catalogMeta || []).filter((m: any) => existingAnalyteSet.has(m.analyte_id));
 
       let analytesAdded = 0;
+      let analytesUpdated = 0;
       let analytesHydrated = 0;
 
       if (toAdd.length > 0) {
@@ -89,7 +91,6 @@ serve(async (req) => {
         await supabaseClient.from('lab_analytes').upsert(labAnalytePayload, { onConflict: 'lab_id,analyte_id', ignoreDuplicates: true });
         analytesHydrated = toAdd.length;
 
-        // Insert missing analyte links (non-destructive — ignore existing)
         const linkPayload = toAdd.map((m: any) => ({
           test_group_id: labGroup.id,
           analyte_id: m.analyte_id,
@@ -108,6 +109,22 @@ serve(async (req) => {
 
         if (!linkErr) analytesAdded = toAdd.length;
         else console.error('Single mode link error:', linkErr);
+      }
+
+      // Update sort_order and section_heading for already-linked analytes
+      if (toUpdate.length > 0) {
+        for (const m of toUpdate) {
+          await supabaseClient
+            .from('test_group_analytes')
+            .update({
+              sort_order: m.sort_order,
+              display_order: m.display_order ?? m.sort_order,
+              section_heading: m.section_heading ?? null,
+            })
+            .eq('test_group_id', labGroup.id)
+            .eq('analyte_id', m.analyte_id);
+        }
+        analytesUpdated = toUpdate.length;
       }
 
       // Sync group_interpretation only if global has one and lab doesn't yet
@@ -161,7 +178,7 @@ serve(async (req) => {
         }
       }
 
-      console.log(`✅ Single sync: ${labGroup.name} — added ${analytesAdded} analytes, ${sectionsAdded} sections, interpretation synced: ${interpretationSynced}`);
+      console.log(`✅ Single sync: ${labGroup.name} — added ${analytesAdded}, updated ${analytesUpdated} analytes, ${sectionsAdded} sections, interpretation synced: ${interpretationSynced}`);
 
       return new Response(JSON.stringify({
         success: true,
@@ -170,6 +187,7 @@ serve(async (req) => {
         catalog_analyte_count: (catalogMeta || []).length,
         existing_analyte_count: existingAnalyteSet.size,
         analytesAdded,
+        analytesUpdated,
         analytesHydrated,
         interpretationSynced,
         sectionsAdded,

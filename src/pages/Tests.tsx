@@ -187,6 +187,7 @@ const Tests: React.FC = () => {
 
   // State for AI Configurator
   const [showAIConfigurator, setShowAIConfigurator] = useState(false);
+  const [analyteSort, setAnalyteSort] = useState<'asc' | 'desc' | null>(null);
 
   // Lab-level flag options for analyte flag mapping
   const [labFlagOptions, setLabFlagOptions] = useState<Array<{value: string; label: string}>>([]);
@@ -559,13 +560,20 @@ const Tests: React.FC = () => {
     return matchesSearch && matchesCategory;
   });
 
-  const filteredTestGroups = (testGroups || []).filter(group => {
-    const isVisible = group.isActive !== false;
-    const matchesSearch = group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (group.code?.toLowerCase().includes(searchTerm.toLowerCase()) ?? false);
-    const matchesCategory = selectedCategory === 'All' || group.category === selectedCategory;
-    return isVisible && matchesSearch && matchesCategory;
-  });
+  const filteredTestGroups = (() => {
+    const filtered = (testGroups || []).filter(group => {
+      const isVisible = group.isActive !== false;
+      const matchesSearch = group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (group.code?.toLowerCase().includes(searchTerm.toLowerCase()) ?? false);
+      const matchesCategory = selectedCategory === 'All' || group.category === selectedCategory;
+      return isVisible && matchesSearch && matchesCategory;
+    });
+    if (analyteSort === null) return filtered;
+    return [...filtered].sort((a, b) => {
+      const diff = (a.analytes?.length || 0) - (b.analytes?.length || 0);
+      return analyteSort === 'asc' ? diff : -diff;
+    });
+  })();
 
   const filteredAnalytes = (analytes || []).filter(analyte => {
     const matchesSearch = analyte.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -1453,7 +1461,7 @@ const Tests: React.FC = () => {
       console.warn("Hard delete failed, trying soft hide (is_active=false):", e);
       try {
         const { error: hideError } = await database.testGroups.update(group.id, {
-          is_active: false,
+          isActive: false,
         });
         if (hideError) throw hideError;
 
@@ -1800,7 +1808,13 @@ const Tests: React.FC = () => {
                     <tr>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Group Details</th>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Analytes</th>
+                      <th
+                        className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer select-none hover:text-blue-600"
+                        onClick={() => setAnalyteSort(s => s === 'asc' ? 'desc' : s === 'desc' ? null : 'asc')}
+                        title="Sort by analyte count"
+                      >
+                        Analytes {analyteSort === 'asc' ? '↑' : analyteSort === 'desc' ? '↓' : '↕'}
+                      </th>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Sample</th>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
@@ -1808,7 +1822,7 @@ const Tests: React.FC = () => {
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
                     {filteredTestGroups.map((group) => (
-                      <tr key={group.id} className="hover:bg-gray-50 transition-colors">
+                      <tr key={group.id} className={`hover:bg-gray-50 transition-colors ${(group.analytes?.length || 0) === 0 ? 'bg-red-50' : ''}`}>
                         <td className="px-3 py-2">
                           <div>
                             <div className="font-medium text-gray-900 text-sm">{group.name}</div>
@@ -1821,7 +1835,9 @@ const Tests: React.FC = () => {
                           </span>
                         </td>
                         <td className="px-3 py-2">
-                          <div className="text-sm text-gray-900">{group.analytes?.length || 0}</div>
+                          <div className={`text-sm font-medium ${(group.analytes?.length || 0) === 0 ? 'text-red-600' : 'text-gray-900'}`}>
+                            {group.analytes?.length || 0}
+                          </div>
                         </td>
                         <td className="px-3 py-2">
                           <div className="font-medium text-gray-900">₹{group.price || 0}</div>

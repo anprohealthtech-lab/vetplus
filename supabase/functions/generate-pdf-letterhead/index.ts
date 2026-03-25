@@ -63,10 +63,10 @@ const BASELINE_CSS = `
 
 :root {
   --report-font-family: "Inter", "Noto Sans", "Noto Sans Gujarati", "Noto Sans Devanagari", "Noto Sans Tamil", "Noto Sans Telugu", "Noto Sans Kannada", "Noto Sans Bengali", "Noto Sans Gurmukhi", "Noto Sans Malayalam", "Noto Sans Oriya", Arial, sans-serif;
-  --report-text-color: #1f2937;
-  --report-muted-color: #4b5563;
-  --report-heading-color: #111827;
-  --report-border-color: #d1d5db;
+  --report-text-color: #000000;
+  --report-muted-color: #333333;
+  --report-heading-color: #000000;
+  --report-border-color: #999999;
   --report-accent-color: #2563eb;
   --report-background-color: #ffffff;
 }
@@ -110,6 +110,20 @@ const BASELINE_CSS = `
 .limsv2-report h2 { font-size: 1.5rem; }
 .limsv2-report h3 { font-size: 1.25rem; }
 .limsv2-report h4 { font-size: 1.1rem; }
+
+/* Normalize headings inside interpretation blocks — CKEditor often saves <p> content as <h4> */
+.limsv2-report .group-interpretation h1,
+.limsv2-report .group-interpretation h2,
+.limsv2-report .group-interpretation h3,
+.limsv2-report .group-interpretation h4,
+.limsv2-report .group-interpretation h5,
+.limsv2-report .group-interpretation h6 {
+  font-size: 13px;
+  font-weight: normal;
+  margin: 0 0 3px 0;
+  line-height: 1.45;
+  color: #111;
+}
 
 .limsv2-report p {
   margin: 0 0 0.5rem;
@@ -241,6 +255,25 @@ figure.table {
   .test-group-header, .section-header, h3, h4 {
     page-break-after: avoid !important;
     break-after: avoid !important;
+  }
+
+  /* Allow interpretation blocks to flow across pages freely */
+  .limsv2-report .group-interpretation {
+    break-inside: auto !important;
+    page-break-inside: auto !important;
+    break-before: auto !important;
+    page-break-before: auto !important;
+  }
+
+  /* Override h4 page-break rule inside interpretation — these are prose, not section headers */
+  .limsv2-report .group-interpretation h1,
+  .limsv2-report .group-interpretation h2,
+  .limsv2-report .group-interpretation h3,
+  .limsv2-report .group-interpretation h4,
+  .limsv2-report .group-interpretation h5,
+  .limsv2-report .group-interpretation h6 {
+    page-break-after: auto !important;
+    break-after: auto !important;
   }
 }
 
@@ -654,7 +687,7 @@ function determineFlag(
       // Critical checks first
       if (highCrit !== null && numValue >= highCrit) {
         flag = "critical_high";
-      } else if (lowCrit !== null && numValue <= lowCrit) {
+      } else if (lowCrit !== null && numValue < lowCrit) {
         flag = "critical_low";
       } else if (type === "range" && low !== null && high !== null) {
         if (numValue < low) flag = "low";
@@ -1988,7 +2021,7 @@ function generateClassicDefaultTemplateHtml(
           ? String(parseFloat(Number(rawValue).toFixed(2)))
           : rawValue;
         const unit = analyte.unit || "";
-        const refRange = analyte.reference_range || "";
+        const refRange = (analyte.reference_range || "").replace(/\n/g, "<br>");
         const flag = analyte.flag || "";
         const normalizedFlag = normalizeReportFlag(flag);
         const canonicalFlag = normalizedFlag.canonical;
@@ -2316,21 +2349,21 @@ ${flagSymbol === "before" ? `
 .basic-report-template .tbl-results thead th:nth-child(2) { width: 7% !important; text-align: center !important; }
 .basic-report-template .tbl-results thead th:nth-child(3) { width: 14% !important; text-align: right !important; }
 .basic-report-template .tbl-results thead th:nth-child(4) { width: 10% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(5) { width: 25% !important; text-align: right !important; }
+.basic-report-template .tbl-results thead th:nth-child(5) { width: 25% !important; text-align: left !important; }
 .basic-report-template .tbl-results tbody td:nth-child(1) { width: 44% !important; text-align: left !important; color: #111 !important; }
 .basic-report-template .tbl-results tbody td:nth-child(2) { width: 7% !important; text-align: center !important; font-weight: 700 !important; }
 .basic-report-template .tbl-results tbody td:nth-child(3) { width: 14% !important; text-align: right !important; }
 .basic-report-template .tbl-results tbody td:nth-child(4) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
-.basic-report-template .tbl-results tbody td:nth-child(5) { width: 25% !important; text-align: right !important; color: #666 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(5) { width: 25% !important; text-align: left !important; color: #666 !important; }
 ` : `
 .basic-report-template .tbl-results thead th:nth-child(1) { width: 50% !important; text-align: left !important; }
 .basic-report-template .tbl-results thead th:nth-child(2) { width: 15% !important; text-align: right !important; }
 .basic-report-template .tbl-results thead th:nth-child(3) { width: 10% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(4) { width: 25% !important; text-align: right !important; }
+.basic-report-template .tbl-results thead th:nth-child(4) { width: 25% !important; text-align: left !important; }
 .basic-report-template .tbl-results tbody td:nth-child(1) { width: 50% !important; text-align: left !important; color: #111 !important; }
 .basic-report-template .tbl-results tbody td:nth-child(2) { width: 15% !important; text-align: right !important; }
 .basic-report-template .tbl-results tbody td:nth-child(3) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
-.basic-report-template .tbl-results tbody td:nth-child(4) { width: 25% !important; text-align: right !important; color: #666 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(4) { width: 25% !important; text-align: left !important; color: #666 !important; }
 `}
 
 .basic-report-template .tbl-results td,
@@ -2580,7 +2613,7 @@ ${flagSymbol === "before" ? `
           ? String(parseFloat(Number(rawValue).toFixed(2)))
           : rawValue;
         const unit = analyte.unit || "";
-        const refRange = analyte.reference_range || "";
+        const refRange = (analyte.reference_range || "").replace(/\n/g, "<br>");
         const flag = analyte.flag || "";
         const normalizedFlag = normalizeReportFlag(flag);
         const canonicalFlag = normalizedFlag.canonical;
@@ -2651,7 +2684,7 @@ ${flagSymbol === "before" ? `
                 ${flagSymbol === "before" ? `<td class="${valClass}" style="font-size:${basePx}px; text-align:center;">${flagSymbolText}</td>` : ""}
                 <td class="${valClass}">${displayValue}</td>
                 <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
-                <td style="text-align:right; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
+                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
               </tr>
         `;
 
@@ -4236,7 +4269,8 @@ async function fetchSectionContent(
         image_urls,
         lab_template_sections!inner(
           placeholder_key,
-          section_name
+          section_name,
+          test_group_id
         )
       `)
       .in("result_id", resultIds)
@@ -4244,12 +4278,14 @@ async function fetchSectionContent(
 
     if (error || !data) {
       console.warn("Failed to fetch section content:", error?.message);
-      return { sectionContent: {}, sectionLabels: {} };
+      return { sectionContent: {}, sectionLabels: {}, sectionContentByGroup: new Map() };
     }
 
     // Build map of placeholder_key -> final_content and placeholder_key -> section_name
+    // Also build per-group map: test_group_id -> { placeholder_key -> content }
     const sectionContent: Record<string, string> = {};
     const sectionLabels: Record<string, string> = {};
+    const sectionContentByGroup = new Map<string, Record<string, string>>();
     for (const item of data) {
       const key = item.lab_template_sections?.placeholder_key;
       if (key) {
@@ -4261,14 +4297,21 @@ async function fetchSectionContent(
         const combined = [content.trim(), imagesHtml].filter(Boolean).join("\n\n");
         if (combined) {
           sectionContent[key] = combined;
+          const groupId = item.lab_template_sections?.test_group_id;
+          if (groupId) {
+            if (!sectionContentByGroup.has(groupId)) {
+              sectionContentByGroup.set(groupId, {});
+            }
+            sectionContentByGroup.get(groupId)![key] = combined;
+          }
         }
       }
     }
 
-    return { sectionContent, sectionLabels };
+    return { sectionContent, sectionLabels, sectionContentByGroup };
   } catch (err) {
     console.warn("Error fetching section content:", err);
-    return { sectionContent: {}, sectionLabels: {} };
+    return { sectionContent: {}, sectionLabels: {}, sectionContentByGroup: new Map() };
   }
 }
 
@@ -5541,12 +5584,12 @@ serve(async (req) => {
         const { data: existingReport, error: reportError } =
           await supabaseClient
             .from("reports")
-            .select("id, ecopy_url, print_url, is_draft")
+            .select("id, pdf_url, print_pdf_url, report_type")
             .eq("order_id", orderId)
-            .eq("is_draft", false)
+            .eq("report_type", "final")
             .maybeSingle();
 
-        if (existingReport && existingReport.ecopy_url) {
+        if (existingReport && existingReport.pdf_url) {
           console.log(
             "✅ Final PDF already exists in reports table, returning existing URL",
           );
@@ -5554,8 +5597,8 @@ serve(async (req) => {
             JSON.stringify({
               success: true,
               status: "completed",
-              pdfUrl: existingReport.ecopy_url,
-              printPdfUrl: existingReport.print_url,
+              pdfUrl: existingReport.pdf_url,
+              printPdfUrl: existingReport.print_pdf_url,
               message: "PDF already exists",
               cached: true,
             }),
@@ -5808,12 +5851,12 @@ serve(async (req) => {
             .filter(Boolean);
 
           if (resultIds.length > 0) {
-            const { sectionContent: scWithImages, sectionLabels } = await fetchSectionContent(
+            const { sectionContent: scWithImages, sectionLabels, sectionContentByGroup: scByGroupWithImages } = await fetchSectionContent(
               supabaseClient,
               resultIds,
               true,
             );
-            const { sectionContent: scNoImages } = await fetchSectionContent(
+            const { sectionContent: scNoImages, sectionContentByGroup: scByGroupNoImages } = await fetchSectionContent(
               supabaseClient,
               resultIds,
               false,
@@ -5829,6 +5872,7 @@ serve(async (req) => {
             context.sectionContent = withImages;
             context.sectionContentNoImages = noImages;
             context.sectionLabels = sectionLabels;
+            context.sectionContentByGroup = scByGroupWithImages.size > 0 ? scByGroupWithImages : (context.sectionContentByGroup || new Map());
             context.placeholderValues = {
               ...(context.placeholderValues || {}),
               ...withImages,
@@ -7339,13 +7383,18 @@ serve(async (req) => {
             );
             const singleGroupMap = new Map<string, any[]>();
             singleGroupMap.set(testGroupId, groupAnalytes);
+            // Use sections scoped to this test group; fall back to all sections only if no group mapping exists
+            const sectionContentByGroup: Map<string, Record<string, string>> = context.sectionContentByGroup || new Map();
+            const groupSectionContent = sectionContentByGroup.has(testGroupId)
+              ? sectionContentByGroup.get(testGroupId)
+              : (sectionContentByGroup.size === 0 && renderedSections.length === 0 ? groupFullContext?.sectionContent : undefined);
             renderedHtml = generateDefaultTemplateHtml(
               groupContext,
               testGroupNames,
               singleGroupMap,
               signatoryInfo,
-              groupFullContext?.sectionContent,
-              renderedSections.length === 0,
+              groupSectionContent,
+              groupSectionContent != null && Object.keys(groupSectionContent).length > 0,
               testGroupStyles.get(testGroupId) || labSettings?.default_template_style || 'beautiful',
               labSettings?.show_methodology ?? true,
               labSettings?.show_interpretation ?? false,
@@ -8072,9 +8121,11 @@ serve(async (req) => {
           {
             headerHtml: "",
             footerHtml: "",
-            // Print version has no header/footer but uses the lab's configured top margin
+            // Print version has no header/footer but always keeps minimum 20px margins
             // so there is space to print on physical letterhead paper.
-            margins: `${pdfSettings?.margins?.top ?? 20}px ${pdfSettings?.margins?.right ?? 20}px ${pdfSettings?.margins?.bottom ?? 20}px ${pdfSettings?.margins?.left ?? 20}px`,
+            // NOTE: letterhead e-copy uses 0px PDF.co margins (CSS spacers handle spacing),
+            // so we must not inherit those 0px values here — enforce a floor of 20px.
+            margins: `${Math.max(pdfSettings?.margins?.top ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.right ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.bottom ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.left ?? 20, 20)}px`,
             headerHeight: "0px",
             footerHeight: "0px",
             scale: pdfSettings?.scale ?? DEFAULT_PDF_SETTINGS.scale,
@@ -8229,7 +8280,7 @@ serve(async (req) => {
           pdf_generated_at: now,
           status: "completed",
           report_status: "completed",
-          report_type: "final",
+          report_type: isDraft ? "draft" : "final",
           print_layout_mode: printLayoutMode,
           print_plan_json: compactPrintPlan,
           print_plan_source: compactPrintPlan?.source || null,

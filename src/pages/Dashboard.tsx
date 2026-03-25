@@ -241,9 +241,12 @@ const Dashboard: React.FC = () => {
   const [orders, setOrders] = useState<CardOrder[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [isCollapsedView, setIsCollapsedView] = useState(false);
-  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
+  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"All" | OrderStatus>("All");
+  const [doctorFilter, setDoctorFilter] = useState<string>("All");
+  const [dashboardTab, setDashboardTab] = useState<"standard" | "patient-visits">("standard");
+  const [bookingQueueOpen, setBookingQueueOpen] = useState(false);
 
   // Date range state - default to last 7 days
   const [dateFrom, setDateFrom] = useState<string>(() => {
@@ -1413,14 +1416,21 @@ id,
   };
 
   /* ------------- filtering + grouping ------------- */
+  const uniqueDoctors = useMemo(() => {
+    const docs = new Set<string>();
+    orders.forEach((o) => { if (o.doctor) docs.add(o.doctor); });
+    return Array.from(docs).sort();
+  }, [orders]);
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     return orders.filter((o) => {
       const matchesQ = o.patient_name.toLowerCase().includes(q) || (o.patient_id || "").toLowerCase().includes(q) || (o.id || "").toLowerCase().includes(q);
       const matchesStatus = statusFilter === "All" || o.status === statusFilter;
-      return matchesQ && matchesStatus;
+      const matchesDoctor = doctorFilter === "All" || o.doctor === doctorFilter;
+      return matchesQ && matchesStatus && matchesDoctor;
     });
-  }, [orders, search, statusFilter]);
+  }, [orders, search, statusFilter, doctorFilter]);
 
   type Group = { key: string; label: string; orders: CardOrder[] };
   const groups: Group[] = useMemo(() => {
@@ -1515,11 +1525,17 @@ id,
 
           {!mobile.isMobile && (
             <div className="flex items-center gap-2">
-              <button className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg font-medium shadow-sm transition-all">
+              <button
+                onClick={() => setDashboardTab("standard")}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-medium shadow-sm transition-all ${dashboardTab === "standard" ? "bg-blue-50 text-blue-700 border border-blue-200" : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"}`}
+              >
                 <LayoutDashboard className="h-4 w-4" />
                 Standard View
               </button>
-              <button className="inline-flex items-center gap-2 px-4 py-2 bg-white text-gray-700 border border-gray-200 rounded-lg font-medium hover:bg-gray-50 shadow-sm transition-all">
+              <button
+                onClick={() => setDashboardTab("patient-visits")}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-medium shadow-sm transition-all ${dashboardTab === "patient-visits" ? "bg-blue-50 text-blue-700 border border-blue-200" : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"}`}
+              >
                 <Users className="h-4 w-4" />
                 Patient Visits
               </button>
@@ -1582,19 +1598,31 @@ id,
           </div>
         )}
 
-        {/* New Bookings/Samples Queue */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-          <BookingQueue
-            onProcessBooking={(booking) => {
-              setProcessingBooking(booking);
-              setShowOrderForm(true);
-            }}
-          />
-          <div className="hidden lg:block">
-            {/* Placeholder or move SampleCollectionTracker here if desired, 
-                   otherwise keep layout balanced */}
+        {/* Booking Queue — only in Patient Visits tab */}
+        {dashboardTab === "patient-visits" && (
+          <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden mb-2">
+            <button
+              onClick={() => setBookingQueueOpen((o) => !o)}
+              className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <Calendar className="h-4 w-4 text-blue-600" />
+                <span className="font-semibold text-gray-800">Booking Queue</span>
+              </div>
+              {bookingQueueOpen ? <ChevronUp className="h-4 w-4 text-gray-500" /> : <ChevronDown className="h-4 w-4 text-gray-500" />}
+            </button>
+            {bookingQueueOpen && (
+              <div className="border-t border-gray-100 p-4">
+                <BookingQueue
+                  onProcessBooking={(booking) => {
+                    setProcessingBooking(booking);
+                    setShowOrderForm(true);
+                  }}
+                />
+              </div>
+            )}
           </div>
-        </div>
+        )}
 
         <SampleTransitWidget />
 
@@ -1611,11 +1639,11 @@ id,
               />
             </div>
 
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value as any)}
-                className={`flex-1 ${mobile.isMobile ? "px-3 py-2.5 text-base" : "px-3 py-2"} border border-gray-300 rounded-lg bg-white font-medium shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200`}
+                className={`flex-1 min-w-[140px] ${mobile.isMobile ? "px-3 py-2.5 text-base" : "px-3 py-2"} border border-gray-300 rounded-lg bg-white font-medium shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200`}
               >
                 {["All", "Order Created", "Sample Collection", "In Progress", "Pending Approval", "Completed", "Delivered"].map((s) => (
                   <option key={s} value={s}>
@@ -1624,10 +1652,23 @@ id,
                 ))}
               </select>
 
-              {!mobile.isMobile && (
-                <button className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 bg-white shadow-sm transition-all">
-                  <Filter className="h-4 w-4 mr-2" />
-                  More Filters
+              <select
+                value={doctorFilter}
+                onChange={(e) => setDoctorFilter(e.target.value)}
+                className={`flex-1 min-w-[140px] ${mobile.isMobile ? "px-3 py-2.5 text-base" : "px-3 py-2"} border border-gray-300 rounded-lg bg-white font-medium shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200`}
+              >
+                <option value="All">All Ref By</option>
+                {uniqueDoctors.map((doc) => (
+                  <option key={doc} value={doc}>{doc}</option>
+                ))}
+              </select>
+
+              {doctorFilter !== "All" && (
+                <button
+                  onClick={() => setDoctorFilter("All")}
+                  className="px-3 py-1.5 text-xs bg-blue-100 text-blue-700 rounded-lg border border-blue-200 hover:bg-blue-200 font-medium whitespace-nowrap"
+                >
+                  ✕ {doctorFilter}
                 </button>
               )}
             </div>
@@ -1832,8 +1873,9 @@ id,
                             key={o.id}
                             role="button"
                             onClick={() => openDetails(o)}
-                            className="w-full p-3 border rounded-lg hover:shadow-md transition-all cursor-pointer border-gray-200 bg-white flex items-center justify-between"
+                            className="w-full px-3 pt-3 pb-2 border rounded-lg hover:shadow-md transition-all cursor-pointer border-gray-200 bg-white flex flex-col gap-1.5"
                           >
+                            <div className="flex items-center justify-between">
                             <div className="flex items-center space-x-4 flex-1 min-w-0">
                               <div className="flex items-center justify-center w-6 h-6 bg-blue-100 text-blue-700 rounded-full font-bold text-xs border border-blue-200">
                                 {String(getDailySeq(o)).padStart(3, "0")}
@@ -1848,6 +1890,12 @@ id,
                                 <span className="flex items-center gap-1 text-xs text-indigo-600 font-medium bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100 truncate max-w-[140px]">
                                   <Briefcase className="h-3 w-3" />
                                   {o.account_name}
+                                </span>
+                              )}
+
+                              {o.doctor && (
+                                <span className="hidden sm:flex items-center gap-1 text-xs text-purple-700 font-medium bg-purple-50 px-1.5 py-0.5 rounded border border-purple-100 truncate max-w-[160px]">
+                                  👨‍⚕️ {o.doctor}
                                 </span>
                               )}
 
@@ -1929,6 +1977,37 @@ id,
                                 </span>
                               )}
                             </div>
+                            </div>
+                            {/* Test panel status chips */}
+                            {(o.panels.length > 0 || o.tests.filter(t => !t.test_name?.startsWith("📦")).length > 0) && (
+                              <div className="flex flex-wrap gap-1.5 pl-10 pb-0.5">
+                                {o.panels.length > 0
+                                  ? o.panels.map((p, i) => {
+                                    const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
+                                    const chipColor = p.verified
+                                      ? "border-green-200 bg-green-50 text-green-800"
+                                      : p.entered > 0
+                                        ? "border-amber-200 bg-amber-50 text-amber-800"
+                                        : "border-gray-200 bg-gray-50 text-gray-600";
+                                    return (
+                                      <span
+                                        key={`chip-${i}`}
+                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-semibold ${chipColor}`}
+                                        title={`${p.name}: ${p.entered}/${p.expected}`}
+                                      >
+                                        {p.name}
+                                        <span className="opacity-70">{p.entered}/{p.expected}{p.verified ? " ✓" : ""}</span>
+                                      </span>
+                                    );
+                                  })
+                                  : o.tests.filter(t => !t.test_name?.startsWith("📦")).map((t, i) => (
+                                    <span key={i} className="inline-flex items-center px-2 py-0.5 rounded border border-gray-200 bg-gray-50 text-[10px] font-semibold text-gray-600 truncate max-w-[150px]" title={t.test_name}>
+                                      {t.test_name}
+                                    </span>
+                                  ))
+                                }
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -2112,6 +2191,9 @@ id,
                                   <div className="min-w-[120px]">
                                     <div className="text-xs text-gray-500 font-medium">Order ID</div>
                                     <div className="font-bold text-gray-900 text-base">#{(o.id || "").slice(-6)}</div>
+                                    <div className="mt-1">
+                                      <OrderStatusDisplay order={o} compact={true} />
+                                    </div>
                                   </div>
 
                                   <div className="flex-1">
@@ -2137,21 +2219,21 @@ id,
 
                                                 return (
                                                   <div
-                                                    key={`${p.name} -${i} `}
-                                                    className={`flex items - center gap - 2 border rounded - lg px - 3 py - 1.5 shadow - sm transition - all duration - 300 ${p.verified
+                                                    key={`${p.name}-${i}`}
+                                                    className={`flex items-center gap-2 border rounded-lg px-3 py-1.5 shadow-sm transition-all duration-300 max-w-[170px] ${p.verified
                                                       ? "border-green-200 bg-green-50"
                                                       : p.entered > 0
                                                         ? "border-amber-200 bg-amber-50"
                                                         : "border-gray-200 bg-white"
-                                                      } `}
+                                                      }`}
                                                   >
                                                     <SampleTypeIndicator
                                                       sampleType={p.sample_type || "Blood"}
                                                       sampleColor={o.color_code || undefined}
                                                       size="sm"
                                                     />
-                                                    <div>
-                                                      <div className="font-bold text-gray-900 text-xs">{p.name}</div>
+                                                    <div className="min-w-0">
+                                                      <div className="font-bold text-gray-900 text-xs truncate" title={p.name}>{p.name}</div>
                                                       <div className="text-[10px] text-gray-500 font-medium">
                                                         {p.entered}/{p.expected} {progress === 100 && "✓"}
                                                       </div>
@@ -2195,7 +2277,8 @@ id,
                                       }
 
                                       const completedStatuses = ['Report Ready', 'Completed', 'Delivered'];
-                                      const isCompleted = completedStatuses.includes(o.status);
+                                      const isCompleted = completedStatuses.includes(o.status) ||
+                                        (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal);
 
                                       // If no valid expected date (no tat_hours configured), show collection time
                                       if (!o.expected_date || isNaN(new Date(o.expected_date).getTime())) {
@@ -2521,7 +2604,11 @@ id,
             </div>
             <div className="flex items-center">
               <AlertTriangle className="h-4 w-4 text-red-600 mr-1" />
-              <span className="text-red-900 font-medium">Overdue: {orders.filter((o) => new Date(o.expected_date) < new Date()).length}</span>
+              <span className="text-red-900 font-medium">Overdue: {orders.filter((o) => {
+                const done = ['Report Ready', 'Completed', 'Delivered'].includes(o.status) ||
+                  (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal);
+                return !done && o.tatStarted && new Date(o.expected_date) < new Date();
+              }).length}</span>
             </div>
           </div>
 

@@ -12,6 +12,7 @@ interface RequestBody {
   filename: string;
   invoiceId?: string;
   labId?: string;
+  pageSize?: string;
 }
 
 serve(async (req) => {
@@ -33,7 +34,7 @@ serve(async (req) => {
     }
 
     // Parse request
-    const { html, filename, invoiceId, labId }: RequestBody = await req.json();
+    const { html, filename, invoiceId, labId, pageSize = 'A4' }: RequestBody = await req.json();
 
     if (!html) {
       throw new Error('HTML content is required');
@@ -52,7 +53,7 @@ serve(async (req) => {
         html: html,
         name: filename || 'invoice.pdf',
         margins: '10mm 10mm 15mm 15mm', // top right bottom left
-        paperSize: 'A4',
+        paperSize: pageSize,
         orientation: 'Portrait',
         printBackground: true,
         header: '',

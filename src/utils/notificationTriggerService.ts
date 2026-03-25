@@ -21,6 +21,10 @@ export interface NotificationSettings {
   send_window_end: string;
   queue_outside_window: boolean;
   max_messages_per_patient_per_day: number;
+  /** 'proper' = Title Case, 'upper' = ALL CAPS for patient & doctor names */
+  name_case_format: 'proper' | 'upper';
+  /** 'doctor_only' = send to doctor phone only; 'both' = doctor + hospital_phone */
+  doctor_report_recipients: 'doctor_only' | 'both';
 }
 
 export interface QueuedNotification {
@@ -102,6 +106,14 @@ function formatPhoneNumber(phone: string): string {
     cleaned = '91' + cleaned;
   }
   return cleaned;
+}
+
+/** Apply lab name_case_format to a name string */
+export function formatName(name: string, format: 'proper' | 'upper' = 'proper'): string {
+  if (!name) return name;
+  if (format === 'upper') return name.toUpperCase();
+  // Proper case: first letter of each word upper, rest lower
+  return name.replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
 }
 
 export const notificationTriggerService = {
@@ -231,7 +243,7 @@ export const notificationTriggerService = {
         doctor,
         referring_doctor_id,
         patients!inner (id, name, phone, email),
-        doctors (id, name, phone, email, report_delivery_method)
+        doctors (id, name, phone, hospital_phone, email, report_delivery_method)
       `)
       .eq('id', orderId)
       .single();
@@ -324,7 +336,7 @@ export const notificationTriggerService = {
       }
     }
 
-    // Send to doctor
+    // Send to doctor (personal phone)
     if (settings.auto_send_report_to_doctor && order.doctors?.phone) {
       const doctorMessage = replacePlaceholders(
         DEFAULT_TEMPLATES.doctor_report_ready.message,
@@ -342,7 +354,6 @@ export const notificationTriggerService = {
         : { success: false, error: !statusMatches ? `Waiting for status ${statusGate}` : 'Outside send window' };
 
       if (sendResult.success) {
-        // Update report tracking fields
         await supabase
           .from('reports')
           .update({
@@ -350,7 +361,6 @@ export const notificationTriggerService = {
             doctor_informed_via: 'whatsapp',
           })
           .eq('id', reportId);
-        
         results.doctor = { sent: true, messageId: sendResult.messageId };
       } else {
         if (settings.queue_outside_window !== false || statusMatches) {
@@ -373,6 +383,46 @@ export const notificationTriggerService = {
         } else {
           results.doctor = { sent: false, queued: false, skipped: true, reason: sendResult.error };
         }
+      }
+    }
+
+    // Send to doctor hospital phone (if 'both' mode and hospital_phone exists)
+    if (
+      settings.auto_send_report_to_doctor &&
+      settings.doctor_report_recipients === 'both' &&
+      order.doctors?.hospital_phone
+    ) {
+      const doctorMessage = replacePlaceholders(
+        DEFAULT_TEMPLATES.doctor_report_ready.message,
+        templateData
+      );
+
+      const sendResult = shouldAttemptNow
+        ? await notificationTriggerService.sendWithFallback(
+          order.doctors.hospital_phone,
+          doctorMessage,
+          pdfUrl,
+          order.patient_name,
+          testNames
+        )
+        : { success: false, error: !statusMatches ? `Waiting for status ${statusGate}` : 'Outside send window' };
+
+      if (!sendResult.success && (settings.queue_outside_window !== false || statusMatches)) {
+        await notificationTriggerService.queueNotification({
+          lab_id: labId,
+          recipient_type: 'doctor',
+          recipient_phone: order.doctors.hospital_phone,
+          recipient_name: order.doctors.name,
+          recipient_id: order.doctors.id,
+          trigger_type: 'report_ready',
+          order_id: orderId,
+          report_id: reportId,
+          message_content: doctorMessage,
+          attachment_url: pdfUrl,
+          attachment_type: 'report',
+          scheduled_for: scheduledFor,
+          last_error: sendResult.error,
+        });
       }
     }
 

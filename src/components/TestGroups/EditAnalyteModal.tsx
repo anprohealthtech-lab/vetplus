@@ -170,12 +170,12 @@ export const EditAnalyteModal: React.FC<EditAnalyteModalProps> = ({
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Reference Range
             </label>
-            <input
-              type="text"
+            <textarea
+              rows={3}
               value={formData.reference_range}
               onChange={(e) => handleInputChange('reference_range', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="e.g., 12-16 g/dL (Female), 14-18 g/dL (Male)"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y"
+              placeholder="e.g., 12-16 g/dL (Female), 14-18 g/dL (Male)&#10;Press Enter for multiple lines"
             />
           </div>
 

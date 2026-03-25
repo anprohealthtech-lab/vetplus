@@ -79,6 +79,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    // B2B account users are not lab staff — skip lab status check
+    if (currentUser.user_metadata?.role === 'b2b_account') {
+      setLabStatus('active');
+      setLabStatusLoading(false);
+      labStatusFetchedForUser.current = currentUser.email;
+      return;
+    }
+
     setLabStatusLoading(true);
     try {
       // First, get the user's lab_id from the users table

@@ -96,7 +96,7 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
 
     // Create temporary anchor element to trigger download
     const link = document.createElement('a');
-    link.href = generatedPdfUrl;
+    link.href = `${generatedPdfUrl}?t=${Date.now()}`;
     link.download = `invoice-${invoiceId}.pdf`;
     link.target = '_blank';
     document.body.appendChild(link);

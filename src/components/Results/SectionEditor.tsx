@@ -252,6 +252,17 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
     });
   };
 
+  // Directly edit final content (overrides computed value from options + custom text)
+  const updateFinalContent = (sectionId: string, text: string) => {
+    setContents(prev => {
+      const newMap = new Map(prev);
+      const content = newMap.get(sectionId);
+      if (!content || content.is_finalized) return prev;
+      newMap.set(sectionId, { ...content, final_content: text });
+      return newMap;
+    });
+  };
+
   // Update custom text
   const updateCustomText = (sectionId: string, text: string) => {
     setContents(prev => {
@@ -900,20 +911,26 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
                     </div>
                   )}
 
-                  {/* Preview */}
+                  {/* Preview — editable so the user can fine-tune the composed content */}
                   {(content?.final_content || (content?.image_urls && content.image_urls.length > 0)) && (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         Preview (will appear in report):
                       </label>
-                      <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
-                        {content?.final_content && (
-                          <div className="text-sm text-gray-800 whitespace-pre-wrap">
-                            {content.final_content}
-                          </div>
+                      <div className="bg-gray-50 border border-gray-200 rounded-lg space-y-3 overflow-hidden">
+                        {content?.final_content !== undefined && (
+                          <textarea
+                            value={content.final_content}
+                            onChange={(e) => !isLocked && updateFinalContent(section.id, e.target.value)}
+                            disabled={isLocked}
+                            rows={6}
+                            className={`w-full px-4 py-3 text-sm text-gray-800 bg-transparent border-0 focus:ring-2 focus:ring-blue-400 focus:outline-none resize-y ${
+                              isLocked ? 'cursor-not-allowed text-gray-500' : ''
+                            }`}
+                          />
                         )}
                         {content?.image_urls && content.image_urls.length > 0 && (
-                          <div className="grid grid-cols-2 gap-3">
+                          <div className="grid grid-cols-2 gap-3 px-4 pb-3">
                             {content.image_urls.map((url) => (
                               <img
                                 key={url}

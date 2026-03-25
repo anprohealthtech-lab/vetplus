@@ -55,6 +55,7 @@ import PhlebotomistSelector from "../Users/PhlebotomistSelector";
 import { OrderStatusDisplay } from "./OrderStatusDisplay";
 import { capturePhoto, isNative } from "../../utils/androidFileUpload";
 import { calculateFlagsForResults, calculateFlag } from "../../utils/flagCalculation";
+import SectionEditor from "../Results/SectionEditor";
 import VoiceRecorder from "../Voice/VoiceRecorder";
 
 interface WorkflowStep {
@@ -652,6 +653,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   const [activeAttachment, setActiveAttachment] = React.useState<any | null>(null);
   const [progressRows, setProgressRows] = useState<any[]>([]);
   const [readonlyByTG, setReadonlyByTG] = useState<Record<string, any[]>>({});
+  const [resultIdByTG, setResultIdByTG] = useState<Record<string, string>>({});
   const [calcDeps, setCalcDeps] = useState<{ calculated_analyte_id: string; source_analyte_id: string; variable_name: string }[]>([]);
 
   // =========================================================
@@ -1298,14 +1300,17 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       if (error) return;
 
       const map: Record<string, any[]> = {};
+      const idMap: Record<string, string> = {};
       (data || []).forEach((r: any) => {
         const key = r.test_group_id || r.order_test_group_id || r.order_test_id || "unknown";
         const arr = r.result_values || [];
         if (!map[key]) map[key] = [];
         // keep newest first; if same analyte appears, latest stays at top
         map[key] = [...arr, ...(map[key] || [])];
+        if (!idMap[key]) idMap[key] = r.id;
       });
       setReadonlyByTG(map);
+      setResultIdByTG(idMap);
     } catch (e) {
       console.error("Error loading readonly results", e);
     }
@@ -2900,15 +2905,29 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       // Prefetch existing rows once to avoid one query per test group.
       const existingResultRowByGroupKey = new Map<string, string>();
+      const existingResultStatusByGroupKey = new Map<string, string>();
+      const isLockedResult = (status: string | null, verificationStatus: string | null) =>
+        ['Approved', 'Reviewed', 'Reported', 'approved', 'verified'].includes(status || '') ||
+        ['verified'].includes(verificationStatus || '');
       const { data: existingRows, error: existingRowsError } = await supabase
         .from("results")
-        .select("id, test_group_id, order_test_group_id, order_test_id")
+        .select("id, test_group_id, order_test_group_id, order_test_id, status, verification_status")
         .eq("order_id", order.id);
       if (existingRowsError) throw existingRowsError;
       for (const row of existingRows || []) {
-        if (row.order_test_group_id) existingResultRowByGroupKey.set(`otg:${row.order_test_group_id}`, row.id);
-        if (row.order_test_id) existingResultRowByGroupKey.set(`ot:${row.order_test_id}`, row.id);
-        if (row.test_group_id) existingResultRowByGroupKey.set(`tg:${row.test_group_id}`, row.id);
+        const locked = isLockedResult(row.status, row.verification_status) ? 'LOCKED' : row.status;
+        if (row.order_test_group_id) {
+          existingResultRowByGroupKey.set(`otg:${row.order_test_group_id}`, row.id);
+          existingResultStatusByGroupKey.set(`otg:${row.order_test_group_id}`, locked);
+        }
+        if (row.order_test_id) {
+          existingResultRowByGroupKey.set(`ot:${row.order_test_id}`, row.id);
+          existingResultStatusByGroupKey.set(`ot:${row.order_test_id}`, locked);
+        }
+        if (row.test_group_id) {
+          existingResultRowByGroupKey.set(`tg:${row.test_group_id}`, row.id);
+          existingResultStatusByGroupKey.set(`tg:${row.test_group_id}`, locked);
+        }
       }
 
       // Prefetch outsourced status once to avoid one query per test group.
@@ -3121,12 +3140,17 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           const { data: savedResult, error: resultError } = await supabase
             .from("results")
             .upsert(resultData, { onConflict: "order_id,test_name", ignoreDuplicates: false })
-            .select()
+            .select("id, status, verification_status")
             .single();
           if (resultError) throw resultError;
           resultRowId = savedResult.id;
           existingResultRowByGroupKey.set(groupKey, resultRowId);
+          const savedLocked = isLockedResult(savedResult.status, savedResult.verification_status) ? 'LOCKED' : savedResult.status;
+          existingResultStatusByGroupKey.set(groupKey, savedLocked);
         }
+
+        // Skip groups whose result is already approved/verified — do not overwrite locked results
+        if (existingResultStatusByGroupKey.get(groupKey) === 'LOCKED') continue;
 
         // Upsert result_values for only the analytes we are saving now:
         // Use analyte_id (UUID) for the delete filter — analyte names may contain characters like "(%)"
@@ -4409,6 +4433,17 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                               </tbody>
                             </table>
                           </div>
+                          {/* Report Sections for this test group */}
+                          {resultIdByTG[key] && tg.test_group_id && (
+                            <div className="border-t border-gray-100 p-3 bg-gray-50/50">
+                              <SectionEditor
+                                resultId={resultIdByTG[key]}
+                                testGroupId={tg.test_group_id}
+                                editorRole="doctor"
+                                showAIAssistant={false}
+                              />
+                            </div>
+                          )}
                         </div>
                       );
                     })}

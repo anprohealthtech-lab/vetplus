@@ -14,6 +14,8 @@ interface SelectedSourceAnalyte extends SourceAnalyte {
 }
 
 interface SimpleAnalyteEditorProps {
+  /** IDs of analytes currently attached to this test group — used to surface them first in the dependency picker */
+  testGroupAnalyteIds?: string[];
   analyte: {
     id: string;
     name: string;
@@ -55,6 +57,7 @@ interface SimpleAnalyteEditorProps {
 export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
   analyte,
   availableAnalytes = [],
+  testGroupAnalyteIds = [],
   onSave,
   onCancel
 }) => {
@@ -167,19 +170,26 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showSourcePicker]);
 
+  const inGroupSet = useMemo(() => new Set(testGroupAnalyteIds), [testGroupAnalyteIds]);
+
   const filteredSourceAnalytes = useMemo(() => {
-    return availableAnalytes
-      .filter(a => {
-        if (a.id === analyte.id) return false;
-        if (selectedSources.some(s => s.id === a.id)) return false;
-        if (sourceSearchTerm) {
-          const q = sourceSearchTerm.toLowerCase();
-          return a.name.toLowerCase().includes(q) || a.category?.toLowerCase().includes(q);
-        }
-        return true;
-      })
-      .slice(0, 15);
-  }, [availableAnalytes, selectedSources, sourceSearchTerm, analyte.id]);
+    const filtered = availableAnalytes.filter(a => {
+      if (a.id === analyte.id) return false;
+      if (selectedSources.some(s => s.id === a.id)) return false;
+      if (sourceSearchTerm) {
+        const q = sourceSearchTerm.toLowerCase();
+        return a.name.toLowerCase().includes(q) || a.category?.toLowerCase().includes(q);
+      }
+      return true;
+    });
+    // Sort: analytes in this test group appear first
+    filtered.sort((a, b) => {
+      const aIn = inGroupSet.has(a.id) ? 0 : 1;
+      const bIn = inGroupSet.has(b.id) ? 0 : 1;
+      return aIn - bIn;
+    });
+    return filtered.slice(0, 30);
+  }, [availableAnalytes, selectedSources, sourceSearchTerm, analyte.id, inGroupSet]);
 
   const handleAddSource = (source: SourceAnalyte) => {
     let varName = generateVariableSlug(source.name);
@@ -445,12 +455,12 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Reference Range (Text)</label>
-                <input
-                  type="text"
+                <textarea
+                  rows={3}
                   value={formData.reference_range}
                   onChange={(e) => setFormData(prev => ({ ...prev, reference_range: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="e.g., 12-16 (F), 14-18 (M) or Normal/Abnormal"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y"
+                  placeholder="e.g., 12-16 (F), 14-18 (M) or Normal/Abnormal&#10;Press Enter for multiple lines"
                 />
                 <p className="text-xs text-gray-500 mt-1">Text description of normal ranges, including gender/age specific values</p>
               </div>
@@ -854,9 +864,17 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                     {selectedSources.length > 0 && (
                       <div className="mb-3 space-y-2">
                         {selectedSources.map(source => (
-                          <div key={source.id} className="flex items-center gap-2 bg-white border border-amber-200 rounded-lg p-2">
+                          <div key={source.id} className={`flex items-center gap-2 bg-white rounded-lg p-2 ${inGroupSet.has(source.id) ? 'border border-green-300' : 'border border-amber-200'}`}>
                             <div className="flex-1 min-w-0">
-                              <div className="text-sm font-medium text-gray-900 truncate">{source.name}</div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-sm font-medium text-gray-900 truncate">{source.name}</span>
+                                {inGroupSet.has(source.id) && (
+                                  <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">In group</span>
+                                )}
+                                {!inGroupSet.has(source.id) && source.id && !source.id.startsWith('_manual_') && (
+                                  <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-yellow-100 text-yellow-700 rounded-full font-medium" title="This analyte is not in the current test group — formula may not calculate if a different copy is used">⚠ Not in group</span>
+                                )}
+                              </div>
                               {source.unit && <div className="text-xs text-gray-500">{source.unit}</div>}
                             </div>
                             <div className="flex items-center gap-2 flex-shrink-0">
@@ -919,19 +937,43 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                               {filteredSourceAnalytes.length === 0 ? (
                                 <div className="p-3 text-sm text-gray-500 text-center">No matching analytes found</div>
                               ) : (
-                                filteredSourceAnalytes.map(a => (
-                                  <div
-                                    key={a.id}
-                                    className="px-3 py-2 hover:bg-amber-50 cursor-pointer flex items-center justify-between"
-                                    onClick={() => handleAddSource(a)}
-                                  >
-                                    <div>
-                                      <div className="text-sm font-medium text-gray-900">{a.name}</div>
-                                      <div className="text-xs text-gray-500">{a.unit}{a.category ? ` • ${a.category}` : ''}</div>
-                                    </div>
-                                    <span className="text-xs text-amber-600 font-mono">{generateVariableSlug(a.name)}</span>
-                                  </div>
-                                ))
+                                filteredSourceAnalytes.map((a, idx) => {
+                                  const isInGroup = inGroupSet.has(a.id);
+                                  // Show section header when transitioning from in-group to others
+                                  const prevIsInGroup = idx > 0 ? inGroupSet.has(filteredSourceAnalytes[idx - 1].id) : true;
+                                  const showSeparator = !isInGroup && prevIsInGroup && filteredSourceAnalytes.some(x => inGroupSet.has(x.id));
+                                  return (
+                                    <React.Fragment key={a.id}>
+                                      {showSeparator && (
+                                        <div className="px-3 py-1 bg-gray-50 border-t border-b border-gray-100 text-xs text-gray-400 font-medium uppercase tracking-wide">
+                                          Other analytes
+                                        </div>
+                                      )}
+                                      {idx === 0 && isInGroup && (
+                                        <div className="px-3 py-1 bg-green-50 border-b border-green-100 text-xs text-green-700 font-medium uppercase tracking-wide">
+                                          In this test group
+                                        </div>
+                                      )}
+                                      <div
+                                        className={`px-3 py-2 cursor-pointer flex items-center justify-between ${isInGroup ? 'hover:bg-green-50 bg-green-50/30' : 'hover:bg-amber-50'}`}
+                                        onClick={() => handleAddSource(a)}
+                                      >
+                                        <div className="flex items-center gap-2 min-w-0">
+                                          <div>
+                                            <div className="text-sm font-medium text-gray-900">{a.name}</div>
+                                            <div className="text-xs text-gray-500">{a.unit}{a.category ? ` • ${a.category}` : ''}</div>
+                                          </div>
+                                          {isInGroup && (
+                                            <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">
+                                              In group
+                                            </span>
+                                          )}
+                                        </div>
+                                        <span className="text-xs text-amber-600 font-mono flex-shrink-0 ml-2">{generateVariableSlug(a.name)}</span>
+                                      </div>
+                                    </React.Fragment>
+                                  );
+                                })
                               )}
                             </div>
                           </div>

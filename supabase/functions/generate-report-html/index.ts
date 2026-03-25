@@ -536,7 +536,7 @@ function determineFlag(
       // Critical checks first
       if (highCrit !== null && numValue >= highCrit) {
         flag = 'critical_high'
-      } else if (lowCrit !== null && numValue <= lowCrit) {
+      } else if (lowCrit !== null && numValue < lowCrit) {
         flag = 'critical_low'
       } else if (type === 'range' && low !== null && high !== null) {
         if (numValue < low) flag = 'low'

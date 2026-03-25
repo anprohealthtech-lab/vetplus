@@ -3565,21 +3565,25 @@ export const database = {
           r.result_values && r.result_values.length > 0
         );
         const approvedResults = results.filter((r: any) =>
-          r.status === "Approved"
+          r.status === "Approved" || r.verification_status === "verified"
         );
 
         let newStatus = order.status;
 
         // Determine new status based on completion
-        if (order.status === "In Progress") {
-          // If all tests have results submitted, move to Pending Approval
-          if (resultsWithValues.length >= totalTests && totalTests > 0) {
+        if (order.status === "Sample Collected" || order.status === "In Progress") {
+          if (totalTests > 0 && approvedResults.length >= totalTests) {
+            // All results verified — jump straight to Report Ready
+            newStatus = "Report Ready";
+          } else if (order.status === "In Progress" && resultsWithValues.length >= totalTests && totalTests > 0) {
             newStatus = "Pending Approval";
+          } else if (order.status === "Sample Collected" && resultsWithValues.length >= totalTests && totalTests > 0) {
+            newStatus = "In Progress";
           }
         } else if (order.status === "Pending Approval") {
-          // If all results are approved, move to Completed
+          // If all results are approved/verified, move to Report Ready
           if (approvedResults.length >= totalTests && totalTests > 0) {
-            newStatus = "Completed";
+            newStatus = "Report Ready";
           }
         }
 
@@ -3648,6 +3652,33 @@ export const database = {
         console.error("Error in markAsDelivered:", error);
         return { data: null, error };
       }
+    },
+
+    // Get all orders for a B2B account within a billing period (YYYY-MM)
+    getByAccountAndPeriod: async (accountId: string, billingPeriod: string) => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: new Error("No lab_id found") };
+
+      const [year, month] = billingPeriod.split('-').map(Number);
+      const periodStart = `${billingPeriod}-01`;
+      const lastDay = new Date(year, month, 0).getDate();
+      const periodEnd = `${billingPeriod}-${String(lastDay).padStart(2, '0')}`;
+
+      const { data, error } = await supabase
+        .from("orders")
+        .select(`
+          id, order_number, order_date, total_amount, final_amount, patient_id,
+          billing_status,
+          patients(name),
+          consolidated_invoice_items(consolidated_invoice_id)
+        `)
+        .eq("lab_id", lab_id)
+        .eq("account_id", accountId)
+        .gte("order_date", periodStart)
+        .lte("order_date", periodEnd)
+        .order("order_date", { ascending: true });
+
+      return { data, error };
     },
   },
 
@@ -4312,6 +4343,7 @@ export const database = {
         flag_confidence?: number;
         ai_interpretation?: string;
         ai_audit_status?: "pending" | "approved" | "rejected";
+        reference_range?: string | null;
         // Enriched analyte snapshot fields for PDF template
         normal_range_min?: number | null;
         normal_range_max?: number | null;
@@ -4335,6 +4367,9 @@ export const database = {
             flag_confidence: update.flag_confidence,
             ai_interpretation: update.ai_interpretation,
             ai_audit_status: update.ai_audit_status,
+            ...(update.reference_range !== undefined
+              ? { reference_range: update.reference_range }
+              : {}),
             // Enriched analyte snapshot fields (only set if provided)
             ...(update.normal_range_min !== undefined
               ? { normal_range_min: update.normal_range_min }
@@ -4682,15 +4717,20 @@ export const database = {
         };
       }
 
-      const { data, error } = await supabase
+      let query = supabase
         .from("invoices")
         .select(`
           *,
           invoice_items(*),
           accounts(name)
         `)
-        .eq("lab_id", lab_id)
-        .eq("billing_period", billingPeriod)
+        .eq("lab_id", lab_id);
+
+      if (billingPeriod) {
+        query = query.eq("billing_period", billingPeriod);
+      }
+
+      const { data, error } = await query
         .order("account_id")
         .order("invoice_date", { ascending: false });
 
@@ -4854,7 +4894,7 @@ export const database = {
           accounts(name)
         `)
         .eq("lab_id", lab_id)
-        .order("invoice_date", { ascending: false });
+        .order("created_at", { ascending: false });
 
       return { data, error };
     },
@@ -4915,7 +4955,7 @@ export const database = {
         .select("*")
         .eq("lab_id", lab_id)
         .eq("account_id", accountId)
-        .order("billing_period", { ascending: false });
+        .order("billing_period_start", { ascending: false });
 
       return { data, error };
     },
