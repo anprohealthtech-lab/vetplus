@@ -1,0 +1,15 @@
+
+{
+  "id": "cbc_peripheral_smear_v1",
+  "name": "CBC + Peripheral Smear (Demo)",
+  "modality": "PERIPHERAL_SMEAR",
+  "version": 1,
+  "steps": [
+    { "id": "intro", "type": "info", "title": "Start Peripheral Smear", "text": "Prepare slide, focus at 10x." },
+    { "id": "capture_low", "type": "capture", "magnification": "10x", "prompt": "Capture representative field (10x)" },
+    { "id": "capture_high", "type": "capture", "magnification": "40x", "prompt": "Capture WBC rich field (40x)" },
+    { "id": "ai_stub", "type": "analyze", "algorithm": "wbc_rbc_estimator_stub" },
+    { "id": "review", "type": "review", "fields": ["wbc_estimate", "rbc_morphology", "platelets"] },
+    { "id": "finalize", "type": "commit", "creates": ["result" ] }
+  ]
+}

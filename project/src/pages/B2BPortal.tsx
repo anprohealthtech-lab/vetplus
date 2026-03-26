@@ -1,0 +1,496 @@
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle, X, Clock, User, Phone, Trash2, Printer, FileText } from 'lucide-react';
+import { supabase } from '../utils/supabase';
+import { getCurrentB2BAccount } from '../utils/b2bAuth';
+import AccountInfoCard from '../components/B2B/AccountInfoCard';
+import B2BBookingModal from '../components/B2B/B2BBookingModal';
+import { format } from 'date-fns';
+
+interface Order {
+    id: string;
+    patient_name: string;
+    patient_id: string;
+    status: string;
+    priority: string;
+    order_date: string;
+    expected_date: string;
+    total_amount: number;
+    sample_id?: string;
+    color_code?: string;
+    color_name?: string;
+    reports?: {
+        id: string;
+        pdf_url?: string;
+        print_pdf_url?: string;
+        status: string;
+        generated_date?: string;
+    } | null;
+}
+
+const B2BPortal: React.FC = () => {
+    const navigate = useNavigate();
+    const [account, setAccount] = useState<any>(null);
+    const [orders, setOrders] = useState<Order[]>([]);
+    const [filteredOrders, setFilteredOrders] = useState<Order[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [statusFilter, setStatusFilter] = useState('All');
+    const [dateRange, setDateRange] = useState({ from: '', to: '' });
+    const [showBookingModal, setShowBookingModal] = useState(false);
+    const [pendingBookings, setPendingBookings] = useState<any[]>([]);
+    const [cancellingBooking, setCancellingBooking] = useState<string | null>(null);
+
+    // Load account and orders
+    useEffect(() => {
+        loadData();
+    }, []);
+
+    // Apply filters
+    useEffect(() => {
+        applyFilters();
+    }, [orders, searchTerm, statusFilter, dateRange]);
+
+    const loadData = async () => {
+        try {
+            setLoading(true);
+
+            // Get account info
+            const accountData = await getCurrentB2BAccount();
+            if (!accountData) {
+                alert('Unable to load account information');
+                handleLogout();
+                return;
+            }
+            setAccount(accountData);
+
+            // Fetch orders for this account
+            // Note: Don't join with patients table - B2B users don't have access
+            // patient_name is already in the orders table
+            const { data: ordersData, error } = await supabase
+                .from('orders')
+                .select(`
+                    *,
+                    reports(id, pdf_url, print_pdf_url, status, generated_date)
+                `)
+                .eq('account_id', accountData.id)
+                .order('order_date', { ascending: false });
+
+            if (error) {
+                console.error('Error fetching orders:', error);
+                alert('Failed to load orders');
+                return;
+            }
+
+            setOrders(ordersData || []);
+
+            // Fetch pending bookings for this account
+            const { data: bookingsData, error: bookingsError } = await supabase
+                .from('bookings')
+                .select('*')
+                .eq('account_id', accountData.id)
+                .in('status', ['pending', 'quoted', 'confirmed'])
+                .order('created_at', { ascending: false });
+
+            if (!bookingsError && bookingsData) {
+                setPendingBookings(bookingsData);
+            }
+        } catch (error) {
+            console.error('Error loading data:', error);
+            alert('An error occurred while loading data');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleCancelBooking = async (bookingId: string) => {
+        if (!window.confirm('Are you sure you want to cancel this booking?')) return;
+        
+        try {
+            setCancellingBooking(bookingId);
+            const { error } = await supabase
+                .from('bookings')
+                .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+                .eq('id', bookingId);
+            
+            if (error) throw error;
+            
+            // Refresh bookings
+            setPendingBookings(prev => prev.filter(b => b.id !== bookingId));
+        } catch (error) {
+            console.error('Error cancelling booking:', error);
+            alert('Failed to cancel booking');
+        } finally {
+            setCancellingBooking(null);
+        }
+    };
+
+    const applyFilters = () => {
+        let filtered = [...orders];
+
+        // Search filter
+        if (searchTerm) {
+            const search = searchTerm.toLowerCase();
+            filtered = filtered.filter(
+                (order) =>
+                    order.sample_id?.toLowerCase().includes(search) ||
+                    order.patient_name?.toLowerCase().includes(search) ||
+                    order.id.toLowerCase().includes(search)
+            );
+        }
+
+        // Status filter
+        if (statusFilter !== 'All') {
+            filtered = filtered.filter((order) => order.status === statusFilter);
+        }
+
+        // Date range filter
+        if (dateRange.from) {
+            filtered = filtered.filter((order) => order.order_date >= dateRange.from);
+        }
+        if (dateRange.to) {
+            filtered = filtered.filter((order) => order.order_date <= dateRange.to);
+        }
+
+        setFilteredOrders(filtered);
+    };
+
+    const handleLogout = async () => {
+        await supabase.auth.signOut();
+        navigate('/b2b');
+    };
+
+    const handleDownloadReport = (reportUrl: string) => {
+        window.open(reportUrl, '_blank');
+    };
+
+    const getStatusColor = (status: string) => {
+        const colors: Record<string, string> = {
+            'Pending Collection': 'bg-yellow-100 text-yellow-800',
+            'In Progress': 'bg-blue-100 text-blue-800',
+            'Pending Approval': 'bg-orange-100 text-orange-800',
+            'Report Ready': 'bg-green-100 text-green-800',
+            'Completed': 'bg-green-100 text-green-800',
+            'Delivered': 'bg-gray-100 text-gray-800',
+        };
+        return colors[status] || 'bg-gray-100 text-gray-800';
+    };
+
+    const formatCurrency = (amount: number) => {
+        return new Intl.NumberFormat('en-IN', {
+            style: 'currency',
+            currency: 'INR',
+            maximumFractionDigits: 0,
+        }).format(amount);
+    };
+
+    const formatDate = (dateString: string) => {
+        return new Date(dateString).toLocaleDateString('en-IN', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+        });
+    };
+
+    if (loading) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-gray-50">
+                <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+                    <p className="mt-4 text-gray-600">Loading portal...</p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="min-h-screen bg-gray-50">
+            {/* Header */}
+            <header className="bg-white shadow-sm border-b border-gray-200">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <h1 className="text-2xl font-bold text-gray-900">B2B Portal</h1>
+                            <p className="text-sm text-gray-600 mt-1">Welcome back, {account?.name}</p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <button
+                                onClick={() => setShowBookingModal(true)}
+                                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+                            >
+                                <PlusCircle className="h-4 w-4 mr-2" />
+                                Book New Test
+                            </button>
+                            <button
+                                onClick={handleLogout}
+                                className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                            >
+                                <LogOut className="h-4 w-4 mr-2" />
+                                Logout
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            {/* Main Content */}
+            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                {/* Account Info */}
+                {account && (
+                    <div className="mb-8">
+                        <AccountInfoCard account={account} />
+                    </div>
+                )}
+
+                {/* Pending Bookings Section */}
+                {pendingBookings.length > 0 && (
+                    <div className="bg-yellow-50 rounded-lg shadow-md border border-yellow-200 mb-8">
+                        <div className="p-4 border-b border-yellow-200">
+                            <h2 className="text-lg font-bold text-yellow-800 flex items-center gap-2">
+                                <Clock className="h-5 w-5" />
+                                Pending Bookings ({pendingBookings.length})
+                            </h2>
+                            <p className="text-sm text-yellow-700 mt-1">
+                                These bookings are waiting to be processed by the lab.
+                            </p>
+                        </div>
+                        <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {pendingBookings.map((booking) => (
+                                <div key={booking.id} className="bg-white rounded-lg border border-yellow-200 p-4">
+                                    <div className="flex justify-between items-start mb-2">
+                                        <div>
+                                            <p className="font-medium text-gray-900 flex items-center gap-1">
+                                                <User className="h-3 w-3" />
+                                                {booking.patient_info?.name || 'N/A'}
+                                            </p>
+                                            <p className="text-sm text-gray-500 flex items-center gap-1">
+                                                <Phone className="h-3 w-3" />
+                                                {booking.patient_info?.phone || 'N/A'}
+                                            </p>
+                                        </div>
+                                        <span className="text-xs font-semibold px-2 py-1 rounded-full bg-yellow-100 text-yellow-800 uppercase">
+                                            {booking.status}
+                                        </span>
+                                    </div>
+                                    <div className="text-xs text-gray-500 mb-2">
+                                        {booking.scheduled_at && (
+                                            <p>Scheduled: {format(new Date(booking.scheduled_at), 'dd MMM yyyy, hh:mm a')}</p>
+                                        )}
+                                        <p>Tests: {booking.test_details?.length || 0}</p>
+                                    </div>
+                                    <button
+                                        onClick={() => handleCancelBooking(booking.id)}
+                                        disabled={cancellingBooking === booking.id}
+                                        className="w-full mt-2 px-3 py-1.5 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg flex items-center justify-center gap-1 disabled:opacity-50"
+                                    >
+                                        {cancellingBooking === booking.id ? (
+                                            'Cancelling...'
+                                        ) : (
+                                            <>
+                                                <Trash2 className="h-3 w-3" />
+                                                Cancel Booking
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* Orders Section */}
+                <div className="bg-white rounded-lg shadow-md border border-gray-200">
+                    {/* Filters */}
+                    <div className="p-6 border-b border-gray-200">
+                        <div className="flex items-center justify-between mb-4">
+                            <h2 className="text-xl font-bold text-gray-900">Your Orders</h2>
+                            <button
+                                onClick={loadData}
+                                className="flex items-center px-3 py-2 text-sm bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors"
+                            >
+                                <RefreshCw className="h-4 w-4 mr-2" />
+                                Refresh
+                            </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                            {/* Search */}
+                            <div className="relative">
+                                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                                <input
+                                    type="text"
+                                    placeholder="Search by Sample ID or Patient..."
+                                    value={searchTerm}
+                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                    className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                />
+                            </div>
+
+                            {/* Status Filter */}
+                            <div className="relative">
+                                <Filter className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                                <select
+                                    value={statusFilter}
+                                    onChange={(e) => setStatusFilter(e.target.value)}
+                                    className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                >
+                                    <option value="All">All Status</option>
+                                    <option value="Pending Collection">Pending Collection</option>
+                                    <option value="In Progress">In Progress</option>
+                                    <option value="Pending Approval">Pending Approval</option>
+                                    <option value="Report Ready">Report Ready</option>
+                                    <option value="Completed">Completed</option>
+                                    <option value="Delivered">Delivered</option>
+                                </select>
+                            </div>
+
+                            {/* Date From */}
+                            <div className="relative">
+                                <Calendar className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                                <input
+                                    type="date"
+                                    value={dateRange.from}
+                                    onChange={(e) => setDateRange({ ...dateRange, from: e.target.value })}
+                                    className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                    placeholder="From Date"
+                                />
+                            </div>
+
+                            {/* Date To */}
+                            <div className="relative">
+                                <Calendar className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                                <input
+                                    type="date"
+                                    value={dateRange.to}
+                                    onChange={(e) => setDateRange({ ...dateRange, to: e.target.value })}
+                                    className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                    placeholder="To Date"
+                                />
+                            </div>
+                        </div>
+
+                        <div className="mt-4 text-sm text-gray-600">
+                            Showing {filteredOrders.length} of {orders.length} orders
+                        </div>
+                    </div>
+
+                    {/* Orders Table */}
+                    <div className="overflow-x-auto">
+                        <table className="w-full">
+                            <thead className="bg-gray-50 border-b border-gray-200">
+                                <tr>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Sample ID
+                                    </th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Patient
+                                    </th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Order Date
+                                    </th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Status
+                                    </th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Amount
+                                    </th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Actions
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-gray-200">
+                                {filteredOrders.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
+                                            No orders found
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    filteredOrders.map((order) => (
+                                        <tr key={order.id} className="hover:bg-gray-50 transition-colors">
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className="flex items-center">
+                                                    {order.color_code && (
+                                                        <div
+                                                            className="w-3 h-3 rounded-full mr-2"
+                                                            style={{ backgroundColor: order.color_code }}
+                                                            title={order.color_name}
+                                                        />
+                                                    )}
+                                                    <span className="text-sm font-medium text-gray-900">
+                                                        {order.sample_id || 'N/A'}
+                                                    </span>
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className="text-sm text-gray-900">{order.patient_name}</div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className="text-sm text-gray-900">{formatDate(order.order_date)}</div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(order.status)}`}>
+                                                    {order.status}
+                                                </span>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className="text-sm font-medium text-gray-900">
+                                                    {formatCurrency(order.total_amount)}
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm">
+                                                <div className="flex items-center space-x-1.5">
+                                                    {order.reports?.pdf_url ? (
+                                                        <>
+                                                            {/* E-Copy (digital PDF) */}
+                                                            <button
+                                                                onClick={() => handleDownloadReport(order.reports!.pdf_url!)}
+                                                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 transition-colors"
+                                                                title="Download E-Copy (digital PDF)"
+                                                            >
+                                                                <FileText className="h-3.5 w-3.5" />
+                                                                E-Copy
+                                                            </button>
+                                                            {/* Print version */}
+                                                            <button
+                                                                onClick={() => {
+                                                                    const url = order.reports!.print_pdf_url || order.reports!.pdf_url!;
+                                                                    handleDownloadReport(url);
+                                                                }}
+                                                                className="inline-flex items-center justify-center p-1.5 text-xs font-medium rounded-lg text-white bg-emerald-700 hover:bg-emerald-800 transition-colors"
+                                                                title={order.reports!.print_pdf_url ? "Print Version (letterhead)" : "Print (opens report PDF)"}
+                                                            >
+                                                                <Printer className="h-3.5 w-3.5" />
+                                                            </button>
+                                                        </>
+                                                    ) : (
+                                                        <span className="text-gray-400 text-xs italic">Report pending</span>
+                                                    )}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </main>
+
+            {showBookingModal && account && (
+                <B2BBookingModal
+                    accountId={account.id}
+                    labId={account.lab_id}
+                    onClose={() => setShowBookingModal(false)}
+                    onSuccess={() => {
+                        loadData();
+                        alert('Booking created successfully! It will appear in your orders once processed by the lab.');
+                    }}
+                />
+            )}
+        </div>
+    );
+};
+
+export default B2BPortal;

@@ -1,0 +1,671 @@
+import { createClient } from '@supabase/supabase-js';
+import { getAssignedColor, generateQRCodeData } from './colorAssignment';
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error('Missing Supabase environment variables');
+};
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const invoices = {
+
+// File upload utilities
+export const uploadFile = async (
+  file: File, 
+  filePath: string, 
+  options?: { upsert?: boolean }
+) => {
+  const { data, error } = await supabase.storage
+    .from('attachments')
+    .upload(filePath, file, {
+      upsert: options?.upsert || false,
+      contentType: file.type
+};
+  if (error) {
+const invoice_items = {
+    throw new Error(`Upload failed: ${error.message}`);
+};
+  // Get public URL
+const payments = {
+  const { data: publicUrlData } = supabase.storage
+    .from('attachments')
+    .getPublicUrl(data.path);
+
+  return {
+    path: data.path,
+    publicUrl: publicUrlData.publicUrl,
+    fullPath: data.fullPath
+  };
+};
+
+// Generate organized file path
+export const generateFilePath = (
+  fileName: string,
+  patientId?: string,
+  labId?: string,
+  category: string = 'general'
+): string => {
+  const timestamp = Date.now();
+  const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+  
+  if (labId && patientId) {
+    return `${category}/${labId}/${patientId}_${timestamp}_${sanitizedFileName}`;
+  } else if (patientId) {
+    return `${category}/${patientId}_${timestamp}_${sanitizedFileName}`;
+  } else {
+    return `${category}/${timestamp}_${sanitizedFileName}`;
+};
+
+const analytes = {
+
+// Auth helper functions
+export const auth = {
+  signUp: async (email: string, password: string, userData?: any) => {
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: userData
+};
+    return { data, error };
+const attachments = {
+};
+  signIn: async (email: string, password: string) => {
+const database = {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password
+};
+  },
+export default database;
+
+  signOut: async () => {
+    const { error } = await supabase.auth.signOut();
+    return { error };
+  },
+
+  getAll: async () => {
+    const { data, error } = await supabase
+      .from('test_groups')
+      .select('id, name, code, category, clinical_purpose, price, turnaround_time, sample_type, requires_fasting, is_active, created_at, updated_at, default_ai_processing_type, group_level_prompt, test_group_analytes(analyte_id, analytes(id, name, unit, reference_range, ai_processing_type, ai_prompt_override, group_ai_mode))')
+      .eq('is_active', true)
+      .order('name');
+    return { data, error };
+  },
+const patients = {
+    getAll: async () => {
+      const { data, error } = await supabase
+        .from('patients')
+        .select('*, qr_code_data, color_code, color_name')
+        .eq('is_active', true)
+        .order('created_at', { ascending: false });
+      return { data, error };
+    },
+
+    getAllWithTestCounts: async () => {
+      const { data, error } = await supabase
+        .from('patients')
+        .select('*, qr_code_data, color_code, color_name, orders(id)')
+        .eq('is_active', true)
+        .order('created_at', { ascending: false });
+  },
+  // Get today's patient count for color assignment
+  getTodaysPatientsCount: async () => {
+      
+      // Transform the data to include test_count
+      const transformedData = data?.map(patient => ({
+        ...patient,
+        test_count: patient.orders?.length || 0
+      }));
+      
+      return { data, error };
+    },
+
+    getById: async (id: string) => {
+      const { data, error } = await supabase
+        .from('patients')
+        .select('*, qr_code_data, color_code, color_name')
+        .eq('id', id)
+        .single();
+      return { data, error };
+    },
+
+    create: async (patientData: any) => {
+      const { requestedTests, ...patientDetails } = patientData;
+      // Get today's date in DD-Mon-YYYY format
+      const today = new Date();
+      const day = today.getDate().toString().padStart(2, '0');
+      const month = today.toLocaleString('en-US', { month: 'short' });
+      const year = today.getFullYear();
+      const dateFormatted = `${day}-${month}-${year}`;
+      // Count patients registered today to determine sequential number
+      const { count: todayCount, error: countError } = await supabase
+        .from('patients')
+        .select('id', { count: 'exact', head: true })
+        .gte('created_at', today.toISOString().split('T')[0]);
+      if (countError) {
+        console.error('Error counting today\'s patients:', countError);
+        return { data: null, error: countError };
+      }
+      // Calculate sequential number (1-indexed)
+      const sequentialNumber = (todayCount || 0) + 1;
+      // Generate display_id in format DD-Mon-YYYY-SeqNum
+      const display_id = `${dateFormatted}-${sequentialNumber}`;
+      // Assign color based on sequential number
+      const { color_code, color_name } = getAssignedColor(sequentialNumber);
+      // Create patient with display_id and color information
+      const { data, error } = await supabase
+        .from('patients')
+        .insert([{
+          ...patientDetails,
+          display_id,
+          color_code,
+          color_name
+        }])
+        .select()
+        .single();
+      if (error || !data) {
+        return { data, error };
+      }
+      // Generate QR code data with the new patient ID
+      const qrCodeData = generateQRCodeData({
+        id: data.id,
+        display_id: data.display_id,
+        name: data.name,
+        age: data.age,
+        gender: data.gender
+      });
+      // Update the patient with QR code data and color information
+      const { data: updatedData, error: updateError } = await supabase
+        .from('patients')
+        .update({ qr_code_data: qrCodeData })
+        .eq('id', data.id)
+        .select()
+        .single();
+      if (updateError) {
+        console.error('Error updating patient with QR and color data:', updateError);
+        // If the update itself failed, return null data and the update error
+        return { data: null, error: updateError };
+      }
+      
+      // If updatedData is null or undefined, it means the update didn't return the expected data
+      if (!updatedData) {
+        console.warn('Warning: Patient update for QR/color data returned no data, but no explicit error was reported.');
+        // Return null data and a generic error to indicate silent failure
+        return { data: null, error: new Error('Patient update failed silently.') };
+      }
+      
+      // Step 3: Create order if tests were requested
+      if (requestedTests && requestedTests.length > 0) {
+        try {
+          // Get test groups from database to match test names
+          const { data: testGroups, error: testGroupsError } = await supabase
+            .from('test_groups')
+            .select('*');
+          
+          if (testGroupsError) {
+            console.error('Error fetching test groups:', testGroupsError);
+          } else {
+            // Match requested tests to test groups
+            const matchedTests = [];
+            let totalAmount = 0;
+            
+            requestedTests.forEach((testName: string) => {
+              const matchedGroup = testGroups?.find(group => 
+                group.name.toLowerCase().includes(testName.toLowerCase()) ||
+                testName.toLowerCase().includes(group.name.toLowerCase())
+              );
+              
+              if (matchedGroup) {
+                matchedTests.push(matchedGroup.name);
+                totalAmount += matchedGroup.price;
+              } else {
+                // Add unmatched tests as-is for manual review
+                matchedTests.push(testName);
+                totalAmount += 500; // Default price for unmatched tests
+              }
+            });
+            
+            if (matchedTests.length > 0) {
+              // Create order for the new patient
+              const orderData = {
+                patient_name: updatedData.name,
+                patient_id: updatedData.id,
+                tests: matchedTests,
+                status: 'Sample Collection',
+                priority: 'Normal',
+                order_date: new Date().toISOString().split('T')[0],
+                expected_date: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 2 days from now
+                total_amount: totalAmount,
+                doctor: patientData.referringDoctor || 'Self',
+              };
+              
+              const { data: orderResult, error: orderError } = await database.orders.create(orderData);
+              
+              if (orderError) {
+                console.error('Error creating order:', orderError);
+                // Don't fail patient creation if order creation fails
+              } else {
+                console.log('Order created successfully:', orderResult?.id);
+                // Add order info to the response
+                return { 
+                  data: { 
+                    ...updatedData, 
+                    order_created: true, 
+                    order_id: orderResult?.id,
+                    matched_tests: matchedTests.length,
+                    total_tests: requestedTests.length
+                  }, 
+                  error: null 
+                };
+              }
+            }
+          }
+        } catch (orderCreationError) {
+          console.error('Error in order creation process:', orderCreationError);
+          // Don't fail patient creation if order creation fails
+        }
+      }
+      
+      // If the update was successful and returned data, return that updated data
+      // If the update was successful and returned data, return that updated data
+      return { data: updatedData, error: null };
+    },
+
+    update: async (id: string, patientData: any) => {
+      // Don't update color or QR code data when updating patient info
+      const { qr_code_data, color_code, color_name, ...updateData } = patientData;
+      
+      const { data, error } = await supabase
+        .from('patients')
+        .update(updateData)
+        .eq('id', id)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    delete: async (id: string) => {
+      const { error } = await supabase
+        .from('patients')
+        .update({ is_active: false })
+        .eq('id', id);
+      return { error };
+    }
+}
+
+// Get today's patient count for color assignment
+
+  
+const orders = {
+    getAll: async () => {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*, order_tests(*)')
+        .order('order_date', { ascending: false });
+      return { data, error };
+    },
+
+    getById: async (id: string) => {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*, order_tests(*)')
+        .eq('id', id)
+        .single();
+      return { data, error };
+    },
+
+    create: async (orderData: any) => {
+      // ...existing code...
+      const { tests, ...orderDetails } = orderData;
+      const { data: order, error } = await supabase
+        .from('orders')
+        .insert([orderDetails])
+        .select()
+        .single();
+      if (error) {
+        return { data: null, error };
+      }
+      // Insert order tests if provided
+      if (order && tests && tests.length > 0) {
+        const orderTests = tests.map((test: string) => ({
+          order_id: order.id,
+          test_name: test
+        }));
+        await supabase
+          .from('order_tests')
+          .insert(orderTests);
+      }
+      return { data: { ...order, tests }, error: null };
+    },
+  },
+const results = {
+
+    update: async (id: string, orderData: any) => {
+      const { data, error } = await supabase
+        .from('orders')
+        .update(orderData)
+        .eq('id', id)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    delete: async (id: string) => {
+      const { error } = await supabase
+        .from('orders')
+        .delete()
+        .eq('id', id);
+      return { error };
+    }
+},
+  
+  results: {
+    getAll: async () => {
+      const { data, error } = await supabase
+        .from('results')
+        .select('*, result_values(*)') // Select all results and their nested result_values
+        .order('entered_date', { ascending: false });
+      return { data, error };
+    },
+
+    getById: async (id: string) => {
+      const { data, error } = await supabase
+        .from('results')
+        .select('*, result_values(*)')
+        .eq('id', id)
+        .single();
+      return { data, error };
+    },
+
+    getByOrderId: async (orderId: string) => {
+      const { data, error } = await supabase
+        .from('results')
+        .select('*, result_values(*)')
+        .eq('order_id', orderId)
+        .order('entered_date', { ascending: false });
+      return { data, error };
+    },
+    create: async (resultData: any) => {
+      const { values, ...rest } = resultData; // Separate values array
+      const { data: result, error } = await supabase
+        .from('results')
+        .insert([rest])
+        .select()
+        .single();
+
+      if (error) {
+        return { data: null, error };
+    },
+  },
+const result_values = {
+  // Direct CRUD operations for result_values are typically not needed if managed via results
+};
+
+const invoices = {
+    getAll: async () => {
+      // Query invoices with basic data
+      const { data, error } = await supabase
+        .from('invoices')
+        .select('*, invoice_items(*)')
+        .order('invoice_date', { ascending: false });
+      if (error) {
+        return { data: null, error };
+      }
+      // Add paid_amount = 0 to all invoices (will be calculated by payments functionality later)
+      const invoicesWithPayments = (data || []).map(invoice => ({
+        ...invoice,
+        paid_amount: 0,
+        payment_status: invoice.status
+      }));
+      return { data: invoicesWithPayments, error: null };
+    },
+
+    getById: async (id: string) => {
+      const { data, error } = await supabase
+        .from('invoices')
+        .select('*, invoice_items(*)')
+        .eq('id', id)
+        .single();
+      return { data, error };
+    },
+
+    create: async (invoiceData: any) => {
+      const { invoice_items, ...invoiceDetails } = invoiceData;
+      
+      // First create the invoice
+      const { data: invoice, error } = await supabase
+        .from('invoices')
+        .insert([invoiceDetails])
+        .select()
+        .single();
+
+      if (error) {
+        return { data: null, error };
+      }
+
+      // Then create the associated invoice items
+      if (invoice && invoice_items && invoice_items.length > 0) {
+        const invoiceItemsToInsert = invoice_items.map((item: any) => ({
+          ...item,
+          invoice_id: invoice.id
+        }));
+
+        const { error: itemsError } = await supabase
+          .from('invoice_items')
+          .insert(invoiceItemsToInsert);
+
+        if (itemsError) {
+          console.error('Error inserting invoice items:', itemsError);
+          return { data: invoice, error: itemsError };
+        }
+      }
+
+      return { data: { ...invoice, invoice_items }, error: null };
+    },
+
+    update: async (id: string, invoiceData: any) => {
+      const { data, error } = await supabase
+        .from('invoices')
+        .update(invoiceData)
+        .eq('id', id)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    delete: async (id: string) => {
+      const { error } = await supabase
+        .from('invoices')
+        .delete()
+        .eq('id', id);
+      return { error };
+    }
+  },
+  
+const invoice_items = {
+    create: async (items: any[]) => {
+      const { data, error } = await supabase
+        .from('invoice_items')
+        .insert(items)
+        .select();
+      return { data, error };
+    },
+    
+    update: async (id: string, itemData: any) => {
+      const { data, error } = await supabase
+        .from('invoice_items')
+        .update(itemData)
+        .eq('id', id)
+        .select()
+        .single();
+      return { data, error };
+    },
+    
+    delete: async (id: string) => {
+      const { error } = await supabase
+        .from('invoice_items')
+        .delete()
+        .eq('id', id);
+      return { error };
+    }
+  },
+  
+const payments = {
+    getByInvoiceId: async (invoiceId: string) => {
+      const { data, error } = await supabase
+        .from('payments')
+        .select('*')
+        .eq('invoice_id', invoiceId)
+        .order('payment_date', { ascending: false });
+      return { data, error };
+    },
+    
+    create: async (paymentData: any) => {
+      const { data, error } = await supabase
+        .from('payments')
+        .insert([paymentData])
+        .select()
+        .single();
+      return { data, error };
+    },
+    
+    getPaymentSummary: async (startDate?: string, endDate?: string, method?: string) => {
+      let query = supabase
+        .from('payments')
+        .select('*');
+      
+      if (startDate) {
+        query = query.gte('payment_date', startDate);
+      }
+      
+      if (endDate) {
+        query = query.lte('payment_date', endDate);
+      }
+      
+      if (method) {
+        query = query.eq('payment_method', method);
+      }
+      
+      const { data, error } = await query.order('payment_date', { ascending: false });
+      return { data, error };
+    }
+  },
+
+const analytes = {
+    getAll: async () => {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        console.warn('No lab ID found for current user, fetching all active analytes globally. This might not be the intended behavior for a multi-lab setup.');
+        const { data, error } = await supabase
+          .from('analytes')
+          .select('*')
+          .eq('is_active', true)
+          .order('name');
+        return { data, error };
+      }
+      // ...existing code...
+    }
+  },
+};
+
+// Main database helper object
+const attachments = {
+  getByLabId: async (labId: string) => {
+    const { data, error } = await supabase
+      .from('attachments')
+      .select('*')
+      .eq('lab_id', labId)
+      .order('created_at', { ascending: false });
+    return { data, error };
+  },
+  getById: async (id: string) => {
+    const { data, error } = await supabase
+      .from('attachments')
+      .select('*')
+      .eq('id', id)
+      .single();
+    return { data, error };
+  },
+  create: async (attachmentData: any) => {
+    const { data, error } = await supabase
+      .from('attachments')
+      .insert([attachmentData])
+      .select()
+      .single();
+    return { data, error };
+  },
+  updateDescription: async (id: string, description: string) => {
+    const { data, error } = await supabase
+      .from('attachments')
+      .update({ description })
+      .eq('id', id)
+      .select()
+      .single();
+    return { data, error };
+  },
+  delete: async (id: string) => {
+    // First get the file path to delete from storage
+    const { data: attachment, error: fetchError } = await supabase
+      .from('attachments')
+      .select('file_path')
+      .eq('id', id)
+      .single();
+    if (fetchError) {
+      return { error: fetchError };
+    }
+    // Delete from storage
+    if (attachment?.file_path) {
+      const { error: storageError } = await supabase.storage
+        .from('attachments')
+        .remove([attachment.file_path]);
+      if (storageError) {
+        console.warn('Failed to delete file from storage:', storageError);
+      }
+    }
+    // Delete from database
+    const { error } = await supabase
+      .from('attachments')
+      .delete()
+      .eq('id', id);
+    return { error };
+  }
+};
+
+const database = {
+  patients,
+  orders,
+  results,
+  result_values,
+  invoices,
+  invoice_items,
+  payments,
+  analytes,
+  attachments,
+  ocrResults,
+  uploadFile,
+  supabase,
+};
+
+
+// Database helper functions for OCR results
+const ocrResults = {
+  getByAttachmentId: async (attachmentId: string) => {
+    const { data, error } = await supabase
+      .from('ocr_results')
+      .select('*')
+      .eq('attachment_id', attachmentId)
+      .order('created_at', { ascending: false });
+    return { data, error };
+  },
+
+  create: async (ocrData: any) => {
+    const { data, error } = await supabase
+      .from('ocr_results')
+      .insert([ocrData])
+      .select()
+      .single();
+    return { data, error };
+  }
+};

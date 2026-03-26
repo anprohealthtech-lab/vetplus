@@ -1,0 +1,1129 @@
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { X, Save, AlertCircle, Flag, Calculator, Link2, Search, Plus, Trash2, ChevronDown } from 'lucide-react';
+import { database, supabase } from '../../utils/supabase';
+
+interface SourceAnalyte {
+  id: string;
+  name: string;
+  unit: string;
+  category?: string;
+}
+
+interface SelectedSourceAnalyte extends SourceAnalyte {
+  variableName: string;
+}
+
+interface SimpleAnalyteEditorProps {
+  /** IDs of analytes currently attached to this test group — used to surface them first in the dependency picker */
+  testGroupAnalyteIds?: string[];
+  analyte: {
+    id: string;
+    name: string;
+    unit: string;
+    reference_range: string;
+    category: string;
+    method?: string;
+    description?: string;
+    is_critical?: boolean;
+    normal_range_min?: number;
+    normal_range_max?: number;
+    low_critical?: string | number | null;
+    high_critical?: string | number | null;
+    interpretation_low?: string;
+    interpretation_normal?: string;
+    interpretation_high?: string;
+    is_active?: boolean;
+    ai_processing_type?: string;
+    ai_prompt_override?: string | null;
+    group_ai_mode?: string;
+    is_global?: boolean;
+    to_be_copied?: boolean;
+    ref_range_knowledge?: any;
+    expected_normal_values?: string[];
+    expected_value_flag_map?: Record<string, string>;
+    // Calculated parameter fields
+    is_calculated?: boolean;
+    formula?: string;
+    formula_variables?: string[];
+    formula_description?: string;
+    // Lab-level display name override (highest priority in PDF reports)
+    display_name?: string | null;
+  };
+  availableAnalytes?: SourceAnalyte[];
+  onSave: (analyte: any) => void;
+  onCancel: () => void;
+}
+
+export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
+  analyte,
+  availableAnalytes = [],
+  testGroupAnalyteIds = [],
+  onSave,
+  onCancel
+}) => {
+  const [formData, setFormData] = useState(analyte);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [labMethodOptions, setLabMethodOptions] = useState<string[]>([]);
+  const [newMethodValue, setNewMethodValue] = useState('');
+  // Separate state for expected_normal_values as newline-separated text
+  const [expectedNormalValuesText, setExpectedNormalValuesText] = useState(
+    analyte.expected_normal_values?.join('\n') || ''
+  );
+  // Formula state for calculated parameters
+  const [formulaData, setFormulaData] = useState({
+    is_calculated: analyte.is_calculated || false,
+    formula: analyte.formula || '',
+    formula_variables: analyte.formula_variables || [] as string[],
+    formula_description: analyte.formula_description || ''
+  });
+  const [formulaVariablesText, setFormulaVariablesText] = useState(
+    (analyte.formula_variables || []).join(', ')
+  );
+  // Source analyte picker state
+  const [selectedSources, setSelectedSources] = useState<SelectedSourceAnalyte[]>([]);
+  const [sourceSearchTerm, setSourceSearchTerm] = useState('');
+  const [showSourcePicker, setShowSourcePicker] = useState(false);
+  const formulaInputRef = useRef<HTMLInputElement>(null);
+  const sourcePickerRef = useRef<HTMLDivElement>(null);
+  // Flag mapping state
+  const [expectedValueFlagMap, setExpectedValueFlagMap] = useState<Record<string, string>>(
+    analyte.expected_value_flag_map || {}
+  );
+  const [labFlagOptions, setLabFlagOptions] = useState<Array<{value: string; label: string}>>([
+    { value: '', label: 'Normal' },
+    { value: 'H', label: 'High' },
+    { value: 'L', label: 'Low' },
+    { value: 'A', label: 'Abnormal' },
+    { value: 'C', label: 'Critical' },
+  ]);
+
+  React.useEffect(() => {
+    const loadLabOptions = async () => {
+      try {
+        const labId = await database.getCurrentUserLabId();
+        if (!labId) return;
+        const { data } = await database.labs.getById(labId);
+        const options = Array.isArray(data?.method_options) ? data.method_options : [];
+        setLabMethodOptions(options);
+        // Load lab flag options
+        if (data?.flag_options && Array.isArray(data.flag_options)) {
+          setLabFlagOptions(data.flag_options);
+        }
+      } catch (loadError) {
+        console.error('Failed to load lab options:', loadError);
+      }
+    };
+
+    loadLabOptions();
+  }, []);
+
+  // Generate a short variable slug from analyte name
+  const generateVariableSlug = (name: string): string => {
+    const abbreviations: Record<string, string> = {
+      'total cholesterol': 'TC', 'hdl cholesterol': 'HDL', 'ldl cholesterol': 'LDL',
+      'triglycerides': 'TG', 'hemoglobin': 'HGB', 'hematocrit': 'HCT',
+      'red blood cell': 'RBC', 'white blood cell': 'WBC', 'platelet': 'PLT',
+      'mean corpuscular volume': 'MCV', 'mean corpuscular hemoglobin': 'MCH',
+      'albumin': 'ALB', 'globulin': 'GLOB', 'total protein': 'TP',
+      'creatinine': 'CREAT', 'blood urea nitrogen': 'BUN', 'urea': 'UREA',
+      'glucose': 'GLU', 'calcium': 'CA', 'sodium': 'NA', 'potassium': 'K',
+    };
+    const lowerName = name.toLowerCase();
+    for (const [full, abbrev] of Object.entries(abbreviations)) {
+      if (lowerName.includes(full)) return abbrev;
+    }
+    const words = name.replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/);
+    if (words.length === 1) return words[0].substring(0, 4).toUpperCase();
+    return words.map(w => w.substring(0, 3)).join('').toUpperCase().substring(0, 6);
+  };
+
+  // Pre-populate selectedSources from existing formula_variables on mount
+  useEffect(() => {
+    if (analyte.formula_variables && analyte.formula_variables.length > 0 && availableAnalytes.length > 0) {
+      const sources = analyte.formula_variables.map((varName: string) => {
+        const matched = availableAnalytes.find(a => generateVariableSlug(a.name) === varName);
+        return matched
+          ? { ...matched, variableName: varName }
+          : { id: `_manual_${varName}`, name: varName, unit: '', variableName: varName };
+      });
+      setSelectedSources(sources);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync selectedSources → formulaVariablesText
+  useEffect(() => {
+    if (selectedSources.length > 0) {
+      setFormulaVariablesText(selectedSources.map(s => s.variableName).join(', '));
+    }
+  }, [selectedSources]);
+
+  // Close picker on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (sourcePickerRef.current && !sourcePickerRef.current.contains(e.target as Node)) {
+        setShowSourcePicker(false);
+      }
+    };
+    if (showSourcePicker) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showSourcePicker]);
+
+  const inGroupSet = useMemo(() => new Set(testGroupAnalyteIds), [testGroupAnalyteIds]);
+
+  const filteredSourceAnalytes = useMemo(() => {
+    const filtered = availableAnalytes.filter(a => {
+      if (a.id === analyte.id) return false;
+      if (selectedSources.some(s => s.id === a.id)) return false;
+      if (sourceSearchTerm) {
+        const q = sourceSearchTerm.toLowerCase();
+        return a.name.toLowerCase().includes(q) || a.category?.toLowerCase().includes(q);
+      }
+      return true;
+    });
+    // Sort: analytes in this test group appear first
+    filtered.sort((a, b) => {
+      const aIn = inGroupSet.has(a.id) ? 0 : 1;
+      const bIn = inGroupSet.has(b.id) ? 0 : 1;
+      return aIn - bIn;
+    });
+    return filtered.slice(0, 30);
+  }, [availableAnalytes, selectedSources, sourceSearchTerm, analyte.id, inGroupSet]);
+
+  const handleAddSource = (source: SourceAnalyte) => {
+    let varName = generateVariableSlug(source.name);
+    let counter = 1;
+    while (selectedSources.some(s => s.variableName === varName)) {
+      varName = `${generateVariableSlug(source.name)}${counter}`;
+      counter++;
+    }
+    setSelectedSources(prev => [...prev, { ...source, variableName: varName }]);
+    setSourceSearchTerm('');
+    setShowSourcePicker(false);
+  };
+
+  const handleRemoveSource = (id: string) => {
+    setSelectedSources(prev => prev.filter(s => s.id !== id));
+  };
+
+  const handleUpdateVariableName = (id: string, newName: string) => {
+    setSelectedSources(prev => prev.map(s =>
+      s.id === id ? { ...s, variableName: newName.toUpperCase().replace(/[^A-Z0-9_]/g, '') } : s
+    ));
+  };
+
+  const handleInsertVariable = (variableName: string) => {
+    if (formulaInputRef.current) {
+      const input = formulaInputRef.current;
+      const start = input.selectionStart || 0;
+      const end = input.selectionEnd || 0;
+      const current = formulaData.formula;
+      const next = current.substring(0, start) + variableName + current.substring(end);
+      setFormulaData(prev => ({ ...prev, formula: next }));
+      setTimeout(() => {
+        input.focus();
+        input.setSelectionRange(start + variableName.length, start + variableName.length);
+      }, 0);
+    } else {
+      setFormulaData(prev => ({ ...prev, formula: prev.formula + variableName }));
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+
+    try {
+      // Get current lab ID
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        throw new Error('Unable to determine lab context');
+      }
+
+      // Parse expected_normal_values from newline-separated text
+      const expected_normal_values = expectedNormalValuesText
+        ? expectedNormalValuesText.split('\n').map(v => v.trim()).filter(Boolean)
+        : [];
+
+      // Update lab_analytes table (lab-specific) instead of global analytes
+      const { data, error: updateError } = await database.labAnalytes.updateLabSpecific(
+        labId,
+        formData.id, // analyte_id
+        {
+          // Update actual values
+          name: formData.name,
+          unit: formData.unit,
+          method: formData.method,
+          reference_range: formData.reference_range,
+          category: formData.category,
+          low_critical: formData.low_critical,
+          high_critical: formData.high_critical,
+          interpretation_low: formData.interpretation_low,
+          interpretation_normal: formData.interpretation_normal,
+          interpretation_high: formData.interpretation_high,
+          is_active: formData.is_active,
+          // Lab-level display name override for PDF reports
+          display_name: (formData as any).display_name?.trim() || null,
+          // Set lab_specific_* fields to mark as customized (prevents global sync overwrite)
+          lab_specific_name: formData.name,
+          lab_specific_unit: formData.unit,
+          lab_specific_method: formData.method,
+          lab_specific_reference_range: formData.reference_range,
+          lab_specific_interpretation_low: formData.interpretation_low,
+          lab_specific_interpretation_normal: formData.interpretation_normal,
+          lab_specific_interpretation_high: formData.interpretation_high,
+          ref_range_knowledge: formData.ref_range_knowledge,
+          // Dropdown options for qualitative values
+          expected_normal_values: expected_normal_values,
+          // Dropdown value → flag mapping
+          expected_value_flag_map: expectedValueFlagMap,
+        }
+      );
+
+      if (updateError) throw updateError;
+
+      // If calculated fields changed, update the global analytes table too
+      if (formulaData.is_calculated || analyte.is_calculated) {
+        // Use selectedSources variable names if picker was used, else fall back to text input
+        const parsedVars = selectedSources.length > 0
+          ? selectedSources.map(s => s.variableName)
+          : formulaVariablesText.split(',').map(v => v.trim()).filter(Boolean);
+        const { error: globalUpdateError } = await supabase
+          .from('analytes')
+          .update({
+            is_calculated: formulaData.is_calculated,
+            formula: formulaData.formula || null,
+            formula_variables: parsedVars.length > 0 ? parsedVars : null,
+            formula_description: formulaData.formula_description || null,
+          })
+          .eq('id', formData.id);
+
+        if (globalUpdateError) {
+          console.error('Failed to update global analyte formula:', globalUpdateError);
+        }
+
+        // Save analyte_dependencies if source analytes were selected via picker
+        if (selectedSources.length > 0) {
+          const deps = selectedSources
+            .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
+            .map(s => ({ source_analyte_id: s.id, variable_name: s.variableName }));
+
+          if (deps.length > 0) {
+            const { error: depError } = await database.analyteDependencies.setDependencies(formData.id, deps);
+            if (depError) {
+              console.error('Failed to save analyte dependencies:', depError);
+            }
+          }
+        }
+      }
+
+      onSave({ ...formData, expected_normal_values, expected_value_flag_map: expectedValueFlagMap, ...formulaData });
+    } catch (error) {
+      console.error('Failed to update analyte:', error);
+      setError(error instanceof Error ? error.message : 'Failed to update analyte');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAddMethodOption = async () => {
+    const trimmed = newMethodValue.trim();
+    if (!trimmed) return;
+
+    if (labMethodOptions.some((option) => option.toLowerCase() === trimmed.toLowerCase())) {
+      setNewMethodValue('');
+      return;
+    }
+
+    try {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        throw new Error('Unable to determine lab context');
+      }
+
+      const nextOptions = [...labMethodOptions, trimmed];
+      const { error: updateError } = await database.labs.update(labId, {
+        method_options: nextOptions,
+      });
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      setLabMethodOptions(nextOptions);
+      setFormData(prev => ({ ...prev, method: trimmed }));
+      setNewMethodValue('');
+    } catch (updateError) {
+      console.error('Failed to update lab method options:', updateError);
+      setError(updateError instanceof Error ? updateError.message : 'Failed to add method option');
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-xl font-semibold">Edit Analyte</h3>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md flex items-center space-x-2">
+            <AlertCircle className="w-5 h-5 text-red-600" />
+            <span className="text-red-700 text-sm">{error}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Basic Information Section */}
+          <div className="bg-gray-50 p-4 rounded-lg">
+            <h4 className="text-lg font-medium text-gray-900 mb-4">Basic Information</h4>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Analyte Name *</label>
+                <input
+                  type="text"
+                  value={formData.name}
+                  onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="e.g., Hemoglobin, Glucose, White Blood Cell Count"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Display Name <span className="text-xs text-gray-400 font-normal">(PDF override, optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={(formData as any).display_name || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, display_name: e.target.value } as any))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="e.g., Serum Cholesterol (shown in report)"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Unit</label>
+                <input
+                  type="text"
+                  value={formData.unit}
+                  onChange={(e) => setFormData(prev => ({ ...prev, unit: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="e.g., g/dL, mg/dL, %, K/uL, M/uL"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Category *</label>
+                <select
+                  value={formData.category}
+                  onChange={(e) => setFormData(prev => ({ ...prev, category: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  required
+                >
+                  <option value="">Select Category</option>
+                  <option value="Hematology">Hematology</option>
+                  <option value="Chemistry">Chemistry</option>
+                  <option value="Immunology">Immunology</option>
+                  <option value="Microbiology">Microbiology</option>
+                  <option value="Blood Banking">Blood Banking</option>
+                  <option value="Immunohematology">Immunohematology</option>
+                  <option value="Clinical Pathology">Clinical Pathology</option>
+                  <option value="Molecular Diagnostics">Molecular Diagnostics</option>
+                  <option value="Cytology">Cytology</option>
+                  <option value="Histopathology">Histopathology</option>
+                  <option value="Toxicology">Toxicology</option>
+                  <option value="Endocrinology">Endocrinology</option>
+                  <option value="Cardiology">Cardiology</option>
+                  <option value="General">General</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Reference Values Section */}
+          <div className="bg-blue-50 p-4 rounded-lg">
+            <h4 className="text-lg font-medium text-gray-900 mb-4">Reference Values</h4>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reference Range (Text)</label>
+                <textarea
+                  rows={3}
+                  value={formData.reference_range}
+                  onChange={(e) => setFormData(prev => ({ ...prev, reference_range: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y"
+                  placeholder="e.g., 12-16 (F), 14-18 (M) or Normal/Abnormal&#10;Press Enter for multiple lines"
+                />
+                <p className="text-xs text-gray-500 mt-1">Text description of normal ranges, including gender/age specific values</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Numeric Range (for automated validation)
+                </label>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">Minimum Normal Value</label>
+                    <input
+                      type="number"
+                      step="0.001"
+                      value={formData.normal_range_min || ''}
+                      onChange={(e) => setFormData(prev => ({
+                        ...prev,
+                        normal_range_min: e.target.value ? parseFloat(e.target.value) : undefined
+                      }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="e.g., 12.0"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">Maximum Normal Value</label>
+                    <input
+                      type="number"
+                      step="0.001"
+                      value={formData.normal_range_max || ''}
+                      onChange={(e) => setFormData(prev => ({
+                        ...prev,
+                        normal_range_max: e.target.value ? parseFloat(e.target.value) : undefined
+                      }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="e.g., 16.0"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">Used for automatic flagging of abnormal results</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Critical Values (immediate notification required)
+                </label>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">Low Critical Value</label>
+                    <input
+                      type="text"
+                      value={formData.low_critical ?? ''}
+                      onChange={(e) => setFormData(prev => ({
+                        ...prev,
+                        low_critical: e.target.value || null
+                      }))}
+                      className="w-full px-3 py-2 border border-red-300 rounded-md focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                      placeholder="e.g., 5.0 or <5 or ≤5"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">High Critical Value</label>
+                    <input
+                      type="text"
+                      value={formData.high_critical ?? ''}
+                      onChange={(e) => setFormData(prev => ({
+                        ...prev,
+                        high_critical: e.target.value || null
+                      }))}
+                      className="w-full px-3 py-2 border border-red-300 rounded-md focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                      placeholder="e.g., 200.0 or >200 or ≥300"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-red-600 mt-1">Values requiring immediate physician notification</p>
+              </div>
+
+              {/* Expected Normal Values - Dropdown Options */}
+              <div className="mt-4 pt-4 border-t border-blue-200">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Expected Values (Dropdown Options)
+                </label>
+                <textarea
+                  value={expectedNormalValuesText}
+                  onChange={(e) => setExpectedNormalValuesText(e.target.value)}
+                  rows={4}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter one value per line, e.g.:&#10;Negative&#10;Positive&#10;Reactive&#10;Non-Reactive"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  For qualitative analytes (HIV, Blood Group, etc.). Enter one option per line. When set, users will see a dropdown instead of free text input.
+                </p>
+                {expectedNormalValuesText && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {expectedNormalValuesText.split('\n').filter(v => v.trim()).map((val, idx) => (
+                      <span key={idx} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
+                        {val.trim()}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {/* Flag Mapping for each dropdown option */}
+                {expectedNormalValuesText && expectedNormalValuesText.split('\n').filter(v => v.trim()).length > 0 && (
+                  <div className="mt-3 bg-white border border-blue-200 rounded-lg p-3">
+                    <h5 className="text-sm font-medium text-gray-700 mb-2 flex items-center">
+                      <Flag className="h-4 w-4 mr-1.5 text-orange-500" />
+                      Flag Mapping (auto-set flag when value is selected)
+                    </h5>
+                    <div className="space-y-2">
+                      {expectedNormalValuesText.split('\n').filter(v => v.trim()).map((val, idx) => {
+                        const trimmed = val.trim();
+                        return (
+                          <div key={idx} className="flex items-center gap-3">
+                            <span className="text-sm text-gray-800 min-w-[140px] font-medium">{trimmed}</span>
+                            <span className="text-gray-400 text-xs">&rarr;</span>
+                            <select
+                              value={expectedValueFlagMap[trimmed] ?? ''}
+                              onChange={(e) => {
+                                setExpectedValueFlagMap(prev => ({
+                                  ...prev,
+                                  [trimmed]: e.target.value
+                                }));
+                              }}
+                              className="px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            >
+                              {labFlagOptions.map((opt, i) => (
+                                <option key={i} value={opt.value}>{opt.label}{opt.value ? ` (${opt.value})` : ''}</option>
+                              ))}
+                            </select>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      When a user selects a dropdown value during result entry, the flag will auto-set to the mapped value.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Result Interpretation Section */}
+          <div className="bg-purple-50 p-4 rounded-lg">
+            <h4 className="text-lg font-medium text-gray-900 mb-4">Result Interpretation</h4>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Low Value Interpretation</label>
+                <textarea
+                  value={formData.interpretation_low || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, interpretation_low: e.target.value }))}
+                  rows={2}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Clinical significance when value is below normal range"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Normal Value Interpretation</label>
+                <textarea
+                  value={formData.interpretation_normal || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, interpretation_normal: e.target.value }))}
+                  rows={2}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Clinical significance when value is within normal range"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">High Value Interpretation</label>
+                <textarea
+                  value={formData.interpretation_high || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, interpretation_high: e.target.value }))}
+                  rows={2}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Clinical significance when value is above normal range"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Testing Method & Quality Section */}
+          <div className="bg-green-50 p-4 rounded-lg">
+            <h4 className="text-lg font-medium text-gray-900 mb-4">Testing Method & Quality</h4>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Testing Method</label>
+                <select
+                  value={formData.method || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, method: e.target.value || undefined }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
+                  <option value="">Select Method</option>
+                  {labMethodOptions.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newMethodValue}
+                    onChange={(e) => setNewMethodValue(e.target.value)}
+                    placeholder="Add new method"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddMethodOption}
+                    className="px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                  >
+                    Add
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Methods are saved per lab and available for all analytes in this lab.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    id="is_critical"
+                    checked={formData.is_critical || false}
+                    onChange={(e) => setFormData(prev => ({ ...prev, is_critical: e.target.checked }))}
+                    className="mt-1 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                  />
+                  <div>
+                    <label htmlFor="is_critical" className="text-sm font-medium text-gray-700">
+                      Critical Value Parameter
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Can have critical values requiring immediate notification
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    id="is_active"
+                    checked={formData.is_active !== false}
+                    onChange={(e) => setFormData(prev => ({ ...prev, is_active: e.target.checked }))}
+                    className="mt-1 rounded border-gray-300 text-green-600 focus:ring-green-500"
+                  />
+                  <div>
+                    <label htmlFor="is_active" className="text-sm font-medium text-gray-700">
+                      Active Status
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Analyte is available for use in tests
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* AI Processing & Configuration Section */}
+          <div className="bg-indigo-50 p-4 rounded-lg">
+            <h4 className="text-lg font-medium text-gray-900 mb-4">AI Processing & Configuration</h4>
+
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">AI Processing Type</label>
+                  <select
+                    value={formData.ai_processing_type || ''}
+                    onChange={(e) => setFormData(prev => ({ ...prev, ai_processing_type: e.target.value || undefined }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="">Select Processing Type</option>
+                    <option value="ocr_report">OCR Report</option>
+                    <option value="manual_entry">Manual Entry</option>
+                    <option value="instrument_interface">Instrument Interface</option>
+                    <option value="batch_processing">Batch Processing</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Group AI Mode</label>
+                  <select
+                    value={formData.group_ai_mode || ''}
+                    onChange={(e) => setFormData(prev => ({ ...prev, group_ai_mode: e.target.value || undefined }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="">Select AI Mode</option>
+                    <option value="individual">Individual</option>
+                    <option value="group">Group</option>
+                    <option value="batch">Batch</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">AI Prompt Override</label>
+                <textarea
+                  value={formData.ai_prompt_override || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, ai_prompt_override: e.target.value || null }))}
+                  rows={3}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Custom AI processing instructions for this analyte..."
+                />
+                <p className="text-xs text-gray-500 mt-1">Override default AI processing prompts with custom instructions</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reference Range Rules (AI Context)</label>
+                <textarea
+                  value={formData.ref_range_knowledge?.text_rules || ''}
+                  onChange={(e) => setFormData(prev => ({
+                    ...prev,
+                    ref_range_knowledge: { text_rules: e.target.value }
+                  }))}
+                  rows={4}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Describe specific rules for this analyte (e.g., 'Adult Males: 13-17, Females: 12-16. Pregnancy T1: 11-14...'). The AI will use this knowledge to resolve ranges dynamically."
+                />
+                <p className="text-xs text-gray-500 mt-1">Provide specific context, conditions, or rules that the AI should follow when determining reference ranges</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    id="is_global"
+                    checked={formData.is_global || false}
+                    onChange={(e) => setFormData(prev => ({ ...prev, is_global: e.target.checked }))}
+                    className="mt-1 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <div>
+                    <label htmlFor="is_global" className="text-sm font-medium text-gray-700">
+                      Global Analyte
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Available across all lab branches/locations
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    id="to_be_copied"
+                    checked={formData.to_be_copied || false}
+                    onChange={(e) => setFormData(prev => ({ ...prev, to_be_copied: e.target.checked }))}
+                    className="mt-1 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                  />
+                  <div>
+                    <label htmlFor="to_be_copied" className="text-sm font-medium text-gray-700">
+                      To Be Copied
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Mark for replication to other systems
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Calculated Parameter Section */}
+          <div className="bg-amber-50 p-4 rounded-lg border border-amber-200">
+            <h4 className="text-lg font-medium text-gray-900 mb-4 flex items-center">
+              <Calculator className="w-5 h-5 mr-2 text-amber-600" />
+              Calculated Parameter
+            </h4>
+
+            <div className="space-y-4">
+              <div className="flex items-start space-x-3">
+                <input
+                  type="checkbox"
+                  id="is_calculated"
+                  checked={formulaData.is_calculated}
+                  onChange={(e) => setFormulaData(prev => ({ ...prev, is_calculated: e.target.checked }))}
+                  className="mt-1 rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                />
+                <div>
+                  <label htmlFor="is_calculated" className="text-sm font-medium text-gray-700">
+                    This is a Calculated Parameter
+                  </label>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Value is auto-computed from other analytes using a formula
+                  </p>
+                </div>
+              </div>
+
+              {formulaData.is_calculated && (
+                <div className="space-y-4">
+                  {/* Step 1: Select Source Analytes */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Step 1: Select Source Analytes
+                    </label>
+                    <p className="text-xs text-gray-500 mb-2">
+                      Choose the analytes whose values will be used in the formula
+                    </p>
+
+                    {/* Selected Sources */}
+                    {selectedSources.length > 0 && (
+                      <div className="mb-3 space-y-2">
+                        {selectedSources.map(source => (
+                          <div key={source.id} className={`flex items-center gap-2 bg-white rounded-lg p-2 ${inGroupSet.has(source.id) ? 'border border-green-300' : 'border border-amber-200'}`}>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-sm font-medium text-gray-900 truncate">{source.name}</span>
+                                {inGroupSet.has(source.id) && (
+                                  <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">In group</span>
+                                )}
+                                {!inGroupSet.has(source.id) && source.id && !source.id.startsWith('_manual_') && (
+                                  <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-yellow-100 text-yellow-700 rounded-full font-medium" title="This analyte is not in the current test group — formula may not calculate if a different copy is used">⚠ Not in group</span>
+                                )}
+                              </div>
+                              {source.unit && <div className="text-xs text-gray-500">{source.unit}</div>}
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <span className="text-xs text-gray-500">Var:</span>
+                              <input
+                                type="text"
+                                value={source.variableName}
+                                onChange={(e) => handleUpdateVariableName(source.id, e.target.value)}
+                                className="w-20 px-2 py-1 text-xs font-mono border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-amber-500 uppercase"
+                                placeholder="VAR"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleInsertVariable(source.variableName)}
+                                className="px-2 py-1 text-xs bg-amber-600 text-white rounded hover:bg-amber-700"
+                                title="Insert into formula"
+                              >
+                                + Insert
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveSource(source.id)}
+                                className="p-1 text-red-500 hover:text-red-700"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Analyte Picker Dropdown */}
+                    {availableAnalytes.length > 0 ? (
+                      <div className="relative" ref={sourcePickerRef}>
+                        <div
+                          className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-md bg-white cursor-pointer hover:border-amber-400"
+                          onClick={() => setShowSourcePicker(v => !v)}
+                        >
+                          <Plus className="h-4 w-4 text-amber-600" />
+                          <span className="text-sm text-gray-600">Add source analyte...</span>
+                          <ChevronDown className="h-4 w-4 text-gray-400 ml-auto" />
+                        </div>
+                        {showSourcePicker && (
+                          <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-hidden">
+                            <div className="p-2 border-b border-gray-100">
+                              <div className="relative">
+                                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                                <input
+                                  type="text"
+                                  value={sourceSearchTerm}
+                                  onChange={(e) => setSourceSearchTerm(e.target.value)}
+                                  placeholder="Search analytes..."
+                                  className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-amber-500"
+                                  autoFocus
+                                />
+                              </div>
+                            </div>
+                            <div className="max-h-48 overflow-y-auto">
+                              {filteredSourceAnalytes.length === 0 ? (
+                                <div className="p-3 text-sm text-gray-500 text-center">No matching analytes found</div>
+                              ) : (
+                                filteredSourceAnalytes.map((a, idx) => {
+                                  const isInGroup = inGroupSet.has(a.id);
+                                  // Show section header when transitioning from in-group to others
+                                  const prevIsInGroup = idx > 0 ? inGroupSet.has(filteredSourceAnalytes[idx - 1].id) : true;
+                                  const showSeparator = !isInGroup && prevIsInGroup && filteredSourceAnalytes.some(x => inGroupSet.has(x.id));
+                                  return (
+                                    <React.Fragment key={a.id}>
+                                      {showSeparator && (
+                                        <div className="px-3 py-1 bg-gray-50 border-t border-b border-gray-100 text-xs text-gray-400 font-medium uppercase tracking-wide">
+                                          Other analytes
+                                        </div>
+                                      )}
+                                      {idx === 0 && isInGroup && (
+                                        <div className="px-3 py-1 bg-green-50 border-b border-green-100 text-xs text-green-700 font-medium uppercase tracking-wide">
+                                          In this test group
+                                        </div>
+                                      )}
+                                      <div
+                                        className={`px-3 py-2 cursor-pointer flex items-center justify-between ${isInGroup ? 'hover:bg-green-50 bg-green-50/30' : 'hover:bg-amber-50'}`}
+                                        onClick={() => handleAddSource(a)}
+                                      >
+                                        <div className="flex items-center gap-2 min-w-0">
+                                          <div>
+                                            <div className="text-sm font-medium text-gray-900">{a.name}</div>
+                                            <div className="text-xs text-gray-500">{a.unit}{a.category ? ` • ${a.category}` : ''}</div>
+                                          </div>
+                                          {isInGroup && (
+                                            <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">
+                                              In group
+                                            </span>
+                                          )}
+                                        </div>
+                                        <span className="text-xs text-amber-600 font-mono flex-shrink-0 ml-2">{generateVariableSlug(a.name)}</span>
+                                      </div>
+                                    </React.Fragment>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      /* Fallback: manual text input when no analytes passed */
+                      <div>
+                        <input
+                          type="text"
+                          value={formulaVariablesText}
+                          onChange={(e) => setFormulaVariablesText(e.target.value)}
+                          className="w-full px-3 py-2 border border-amber-300 rounded-md focus:ring-2 focus:ring-amber-500 focus:border-transparent font-mono bg-amber-50"
+                          placeholder="e.g., Hb, RBC, PCV"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          Enter variable names manually (comma-separated).
+                        </p>
+                        {formulaVariablesText && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {formulaVariablesText.split(',').map(v => v.trim()).filter(Boolean).map((v, i) => (
+                              <span key={i} className="px-2 py-1 bg-amber-100 text-amber-800 rounded text-xs font-mono">{v}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Step 2: Build Formula */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Step 2: Build Formula *
+                    </label>
+
+                    {/* Quick-insert buttons */}
+                    {selectedSources.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mb-2">
+                        {selectedSources.map(s => (
+                          <button
+                            key={s.id}
+                            type="button"
+                            onClick={() => handleInsertVariable(s.variableName)}
+                            className="px-2 py-1 text-xs font-mono bg-amber-100 text-amber-800 rounded hover:bg-amber-200 border border-amber-300"
+                            title={`Insert ${s.name}`}
+                          >
+                            {s.variableName}
+                          </button>
+                        ))}
+                        <span className="text-xs text-gray-400 self-center ml-1">Click to insert</span>
+                      </div>
+                    )}
+
+                    <input
+                      ref={formulaInputRef}
+                      type="text"
+                      value={formulaData.formula}
+                      onChange={(e) => setFormulaData(prev => ({ ...prev, formula: e.target.value }))}
+                      className="w-full px-3 py-2 border border-amber-300 rounded-md focus:ring-2 focus:ring-amber-500 focus:border-transparent font-mono bg-amber-50"
+                      placeholder="e.g., (HGB / RBC) * 10"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Operators: + - * / ( ) | Functions: sqrt(), pow(), abs(), round()
+                    </p>
+                  </div>
+
+                  {/* Formula Preview */}
+                  {(formulaData.formula || selectedSources.length > 0) && (
+                    <div className="bg-white border border-amber-300 rounded-lg p-3">
+                      <h4 className="text-sm font-medium text-amber-900 mb-2">Formula Preview</h4>
+                      <div className="text-sm text-amber-800 font-mono bg-amber-100 p-2 rounded">
+                        {formulaData.formula || '(No formula entered)'}
+                      </div>
+                      {selectedSources.length > 0 && (
+                        <div className="mt-2 space-y-1">
+                          <div className="text-xs text-amber-700 font-medium">Variable Mappings:</div>
+                          {selectedSources.map(s => (
+                            <div key={s.id} className="text-xs text-amber-600 pl-2">
+                              {s.variableName} → {s.name}{s.unit ? ` (${s.unit})` : ''}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Formula Description */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Formula Description</label>
+                    <input
+                      type="text"
+                      value={formulaData.formula_description}
+                      onChange={(e) => setFormulaData(prev => ({ ...prev, formula_description: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+                      placeholder="e.g., MCH = (Hemoglobin / RBC count) × 10"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Additional Information Section */}
+          <div className="bg-yellow-50 p-4 rounded-lg">
+            <h4 className="text-lg font-medium text-gray-900 mb-4">Additional Information</h4>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Description & Notes</label>
+              <textarea
+                value={formData.description || ''}
+                onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
+                rows={4}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="Additional notes, clinical significance, sample requirements, interference factors, etc."
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Include any important information about sample collection, storage, clinical significance, or interpretation notes
+              </p>
+            </div>
+          </div>
+
+          <div className="flex justify-end space-x-3 pt-4 border-t">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="px-4 py-2 text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200"
+              disabled={saving}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+            >
+              {saving ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                  <span>Saving...</span>
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4" />
+                  <span>Save Changes</span>
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};

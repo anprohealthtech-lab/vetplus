@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Backend Session Manager</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; max-width: 1000px; margin: 0 auto; }
+        .card { border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin: 20px 0; }
+        .success { color: green; }
+        .error { color: red; }
+        .warning { color: orange; }
+        .info { color: blue; }
+        button { padding: 10px 15px; margin: 5px; background: #007cba; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #005a87; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        button.danger { background: #dc3545; }
+        button.danger:hover { background: #c82333; }
+        button.success { background: #28a745; }
+        button.success:hover { background: #218838; }
+        .qr-container { text-align: center; margin: 20px 0; }
+        .qr-container img { max-width: 300px; border: 1px solid #ddd; }
+        pre { background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 12px; }
+        .session-list { display: grid; gap: 10px; }
+        .session-item { padding: 15px; border: 1px solid #ddd; border-radius: 4px; }
+        .session-item.authenticated { border-color: #28a745; background: #f8fff9; }
+        .session-item.not-authenticated { border-color: #dc3545; background: #fff8f8; }
+        input, select { padding: 8px; margin: 5px; width: 200px; }
+        .two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    </style>
+</head>
+<body>
+    <h1>🔧 WhatsApp Backend Session Manager</h1>
+    <p>This tool helps you manage WhatsApp sessions directly with your backend.</p>
+
+    <div class="two-column">
+        <div class="card">
+            <h2>Current Sessions</h2>
+            <button onclick="listSessions()" id="listBtn">List All Sessions</button>
+            <div id="sessionsList"></div>
+        </div>
+
+        <div class="card">
+            <h2>Session Status Check</h2>
+            <input type="text" id="sessionIdCheck" placeholder="Session ID" value="f1e86dc8-fd5a-4719-a94a-e49729d6ac14">
+            <br>
+            <button onclick="checkSessionStatus()" id="checkBtn">Check Session Status</button>
+            <div id="sessionStatus"></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Create New Session</h2>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;">
+            <input type="text" id="userId" placeholder="User ID (UUID)" value="anand-user-001">
+            <input type="text" id="username" placeholder="Username" value="Anand">
+            <input type="email" id="email" placeholder="Email" value="anand@example.com">
+            <input type="text" id="role" placeholder="Role" value="admin">
+            <input type="text" id="orgName" placeholder="Organization Name" value="LIMS Lab">
+            <select id="strategy">
+                <option value="always_on">Always On</option>
+                <option value="business_hours">Business Hours</option>
+                <option value="on_demand">On Demand</option>
+            </select>
+        </div>
+        <br>
+        <button onclick="createSession()" id="createBtn" class="success">Create Session</button>
+        <div id="createResult"></div>
+    </div>
+
+    <div class="card">
+        <h2>Get QR Code for Existing Session</h2>
+        <input type="text" id="qrSessionId" placeholder="Session ID" value="f1e86dc8-fd5a-4719-a94a-e49729d6ac14">
+        <button onclick="getQRCode()" id="qrBtn">Get QR Code</button>
+        <div id="qrResult"></div>
+    </div>
+
+    <div class="card">
+        <h2>Test Message Send</h2>
+        <input type="text" id="testSessionId" placeholder="Session ID" value="f1e86dc8-fd5a-4719-a94a-e49729d6ac14">
+        <input type="text" id="testPhone" placeholder="Phone (+918780465286)" value="+918780465286">
+        <input type="text" id="testMessage" placeholder="Test message" value="Hello from LIMS system!">
+        <br>
+        <button onclick="testSendMessage()" id="testSendBtn">Send Test Message</button>
+        <div id="testResult"></div>
+    </div>
+
+    <div class="card">
+        <h2>Debug Log</h2>
+        <pre id="debugLog">Ready for testing...</pre>
+    </div>
+
+    <script>
+        const BACKEND_BASE = 'https://lionfish-app-nmodi.ondigitalocean.app';
+        const API_KEY = 'whatsapp-lims-secure-api-key-2024';
+
+        function log(message) {
+            const debugLog = document.getElementById('debugLog');
+            const timestamp = new Date().toLocaleTimeString();
+            debugLog.textContent += `[${timestamp}] ${message}\n`;
+            debugLog.scrollTop = debugLog.scrollHeight;
+            console.log(message);
+        }
+
+        async function apiCall(endpoint, options = {}) {
+            const url = `${BACKEND_BASE}${endpoint}`;
+            const headers = {
+                'X-API-Key': API_KEY,
+                'Content-Type': 'application/json',
+                ...options.headers
+            };
+
+            log(`Making API call to: ${endpoint}`);
+            
+            try {
+                const response = await fetch(url, {
+                    ...options,
+                    headers
+                });
+
+                const responseText = await response.text();
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (e) {
+                    data = { rawResponse: responseText };
+                }
+
+                log(`Response (${response.status}): ${JSON.stringify(data, null, 2)}`);
+                return { response, data, ok: response.ok };
+            } catch (error) {
+                log(`Error: ${error.message}`);
+                return { error, ok: false };
+            }
+        }
+
+        async function listSessions() {
+            const btn = document.getElementById('listBtn');
+            const result = document.getElementById('sessionsList');
+            
+            btn.disabled = true;
+            btn.textContent = 'Loading...';
+            result.innerHTML = 'Fetching sessions...';
+
+            const { data, ok } = await apiCall('/api/external/sessions');
+
+            if (ok && data.success) {
+                const sessions = data.data || [];
+                if (sessions.length === 0) {
+                    result.innerHTML = '<p class="info">No sessions found</p>';
+                } else {
+                    result.innerHTML = '<div class="session-list">' + 
+                        sessions.map(session => `
+                            <div class="session-item ${session.isAuthenticated ? 'authenticated' : 'not-authenticated'}">
+                                <strong>ID:</strong> ${session.id}<br>
+                                <strong>User:</strong> ${session.userId}<br>
+                                <strong>Phone:</strong> ${session.phoneNumber || 'N/A'}<br>
+                                <strong>Authenticated:</strong> ${session.isAuthenticated ? '✅' : '❌'}<br>
+                                <strong>Active:</strong> ${session.isActive ? '✅' : '❌'}<br>
+                                <strong>Strategy:</strong> ${session.strategy}<br>
+                                <strong>Last Activity:</strong> ${new Date(session.lastActivity).toLocaleString()}
+                            </div>
+                        `).join('') + 
+                    '</div>';
+                }
+            } else {
+                result.innerHTML = `<p class="error">Error: ${data.error || data.message || 'Failed to fetch sessions'}</p>`;
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'List All Sessions';
+        }
+
+        async function checkSessionStatus() {
+            const sessionId = document.getElementById('sessionIdCheck').value;
+            const btn = document.getElementById('checkBtn');
+            const result = document.getElementById('sessionStatus');
+
+            if (!sessionId) {
+                result.innerHTML = '<p class="error">Please enter a session ID</p>';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = 'Checking...';
+            result.innerHTML = 'Checking session status...';
+
+            const { data, ok } = await apiCall(`/api/whatsapp/${sessionId}/status`);
+
+            if (ok) {
+                result.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+            } else {
+                result.innerHTML = `<p class="error">Session not found or error occurred</p><pre>${JSON.stringify(data, null, 2)}</pre>`;
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'Check Session Status';
+        }
+
+        async function createSession() {
+            const userId = document.getElementById('userId').value;
+            const username = document.getElementById('username').value;
+            const email = document.getElementById('email').value;
+            const role = document.getElementById('role').value;
+            const orgName = document.getElementById('orgName').value;
+            const strategy = document.getElementById('strategy').value;
+            
+            const btn = document.getElementById('createBtn');
+            const result = document.getElementById('createResult');
+
+            if (!userId || !username) {
+                result.innerHTML = '<p class="error">User ID and Username are required</p>';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+            result.innerHTML = 'Creating session...';
+
+            // Generate a proper UUID for userId if not provided
+            const finalUserId = userId.includes('-') ? userId : crypto.randomUUID();
+
+            const requestBody = {
+                userId: finalUserId,
+                organizationId: crypto.randomUUID(),
+                strategy: strategy,
+                userInfo: {
+                    username: username,
+                    email: email || undefined,
+                    role: role,
+                    organizationName: orgName || undefined
+                }
+            };
+
+            const { data, ok } = await apiCall('/api/external/sessions/create', {
+                method: 'POST',
+                body: JSON.stringify(requestBody)
+            });
+
+            if (ok && data.success) {
+                result.innerHTML = `
+                    <div class="success">
+                        <h4>✅ Session Created Successfully!</h4>
+                        <p><strong>Session ID:</strong> ${data.data.sessionId}</p>
+                        <p><strong>Status:</strong> ${data.data.status}</p>
+                        <p><strong>Authenticated:</strong> ${data.data.isAuthenticated ? '✅' : '❌'}</p>
+                        ${data.data.qrCodeUrl ? `
+                            <div class="qr-container">
+                                <p>Scan this QR code with WhatsApp:</p>
+                                <img src="${data.data.qrCodeUrl}" alt="QR Code" />
+                            </div>
+                        ` : '<p class="info">No QR code available - session may already be authenticated</p>'}
+                    </div>
+                `;
+            } else {
+                result.innerHTML = `<p class="error">Failed to create session: ${data.error || data.message}</p><pre>${JSON.stringify(data, null, 2)}</pre>`;
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'Create Session';
+        }
+
+        async function getQRCode() {
+            const sessionId = document.getElementById('qrSessionId').value;
+            const btn = document.getElementById('qrBtn');
+            const result = document.getElementById('qrResult');
+
+            if (!sessionId) {
+                result.innerHTML = '<p class="error">Please enter a session ID</p>';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = 'Getting QR...';
+            result.innerHTML = 'Fetching QR code...';
+
+            const { data, ok } = await apiCall(`/api/whatsapp/${sessionId}/qr`);
+
+            if (ok && data.success && data.qrCode) {
+                const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent(data.qrCode)}`;
+                result.innerHTML = `
+                    <div class="qr-container">
+                        <p class="success">QR Code for session: ${sessionId}</p>
+                        <img src="${qrUrl}" alt="WhatsApp QR Code" />
+                        <p class="warning">Scan with WhatsApp mobile app within 60 seconds</p>
+                    </div>
+                `;
+            } else {
+                result.innerHTML = `<p class="error">No QR code available</p><pre>${JSON.stringify(data, null, 2)}</pre>`;
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'Get QR Code';
+        }
+
+        async function testSendMessage() {
+            const sessionId = document.getElementById('testSessionId').value;
+            const phoneNumber = document.getElementById('testPhone').value;
+            const content = document.getElementById('testMessage').value;
+            
+            const btn = document.getElementById('testSendBtn');
+            const result = document.getElementById('testResult');
+
+            if (!sessionId || !phoneNumber || !content) {
+                result.innerHTML = '<p class="error">All fields are required</p>';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = 'Sending...';
+            result.innerHTML = 'Sending message...';
+
+            const { data, ok } = await apiCall('/api/external/messages/send', {
+                method: 'POST',
+                body: JSON.stringify({
+                    sessionId: sessionId,
+                    phoneNumber: phoneNumber,
+                    content: content
+                })
+            });
+
+            if (ok && data.success) {
+                result.innerHTML = `<p class="success">✅ Message sent successfully!</p><pre>${JSON.stringify(data, null, 2)}</pre>`;
+            } else {
+                result.innerHTML = `<p class="error">❌ Failed to send message</p><pre>${JSON.stringify(data, null, 2)}</pre>`;
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'Send Test Message';
+        }
+
+        // Auto-list sessions on page load
+        window.onload = function() {
+            log('WhatsApp Backend Session Manager loaded');
+            log(`Backend: ${BACKEND_BASE}`);
+            setTimeout(listSessions, 1000);
+        };
+    </script>
+</body>
+</html>

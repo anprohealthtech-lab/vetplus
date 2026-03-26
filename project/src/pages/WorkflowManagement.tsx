@@ -1,0 +1,992 @@
+import React, { useState, useEffect } from 'react';
+import { Plus, Settings, Trash2, AlertCircle, Edit, Workflow, TestTube, Loader2, CheckCircle, Play, Search, Sparkles } from 'lucide-react';
+import { FlowManager } from '../components/Workflow/FlowManager';
+import VisualWorkflowManager from '../components/Workflow/VisualWorkflowManager';
+import UnifiedWorkflowRunner from '../components/Workflow/UnifiedWorkflowRunner';
+import AIWorkflowGenerator from '../components/Workflow/AIWorkflowGenerator';
+import { useAuth } from '../contexts/AuthContext';
+import { database, supabase } from '../utils/supabase';
+
+interface WorkflowManagementProps {
+  className?: string;
+}
+
+interface TestGroup {
+  id: string;
+  name: string;
+  code: string;
+  category: string;
+  lab_id: string;
+  price: number;
+  is_active: boolean;
+}
+
+interface WorkflowVersion {
+  id: string;
+  name: string;
+  description?: string;
+  active: boolean;
+  definition?: any;
+  created_at?: string;
+  version?: string;
+}
+
+interface WorkflowMapping {
+  id: string;
+  test_group_id: string;
+  workflow_version_id: string;
+  is_default: boolean;
+  is_active: boolean;
+  priority: number;
+  test_groups?: { id: string; name: string; code: string };
+  workflow_versions?: { id: string; name: string };
+}
+
+export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
+  className = ''
+}) => {
+  const { user } = useAuth();
+  const [activeTab, setActiveTab] = useState<'mappings' | 'ai-generate' | 'builder' | 'visual-builder' | 'execute'>('mappings');
+  const [labId, setLabId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // State for mappings
+  const [mappings, setMappings] = useState<WorkflowMapping[]>([]);
+  const [unmappedTestGroups, setUnmappedTestGroups] = useState<TestGroup[]>([]);
+  const [workflows, setWorkflows] = useState<WorkflowVersion[]>([]);
+
+  // State for creation
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newMapping, setNewMapping] = useState({
+    test_group_id: '',
+    workflow_version_id: '',
+    is_default: false,
+    priority: 1
+  });
+
+  // State for visual builder
+  // State for visual builder (to be implemented)
+  // const [showVisualBuilder, setShowVisualBuilder] = useState(false);
+  // const [selectedWorkflowForEdit, setSelectedWorkflowForEdit] = useState<WorkflowVersion | null>(null);
+
+  const [demoSettings, setDemoSettings] = useState({
+    orderId: 'ORDER-12345',
+    testGroupId: 'test-group-id',
+    analyteIds: ['analyte-1', 'analyte-2'],
+    labId: ''
+  });
+
+  // State for workflow execution tab
+  const [execOrders, setExecOrders] = useState<any[]>([]);
+  const [execSelectedOrder, setExecSelectedOrder] = useState<any>(null);
+  const [execSelectedWorkflow, setExecSelectedWorkflow] = useState<any>(null);
+  const [execSearchTerm, setExecSearchTerm] = useState('');
+  const [execLoadingOrders, setExecLoadingOrders] = useState(false);
+
+  useEffect(() => {
+    if (user) {
+      loadWorkflowData();
+    }
+  }, [user]);
+
+  const loadWorkflowData = async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const currentLabId = await database.getCurrentUserLabId();
+      if (!currentLabId) {
+        throw new Error('No lab context available');
+      }
+      setLabId(currentLabId);
+
+      // Load all required data
+      const [mappingsResult, testGroupsResult, workflowsResult] = await Promise.all([
+        database.testWorkflowMap.getAll(),
+        database.testGroups.getByLabId(currentLabId),
+        database.workflowVersions.getAll()
+      ]);
+
+      if (mappingsResult.error) throw mappingsResult.error;
+      if (testGroupsResult.error) throw testGroupsResult.error;
+      if (workflowsResult.error) throw workflowsResult.error;
+
+      const allMappings = mappingsResult.data || [];
+      const allTestGroupsData = testGroupsResult.data || [];
+      const workflowsData = workflowsResult.data || [];
+
+      // Filter out test groups that already have mappings
+      const mappedTestGroupIds = new Set(
+        allMappings
+          .filter(m => m.test_group_id)
+          .map(m => m.test_group_id)
+      );
+
+      const unmapped = allTestGroupsData.filter(tg =>
+        tg.is_active && !mappedTestGroupIds.has(tg.id)
+      );
+
+      setMappings(allMappings as any);
+      setUnmappedTestGroups(unmapped);
+      setWorkflows(workflowsData as any);
+    } catch (err: any) {
+      console.error('Error loading workflow data:', err);
+      setError(err.message || 'Failed to load workflow data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createMapping = async () => {
+    if (!newMapping.test_group_id || !newMapping.workflow_version_id) {
+      setError('Please select both test group and workflow');
+      return;
+    }
+
+    try {
+      // Get the selected test group info
+      const selectedTestGroup = unmappedTestGroups.find(tg => tg.id === newMapping.test_group_id);
+      if (!selectedTestGroup) {
+        throw new Error('Selected test group not found');
+      }
+
+      // Ensure test_code is not null or empty
+      const testCode = selectedTestGroup.code?.trim();
+      if (!testCode) {
+        throw new Error(`Test group "${selectedTestGroup.name}" does not have a valid test code`);
+      }
+
+      const { error } = await database.testWorkflowMap.create({
+        test_group_id: newMapping.test_group_id,
+        workflow_version_id: newMapping.workflow_version_id,
+        test_code: testCode,
+        is_default: newMapping.is_default,
+        is_active: true,
+        priority: newMapping.priority
+      });
+
+      if (error) throw error;
+
+      setShowCreateModal(false);
+      setNewMapping({
+        test_group_id: '',
+        workflow_version_id: '',
+        is_default: false,
+        priority: 1
+      });
+
+      await loadWorkflowData(); // Reload to update unmapped list
+    } catch (err: any) {
+      console.error('Error creating mapping:', err);
+      setError(err.message || 'Failed to create mapping');
+    }
+  };
+
+  const deleteMapping = async (mappingId: string) => {
+    if (!confirm('Are you sure you want to delete this workflow mapping?')) {
+      return;
+    }
+
+    try {
+      const { error } = await database.testWorkflowMap.delete(mappingId);
+      if (error) throw error;
+
+      await loadWorkflowData(); // This will update both mappings and unmapped test groups
+    } catch (err: any) {
+      console.error('Error deleting mapping:', err);
+      setError(err.message || 'Failed to delete mapping');
+    }
+  };
+
+  const toggleMappingStatus = async (mappingId: string, currentStatus: boolean) => {
+    try {
+      const { error } = await database.testWorkflowMap.update(mappingId, {
+        is_active: !currentStatus
+      });
+
+      if (error) throw error;
+      await loadWorkflowData();
+    } catch (err: any) {
+      console.error('Error updating mapping:', err);
+      setError(err.message || 'Failed to update mapping status');
+    }
+  };
+
+  const setDefaultMapping = async (mappingId: string, testGroupId: string) => {
+    try {
+      // First, remove default from all mappings for this test group
+      const currentDefaults = mappings.filter(m =>
+        m.test_group_id === testGroupId && m.is_default
+      );
+
+      for (const defaultMapping of currentDefaults) {
+        await database.testWorkflowMap.update(defaultMapping.id, {
+          is_default: false
+        });
+      }
+
+      // Then set the new default
+      const { error } = await database.testWorkflowMap.update(mappingId, {
+        is_default: true
+      });
+
+      if (error) throw error;
+      await loadWorkflowData();
+    } catch (err: any) {
+      console.error('Error setting default:', err);
+      setError(err.message || 'Failed to set default mapping');
+    }
+  };
+
+  // Visual builder function (to be implemented)
+  // const openVisualBuilder = (workflow?: WorkflowVersion) => {
+  //   setSelectedWorkflowForEdit(workflow || null);
+  //   setShowVisualBuilder(true);
+  // };
+
+  const tabs = [
+    {
+      id: 'mappings',
+      name: 'Mappings',
+      icon: Settings,
+      description: 'Configure workflow mappings for test groups'
+    },
+    {
+      id: 'ai-generate',
+      name: 'AI Generate',
+      icon: Sparkles,
+      description: 'One-click NABL workflow generation',
+      highlight: true
+    },
+    {
+      id: 'execute',
+      name: 'Execute',
+      icon: Play,
+      description: 'Run workflows with automatic order context'
+    },
+    {
+      id: 'builder',
+      name: 'Manual Builder',
+      icon: Workflow,
+      description: 'Create and configure new workflows'
+    },
+    {
+      id: 'visual-builder',
+      name: 'Visual Builder',
+      icon: Edit,
+      description: 'Create workflows with visual form builder'
+    }
+  ];
+
+  // Load orders when execute tab is active
+  useEffect(() => {
+    if (activeTab === 'execute' && labId) {
+      loadOrdersForExecution();
+    }
+  }, [activeTab, labId]);
+
+  const loadOrdersForExecution = async () => {
+    setExecLoadingOrders(true);
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select(`
+          id,
+          sample_id,
+          patient_name,
+          order_date,
+          status,
+          patient_id,
+          patients (name, age, gender),
+          order_tests (
+            id,
+            test_group_id,
+            test_groups (id, name, code)
+          )
+        `)
+        .eq('lab_id', labId)
+        .in('status', ['Sample Collection', 'Processing', 'In Progress'])
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (error) throw error;
+      setExecOrders(data || []);
+    } catch (err) {
+      console.error('Error loading orders:', err);
+    } finally {
+      setExecLoadingOrders(false);
+    }
+  };
+
+  const getWorkflowForTestGroup = (testGroupId: string) => {
+    const mapping = mappings.find(m =>
+      m.test_group_id === testGroupId && m.is_active && m.is_default
+    );
+    if (mapping) {
+      const workflow = workflows.find(w => w.id === mapping.workflow_version_id);
+      return { mapping, workflow };
+    }
+    return null;
+  };
+
+  const filteredExecOrders = execOrders.filter(order => {
+    if (!execSearchTerm) return true;
+    const search = execSearchTerm.toLowerCase();
+    return (
+      order.sample_id?.toLowerCase().includes(search) ||
+      order.patient_name?.toLowerCase().includes(search) ||
+      order.id.toLowerCase().includes(search)
+    );
+  });
+
+  if (!labId) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <AlertCircle className="mx-auto h-12 w-12 text-red-500 mb-4" />
+          <h2 className="text-lg font-semibold text-gray-900 mb-2">No Lab Context</h2>
+          <p className="text-gray-600">Please ensure you're logged in with a valid lab account.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-64">
+        <div className="flex items-center gap-2 text-gray-600">
+          <Loader2 className="h-5 w-5 animate-spin" />
+          Loading workflow management...
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`space-y-6 ${className}`}>
+      {/* Header */}
+      <div className="bg-white rounded-lg shadow-sm border p-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className="bg-blue-100 p-3 rounded-lg">
+              <Workflow className="h-6 w-6 text-blue-600" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">Workflow Management</h1>
+              <p className="text-gray-600 mt-1">Configure test group mappings and manage workflows</p>
+            </div>
+          </div>
+          {activeTab === 'mappings' && (
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 flex items-center gap-2"
+            >
+              <Plus className="h-4 w-4" />
+              Add Mapping
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Error Alert */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <div className="flex">
+            <AlertCircle className="h-5 w-5 text-red-400" />
+            <div className="ml-3">
+              <p className="text-sm text-red-800">{error}</p>
+              <button
+                onClick={() => setError(null)}
+                className="text-xs text-red-600 hover:text-red-800 underline mt-1"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Navigation Tabs */}
+      <div className="bg-white rounded-lg shadow-sm border">
+        <div className="border-b border-gray-200">
+          <nav className="flex px-6">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              const isHighlight = (tab as any).highlight;
+
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id as any)}
+                  className={`py-4 px-4 border-b-2 font-medium text-sm whitespace-nowrap transition-colors ${
+                    isActive
+                      ? isHighlight
+                        ? 'border-purple-500 text-purple-600'
+                        : 'border-blue-500 text-blue-600'
+                      : isHighlight
+                        ? 'border-transparent text-purple-500 hover:text-purple-700 hover:bg-purple-50'
+                        : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2">
+                    <Icon className={`h-4 w-4 ${isHighlight && !isActive ? 'animate-pulse' : ''}`} />
+                    <span>{tab.name}</span>
+                    {tab.id === 'mappings' && (
+                      <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-xs">
+                        {mappings.length}
+                      </span>
+                    )}
+                    {isHighlight && !isActive && (
+                      <span className="bg-gradient-to-r from-purple-500 to-indigo-500 text-white px-2 py-0.5 rounded-full text-xs font-semibold">
+                        NEW
+                      </span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+
+        {/* Tab Content */}
+        <div className="p-6">
+          {activeTab === 'mappings' && (
+            <div>
+              {mappings.length === 0 ? (
+                <div className="text-center py-12">
+                  <Settings className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+                  <h3 className="text-lg font-medium text-gray-900 mb-2">No mappings configured</h3>
+                  <p className="text-gray-600 mb-4">Create your first test group to workflow mapping.</p>
+                  <button
+                    onClick={() => setShowCreateModal(true)}
+                    className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700"
+                  >
+                    Add Mapping
+                  </button>
+                </div>
+              ) : (
+                <div className="overflow-hidden shadow ring-1 ring-black ring-opacity-5 md:rounded-lg">
+                  <table className="min-w-full divide-y divide-gray-300">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Test Group
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Workflow
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Status
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Priority
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Actions
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {mappings.map((mapping) => (
+                        <tr key={mapping.id}>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="text-sm font-medium text-gray-900">
+                              {mapping.test_groups?.name || 'Unknown Test Group'}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="text-sm text-gray-900">
+                              {mapping.workflow_versions?.name || 'Unknown Workflow'}
+                            </div>
+                            {mapping.is_default && (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 ml-2">
+                                Default
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span
+                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${mapping.is_active
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-red-100 text-red-800'
+                                }`}
+                            >
+                              {mapping.is_active ? 'Active' : 'Inactive'}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {mapping.priority}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                            <div className="flex items-center space-x-2">
+                              <button
+                                onClick={() => toggleMappingStatus(mapping.id, mapping.is_active)}
+                                className="text-blue-600 hover:text-blue-900"
+                              >
+                                {mapping.is_active ? 'Deactivate' : 'Activate'}
+                              </button>
+                              {!mapping.is_default && (
+                                <button
+                                  onClick={() => setDefaultMapping(mapping.id, mapping.test_group_id)}
+                                  className="text-green-600 hover:text-green-900"
+                                >
+                                  Set Default
+                                </button>
+                              )}
+                              <button
+                                onClick={() => deleteMapping(mapping.id)}
+                                className="text-red-600 hover:text-red-900"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'ai-generate' && labId && (
+            <AIWorkflowGenerator
+              labId={labId}
+              onWorkflowGenerated={(result) => {
+                // Success state is now displayed in the component
+                // Don't reload here as it causes the component to remount and lose state
+              }}
+              onReset={() => {
+                // Reload workflow data when user clicks "Generate Another"
+                loadWorkflowData();
+              }}
+            />
+          )}
+
+          {activeTab === 'builder' && (
+            <div>
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Manual Workflow Builder</h3>
+                <p className="text-gray-600">
+                  Create new workflows for test groups that don't have workflow configurations yet.
+                  Select a test group to start building its workflow.
+                </p>
+              </div>
+
+              {/* Unmapped Test Groups Section - Collapsible */}
+              {unmappedTestGroups.length > 0 ? (
+                <details className="group bg-white rounded-lg shadow-sm border border-gray-200" open>
+                  <summary className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none border-b border-gray-200">
+                    <div>
+                      <h4 className="text-lg font-medium text-gray-900">Test Groups Without Workflows</h4>
+                      <p className="text-sm text-gray-600 mt-0.5">
+                        {unmappedTestGroups.length} test groups need configuration
+                      </p>
+                    </div>
+                    <svg className="w-5 h-5 text-gray-500 transform group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </summary>
+
+                  <div className="p-4">
+                    <div className="grid gap-3">
+                      {unmappedTestGroups.map((testGroup) => (
+                        <div
+                          key={testGroup.id}
+                          className="border border-gray-200 rounded-lg p-3 hover:border-gray-300 transition-colors"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1">
+                              <h5 className="text-base font-medium text-gray-900">{testGroup.name}</h5>
+                              <div className="flex items-center gap-2 mt-1">
+                                <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
+                                  {testGroup.code}
+                                </span>
+                                <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                                  {testGroup.category}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  Price: ${testGroup.price}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="ml-4">
+                              <a
+                                href={`/workflow-configurator?testGroupId=${testGroup.id}`}
+                                className="inline-flex items-center px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-md hover:bg-blue-700 transition-colors"
+                              >
+                                <Workflow className="h-3 w-3 mr-1.5" />
+                                Configure
+                              </a>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </details>
+              ) : (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                  <div className="flex items-center">
+                    <CheckCircle className="h-5 w-5 text-yellow-400 mr-2" />
+                    <h4 className="text-yellow-800 font-medium">All Test Groups Configured</h4>
+                  </div>
+                  <p className="text-sm text-yellow-700 mt-1">
+                    All test groups in your lab have workflow configurations.
+                    You can manage existing mappings in the "Test Group Mappings" tab.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'visual-builder' && (
+            <div>
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Visual Workflow Manager</h3>
+                <p className="text-gray-600">
+                  Comprehensive workflow management with visual editing, cloning, and organization features.
+                </p>
+              </div>
+
+              <div className="bg-white rounded-lg border border-gray-200">
+                <VisualWorkflowManager />
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'execute' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Order Selection Panel */}
+              <div className="lg:col-span-1 space-y-4">
+                <div className="bg-white rounded-lg border border-gray-200 p-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-3">Select Order</h3>
+
+                  {/* Search */}
+                  <div className="relative mb-4">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                    <input
+                      type="text"
+                      placeholder="Search by sample ID or patient..."
+                      value={execSearchTerm}
+                      onChange={(e) => setExecSearchTerm(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+
+                  {/* Order List */}
+                  {execLoadingOrders ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+                    </div>
+                  ) : filteredExecOrders.length === 0 ? (
+                    <div className="text-center py-8 text-gray-500">
+                      <AlertCircle className="h-8 w-8 mx-auto mb-2 text-gray-400" />
+                      <p>No orders available for workflow execution</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                      {filteredExecOrders.map((order) => {
+                        const testGroup = order.order_tests?.[0]?.test_groups;
+                        const hasWorkflow = testGroup ? !!getWorkflowForTestGroup(testGroup.id) : false;
+
+                        return (
+                          <button
+                            key={order.id}
+                            onClick={() => {
+                              setExecSelectedOrder(order);
+                              if (testGroup) {
+                                const wf = getWorkflowForTestGroup(testGroup.id);
+                                setExecSelectedWorkflow(wf);
+                              } else {
+                                setExecSelectedWorkflow(null);
+                              }
+                            }}
+                            className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                              execSelectedOrder?.id === order.id
+                                ? 'border-blue-500 bg-blue-50'
+                                : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <div className="font-medium text-gray-900">
+                                  {order.sample_id || order.id.slice(0, 8)}
+                                </div>
+                                <div className="text-sm text-gray-600">
+                                  {order.patient_name || (order.patients as any)?.name}
+                                </div>
+                                {testGroup && (
+                                  <div className="text-xs text-gray-500 mt-1">
+                                    {testGroup.name}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex flex-col items-end gap-1">
+                                <span className={`px-2 py-0.5 text-xs rounded-full ${
+                                  order.status === 'Sample Collection'
+                                    ? 'bg-yellow-100 text-yellow-800'
+                                    : 'bg-blue-100 text-blue-800'
+                                }`}>
+                                  {order.status}
+                                </span>
+                                {hasWorkflow && (
+                                  <span className="text-xs text-green-600 flex items-center">
+                                    <Workflow className="h-3 w-3 mr-1" />
+                                    Has Workflow
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={loadOrdersForExecution}
+                    className="mt-4 w-full text-sm text-blue-600 hover:text-blue-800"
+                  >
+                    Refresh Orders
+                  </button>
+                </div>
+
+                {/* Selected Order Info */}
+                {execSelectedOrder && (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <h4 className="font-medium text-green-900 mb-2">Selected Order</h4>
+                    <div className="text-sm text-green-800 space-y-1">
+                      <p><strong>Sample:</strong> {execSelectedOrder.sample_id || 'N/A'}</p>
+                      <p><strong>Patient:</strong> {execSelectedOrder.patient_name}</p>
+                      <p><strong>Test:</strong> {execSelectedOrder.order_tests?.[0]?.test_groups?.name || 'N/A'}</p>
+                      {execSelectedWorkflow ? (
+                        <p className="flex items-center text-green-700">
+                          <CheckCircle className="h-4 w-4 mr-1" />
+                          Workflow configured
+                        </p>
+                      ) : (
+                        <p className="flex items-center text-amber-700">
+                          <AlertCircle className="h-4 w-4 mr-1" />
+                          No workflow mapped
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Workflow Execution Panel */}
+              <div className="lg:col-span-2">
+                {!execSelectedOrder ? (
+                  <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
+                    <Play className="h-16 w-16 mx-auto text-gray-300 mb-4" />
+                    <h3 className="text-lg font-medium text-gray-900 mb-2">Select an Order</h3>
+                    <p className="text-gray-600">
+                      Choose an order from the left panel to execute its workflow.
+                      The system will automatically pre-populate order context.
+                    </p>
+                    <div className="mt-6 p-4 bg-blue-50 rounded-lg text-left">
+                      <h4 className="font-medium text-blue-900 mb-2">Auto-Context Features:</h4>
+                      <ul className="text-sm text-blue-800 space-y-1">
+                        <li>• Sample ID automatically filled</li>
+                        <li>• Patient info pre-populated</li>
+                        <li>• Collection date/time from order</li>
+                        <li>• Test group analytes loaded</li>
+                        <li>• Technician info from current user</li>
+                      </ul>
+                    </div>
+                  </div>
+                ) : !execSelectedWorkflow ? (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
+                    <AlertCircle className="h-12 w-12 mx-auto text-amber-400 mb-4" />
+                    <h3 className="text-lg font-medium text-amber-900 mb-2">No Workflow Configured</h3>
+                    <p className="text-amber-700 mb-4">
+                      This test group does not have a workflow mapping.
+                      Please configure a workflow in the "Test Group Mappings" tab first.
+                    </p>
+                    <button
+                      onClick={() => setActiveTab('mappings')}
+                      className="px-4 py-2 bg-amber-600 text-white rounded-md hover:bg-amber-700"
+                    >
+                      Go to Mappings
+                    </button>
+                  </div>
+                ) : (
+                  <UnifiedWorkflowRunner
+                    workflowDefinition={execSelectedWorkflow.workflow?.definition}
+                    orderId={execSelectedOrder.id}
+                    testGroupId={execSelectedOrder.order_tests?.[0]?.test_group_id}
+                    workflowVersionId={execSelectedWorkflow.mapping?.workflow_version_id}
+                    features={{
+                      autoContext: true,
+                      fileUploads: true,
+                      aiAnalysis: true,
+                      readOnlyContext: true,
+                      showContextIndicator: true
+                    }}
+                    onComplete={(results) => {
+                      console.log('Workflow completed:', results);
+                      // Optionally refresh or navigate
+                    }}
+                    onContextLoaded={(context) => {
+                      console.log('Context loaded:', context);
+                    }}
+                  />
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Quick Actions - Collapsible */}
+      <details className="group bg-white rounded-lg shadow-sm border border-gray-200" open>
+        <summary className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none border-b border-gray-200 group-open:border-b">
+          <h3 className="text-lg font-semibold text-gray-900">Quick Actions</h3>
+          <svg className="w-5 h-5 text-gray-500 transform group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </summary>
+
+        <div className="p-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <button className="p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-blue-300 hover:bg-blue-50 transition-colors text-left">
+              <div className="flex items-center space-x-3">
+                <div className="bg-blue-100 p-2 rounded">
+                  <Workflow className="h-4 w-4 text-blue-600" />
+                </div>
+                <div>
+                  <h4 className="font-medium text-sm text-gray-900">Create New Workflow</h4>
+                  <p className="text-xs text-gray-600">Design a new Survey.js workflow</p>
+                </div>
+              </div>
+            </button>
+
+            <button className="p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-300 hover:bg-green-50 transition-colors text-left">
+              <div className="flex items-center space-x-3">
+                <div className="bg-green-100 p-2 rounded">
+                  <TestTube className="h-4 w-4 text-green-600" />
+                </div>
+                <div>
+                  <h4 className="font-medium text-sm text-gray-900">Import Templates</h4>
+                  <p className="text-xs text-gray-600">Import pre-built workflow templates</p>
+                </div>
+              </div>
+            </button>
+
+            <button className="p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors text-left">
+              <div className="flex items-center space-x-3">
+                <div className="bg-purple-100 p-2 rounded">
+                  <Settings className="h-4 w-4 text-purple-600" />
+                </div>
+                <div>
+                  <h4 className="font-medium text-sm text-gray-900">Bulk Configuration</h4>
+                  <p className="text-xs text-gray-600">Configure multiple mappings at once</p>
+                </div>
+              </div>
+            </button>
+          </div>
+        </div>
+      </details>
+
+      {/* Create Mapping Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+          <div className="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+            <div className="mt-3">
+              <h3 className="text-lg font-medium text-gray-900 mb-4">
+                Create Workflow Mapping
+              </h3>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Test Group
+                  </label>
+                  <select
+                    value={newMapping.test_group_id}
+                    onChange={(e) => setNewMapping(prev => ({ ...prev, test_group_id: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">Select Test Group</option>
+                    {unmappedTestGroups.map((group: TestGroup) => (
+                      <option key={group.id} value={group.id}>
+                        {group.name || 'Unnamed Test Group'} ({group.code || 'No Code'})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Workflow
+                  </label>
+                  <select
+                    value={newMapping.workflow_version_id}
+                    onChange={(e) => setNewMapping(prev => ({ ...prev, workflow_version_id: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">Select Workflow</option>
+                    {workflows.filter(w => w.active).map((workflow) => (
+                      <option key={workflow.id} value={workflow.id}>
+                        {workflow.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Priority
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={newMapping.priority}
+                    onChange={(e) => setNewMapping(prev => ({ ...prev, priority: parseInt(e.target.value) }))}
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    id="is_default"
+                    checked={newMapping.is_default}
+                    onChange={(e) => setNewMapping(prev => ({ ...prev, is_default: e.target.checked }))}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <label htmlFor="is_default" className="ml-2 block text-sm text-gray-900">
+                    Set as default for this test group
+                  </label>
+                </div>
+              </div>
+
+              <div className="flex justify-end space-x-3 mt-6">
+                <button
+                  onClick={() => setShowCreateModal(false)}
+                  className="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={createMapping}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                >
+                  Create Mapping
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default WorkflowManagement;

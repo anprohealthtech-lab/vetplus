@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patient-Centric Workflow Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-result { margin: 10px 0; padding: 10px; border-radius: 5px; }
+        .success { background-color: #d4edda; border: 1px solid #c3e6cb; color: #155724; }
+        .error { background-color: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; }
+        .info { background-color: #e2e3e5; border: 1px solid #d6d8db; color: #383d41; }
+        button { padding: 10px 20px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        pre { background: #f8f9fa; padding: 10px; border-radius: 5px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>🏥 Patient-Centric Workflow Test Page</h1>
+    <p>This page will test your database migration and workflow implementation.</p>
+    
+    <div id="results"></div>
+    
+    <button onclick="runQuickCheck()">Quick Verification</button>
+    <button onclick="runFullTests()">Run All Tests</button>
+    <button onclick="showSQL()">Show SQL Queries</button>
+    <button onclick="clearResults()">Clear Results</button>
+
+    <script type="module">
+        import { createClient } from 'https://cdn.skypack.dev/@supabase/supabase-js';
+        
+        // You'll need to replace these with your actual Supabase credentials
+        const supabaseUrl = 'YOUR_SUPABASE_URL';
+        const supabaseKey = 'YOUR_SUPABASE_ANON_KEY';
+        const supabase = createClient(supabaseUrl, supabaseKey);
+
+        function addResult(message, type = 'info') {
+            const results = document.getElementById('results');
+            const div = document.createElement('div');
+            div.className = `test-result ${type}`;
+            div.innerHTML = message;
+            results.appendChild(div);
+        }
+
+        window.runQuickCheck = async function() {
+            addResult('🔍 Running quick verification...', 'info');
+            
+            try {
+                // Test 1: Check orders table new columns
+                const { data: orders, error: ordersError } = await supabase
+                    .from('orders')
+                    .select('id, parent_order_id, order_type, visit_group_id, can_add_tests')
+                    .limit(1);
+
+                if (ordersError) {
+                    addResult(`❌ Orders table check failed: ${ordersError.message}`, 'error');
+                    return;
+                }
+
+                addResult(`✅ Orders table structure verified (${orders?.length || 0} rows checked)`, 'success');
+
+                // Test 2: Check activity log table
+                const { data: activities, error: activitiesError } = await supabase
+                    .from('patient_activity_log')
+                    .select('id, activity_type')
+                    .limit(1);
+
+                if (activitiesError) {
+                    addResult(`❌ Activity log table check failed: ${activitiesError.message}`, 'error');
+                    return;
+                }
+
+                addResult(`✅ Activity log table verified (${activities?.length || 0} rows found)`, 'success');
+
+                // Test 3: Check views
+                const { data: visitSummary, error: viewError } = await supabase
+                    .from('patient_visit_summary')
+                    .select('visit_group_id, patient_name')
+                    .limit(1);
+
+                if (viewError) {
+                    addResult(`❌ Views check failed: ${viewError.message}`, 'error');
+                    return;
+                }
+
+                addResult(`✅ Database views working (${visitSummary?.length || 0} visit summaries found)`, 'success');
+
+                // Test 4: Test database function
+                const { data: visitId, error: funcError } = await supabase.rpc('generate_visit_group_id', {
+                    p_patient_id: '00000000-0000-0000-0000-000000000000',
+                    p_order_date: new Date().toISOString().split('T')[0]
+                });
+
+                if (funcError) {
+                    addResult(`⚠️ Database function test: ${funcError.message}`, 'error');
+                } else {
+                    addResult(`✅ Database functions working. Generated visit ID: ${visitId}`, 'success');
+                }
+
+                addResult('🎉 Quick verification completed successfully!', 'success');
+
+            } catch (error) {
+                addResult(`❌ Quick verification failed: ${error.message}`, 'error');
+            }
+        };
+
+        window.runFullTests = async function() {
+            addResult('🧪 Running comprehensive tests...', 'info');
+            
+            const tests = [
+                {
+                    name: 'Database Structure',
+                    test: async () => {
+                        const { error } = await supabase
+                            .from('orders')
+                            .select('parent_order_id, order_type, visit_group_id, addition_reason, can_add_tests, locked_at')
+                            .limit(1);
+                        return !error;
+                    }
+                },
+                {
+                    name: 'Activity Logging',
+                    test: async () => {
+                        const { error } = await supabase
+                            .from('patient_activity_log')
+                            .select('*')
+                            .limit(5);
+                        return !error;
+                    }
+                },
+                {
+                    name: 'Patient Visit Summary View',
+                    test: async () => {
+                        const { error } = await supabase
+                            .from('patient_visit_summary')
+                            .select('*')
+                            .limit(5);
+                        return !error;
+                    }
+                },
+                {
+                    name: 'Order Chain View',
+                    test: async () => {
+                        const { error } = await supabase
+                            .from('order_chain_view')
+                            .select('*')
+                            .limit(5);
+                        return !error;
+                    }
+                },
+                {
+                    name: 'Activity Timeline View',
+                    test: async () => {
+                        const { error } = await supabase
+                            .from('patient_activity_timeline')
+                            .select('*')
+                            .limit(5);
+                        return !error;
+                    }
+                }
+            ];
+
+            let passed = 0;
+            let total = tests.length;
+
+            for (const { name, test } of tests) {
+                try {
+                    const result = await test();
+                    if (result) {
+                        addResult(`✅ ${name}: Passed`, 'success');
+                        passed++;
+                    } else {
+                        addResult(`❌ ${name}: Failed`, 'error');
+                    }
+                } catch (error) {
+                    addResult(`❌ ${name}: Error - ${error.message}`, 'error');
+                }
+            }
+
+            addResult(`🎯 Test Results: ${passed}/${total} tests passed`, passed === total ? 'success' : 'error');
+        };
+
+        window.showSQL = function() {
+            addResult(`
+                <h3>🔍 Useful SQL Queries for Testing</h3>
+                <pre>
+-- Check visit group IDs were generated
+SELECT visit_group_id, COUNT(*) as order_count 
+FROM orders 
+WHERE visit_group_id IS NOT NULL 
+GROUP BY visit_group_id 
+ORDER BY visit_group_id;
+
+-- View patient visit summaries
+SELECT * FROM patient_visit_summary 
+ORDER BY visit_date DESC 
+LIMIT 10;
+
+-- Check activity log entries
+SELECT activity_type, COUNT(*) as count 
+FROM patient_activity_log 
+GROUP BY activity_type 
+ORDER BY count DESC;
+
+-- Test visit group ID generation
+SELECT generate_visit_group_id(
+    (SELECT id FROM patients LIMIT 1),
+    CURRENT_DATE
+) as generated_visit_id;
+
+-- View order chains
+SELECT * FROM order_chain_view 
+WHERE visit_group_id IS NOT NULL 
+ORDER BY visit_group_id, path;
+                </pre>
+            `, 'info');
+        };
+
+        window.clearResults = function() {
+            document.getElementById('results').innerHTML = '';
+        };
+
+        // Auto-run quick check when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            addResult('📋 Patient-Centric Workflow Test Page Loaded', 'info');
+            addResult('💡 Click "Quick Verification" to test your database migration', 'info');
+            addResult('⚠️ Make sure to update the Supabase credentials in the script before testing', 'error');
+        });
+    </script>
+</body>
+</html>
