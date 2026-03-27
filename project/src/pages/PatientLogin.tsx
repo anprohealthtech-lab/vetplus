@@ -72,11 +72,16 @@ const PatientLogin: React.FC = () => {
 
         {/* Header */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-teal-600 rounded-full mb-4">
-            <Stethoscope className="h-8 w-8 text-white" />
+          <div className="flex flex-col items-center justify-center mb-4">
+            <img
+              src="https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Logo%20copy%20(1).png?tr=w-200,h-200,fo-auto"
+              alt="Vetplus Diagnostics"
+              className="h-28 w-auto object-contain mb-3 drop-shadow-md transition-transform hover:scale-105 duration-300"
+            />
+            <h1 className="text-3xl font-extrabold text-[#1a3a5c] leading-tight tracking-tight mt-2">Vetplus Diagnostics</h1>
           </div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Patient Portal</h1>
-          <p className="text-gray-600">View your lab reports anytime</p>
+          <h2 className="text-xl font-bold rounded-full bg-teal-100 text-teal-800 inline-block px-4 py-1 mb-2">Patient Portal</h2>
+          <p className="text-gray-600 mt-1">View your lab reports securely anytime</p>
         </div>
 
         {/* Step indicator */}
@@ -227,10 +232,16 @@ const PatientLogin: React.FC = () => {
         </div>
 
         {/* Footer */}
-        <div className="mt-6 text-center">
-          <p className="text-sm text-gray-500">
+        <div className="mt-8 text-center bg-white/60 backdrop-blur-sm rounded-xl p-4 shadow-sm border border-white/40">
+          <div className="flex items-center justify-center gap-2 mb-2 text-gray-700">
+            <Stethoscope className="h-4 w-4 text-teal-600" />
+            <p className="text-sm font-medium">
+              Opp Veterinary Hospital, Girls High School Road, Gannavaram
+            </p>
+          </div>
+          <p className="text-xs text-gray-500">
             Need help?{' '}
-            <span className="text-teal-600 font-medium">Contact your lab for support.</span>
+            <span className="text-teal-600 font-medium cursor-pointer hover:underline">Contact your lab for support.</span>
           </p>
         </div>
       </div>
