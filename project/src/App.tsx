@@ -1,4 +1,4 @@
-// src/App.tsx
+﻿// src/App.tsx
 import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -31,14 +31,14 @@ import { warmupPuppeteer } from './utils/pdfService';
 import { initializeNativePlatform, cleanupNativePlatform } from './utils/nativeInit';
 import "./styles/print.css";
 
-// ⬇️ New modern dashboard page
+// Γ¼ç∩╕Å New modern dashboard page
 import Dashboard2 from './pages/Dashboard2';
 import VisualFormBuilder from './pages/VisualFormBuilder';
 
-// ⬇️ New AI-integrated results page
+// Γ¼ç∩╕Å New AI-integrated results page
 import Result2 from './pages/result2';
 
-// ⬇️ Master Data Components
+// Γ¼ç∩╕Å Master Data Components
 import DoctorMaster from './components/Masters/DoctorMaster';
 import LocationMaster from './components/Masters/LocationMaster';
 import AccountMaster from './components/Masters/AccountMaster';
@@ -67,17 +67,17 @@ import Analytics from './pages/Analytics';
 import QualityControl from './pages/QualityControl';
 import Inventory from './pages/Inventory';
 
-// ⬇️ B2B Portal
+// Γ¼ç∩╕Å B2B Portal
 import B2BLogin from './pages/B2BLogin';
 import B2BPortal from './pages/B2BPortal';
 import ProtectedB2BRoute from './components/Auth/ProtectedB2BRoute';
 
-// ⬇️ Patient Portal
+// Γ¼ç∩╕Å Patient Portal
 import PatientLogin from './pages/PatientLogin';
 import PatientPortal from './pages/PatientPortal';
 import ProtectedPatientRoute from './components/Auth/ProtectedPatientRoute';
 
-// ⬇️ Doctor Sharing Portal (Admin Only)
+// Γ¼ç∩╕Å Doctor Sharing Portal (Admin Only)
 import DoctorSharingLogin from './pages/DoctorSharingLogin';
 import DoctorSharingLayout from './pages/DoctorSharingLayout';
 import DoctorSharingDashboard from './pages/DoctorSharingDashboard';
@@ -148,20 +148,6 @@ const AppRoutes: React.FC = () => {
         element={<VerificationPage />}
       />
 
-      {/* Patient Portal routes */}
-      <Route
-        path="/patient/login"
-        element={<PatientLogin />}
-      />
-      <Route
-        path="/patient/portal"
-        element={
-          <ProtectedPatientRoute>
-            <PatientPortal />
-          </ProtectedPatientRoute>
-        }
-      />
-
       {/* B2B Portal routes */}
       <Route
         path="/b2b"
@@ -173,6 +159,20 @@ const AppRoutes: React.FC = () => {
           <ProtectedB2BRoute>
             <B2BPortal />
           </ProtectedB2BRoute>
+        }
+      />
+
+      {/* Patient Portal routes */}
+      <Route
+        path="/patient/login"
+        element={<PatientLogin />}
+      />
+      <Route
+        path="/patient/portal"
+        element={
+          <ProtectedPatientRoute>
+            <PatientPortal />
+          </ProtectedPatientRoute>
         }
       />
 

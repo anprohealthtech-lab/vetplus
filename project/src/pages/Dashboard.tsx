@@ -409,6 +409,19 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
     const invoiceData = await Promise.all(invoicePromises);
     const invoiceMap = new Map(invoiceData.map((d) => [d.orderId, d]));
 
+    // 3.6) Fetch uninvoiced extra charges (order_billing_items) per order
+    // These are charges added via the order modal but not yet on any invoice.
+    // They must be added to orderAmount so due_amount is correct.
+    const uninvoicedChargesMap = new Map<string, number>();
+    const { data: billingItemsRows } = await supabase
+      .from('order_billing_items')
+      .select('order_id, amount')
+      .in('order_id', orderIds)
+      .eq('is_invoiced', false);
+    (billingItemsRows || []).forEach((row: any) => {
+      uninvoicedChargesMap.set(row.order_id, (uninvoicedChargesMap.get(row.order_id) || 0) + (row.amount || 0));
+    });
+
     // 3.5) Fetch reports with delivery status for these orders
     const reportMap = new Map<
       string,
@@ -495,6 +508,9 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       const doctor_phone = doctorData?.phone || null;
       const doctor_email = doctorData?.email || null;
 
+      // Extra uninvoiced charges for this order (not yet on any invoice)
+      const uninvoicedCharges = uninvoicedChargesMap.get(o.id) || 0;
+
       return {
         id: o.id,
         patient_name: o.patient_name,
@@ -505,11 +521,12 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         order_date: o.order_date,
         expected_date: dynamicExpectedDate,
         tatStarted,
-        total_amount: o.final_amount || o.total_amount,
-        // Use totalInvoiced from aggregated invoices, fallback to order amount
-        final_amount: invoiceInfo?.totalInvoiced 
-          ? Math.max(invoiceInfo.totalInvoiced, o.final_amount || o.total_amount || 0)
-          : (o.final_amount || o.total_amount || 0),
+        // Include uninvoiced charges in displayed total
+        total_amount: (o.final_amount || o.total_amount || 0) + uninvoicedCharges,
+        // Use totalInvoiced from aggregated invoices, fallback to order amount + uninvoiced charges
+        final_amount: invoiceInfo?.totalInvoiced
+          ? Math.max(invoiceInfo.totalInvoiced, (o.final_amount || o.total_amount || 0) + uninvoicedCharges)
+          : ((o.final_amount || o.total_amount || 0) + uninvoicedCharges),
         doctor: o.doctor,
         doctor_phone,
         doctor_email,
@@ -521,12 +538,11 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         sample_collected_at: o.sample_collected_at,
         sample_collected_by: o.sample_collected_by,
 
-        // Billing status: "partial" if totalInvoiced < order amount, else use DB status
+        // Billing status: "partial" if totalInvoiced < order amount+charges, else use DB status
         billing_status: (() => {
           if (!invoiceInfo?.invoices?.length) return o.billing_status;
-          const orderAmount = o.final_amount || o.total_amount || 0;
+          const orderAmount = (o.final_amount || o.total_amount || 0) + uninvoicedCharges;
           const invoicedAmount = invoiceInfo.totalInvoiced || 0;
-          // If invoiced amount is significantly less than order amount, it's partial
           return (orderAmount - invoicedAmount) > 1 ? 'partial' : o.billing_status;
         })(),
         is_billed: o.is_billed,
@@ -534,34 +550,32 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         invoice_id: invoiceInfo?.primaryInvoice?.id || null,
         // Aggregated paid amount across all invoices
         paid_amount: invoiceInfo?.paidAmount || 0,
-        // Due amount = order total - total paid across all invoices
+        // Due amount = effective total (order + uninvoiced charges) - paid - refunded
         due_amount: (() => {
-          const orderAmount = o.final_amount || o.total_amount || 0;
+          const baseOrderAmount = o.final_amount || o.total_amount || 0;
+          // Add uninvoiced charges on top of order amount
+          const orderAmount = baseOrderAmount + uninvoicedCharges;
           const invoicedAmount = invoiceInfo?.totalInvoiced || 0;
           const paidAmount = invoiceInfo?.paidAmount || 0;
           const refundedAmount = invoiceInfo?.totalRefunded || 0;
-          
-          // If no invoices, due = order amount
-          if (!invoiceInfo?.invoices?.length) {
-            return Math.max(0, orderAmount - paidAmount);
-          }
-          
-          // If partially invoiced, due = max(order, invoiced) - paid - refunded
+
+          // effectiveTotal = max(order+uninvoiced, invoiced)
+          // When invoiced, invoice total already includes any invoiced charges
           const effectiveTotal = Math.max(orderAmount, invoicedAmount);
           return Math.max(0, effectiveTotal - paidAmount - refundedAmount);
         })(),
         // Payment status based on aggregated amounts
         payment_status: (() => {
-          if (!invoiceInfo?.invoices?.length) return "unpaid";
-          
-          const orderAmount = o.final_amount || o.total_amount || 0;
-          const invoicedAmount = invoiceInfo.totalInvoiced || 0;
-          const paidAmount = invoiceInfo.paidAmount || 0;
-          const refundedAmount = invoiceInfo.totalRefunded || 0;
-          
+          const baseOrderAmount = o.final_amount || o.total_amount || 0;
+          const orderAmount = baseOrderAmount + uninvoicedCharges;
+          const invoicedAmount = invoiceInfo?.totalInvoiced || 0;
+          const paidAmount = invoiceInfo?.paidAmount || 0;
+          const refundedAmount = invoiceInfo?.totalRefunded || 0;
+
           const effectiveTotal = Math.max(orderAmount, invoicedAmount);
           const netOwed = Math.max(0, effectiveTotal - refundedAmount);
-          
+
+          if (!netOwed) return "unpaid";
           // Allow small float diff (1.0)
           if (paidAmount > 0 && paidAmount >= (netOwed - 1)) return "paid";
           if (paidAmount > 0) return "partial";

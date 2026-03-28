@@ -68,6 +68,9 @@ export interface InvoiceItem {
   price: number;
   total: number;
   discount_amount?: number;
+  item_type?: 'test' | 'lab_charge';
+  is_shareable_with_doctor?: boolean;
+  is_shareable_with_phlebotomist?: boolean;
 }
 
 export interface InvoiceTemplate {
@@ -123,7 +126,51 @@ export async function generateInvoicePDF(
       throw new Error('Invoice not found');
     }
 
-    // 2. Financial validation
+    // 2. Auto-repair missing invoice_items from order_tests if applicable
+    if ((!invoice.invoice_items || invoice.invoice_items.length === 0) && invoice.order_id) {
+      const { data: orderTests } = await supabase
+        .from('order_tests')
+        .select('id, test_name, price')
+        .eq('order_id', invoice.order_id);
+
+      if (orderTests && orderTests.length > 0) {
+        const itemsToInsert = orderTests.map((t: any) => ({
+          invoice_id: invoiceId,
+          order_test_id: t.id,
+          test_name: t.test_name,
+          price: t.price,
+          quantity: 1,
+          total: t.price,
+          lab_id: invoice.lab_id,
+          order_id: invoice.order_id,
+        }));
+
+        // Add collection charge as a line item if present
+        if (invoice.collection_charge && invoice.collection_charge > 0) {
+          itemsToInsert.push({
+            invoice_id: invoiceId,
+            order_test_id: null,
+            test_name: 'Sample Collection Charge',
+            price: invoice.collection_charge,
+            quantity: 1,
+            total: invoice.collection_charge,
+            lab_id: invoice.lab_id,
+            order_id: invoice.order_id,
+          } as any);
+        }
+
+        const { data: inserted, error: insertError } = await supabase
+          .from('invoice_items')
+          .insert(itemsToInsert)
+          .select();
+
+        if (!insertError && inserted) {
+          invoice.invoice_items = inserted;
+        }
+      }
+    }
+
+    // 3. Financial validation
     await validateInvoiceForPdf(invoice);
 
     // 3. Load template (user-selected or default)
@@ -631,18 +678,27 @@ function buildInvoiceItemsTable(items: InvoiceItem[]): string {
     return '<tr><td colspan="4">No items</td></tr>';
   }
 
-  return items
-    .map(
-      (item) => `
-    <tr>
-      <td>${item.test_name}</td>
+  const testItems = items.filter(i => i.item_type !== 'lab_charge');
+  const chargeItems = items.filter(i => i.item_type === 'lab_charge');
+
+  const renderRow = (item: InvoiceItem, isCharge = false) => `
+    <tr${isCharge ? ' style="background:#fffbeb;"' : ''}>
+      <td>${item.test_name}${isCharge ? ' <span style="font-size:10px;color:#92400e;background:#fef3c7;padding:1px 5px;border-radius:3px;margin-left:4px;">Charge</span>' : ''}</td>
       <td style="text-align: center;">${item.quantity}</td>
       <td style="text-align: right;">₹${item.price.toFixed(2)}</td>
       <td style="text-align: right;">₹${item.total.toFixed(2)}</td>
     </tr>
-  `
-    )
-    .join('');
+  `;
+
+  const rows: string[] = [];
+  testItems.forEach(item => rows.push(renderRow(item, false)));
+
+  if (chargeItems.length > 0) {
+    rows.push(`<tr><td colspan="4" style="padding:4px 8px;background:#fffbeb;font-size:11px;font-weight:600;color:#92400e;border-top:1px solid #fde68a;">Additional Charges</td></tr>`);
+    chargeItems.forEach(item => rows.push(renderRow(item, true)));
+  }
+
+  return rows.join('');
 }
 
 /**

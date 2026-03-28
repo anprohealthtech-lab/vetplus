@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { Menu, Bell, Search, User, LogOut, ChevronUp, ChevronDown } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { NotificationBadge } from '../WhatsApp/NotificationBadge';
@@ -51,7 +51,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, isCollapsed = false, onTog
               <input
                 type="text"
                 placeholder="Search patients, tests, orders..."
-                className="pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent w-80"
+                className="pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-80"
               />
             </div>
           </div>
@@ -70,7 +70,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, isCollapsed = false, onTog
                 {user?.user_metadata?.role || 'User'}
               </div>
             </div>
-            <div className="h-10 w-10 rounded-full flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #1a3a5c, #2A8FA3)' }}>
+            <div className="h-10 w-10 bg-blue-500 rounded-full flex items-center justify-center">
               <span className="text-white text-sm font-medium">
                 {user?.user_metadata?.full_name?.charAt(0) || user?.email?.charAt(0) || 'U'}
               </span>
