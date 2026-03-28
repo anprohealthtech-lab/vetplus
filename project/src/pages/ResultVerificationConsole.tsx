@@ -1115,15 +1115,38 @@ const ResultVerificationConsole: React.FC = () => {
       const calcIds = calcRows.map(a => a.analyte_id);
       const srcIds  = srcRows.map(a => a.analyte_id).filter(Boolean) as string[];
 
-      const [{ data: formulas }, { data: deps }, { data: srcAnalytesData }] = await Promise.all([
-        supabase.from('analytes').select('id, formula, formula_variables').in('id', calcIds),
+      const labId = currentLabId || await database.getCurrentUserLabId();
+      const [{ data: labFormulas }, { data: rawDeps }, { data: srcAnalytesData }] = await Promise.all([
+        // Prefer lab_analytes formula over global analytes formula
+        supabase.from('lab_analytes')
+          .select('analyte_id, is_calculated, formula, formula_variables')
+          .eq('lab_id', labId!)
+          .in('analyte_id', calcIds),
         supabase.from('analyte_dependencies')
-          .select('calculated_analyte_id, source_analyte_id, variable_name')
-          .in('calculated_analyte_id', calcIds),
+          .select('calculated_analyte_id, source_analyte_id, variable_name, lab_id')
+          .in('calculated_analyte_id', calcIds)
+          .or(`lab_id.eq.${labId},lab_id.is.null`),
         srcIds.length > 0
           ? supabase.from('analytes').select('id, name, code').in('id', srcIds)
           : Promise.resolve({ data: [] as any[] }),
       ]);
+      // Fall back to global analytes formula for any analyte not in lab_analytes
+      const labFormulaMap = new Map((labFormulas || []).map((r: any) => [r.analyte_id, r]));
+      const globalFormulasNeeded = calcIds.filter(id => !labFormulaMap.has(id));
+      if (globalFormulasNeeded.length > 0) {
+        const { data: globalFormulas } = await supabase.from('analytes').select('id, formula, formula_variables').in('id', globalFormulasNeeded);
+        (globalFormulas || []).forEach((r: any) => labFormulaMap.set(r.id, { analyte_id: r.id, ...r }));
+      }
+      // Remap to match shape expected downstream ({ id, formula, formula_variables })
+      const formulas = Array.from(labFormulaMap.values()).map((r: any) => ({ id: r.analyte_id ?? r.id, formula: r.formula, formula_variables: r.formula_variables }));
+      // Deduplicate deps: prefer lab-specific over global
+      const depSeen = new Set<string>();
+      const deps: { calculated_analyte_id: string; source_analyte_id: string; variable_name: string }[] = [];
+      const depsSorted = [...(rawDeps || [])].sort((a: any, b: any) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1));
+      for (const row of depsSorted as any[]) {
+        const key = `${row.calculated_analyte_id}:${row.variable_name}`;
+        if (!depSeen.has(key)) { depSeen.add(key); deps.push(row); }
+      }
 
       // Build lookup: analyte_id / param name / code → numeric value
       const valueLookup = new Map<string, number>();
@@ -1191,7 +1214,7 @@ const ResultVerificationConsole: React.FC = () => {
         return;
       }
 
-      await Promise.all(updates.map(upd =>
+      const patchResults = await Promise.all(updates.map(upd =>
         supabase.from('result_values').update({
           value: upd.value,
           calculation_inputs: upd.inputs,
@@ -1201,13 +1224,29 @@ const ResultVerificationConsole: React.FC = () => {
           verify_note: 'Recalculated by verifier',
           verified_at: null,
           verified_by: null,
-        }).eq('id', upd.id)
+        }).eq('id', upd.id).select('id, value')
       ));
+
+      const firstError = patchResults.find(r => r.error);
+      if (firstError?.error) {
+        alert(`Recalculate failed: ${firstError.error.message}`);
+        return;
+      }
+
+      // Only update rows that were confirmed saved by the DB response
+      const savedIds = new Set(
+        patchResults.flatMap(r => (r.data || []).map((d: any) => d.id as string))
+      );
+
+      if (savedIds.size === 0) {
+        alert('Recalculate: no rows were updated — check permissions or verify the result is not locked/approved.');
+        return;
+      }
 
       setRowsByResult(s => ({
         ...s,
         [row.result_id]: (s[row.result_id] || []).map(a => {
-          const upd = updates.find(u => u.id === a.id);
+          const upd = updates.find(u => u.id === a.id && savedIds.has(a.id));
           if (!upd) return a;
           return {
             ...a,
@@ -1222,6 +1261,7 @@ const ResultVerificationConsole: React.FC = () => {
           };
         }),
       }));
+      await loadPanels();
     } finally {
       setRecalculating(prev => ({ ...prev, [row.result_id]: false }));
     }

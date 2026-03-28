@@ -359,11 +359,13 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         return;
       }
 
-      // Save analyte_dependencies if source analytes were selected
+      // Save lab-specific analyte_dependencies if source analytes were selected
       if (analyteData.isCalculated && analyteData.sourceDependencies?.length > 0) {
+        const depsLabId = await database.getCurrentUserLabId();
         const { error: depError } = await database.analyteDependencies.setDependencies(
           data.id,
-          analyteData.sourceDependencies
+          analyteData.sourceDependencies,
+          depsLabId ?? undefined
         );
         if (depError) {
           console.error('Error creating dependencies:', depError);
