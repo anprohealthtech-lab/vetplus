@@ -151,9 +151,9 @@ export interface LabReportBrandingDefaults {
 export interface LabPatientFieldConfig {
   id: string;
   lab_id: string;
-  field_key: string;        // e.g. "abha_id"
-  label: string;            // e.g. "ABHA ID"
-  field_type: 'text' | 'number' | 'select';
+  field_key: string; // e.g. "abha_id"
+  label: string; // e.g. "ABHA ID"
+  field_type: "text" | "number" | "select";
   options?: string[] | null; // for select type
   searchable: boolean;
   required: boolean;
@@ -533,84 +533,84 @@ export const database = {
           return null;
         }
 
-    // Primary: Check users table for lab_id (most reliable)
-    try {
-      const { data: userData, error: userDataError } = await supabase
-        .from("users")
-        .select("lab_id")
-        .eq("email", user.email) // Match by email since auth.users.id might be different from public.users.id
-        .eq("status", "Active")
-        .maybeSingle();
+        // Primary: Check users table for lab_id (most reliable)
+        try {
+          const { data: userData, error: userDataError } = await supabase
+            .from("users")
+            .select("lab_id")
+            .eq("email", user.email) // Match by email since auth.users.id might be different from public.users.id
+            .eq("status", "Active")
+            .maybeSingle();
 
-      if (!userDataError && userData?.lab_id) {
-        // Cache the result
-        _cachedLabId = userData.lab_id;
-        _cachedLabIdUserId = user.id;
-        return userData.lab_id;
-      }
-    } catch (err) {
-      console.warn("Could not fetch lab_id from users table:", err);
-    }
+          if (!userDataError && userData?.lab_id) {
+            // Cache the result
+            _cachedLabId = userData.lab_id;
+            _cachedLabIdUserId = user.id;
+            return userData.lab_id;
+          }
+        } catch (err) {
+          console.warn("Could not fetch lab_id from users table:", err);
+        }
 
-    if (user?.user_metadata?.lab_id) {
-      console.warn(
-        "Using lab_id from user metadata (consider updating users table):",
-        user.user_metadata.lab_id,
-      );
-      // Cache the result
-      _cachedLabId = user.user_metadata.lab_id;
-      _cachedLabIdUserId = user.id;
-      return user.user_metadata.lab_id;
-    }
+        if (user?.user_metadata?.lab_id) {
+          console.warn(
+            "Using lab_id from user metadata (consider updating users table):",
+            user.user_metadata.lab_id,
+          );
+          // Cache the result
+          _cachedLabId = user.user_metadata.lab_id;
+          _cachedLabIdUserId = user.id;
+          return user.user_metadata.lab_id;
+        }
 
-    // Tertiary: Check user_labs table for user-lab assignment (if exists)
-    try {
-      const { data: userLab, error: userLabError } = await supabase
-        .from("user_labs")
-        .select("lab_id")
-        .eq("user_id", user.id)
-        .eq("is_active", true)
-        .single();
+        // Tertiary: Check user_labs table for user-lab assignment (if exists)
+        try {
+          const { data: userLab, error: userLabError } = await supabase
+            .from("user_labs")
+            .select("lab_id")
+            .eq("user_id", user.id)
+            .eq("is_active", true)
+            .single();
 
-      if (!userLabError && userLab?.lab_id) {
-        console.warn(
-          "Using lab_id from user_labs table (consider updating users table):",
-          userLab.lab_id,
-        );
-        // Cache the result
-        _cachedLabId = userLab.lab_id;
-        _cachedLabIdUserId = user.id;
-        return userLab.lab_id;
-      }
-    } catch (err) {
-      // user_labs table might not exist, which is fine
-    }
+          if (!userLabError && userLab?.lab_id) {
+            console.warn(
+              "Using lab_id from user_labs table (consider updating users table):",
+              userLab.lab_id,
+            );
+            // Cache the result
+            _cachedLabId = userLab.lab_id;
+            _cachedLabIdUserId = user.id;
+            return userLab.lab_id;
+          }
+        } catch (err) {
+          // user_labs table might not exist, which is fine
+        }
 
-    // Final fallback: For development/demo purposes, get first available lab
-    try {
-      const { data: labs, error: labError } = await supabase
-        .from("labs")
-        .select("id")
-        .eq("is_active", true)
-        .limit(1);
+        // Final fallback: For development/demo purposes, get first available lab
+        try {
+          const { data: labs, error: labError } = await supabase
+            .from("labs")
+            .select("id")
+            .eq("is_active", true)
+            .limit(1);
 
-      if (!labError && labs && labs.length > 0) {
-        console.warn(
-          "Lab ID not found for user. Using first available lab for demo:",
-          labs[0].id,
-        );
-        console.warn(
-          "Please update the users table with proper lab_id for user:",
-          user.email,
-        );
-        // Cache the result
-        _cachedLabId = labs[0].id;
-        _cachedLabIdUserId = user.id;
-        return labs[0].id;
-      }
-    } catch (err) {
-      console.warn("Could not fetch default lab:", err);
-    }
+          if (!labError && labs && labs.length > 0) {
+            console.warn(
+              "Lab ID not found for user. Using first available lab for demo:",
+              labs[0].id,
+            );
+            console.warn(
+              "Please update the users table with proper lab_id for user:",
+              user.email,
+            );
+            // Cache the result
+            _cachedLabId = labs[0].id;
+            _cachedLabIdUserId = user.id;
+            return labs[0].id;
+          }
+        } catch (err) {
+          console.warn("Could not fetch default lab:", err);
+        }
 
         console.error("No lab_id found for user and no default lab available");
         return null;
@@ -1663,8 +1663,17 @@ export const database = {
       const display_id = `${dateFormatted}-${sequentialNumber}`;
 
       // Ensure custom_fields is always a plain object (never a pre-stringified string)
-      if (patientDetails.custom_fields && typeof patientDetails.custom_fields === 'string') {
-        try { patientDetails.custom_fields = JSON.parse(patientDetails.custom_fields); } catch { patientDetails.custom_fields = {}; }
+      if (
+        patientDetails.custom_fields &&
+        typeof patientDetails.custom_fields === "string"
+      ) {
+        try {
+          patientDetails.custom_fields = JSON.parse(
+            patientDetails.custom_fields,
+          );
+        } catch {
+          patientDetails.custom_fields = {};
+        }
       }
 
       // Create patient with display_id and lab_id
@@ -1785,7 +1794,9 @@ export const database = {
   // Custom Patient Field Configs (per-lab)
   // ============================================================
   labPatientFieldConfigs: {
-    getAll: async (): Promise<{ data: LabPatientFieldConfig[] | null; error: any }> => {
+    getAll: async (): Promise<
+      { data: LabPatientFieldConfig[] | null; error: any }
+    > => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) return { data: null, error: new Error("No lab_id") };
       const { data, error } = await supabase
@@ -1796,7 +1807,9 @@ export const database = {
       return { data, error };
     },
 
-    create: async (config: Omit<LabPatientFieldConfig, "id" | "lab_id" | "created_at">): Promise<{ data: LabPatientFieldConfig | null; error: any }> => {
+    create: async (
+      config: Omit<LabPatientFieldConfig, "id" | "lab_id" | "created_at">,
+    ): Promise<{ data: LabPatientFieldConfig | null; error: any }> => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) return { data: null, error: new Error("No lab_id") };
       const { data, error } = await supabase
@@ -1807,7 +1820,12 @@ export const database = {
       return { data, error };
     },
 
-    update: async (id: string, updates: Partial<Omit<LabPatientFieldConfig, "id" | "lab_id" | "created_at">>): Promise<{ data: LabPatientFieldConfig | null; error: any }> => {
+    update: async (
+      id: string,
+      updates: Partial<
+        Omit<LabPatientFieldConfig, "id" | "lab_id" | "created_at">
+      >,
+    ): Promise<{ data: LabPatientFieldConfig | null; error: any }> => {
       const { data, error } = await supabase
         .from("lab_patient_field_configs")
         .update(updates)
@@ -2241,14 +2259,13 @@ export const database = {
       const normalizedPlaceholderValues: Record<
         string,
         string | number | boolean | null
-      > =
-        placeholderValues && typeof placeholderValues === "object" &&
+      > = placeholderValues && typeof placeholderValues === "object" &&
           !Array.isArray(placeholderValues)
-          ? (placeholderValues as Record<
-            string,
-            string | number | boolean | null
-          >)
-          : {};
+        ? (placeholderValues as Record<
+          string,
+          string | number | boolean | null
+        >)
+        : {};
 
       const labBrandingSource =
         context.labBranding && typeof context.labBranding === "object" &&
@@ -3571,13 +3588,21 @@ export const database = {
         let newStatus = order.status;
 
         // Determine new status based on completion
-        if (order.status === "Sample Collected" || order.status === "In Progress") {
+        if (
+          order.status === "Sample Collected" || order.status === "In Progress"
+        ) {
           if (totalTests > 0 && approvedResults.length >= totalTests) {
             // All results verified — jump straight to Report Ready
             newStatus = "Report Ready";
-          } else if (order.status === "In Progress" && resultsWithValues.length >= totalTests && totalTests > 0) {
+          } else if (
+            order.status === "In Progress" &&
+            resultsWithValues.length >= totalTests && totalTests > 0
+          ) {
             newStatus = "Pending Approval";
-          } else if (order.status === "Sample Collected" && resultsWithValues.length >= totalTests && totalTests > 0) {
+          } else if (
+            order.status === "Sample Collected" &&
+            resultsWithValues.length >= totalTests && totalTests > 0
+          ) {
             newStatus = "In Progress";
           }
         } else if (order.status === "Pending Approval") {
@@ -3659,10 +3684,10 @@ export const database = {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) return { data: null, error: new Error("No lab_id found") };
 
-      const [year, month] = billingPeriod.split('-').map(Number);
+      const [year, month] = billingPeriod.split("-").map(Number);
       const periodStart = `${billingPeriod}-01`;
       const lastDay = new Date(year, month, 0).getDate();
-      const periodEnd = `${billingPeriod}-${String(lastDay).padStart(2, '0')}`;
+      const periodEnd = `${billingPeriod}-${String(lastDay).padStart(2, "0")}`;
 
       const { data, error } = await supabase
         .from("orders")
@@ -5176,16 +5201,18 @@ export const database = {
     // User-based Daily Collection Report
     getCollectionReport: async (fromDate: string, toDate: string) => {
       const lab_id = await database.getCurrentUserLabId();
-      if (!lab_id) return { data: null, error: new Error('No lab found') };
+      if (!lab_id) return { data: null, error: new Error("No lab found") };
 
       const { data: ordersData, error: ordersError } = await supabase
-        .from('orders')
-        .select('id, order_date, order_number, patient_name, doctor, total_amount, final_amount, created_by')
-        .eq('lab_id', lab_id)
-        .gte('order_date', fromDate)
-        .lte('order_date', `${toDate}T23:59:59.999Z`)
-        .order('created_by', { ascending: true })
-        .order('order_date', { ascending: true });
+        .from("orders")
+        .select(
+          "id, order_date, order_number, patient_name, doctor, total_amount, final_amount, created_by",
+        )
+        .eq("lab_id", lab_id)
+        .gte("order_date", fromDate)
+        .lte("order_date", `${toDate}T23:59:59.999Z`)
+        .order("created_by", { ascending: true })
+        .order("order_date", { ascending: true });
 
       if (ordersError) return { data: null, error: ordersError };
 
@@ -5193,14 +5220,17 @@ export const database = {
       const orderIds = orders.map((o: any) => o.id).filter(Boolean);
 
       if (orderIds.length === 0) {
-        return { data: { orders: [], invoices: [], payments: [], users: [] }, error: null };
+        return {
+          data: { orders: [], invoices: [], payments: [], users: [] },
+          error: null,
+        };
       }
 
       // Invoices for discount + total_after_discount
       const { data: invoicesData } = await supabase
-        .from('invoices')
-        .select('id, order_id, total, total_after_discount, discount, status')
-        .in('order_id', orderIds);
+        .from("invoices")
+        .select("id, order_id, total, total_after_discount, discount, status")
+        .in("order_id", orderIds);
       const invoices = invoicesData || [];
 
       // Payments within date range
@@ -5208,22 +5238,24 @@ export const database = {
       let payments: any[] = [];
       if (invoiceIds.length > 0) {
         const { data: paymentsData } = await supabase
-          .from('payments')
-          .select('invoice_id, amount, payment_method, payment_date')
-          .in('invoice_id', invoiceIds)
-          .gte('payment_date', fromDate)
-          .lte('payment_date', `${toDate}T23:59:59.999Z`);
+          .from("payments")
+          .select("invoice_id, amount, payment_method, payment_date")
+          .in("invoice_id", invoiceIds)
+          .gte("payment_date", fromDate)
+          .lte("payment_date", `${toDate}T23:59:59.999Z`);
         payments = paymentsData || [];
       }
 
       // User names for created_by IDs
-      const userIds = [...new Set(orders.map((o: any) => o.created_by).filter(Boolean))];
+      const userIds = [
+        ...new Set(orders.map((o: any) => o.created_by).filter(Boolean)),
+      ];
       let users: any[] = [];
       if (userIds.length > 0) {
         const { data: usersData } = await supabase
-          .from('users')
-          .select('id, name, email')
-          .in('id', userIds as string[]);
+          .from("users")
+          .select("id, name, email")
+          .in("id", userIds as string[]);
         users = usersData || [];
       }
 
@@ -5741,6 +5773,7 @@ export const database = {
             analyte_id: data.id,
             is_active: true,
             visible: true,
+            ai_processing_type: data.ai_processing_type || null,
           }]);
       }
 
@@ -6254,6 +6287,10 @@ export const database = {
       code?: string;
       description?: string;
       display_name?: string | null;
+      is_critical?: boolean;
+      normal_range_min?: number | null;
+      normal_range_max?: number | null;
+      ai_processing_type?: string | null;
     }) => {
       const { data, error } = await supabase
         .from("lab_analytes")
@@ -6266,7 +6303,10 @@ export const database = {
     },
 
     // Update a specific lab_analytes row by its own primary key (for deactivating duplicates)
-    updateById: async (labAnalyteId: string, updates: { is_active?: boolean; visible?: boolean }) => {
+    updateById: async (
+      labAnalyteId: string,
+      updates: { is_active?: boolean; visible?: boolean },
+    ) => {
       const { data, error } = await supabase
         .from("lab_analytes")
         .update(updates)
@@ -6673,14 +6713,12 @@ export const database = {
           lmp_required:
             (testGroupData.required_patient_inputs || []).includes("lmp") ||
             testGroupData.lmpRequired || false,
-          id_required:
-            (testGroupData.required_patient_inputs || []).includes(
-              "id_document",
-            ) || testGroupData.idRequired || false,
-          consent_form:
-            (testGroupData.required_patient_inputs || []).includes(
-              "consent_form",
-            ) || testGroupData.consentForm || false,
+          id_required: (testGroupData.required_patient_inputs || []).includes(
+            "id_document",
+          ) || testGroupData.idRequired || false,
+          consent_form: (testGroupData.required_patient_inputs || []).includes(
+            "consent_form",
+          ) || testGroupData.consentForm || false,
           pre_collection_guidelines: testGroupData.preCollectionGuidelines ||
             null,
           flabs_id: testGroupData.flabsId || null,
@@ -6693,13 +6731,15 @@ export const database = {
           ref_range_ai_config: testGroupData.ref_range_ai_config || null,
           required_patient_inputs: testGroupData.required_patient_inputs || [],
           is_outsourced: testGroupData.is_outsourced || false,
-          default_outsourced_lab_id: testGroupData.default_outsourced_lab_id || null,
-	          default_template_style: testGroupData.default_template_style || null,
-	          print_options: testGroupData.print_options ?? null,
-	          report_priority: Number.isFinite(Number(testGroupData.report_priority))
-	            ? Number(testGroupData.report_priority)
-	            : null,
-	          collection_charge: testGroupData.collection_charge ?? null,
+          default_outsourced_lab_id: testGroupData.default_outsourced_lab_id ||
+            null,
+          default_template_style: testGroupData.default_template_style || null,
+          print_options: testGroupData.print_options ?? null,
+          report_priority:
+            Number.isFinite(Number(testGroupData.report_priority))
+              ? Number(testGroupData.report_priority)
+              : null,
+          collection_charge: testGroupData.collection_charge ?? null,
           group_interpretation: testGroupData.group_interpretation || null,
         };
 
@@ -6778,10 +6818,9 @@ export const database = {
             id_required:
               (updates.required_patient_inputs || []).includes("id_document") ||
               updates.idRequired || false,
-            consent_form:
-              (updates.required_patient_inputs || []).includes(
-                "consent_form",
-              ) || updates.consentForm || false,
+            consent_form: (updates.required_patient_inputs || []).includes(
+              "consent_form",
+            ) || updates.consentForm || false,
             pre_collection_guidelines: updates.preCollectionGuidelines,
             flabs_id: updates.flabsId,
             only_female: updates.onlyFemale,
@@ -6793,13 +6832,13 @@ export const database = {
             ref_range_ai_config: updates.ref_range_ai_config,
             required_patient_inputs: updates.required_patient_inputs,
             is_outsourced: updates.is_outsourced,
-	            default_outsourced_lab_id: updates.default_outsourced_lab_id,
-	            default_template_style: updates.default_template_style || null,
-	            print_options: updates.print_options ?? null,
-	            report_priority: Number.isFinite(Number(updates.report_priority))
-	              ? Number(updates.report_priority)
-	              : null,
-	            collection_charge: updates.collection_charge ?? null,
+            default_outsourced_lab_id: updates.default_outsourced_lab_id,
+            default_template_style: updates.default_template_style || null,
+            print_options: updates.print_options ?? null,
+            report_priority: Number.isFinite(Number(updates.report_priority))
+              ? Number(updates.report_priority)
+              : null,
+            collection_charge: updates.collection_charge ?? null,
             group_interpretation: updates.group_interpretation ?? null,
             updated_at: new Date().toISOString(),
           })
@@ -6815,8 +6854,14 @@ export const database = {
         // Step 2: Update analyte relationships if analytes are provided
         if (updates.analytes && Array.isArray(updates.analytes)) {
           const newAnalyteIds: string[] = updates.analytes;
-          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean }> =
-            updates.analyteMetadata || {};
+          const analyteMetadata: Record<
+            string,
+            {
+              sort_order?: number;
+              section_heading?: string;
+              is_visible?: boolean;
+            }
+          > = updates.analyteMetadata || {};
 
           // Insert new analytes first (keeps count > 0, preventing the orphan
           // auto-link trigger from firing during the subsequent delete step)
@@ -10502,7 +10547,8 @@ const brandingSignatureAPI = {
             ot.test_name.toLowerCase()
           );
           if (
-            testName && orderTestNames.some((tn: string) =>
+            testName &&
+            orderTestNames.some((tn: string) =>
               tn.includes(testName.toLowerCase())
             )
           ) {
@@ -15936,11 +15982,10 @@ const inventory = {
     if (error) return { data: null, error };
 
     const stats = {
-      pending:
-        items?.filter((i) =>
-          !i.ai_classification_status ||
-          i.ai_classification_status === "pending"
-        ).length || 0,
+      pending: items?.filter((i) =>
+        !i.ai_classification_status ||
+        i.ai_classification_status === "pending"
+      ).length || 0,
       classified:
         items?.filter((i) => i.ai_classification_status === "classified")
           .length || 0,
@@ -16204,7 +16249,9 @@ export const priceMasters = {
   },
 
   /** Create a new price master plan */
-  create: async (payload: { name: string; description?: string; is_active?: boolean }) => {
+  create: async (
+    payload: { name: string; description?: string; is_active?: boolean },
+  ) => {
     const lab_id = await database.getCurrentUserLabId();
     if (!lab_id) return { data: null, error: new Error("No lab_id") };
     const { data, error } = await supabase
@@ -16216,7 +16263,10 @@ export const priceMasters = {
   },
 
   /** Update an existing price master plan */
-  update: async (id: string, payload: Partial<{ name: string; description: string; is_active: boolean }>) => {
+  update: async (
+    id: string,
+    payload: Partial<{ name: string; description: string; is_active: boolean }>,
+  ) => {
     const { data, error } = await supabase
       .from("price_masters")
       .update(payload)
@@ -16228,7 +16278,10 @@ export const priceMasters = {
 
   /** Delete a price master plan (also cascades items) */
   delete: async (id: string) => {
-    const { error } = await supabase.from("price_masters").delete().eq("id", id);
+    const { error } = await supabase.from("price_masters").delete().eq(
+      "id",
+      id,
+    );
     return { error };
   },
 
@@ -16245,12 +16298,21 @@ export const priceMasters = {
   },
 
   /** Upsert a test price within a plan */
-  upsertItem: async (priceMasterId: string, testGroupId: string, price: number) => {
+  upsertItem: async (
+    priceMasterId: string,
+    testGroupId: string,
+    price: number,
+  ) => {
     const { data, error } = await supabase
       .from("price_master_items")
       .upsert(
-        { price_master_id: priceMasterId, test_group_id: testGroupId, price, updated_at: new Date().toISOString() },
-        { onConflict: "price_master_id,test_group_id" }
+        {
+          price_master_id: priceMasterId,
+          test_group_id: testGroupId,
+          price,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "price_master_id,test_group_id" },
       )
       .select()
       .single();
@@ -16259,7 +16321,10 @@ export const priceMasters = {
 
   /** Remove a test price from a plan */
   deleteItem: async (itemId: string) => {
-    const { error } = await supabase.from("price_master_items").delete().eq("id", itemId);
+    const { error } = await supabase.from("price_master_items").delete().eq(
+      "id",
+      itemId,
+    );
     return { error };
   },
 
@@ -16267,7 +16332,10 @@ export const priceMasters = {
    * Resolve the effective price for a test for a given account.
    * Priority: price_master_items → account_prices → test_groups.price
    */
-  getEffectivePrice: async (accountId: string, testGroupId: string): Promise<number | null> => {
+  getEffectivePrice: async (
+    accountId: string,
+    testGroupId: string,
+  ): Promise<number | null> => {
     // 1. Get the account to find price_master_id
     const { data: account } = await supabase
       .from("accounts")
