@@ -1,0 +1,15 @@
+ src/App.tsx                                        |  14 +-
+ src/components/Auth/Login.tsx                      |  41 +-
+ src/components/Auth/ProtectedPatientRoute.tsx      |  40 --
+ src/components/Layout/Header.tsx                   |   4 +-
+ src/components/Layout/Sidebar.tsx                  |  41 +-
+ src/components/Orders/OrderDetailsModal.tsx        | Bin 230685 -> 471796 bytes
+ src/components/Orders/QuickResultEntryModal.tsx    | Bin 46541 -> 95064 bytes
+ src/components/Settings/LabBillingItemSettings.tsx | 293 --------------
+ src/components/Settings/PatientPortalSettings.tsx  | 362 -----------------
+ src/components/Settings/PriceMasterSettings.tsx    | 424 --------------------
+ src/pages/PatientLogin.tsx                         | 241 -----------
+ src/pages/PatientPortal.tsx                        | 444 ---------------------
+ src/utils/patientAuth.ts                           |  58 ---
+ src/utils/supabase.ts                              |  82 ++--
+ 14 files changed, 94 insertions(+), 1950 deletions(-)

@@ -1,0 +1,6 @@
+diff --git a/src/components/Orders/OrderDetailsModal.tsx b/src/components/Orders/OrderDetailsModal.tsx
+index 280dd16..5557259 100644
+Binary files a/src/components/Orders/OrderDetailsModal.tsx and b/src/components/Orders/OrderDetailsModal.tsx differ
+diff --git a/src/components/Orders/QuickResultEntryModal.tsx b/src/components/Orders/QuickResultEntryModal.tsx
+index bc65383..0d422cf 100644
+Binary files a/src/components/Orders/QuickResultEntryModal.tsx and b/src/components/Orders/QuickResultEntryModal.tsx differ

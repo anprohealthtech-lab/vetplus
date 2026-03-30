@@ -1,0 +1,5 @@
+commit d83e0397b478d74f7d993a37edaa1204c6f01400
+Author: LIMS Developer <developer@lims.local>
+Date:   Sat Mar 28 14:38:06 2026 +0530
+
+    Update OrderDetailsModal, QuickResultEntryModal, and supabase.ts from lims-actual upstream

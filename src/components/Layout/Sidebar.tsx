@@ -98,7 +98,7 @@ const categoryConfig: Record<CategoryKey, {
   activeBg: string; activeText: string; activeBorder: string;
   hoverBg: string; hoverText: string; hoverBorder: string; activeIcon: string;
 }> = {
-  core:          { activeBg: 'bg-blue-50',    activeText: 'text-blue-700',    activeBorder: 'border-l-blue-700',    hoverBg: 'hover:bg-blue-50',    hoverText: 'hover:text-blue-700',    hoverBorder: 'hover:border-l-blue-300',    activeIcon: 'text-blue-700'    },
+  core:          { activeBg: 'bg-teal-50',    activeText: 'text-teal-700',    activeBorder: 'border-l-teal-600',    hoverBg: 'hover:bg-teal-50',    hoverText: 'hover:text-teal-700',    hoverBorder: 'hover:border-l-teal-300',    activeIcon: 'text-teal-600'    },
   management:    { activeBg: 'bg-green-50',   activeText: 'text-green-700',   activeBorder: 'border-l-green-700',   hoverBg: 'hover:bg-green-50',   hoverText: 'hover:text-green-700',   hoverBorder: 'hover:border-l-green-300',   activeIcon: 'text-green-700'   },
   business:      { activeBg: 'bg-purple-50',  activeText: 'text-purple-700',  activeBorder: 'border-l-purple-700',  hoverBg: 'hover:bg-purple-50',  hoverText: 'hover:text-purple-700',  hoverBorder: 'hover:border-l-purple-300',  activeIcon: 'text-purple-700'  },
   communication: { activeBg: 'bg-sky-50',     activeText: 'text-sky-700',     activeBorder: 'border-l-sky-700',     hoverBg: 'hover:bg-sky-50',     hoverText: 'hover:text-sky-700',     hoverBorder: 'hover:border-l-sky-300',     activeIcon: 'text-sky-700'     },
@@ -205,33 +205,46 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
 
       {/* Sidebar */}
       <div className={`
-        fixed inset-y-0 left-0 z-30 bg-white shadow-lg transform transition-all duration-300 ease-in-out flex flex-col overflow-hidden
+        fixed inset-y-0 left-0 z-30 bg-white shadow-xl transform transition-all duration-300 ease-in-out flex flex-col overflow-hidden border-r border-gray-100
         lg:translate-x-0
         ${isOpen ? 'translate-x-0' : '-translate-x-full'}
         ${isCollapsed ? 'w-20' : 'w-64'}
       `}>
         {/* Header */}
-        <div className={`flex-none flex items-center justify-between h-16 bg-blue-600 ${isCollapsed ? 'px-2 justify-center' : 'px-6'}`}>
+        <div
+          className={`flex-none flex items-center justify-between h-16 ${isCollapsed ? 'px-2 justify-center' : 'px-4'}`}
+          style={{ background: 'linear-gradient(135deg, #1a3a5c 0%, #2A8FA3 100%)' }}
+        >
           {!isCollapsed && (
-            <div className="flex items-center">
+            <div className="flex items-center min-w-0">
               <img
-                src="https://ik.imagekit.io/18tsendxqy/website/Screenshot%202025-12-15%20133819.png?updatedAt=1765786115578"
-                alt="AnPro LIMS"
-                className="h-8 w-8 object-contain rounded"
+                src="https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Logo%20copy%20(1).png?tr=w-64,h-64,fo-auto"
+                alt="Vetplus Diagnostics"
+                className="h-9 w-9 object-contain flex-shrink-0"
               />
-              <span className="ml-2 text-xl font-bold text-white">AnPro LIMS</span>
+              <div className="ml-2 min-w-0">
+                <span className="block text-white font-bold text-sm leading-tight truncate">Vetplus Diagnostics</span>
+                <span className="block text-teal-200 text-xs leading-tight">LIMS Portal</span>
+              </div>
             </div>
           )}
-          <div className="flex items-center gap-2">
+          {isCollapsed && (
+            <img
+              src="https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Logo%20copy%20(1).png?tr=w-64,h-64,fo-auto"
+              alt="Vetplus"
+              className="h-9 w-9 object-contain"
+            />
+          )}
+          <div className="flex items-center gap-1 flex-shrink-0">
             <button
               onClick={() => setIsCollapsed(!isCollapsed)}
-              className="hidden lg:block text-white hover:text-gray-200 transition-colors"
+              className="hidden lg:block text-white/80 hover:text-white transition-colors p-1 rounded"
               title={isCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
             >
-              {isCollapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronLeft className="h-5 w-5" />}
+              {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
             </button>
-            <button onClick={onToggle} className="lg:hidden text-white hover:text-gray-200">
-              <X className="h-6 w-6" />
+            <button onClick={onToggle} className="lg:hidden text-white/80 hover:text-white p-1 rounded">
+              <X className="h-5 w-5" />
             </button>
           </div>
         </div>
@@ -257,7 +270,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
             {sections.map(section => (
               <div key={section.category} className="mb-5">
                 {!isCollapsed && (
-                  <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                  <h3 className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                     {section.emoji} {section.label}
                   </h3>
                 )}

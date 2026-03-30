@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { Menu, Bell, Search, User, LogOut, ChevronUp, ChevronDown } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { NotificationBadge } from '../WhatsApp/NotificationBadge';

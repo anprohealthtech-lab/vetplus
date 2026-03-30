@@ -1,0 +1,29 @@
+commit 0eb748d0fc67cedd2ba33045adcac07e35da8963
+Author: LIMS Developer <developer@lims.local>
+Date:   Sat Mar 28 14:20:09 2026 +0530
+
+    Update OrderDetailsModal, QuickResultEntryModal, and supabase utils
+
+commit d8f9a0144b3701d418fb1e6bb5ee14f8c54e50d5
+Author: LIMS Developer <developer@lims.local>
+Date:   Sat Mar 28 09:34:52 2026 +0530
+
+    Add ai_processing_type to lab_analytes with analyte editor updates
+
+commit 5b19e4dd963243fcbde2737bf4375e5620d8eebb
+Author: LIMS Developer <developer@lims.local>
+Date:   Sat Mar 28 08:30:13 2026 +0530
+
+    Patient portal, billing items, price masters, GST, analyte fixes, and UI updates
+
+commit bbb036888d691353a4581ad151e3bb654eaf323a
+Author: LIMS Developer <developer@lims.local>
+Date:   Wed Mar 25 14:29:06 2026 +0530
+
+    B2B billing, invoice PDF fixes, dashboard updates, migration scripts - Mar 25
+
+commit 25b99b47e1bebf1e847762acb2fdc19344ffd237
+Author: LIMS Developer <developer@lims.local>
+Date:   Sat Mar 21 21:51:20 2026 +0530
+
+    Analyzer integration, global test catalog, PDF improvements, booking & dashboard updates

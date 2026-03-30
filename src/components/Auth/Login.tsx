@@ -48,19 +48,20 @@ const Login: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4 safe-area-x safe-area-top safe-area-bottom">
+    <div className="min-h-screen bg-gradient-to-br from-teal-50 via-cyan-50 to-blue-100 flex items-center justify-center p-4 safe-area-x safe-area-top safe-area-bottom">
       <div className="max-w-md w-full space-y-8">
         {/* Header */}
         <div className="text-center">
-          <div className="flex items-center justify-center mb-6">
+          <div className="flex flex-col items-center justify-center mb-4">
             <img
-              src="https://ik.imagekit.io/18tsendxqy/website/Screenshot%202025-12-15%20133819.png?updatedAt=1765786115578"
-              alt="AnPro LIMS"
-              className="h-16 w-auto object-contain"
+              src="https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Logo%20copy%20(1).png?tr=w-200,h-200,fo-auto"
+              alt="Vetplus Diagnostics"
+              className="h-24 w-auto object-contain mb-2"
             />
+            <h1 className="text-2xl font-extrabold text-[#1a3a5c] leading-tight tracking-tight">Vetplus Diagnostics</h1>
           </div>
-          <h2 className="text-3xl font-bold text-gray-900">Welcome Back</h2>
-          <p className="mt-2 text-gray-700">Sign in to your AnPro LIMS account</p>
+          <h2 className="text-xl font-bold text-gray-800">Welcome Back</h2>
+          <p className="mt-1 text-gray-500 text-sm">Sign in to your Vetplus Diagnostics account</p>
         </div>
 
         {/* Login Form */}
@@ -85,7 +86,7 @@ const Login: React.FC = () => {
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="pl-10 w-full px-4 py-3 border border-gray-300 rounded-lg text-base leading-6 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="pl-10 w-full px-4 py-3 border border-gray-300 rounded-lg text-base leading-6 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                   placeholder="Enter your email"
                 />
               </div>
@@ -103,7 +104,7 @@ const Login: React.FC = () => {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="pl-10 pr-10 w-full px-4 py-3 border border-gray-300 rounded-lg text-base leading-6 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="pl-10 pr-10 w-full px-4 py-3 border border-gray-300 rounded-lg text-base leading-6 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                   placeholder="Enter your password"
                 />
                 <button
@@ -121,13 +122,13 @@ const Login: React.FC = () => {
                 <input
                   id="remember-me"
                   type="checkbox"
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  className="h-4 w-4 text-teal-600 focus:ring-teal-500 border-gray-300 rounded"
                 />
                 <label htmlFor="remember-me" className="ml-2 block text-sm text-gray-700 leading-5">
                   Remember me
                 </label>
               </div>
-              <Link to="/forgot-password" className="text-sm text-blue-700 hover:text-blue-800">
+              <Link to="/forgot-password" className="text-sm text-teal-700 hover:text-teal-800">
                 Forgot password?
               </Link>
             </div>
@@ -135,7 +136,7 @@ const Login: React.FC = () => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full inline-flex items-center justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="w-full inline-flex items-center justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {loading ? (
                 <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent"></div>
@@ -148,7 +149,7 @@ const Login: React.FC = () => {
           <div className="mt-6 text-center">
             <p className="text-sm text-gray-600">
               Don't have an account?{' '}
-              <Link to="/signup" className="font-medium text-blue-600 hover:text-blue-700">
+              <Link to="/signup" className="font-medium text-teal-600 hover:text-teal-700">
                 Sign up here
               </Link>
             </p>
@@ -156,17 +157,9 @@ const Login: React.FC = () => {
         </div>
 
         {/* Support Info */}
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
-          <p className="text-sm text-blue-700">
-            For more information and support, visit{' '}
-            <a
-              href="https://limsapp.in/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-medium text-blue-600 hover:text-blue-800 underline"
-            >
-              limsapp.in
-            </a>
+        <div className="bg-teal-50 border border-teal-200 rounded-lg p-4 text-center">
+          <p className="text-sm text-teal-700">
+            Vetplus Diagnostics &mdash; Advanced Veterinary Laboratory Solutions
           </p>
         </div>
       </div>

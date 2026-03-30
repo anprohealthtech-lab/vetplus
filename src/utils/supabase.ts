@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+﻿import { createClient } from "@supabase/supabase-js";
 import {
   generateOrderQRCodeData,
   generateOrderSampleId,
@@ -270,7 +270,7 @@ const composeHeaderHtml = (
     [lab.address, lab.city, lab.state, lab.pincode],
     ", ",
   );
-  const contactLine = joinDisplayParts([lab.phone, lab.email], " • ");
+  const contactLine = joinDisplayParts([lab.phone, lab.email], " ΓÇó ");
   const descriptionLine = asset?.description
     ? escapeHtml(asset.description)
     : "";
@@ -330,7 +330,7 @@ const composeFooterHtml = (
     [lab.address, lab.city, lab.state, lab.pincode],
     ", ",
   );
-  const contactLine = joinDisplayParts([lab.phone, lab.email], " • ");
+  const contactLine = joinDisplayParts([lab.phone, lab.email], " ΓÇó ");
   const licenseLine = lab.license_number
     ? `License: ${escapeHtml(lab.license_number)}`
     : "";
@@ -522,7 +522,7 @@ export const database = {
     // Return cached value immediately if available
     if (_cachedLabId) return _cachedLabId;
 
-    // Deduplicate concurrent calls — all share one in-flight promise
+    // Deduplicate concurrent calls ΓÇö all share one in-flight promise
     if (_labIdInflightPromise) return _labIdInflightPromise;
 
     _labIdInflightPromise = (async () => {
@@ -1969,7 +1969,7 @@ export const database = {
           points: pointsEarned,
           balance_after: newBalance,
           description:
-            `Earned ${pointsEarned} pts on order (₹${amount.toLocaleString()})`,
+            `Earned ${pointsEarned} pts on order (Γé╣${amount.toLocaleString()})`,
         })
         .select()
         .single();
@@ -1978,7 +1978,7 @@ export const database = {
     },
 
     /**
-     * Redeem points on an order — returns the discount amount
+     * Redeem points on an order ΓÇö returns the discount amount
      */
     redeemPoints: async (
       patientId: string,
@@ -2053,7 +2053,7 @@ export const database = {
           type: "redeemed",
           points: -pointsToRedeem,
           balance_after: newBalance,
-          description: `Redeemed ${pointsToRedeem} pts for ₹${
+          description: `Redeemed ${pointsToRedeem} pts for Γé╣${
             discountAmount.toFixed(2)
           } discount`,
         });
@@ -3258,7 +3258,7 @@ export const database = {
               packages.forEach((pkg) => {
                 orderTestsData.push({
                   order_id: updatedOrder.id,
-                  test_name: `📦 ${pkg.name}`, // Prefix with package emoji for visibility
+                  test_name: `≡ƒôª ${pkg.name}`, // Prefix with package emoji for visibility
                   test_group_id: null,
                   package_id: pkg.id,
                   price: pkg.price ?? 0, // Store PACKAGE price for billing
@@ -3267,7 +3267,7 @@ export const database = {
                   outsourced_lab_id: null,
                 });
 
-                // Expand package test groups - these have ₹0 price (included in package)
+                // Expand package test groups - these have Γé╣0 price (included in package)
                 const pkgDetails = packageDetails?.find((pd) =>
                   pd.id === pkg.id
                 );
@@ -3279,7 +3279,7 @@ export const database = {
                         test_name: ptg.test_groups.name,
                         test_group_id: ptg.test_groups.id,
                         package_id: pkg.id, // Link to parent package
-                        price: 0, // ₹0 - included in package price
+                        price: 0, // Γé╣0 - included in package price
                         sample_id: updatedOrder.sample_id,
                         lab_id,
                         outsourced_lab_id: null,
@@ -3308,11 +3308,11 @@ export const database = {
           }
 
           console.log(
-            `✅ Created ${orderTestsData.length} order test records with proper test_group_ids`,
+            `Γ£à Created ${orderTestsData.length} order test records with proper test_group_ids`,
           );
 
-          // ✅ Fix package pricing - update prices after insert to override any trigger
-          // Tests inside a package (have package_id AND test_group_id) should be ₹0
+          // Γ£à Fix package pricing - update prices after insert to override any trigger
+          // Tests inside a package (have package_id AND test_group_id) should be Γé╣0
           const packageTestsToUpdate = orderTestsData.filter((t) =>
             t.package_id && t.test_group_id
           );
@@ -3332,7 +3332,7 @@ export const database = {
               );
             } else {
               console.log(
-                `✅ Updated ${packageTestsToUpdate.length} package tests to ₹0 price`,
+                `Γ£à Updated ${packageTestsToUpdate.length} package tests to Γé╣0 price`,
               );
 
               // Recalculate order total_amount from order_tests to ensure consistency
@@ -3351,13 +3351,13 @@ export const database = {
                   .update({ total_amount: correctTotal })
                   .eq("id", updatedOrder.id);
                 console.log(
-                  `✅ Updated order total_amount to ₹${correctTotal}`,
+                  `Γ£à Updated order total_amount to Γé╣${correctTotal}`,
                 );
               }
             }
           }
 
-          // ✅ Auto-create placeholder results for outsourced tests
+          // Γ£à Auto-create placeholder results for outsourced tests
           const outsourcedTests = orderTestsData.filter((test) =>
             test.outsourced_lab_id
           );
@@ -3392,7 +3392,7 @@ export const database = {
               // Don't fail the order creation, just log the error
             } else {
               console.log(
-                `✅ Created ${outsourcedResults.length} placeholder results for outsourced tests`,
+                `Γ£à Created ${outsourcedResults.length} placeholder results for outsourced tests`,
               );
             }
           }
@@ -3573,7 +3573,7 @@ export const database = {
         // Determine new status based on completion
         if (order.status === "Sample Collected" || order.status === "In Progress") {
           if (totalTests > 0 && approvedResults.length >= totalTests) {
-            // All results verified — jump straight to Report Ready
+            // All results verified ΓÇö jump straight to Report Ready
             newStatus = "Report Ready";
           } else if (order.status === "In Progress" && resultsWithValues.length >= totalTests && totalTests > 0) {
             newStatus = "Pending Approval";
@@ -5554,6 +5554,17 @@ export const database = {
           value_type,
           code,
           description,
+          is_calculated,
+          formula,
+          formula_variables,
+          formula_description,
+          is_critical,
+          normal_range_min,
+          normal_range_max,
+          ai_processing_type,
+          name,
+          unit,
+          display_name,
           analytes(*)
         `)
         .eq("lab_id", labId)
@@ -5635,6 +5646,21 @@ export const database = {
               value_type: item.value_type || analyteObj.value_type || "numeric",
               code: item.code || analyteObj.code || "",
               description: item.description || analyteObj.description || "",
+              // Prioritize lab-specific overrides for formula/calculated fields
+              is_calculated: item.is_calculated ?? analyteObj.is_calculated ?? false,
+              formula: item.formula ?? analyteObj.formula ?? null,
+              formula_variables: item.formula_variables ?? analyteObj.formula_variables ?? [],
+              formula_description: item.formula_description ?? analyteObj.formula_description ?? null,
+              // Prioritize lab-specific critical/range fields
+              is_critical: item.is_critical ?? analyteObj.is_critical ?? null,
+              normal_range_min: item.normal_range_min ?? analyteObj.normal_range_min ?? null,
+              normal_range_max: item.normal_range_max ?? analyteObj.normal_range_max ?? null,
+              // Prioritize lab-specific ai_processing_type
+              ai_processing_type: item.ai_processing_type ?? analyteObj.ai_processing_type ?? null,
+              // Prioritize lab-specific name/unit/display_name
+              name: item.name || analyteObj.name,
+              unit: item.unit || analyteObj.unit,
+              display_name: item.display_name ?? analyteObj.display_name ?? null,
             };
           }
           return null;
@@ -5741,6 +5767,7 @@ export const database = {
             analyte_id: data.id,
             is_active: true,
             visible: true,
+            ai_processing_type: data.ai_processing_type || null,
           }]);
       }
 
@@ -6254,6 +6281,14 @@ export const database = {
       code?: string;
       description?: string;
       display_name?: string | null;
+      is_critical?: boolean;
+      normal_range_min?: number | null;
+      normal_range_max?: number | null;
+      ai_processing_type?: string | null;
+      is_calculated?: boolean;
+      formula?: string | null;
+      formula_variables?: string[];
+      formula_description?: string | null;
     }) => {
       const { data, error } = await supabase
         .from("lab_analytes")
@@ -6815,7 +6850,7 @@ export const database = {
         // Step 2: Update analyte relationships if analytes are provided
         if (updates.analytes && Array.isArray(updates.analytes)) {
           const newAnalyteIds: string[] = updates.analytes;
-          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string }> =
+          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean }> =
             updates.analyteMetadata || {};
 
           // Insert new analytes first (keeps count > 0, preventing the orphan
@@ -6850,6 +6885,7 @@ export const database = {
                   .update({
                     sort_order: meta.sort_order ?? 0,
                     section_heading: meta.section_heading || null,
+                    is_visible: meta.is_visible ?? true,
                   })
                   .eq("test_group_id", id)
                   .eq("analyte_id", analyteId);
@@ -7561,7 +7597,9 @@ export const database = {
     },
 
     /**
-     * Set up all dependencies for a calculated analyte at once
+     * Set up all dependencies for a calculated analyte at once.
+     * Pass labId to store lab-specific dependencies (recommended).
+     * Omit labId only for seeding global/default dependencies.
      */
     setDependencies: async (
       calculatedAnalyteId: string,
@@ -7569,12 +7607,18 @@ export const database = {
         source_analyte_id: string;
         variable_name: string;
       }>,
+      labId?: string,
     ) => {
-      // Delete existing dependencies
-      await supabase
+      // Delete existing dependencies for this analyte scoped to the same lab
+      const deleteQuery = supabase
         .from("analyte_dependencies")
         .delete()
         .eq("calculated_analyte_id", calculatedAnalyteId);
+      if (labId) {
+        await deleteQuery.eq("lab_id", labId);
+      } else {
+        await deleteQuery.is("lab_id", null);
+      }
 
       if (dependencies.length === 0) {
         return { data: [], error: null };
@@ -7597,11 +7641,12 @@ export const database = {
         }
       }
 
-      // Insert new dependencies
+      // Insert new lab-specific dependencies
       const insertData = dependencies.map((dep) => ({
         calculated_analyte_id: calculatedAnalyteId,
         source_analyte_id: dep.source_analyte_id,
         variable_name: dep.variable_name,
+        ...(labId ? { lab_id: labId } : {}),
       }));
 
       const { data, error } = await supabase
@@ -10541,7 +10586,7 @@ const brandingSignatureAPI = {
       resultId: string,
       logisticsStatus: string,
       notes?: string,
-      outsourcedStatus?: string, // ✅ Add parameter to update outsourced_status
+      outsourcedStatus?: string, // Γ£à Add parameter to update outsourced_status
     ) => {
       const { data: { user } } = await supabase.auth.getUser();
       const userId = user?.id;
@@ -10551,7 +10596,7 @@ const brandingSignatureAPI = {
         logistics_notes: notes || null,
       };
 
-      // ✅ Update outsourced_status if provided
+      // Γ£à Update outsourced_status if provided
       if (outsourcedStatus) {
         updateData.outsourced_status = outsourcedStatus;
       }
@@ -10576,7 +10621,7 @@ const brandingSignatureAPI = {
       status?: string;
       fromDate?: string;
       toDate?: string;
-      locationIds?: string[]; // ✅ Add location filter parameter
+      locationIds?: string[]; // Γ£à Add location filter parameter
     }) => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
@@ -10617,7 +10662,7 @@ const brandingSignatureAPI = {
         query = query.eq("outsourced_to_lab_id", filters.outsourcedLabId);
       }
 
-      // ✅ Updated logic: awaiting_report includes sent tests (unless cancelled)
+      // Γ£à Updated logic: awaiting_report includes sent tests (unless cancelled)
       if (filters?.status === "awaiting_report") {
         // Show both 'awaiting_report' AND 'sent' tests (dispatched ones)
         // Exclude only if explicitly cancelled (logistics_status = 'pending_dispatch' with status = 'pending_send')
@@ -10632,7 +10677,7 @@ const brandingSignatureAPI = {
         ]);
       }
 
-      // ✅ Add date filters
+      // Γ£à Add date filters
       if (filters?.fromDate) {
         query = query.gte("created_at", filters.fromDate);
       }
@@ -10644,7 +10689,7 @@ const brandingSignatureAPI = {
         query = query.lt("created_at", endDate.toISOString());
       }
 
-      // ✅ Add location filtering
+      // Γ£à Add location filtering
       if (filters?.locationIds && filters.locationIds.length > 0) {
         query = query.in("orders.location_id", filters.locationIds);
       }
@@ -11704,7 +11749,7 @@ export const aiAnalysis = {
         existingData.analytes.length > 0
       ) {
         console.log(
-          `📸 Generating trend graph images for ${existingData.analytes.length} analytes...`,
+          `≡ƒô╕ Generating trend graph images for ${existingData.analytes.length} analytes...`,
         );
 
         // Dynamically import trendChartGenerator to avoid circular dependency
@@ -11727,7 +11772,7 @@ export const aiAnalysis = {
 
               if (trendDataPoints.length < 2) {
                 console.log(
-                  `⏭️ Skipping ${analyte.analyte_name}: insufficient data points`,
+                  `ΓÅ¡∩╕Å Skipping ${analyte.analyte_name}: insufficient data points`,
                 );
                 return analyte;
               }
@@ -11753,7 +11798,7 @@ export const aiAnalysis = {
 
                 if (imageUrl) {
                   console.log(
-                    `✅ Uploaded trend image for ${analyte.analyte_name}`,
+                    `Γ£à Uploaded trend image for ${analyte.analyte_name}`,
                   );
                   return {
                     ...analyte,
@@ -11781,7 +11826,7 @@ export const aiAnalysis = {
         };
 
         console.log(
-          `📊 Generated images for ${
+          `≡ƒôè Generated images for ${
             analytesWithImages.filter((a: any) => a.image_url).length
           }/${analytesWithImages.length} analytes`,
         );
@@ -12184,7 +12229,7 @@ const pdfQueue = {
   ) => {
     try {
       console.log(
-        "🚀 Triggering server-side PDF generation for order:",
+        "≡ƒÜÇ Triggering server-side PDF generation for order:",
         orderId,
       );
       onProgress?.("Starting server-side PDF generation...", 5);
@@ -12194,7 +12239,7 @@ const pdfQueue = {
       const triggeredByUserId = user?.id;
 
       // Call edge function - it handles everything server-side:
-      // Context fetch → Template rendering → PDF.co generation → Storage upload
+      // Context fetch ΓåÆ Template rendering ΓåÆ PDF.co generation ΓåÆ Storage upload
       const { data, error } = await supabase.functions.invoke(
         "generate-pdf-letterhead",
         {
@@ -12203,13 +12248,13 @@ const pdfQueue = {
       );
 
       if (error) {
-        console.error("❌ Edge function failed:", error);
+        console.error("Γ¥î Edge function failed:", error);
         return { data: null, error };
       }
 
       // Check for error response from edge function
       if (data?.error) {
-        console.error("❌ PDF generation failed:", data.error, data.details);
+        console.error("Γ¥î PDF generation failed:", data.error, data.details);
         return {
           data: null,
           error: new Error(
@@ -12220,14 +12265,14 @@ const pdfQueue = {
 
       // Handle already completed case
       if (data?.status === "completed" && data?.pdfUrl) {
-        console.log("✅ PDF already exists:", data.pdfUrl);
+        console.log("Γ£à PDF already exists:", data.pdfUrl);
         onProgress?.("PDF already generated", 100);
         return { data: { success: true, pdfUrl: data.pdfUrl }, error: null };
       }
 
       // Check for successful completion
       if (!data?.success || !data?.pdfUrl) {
-        console.error("❌ Edge function returned unexpected response:", data);
+        console.error("Γ¥î Edge function returned unexpected response:", data);
         return {
           data: null,
           error: new Error(
@@ -12246,7 +12291,7 @@ const pdfQueue = {
         .eq("id", orderId);
 
       onProgress?.("Complete!", 100);
-      console.log("✅ PDF generation complete:", data.pdfUrl);
+      console.log("Γ£à PDF generation complete:", data.pdfUrl);
 
       return {
         data: {
@@ -12258,7 +12303,7 @@ const pdfQueue = {
         error: null,
       };
     } catch (error) {
-      console.error("❌ PDF generation error:", error);
+      console.error("Γ¥î PDF generation error:", error);
 
       // Mark job as failed
       await supabase
@@ -13802,7 +13847,7 @@ const locationReceivables = {
 const pricingHelper = {
   /**
    * Resolve the effective price for a test
-   * Priority: Account Price (B2B) → Location Price (B2C) → Base Price
+   * Priority: Account Price (B2B) ΓåÆ Location Price (B2C) ΓåÆ Base Price
    */
   async resolveTestPrice(
     testGroupId: string,
@@ -13856,7 +13901,7 @@ const pricingHelper = {
 
   /**
    * Resolve the effective price for a package
-   * Priority: Account Price (B2B) → Location Price (B2C) → Base Price
+   * Priority: Account Price (B2B) ΓåÆ Location Price (B2C) ΓåÆ Base Price
    */
   async resolvePackagePrice(
     packageId: string,
@@ -16168,6 +16213,134 @@ Object.assign(database, {
   analytics,
   inventory,
 });
+
+// ΓöÇΓöÇΓöÇ Price Masters API ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+export const priceMasters = {
+  /** List all price master plans for the current lab */
+  getAll: async () => {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) return { data: null, error: new Error("No lab_id") };
+    const { data, error } = await supabase
+      .from("price_masters")
+      .select("*")
+      .eq("lab_id", lab_id)
+      .order("name");
+    return { data, error };
+  },
+
+  /** Get a single price master by id */
+  getById: async (id: string) => {
+    const { data, error } = await supabase
+      .from("price_masters")
+      .select("*")
+      .eq("id", id)
+      .single();
+    return { data, error };
+  },
+
+  /** Create a new price master plan */
+  create: async (payload: { name: string; description?: string; is_active?: boolean }) => {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) return { data: null, error: new Error("No lab_id") };
+    const { data, error } = await supabase
+      .from("price_masters")
+      .insert([{ ...payload, lab_id }])
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  /** Update an existing price master plan */
+  update: async (id: string, payload: Partial<{ name: string; description: string; is_active: boolean }>) => {
+    const { data, error } = await supabase
+      .from("price_masters")
+      .update(payload)
+      .eq("id", id)
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  /** Delete a price master plan (also cascades items) */
+  delete: async (id: string) => {
+    const { error } = await supabase.from("price_masters").delete().eq("id", id);
+    return { error };
+  },
+
+  // ΓöÇΓöÇ Items (test prices within a plan) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+  /** Get all test prices for a specific plan, joined with test_group info */
+  getItems: async (priceMasterId: string) => {
+    const { data, error } = await supabase
+      .from("price_master_items")
+      .select("*, test_group:test_groups(name, code, price)")
+      .eq("price_master_id", priceMasterId)
+      .order("test_group(name)");
+    return { data, error };
+  },
+
+  /** Upsert a test price within a plan */
+  upsertItem: async (priceMasterId: string, testGroupId: string, price: number) => {
+    const { data, error } = await supabase
+      .from("price_master_items")
+      .upsert(
+        { price_master_id: priceMasterId, test_group_id: testGroupId, price, updated_at: new Date().toISOString() },
+        { onConflict: "price_master_id,test_group_id" }
+      )
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  /** Remove a test price from a plan */
+  deleteItem: async (itemId: string) => {
+    const { error } = await supabase.from("price_master_items").delete().eq("id", itemId);
+    return { error };
+  },
+
+  /**
+   * Resolve the effective price for a test for a given account.
+   * Priority: price_master_items ΓåÆ account_prices ΓåÆ test_groups.price
+   */
+  getEffectivePrice: async (accountId: string, testGroupId: string): Promise<number | null> => {
+    // 1. Get the account to find price_master_id
+    const { data: account } = await supabase
+      .from("accounts")
+      .select("price_master_id")
+      .eq("id", accountId)
+      .single();
+
+    if (account?.price_master_id) {
+      const { data: item } = await supabase
+        .from("price_master_items")
+        .select("price")
+        .eq("price_master_id", account.price_master_id)
+        .eq("test_group_id", testGroupId)
+        .single();
+      if (item) return item.price;
+    }
+
+    // 2. Fall back to account_prices
+    const { data: accountPrice } = await supabase
+      .from("account_prices")
+      .select("price")
+      .eq("account_id", accountId)
+      .eq("test_group_id", testGroupId)
+      .single();
+    if (accountPrice) return accountPrice.price;
+
+    // 3. Fall back to base test price
+    const { data: tg } = await supabase
+      .from("test_groups")
+      .select("price")
+      .eq("id", testGroupId)
+      .single();
+    return tg?.price ?? null;
+  },
+};
+
+// Attach priceMasters to the database object so callers can use database.priceMasters.*
+Object.assign(database, { priceMasters });
 
 /**
  * Format patient age with correct unit abbreviation

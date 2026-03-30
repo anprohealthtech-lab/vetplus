@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCircle, Brain, Building2, Edit, Sparkles, FileText, Code, RefreshCw, Calculator } from 'lucide-react';
+import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCircle, Brain, Building2, Edit, Sparkles, FileText, Code, RefreshCw, Calculator, Eye, EyeOff, Unlink } from 'lucide-react';
 
 const CKEDITOR_VERSION = '47.1.0';
 const CKEDITOR_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.umd.js`;
@@ -121,8 +121,10 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const [labMethodOptions, setLabMethodOptions] = useState<string[]>([]);
   const [newMethodValue, setNewMethodValue] = useState('');
   const [methodError, setMethodError] = useState<string | null>(null);
-  // Per-analyte metadata for sort_order and section_heading (keyed by analyte_id)
-  const [analyteMetadata, setAnalyteMetadata] = useState<Record<string, { sort_order: number; section_heading: string }>>({});
+  // Per-analyte metadata for sort_order, section_heading, and is_visible (keyed by analyte_id)
+  const [analyteMetadata, setAnalyteMetadata] = useState<Record<string, { sort_order: number; section_heading: string; is_visible: boolean }>>({});
+  // All analytes linked to this test group (including hidden/inactive lab_analytes)
+  const [allLinkedAnalytes, setAllLinkedAnalytes] = useState<any[]>([]);
   const [showImportWizard, setShowImportWizard] = useState(false);
   const [syncingGlobal, setSyncingGlobal] = useState(false);
   const [syncGlobalResult, setSyncGlobalResult] = useState<string | null>(null);
@@ -200,18 +202,122 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       setLoading(true);
       const requests: Promise<any>[] = [
         database.analytes.getAll(),
-        supabase.from('outsourced_labs').select('*').eq('is_active', true).order('name'),
+        supabase.from('outsourced_labs').select('*').eq('is_active', true).order('name') as unknown as Promise<any>,
       ];
       if (testGroup?.id) {
         requests.push(
           supabase
             .from('test_group_analytes')
-            .select('analyte_id, sort_order, section_heading')
-            .eq('test_group_id', testGroup.id)
+            .select('analyte_id, sort_order, section_heading, is_visible')
+            .eq('test_group_id', testGroup.id) as unknown as Promise<any>
         );
       }
 
       const [analytesRes, labsRes, tgaRes] = await Promise.all(requests);
+
+      // Fetch all linked analytes with lab_analytes as source of truth.
+      // lab_analytes is always the authoritative source for test-group-linked analytes.
+      // Global analytes table is only used as fallback for fields not present in lab_analytes.
+      let allLinkedData: any[] = [];
+      if (testGroup?.id) {
+        const labId = await database.getCurrentUserLabId();
+        if (labId) {
+          // Step 1: get analyte_ids for this test group
+          const { data: tgaIds } = await supabase
+            .from('test_group_analytes')
+            .select('analyte_id')
+            .eq('test_group_id', testGroup.id);
+
+          const linkedIds = (tgaIds || []).map((r: any) => r.analyte_id).filter(Boolean);
+
+          if (linkedIds.length > 0) {
+            // Step 2: fetch from lab_analytes (source of truth) joined with global analytes for fallback fields
+            const { data: laRows } = await supabase
+              .from('lab_analytes')
+              .select(`
+                analyte_id,
+                name, unit, reference_range, method,
+                low_critical, high_critical,
+                interpretation_low, interpretation_normal, interpretation_high,
+                lab_specific_reference_range,
+                lab_specific_interpretation_low,
+                lab_specific_interpretation_normal,
+                lab_specific_interpretation_high,
+                value_type, expected_normal_values, expected_value_flag_map,
+                expected_value_codes, default_value,
+                is_calculated, formula, formula_variables, formula_description,
+                is_critical, normal_range_min, normal_range_max,
+                ai_processing_type, group_ai_mode, ai_prompt_override,
+                ref_range_knowledge, display_name, is_active,
+                analytes!inner(id, name, unit, reference_range, category, is_active, is_global, is_calculated, formula, formula_variables, formula_description)
+              `)
+              .eq('lab_id', labId)
+              .in('analyte_id', linkedIds);
+
+            if (laRows) {
+              // Helper: parse jsonb that Supabase may return as a raw JSON string
+              const parseJsonb = <T,>(val: any, fallback: T): T => {
+                if (val === null || val === undefined) return fallback;
+                if (typeof val === 'string') {
+                  try { return JSON.parse(val) as T; } catch { return fallback; }
+                }
+                return val as T;
+              };
+
+              allLinkedData = (laRows as any[]).map((la: any) => {
+                const global = Array.isArray(la.analytes) ? la.analytes[0] : la.analytes;
+
+                const expectedNormalValues = parseJsonb<string[]>(la.expected_normal_values, []);
+                const expectedValueFlagMap = parseJsonb<Record<string, string>>(la.expected_value_flag_map, {});
+                const expectedValueCodes   = parseJsonb<Record<string, string>>(la.expected_value_codes, {});
+                const refRangeKnowledge    = parseJsonb<any>(la.ref_range_knowledge, {});
+                // formula_variables may be stored as JSON string "[]" or an actual array
+                const laFormulaVars  = parseJsonb<string[]>(la.formula_variables, []);
+                const glbFormulaVars = parseJsonb<string[]>(global?.formula_variables, []);
+
+                return {
+                  // Identity — always from global analytes
+                  id: la.analyte_id,
+                  category: global?.category || 'General',
+                  is_global: global?.is_global ?? false,
+                  // All display/entry fields — lab_analytes is source of truth, global is fallback
+                  name: la.name || global?.name,
+                  unit: la.unit || global?.unit,
+                  // Use ?? not || so explicit empty string (user cleared field) is respected
+                  reference_range: la.lab_specific_reference_range ?? la.reference_range ?? global?.reference_range,
+                  referenceRange:  la.lab_specific_reference_range ?? la.reference_range ?? global?.reference_range,
+                  method: la.method,
+                  low_critical: la.low_critical,
+                  high_critical: la.high_critical,
+                  interpretation_low:    la.lab_specific_interpretation_low    || la.interpretation_low,
+                  interpretation_normal: la.lab_specific_interpretation_normal || la.interpretation_normal,
+                  interpretation_high:   la.lab_specific_interpretation_high   || la.interpretation_high,
+                  value_type: la.value_type || null,
+                  expected_normal_values: expectedNormalValues,
+                  expected_value_flag_map: expectedValueFlagMap,
+                  expected_value_codes: expectedValueCodes,
+                  default_value: la.default_value ?? null,
+                  // Formula: lab_analytes wins, fall back to global
+                  // (calculated analytes from AI configurator store formula on global table initially)
+                  is_calculated:    la.is_calculated    ?? global?.is_calculated    ?? false,
+                  formula:          la.formula          ?? global?.formula          ?? null,
+                  formula_variables: laFormulaVars.length > 0 ? laFormulaVars : glbFormulaVars,
+                  formula_description: la.formula_description ?? global?.formula_description ?? null,
+                  is_critical:     la.is_critical ?? false,
+                  normal_range_min: la.normal_range_min,
+                  normal_range_max: la.normal_range_max,
+                  ai_processing_type: la.ai_processing_type,
+                  group_ai_mode: la.group_ai_mode,
+                  ai_prompt_override: la.ai_prompt_override ?? null,
+                  ref_range_knowledge: refRangeKnowledge,
+                  display_name: la.display_name ?? null,
+                  is_active: la.is_active,
+                };
+              });
+            }
+          }
+        }
+      }
 
       if (analytesRes.error) {
         console.error('Error loading analytes:', analytesRes.error);
@@ -226,14 +332,19 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       }
 
       if (tgaRes && !tgaRes.error && tgaRes.data) {
-        const meta: Record<string, { sort_order: number; section_heading: string }> = {};
+        const meta: Record<string, { sort_order: number; section_heading: string; is_visible: boolean }> = {};
         for (const row of tgaRes.data) {
           meta[row.analyte_id] = {
             sort_order: row.sort_order ?? 0,
             section_heading: row.section_heading ?? '',
+            is_visible: row.is_visible ?? true,
           };
         }
         setAnalyteMetadata(meta);
+      }
+
+      if (allLinkedData.length > 0) {
+        setAllLinkedAnalytes(allLinkedData);
       }
     } catch (error) {
       console.error('Error loading data:', error);
@@ -335,11 +446,13 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         return;
       }
 
-      // Save analyte_dependencies if source analytes were selected
+      // Save lab-specific analyte_dependencies if source analytes were selected
       if (analyteData.isCalculated && analyteData.sourceDependencies?.length > 0) {
+        const depsLabId = await database.getCurrentUserLabId();
         const { error: depError } = await database.analyteDependencies.setDependencies(
           data.id,
-          analyteData.sourceDependencies
+          analyteData.sourceDependencies,
+          depsLabId ?? undefined
         );
         if (depError) {
           console.error('Error creating dependencies:', depError);
@@ -363,49 +476,13 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     }
   };
 
-  const handleUpdateAttachedAnalyte = async (updatedAnalyte: any) => {
-    try {
-        console.log("Updating Attached Analyte", updatedAnalyte);
-        // Update in DB
-        const { error } = await supabase
-            .from('analytes')
-            .update({
-                name: updatedAnalyte.name,
-                unit: updatedAnalyte.unit,
-                reference_range: updatedAnalyte.referenceRange,
-                low_critical: updatedAnalyte.lowCritical,
-                high_critical: updatedAnalyte.highCritical,
-                interpretation_low: updatedAnalyte.interpretationLow,
-                interpretation_normal: updatedAnalyte.interpretationNormal,
-                interpretation_high: updatedAnalyte.interpretationHigh,
-                category: updatedAnalyte.category,
-                is_active: updatedAnalyte.isActive,
-                ai_processing_type: updatedAnalyte.aiProcessingType,
-                ref_range_knowledge: updatedAnalyte.ref_range_knowledge,
-                updated_at: new Date().toISOString()
-            })
-            .eq('id', updatedAnalyte.id);
-
-        if (error) throw error;
-
-        // Update local state 'analytes' array to reflect changes immediately
-        setAnalytes(prev => prev.map(a => a.id === updatedAnalyte.id ? {
-            ...a,
-            name: updatedAnalyte.name,
-            unit: updatedAnalyte.unit,
-            referenceRange: updatedAnalyte.referenceRange,
-            category: updatedAnalyte.category,
-            // ... map other fields if needed for display ...
-        } : a));
-        
-        // Also refresh data to be sure
-        await loadData();
-
-        setEditingAttachedAnalyte(null);
-    } catch (err: any) {
-        console.error("Error updating attached analyte:", err);
-        alert("Failed to update analyte: " + err.message);
-    }
+  const handleUpdateAttachedAnalyte = async (_updatedAnalyte: any) => {
+    // SimpleAnalyteEditor already saved all fields to lab_analytes directly.
+    // Do not save again here — a second partial save would strip fields like
+    // value_type, expected_value_codes, default_value that were just written.
+    // Just reload from DB (lab_analytes is now source of truth) and close.
+    await loadData();
+    setEditingAttachedAnalyte(null);
   };
 
   const categories = [
@@ -414,10 +491,16 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     'Serology',
     'Microbiology',
     'Immunology',
-    'Molecular Biology',
+    'Immunohematology',
+    'Blood Banking',
+    'Molecular Diagnostics',
+    'Clinical Pathology',
     'Histopathology',
     'Cytology',
-    'Clinical Pathology',
+    'Toxicology',
+    'Endocrinology',
+    'Cardiology',
+    'General',
   ];
 
   const sampleTypes = [
@@ -440,11 +523,15 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     try {
       const labId = await database.getCurrentUserLabId();
       if (!labId) throw new Error('Unable to determine lab context');
+      console.log('[SyncFromGlobal] lab_id:', labId, 'test_group_name:', testGroup.name);
       const { data, error: fnError } = await supabase.functions.invoke('onboarding-lab', {
         body: { lab_id: labId, mode: 'single', test_group_name: testGroup.name }
       });
       if (fnError) throw new Error(fnError.message);
-      if (!data?.success) throw new Error(data?.error || 'Sync failed');
+      if (!data?.success) {
+        if (data?.debug) console.error('[SyncFromGlobal] debug:', data.debug);
+        throw new Error(data?.error || 'Sync failed');
+      }
       const parts = [];
       if (data.analytesAdded) parts.push(`${data.analytesAdded} added`);
       if (data.analytesUpdated) parts.push(`${data.analytesUpdated} updated`);
@@ -539,9 +626,31 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     { value: 'UNKNOWN_NEEDS_REVIEW', label: 'Unknown (Needs Review)', description: 'Uncategorized - requires manual classification' },
   ];
 
-  const selectedAnalyteDetails = analytes.filter(analyte =>
-    formData.selectedAnalytes.includes(analyte.id)
-  );
+  // Build selected analyte details: prefer rich lab_analytes data, fall back to global analytes
+  // This ensures hidden/inactive lab_analytes are still shown, AND newly added analytes appear too
+  const selectedAnalyteDetails = (() => {
+    const linkedIds = new Set(allLinkedAnalytes.map((a: any) => a.id));
+    // Existing linked analytes — use lab_analytes data as source of truth.
+    // Do NOT replace with global analyte: it lacks lab-specific fields like
+    // expected_value_codes, value_type, default_value, reference_range overrides.
+    const base = allLinkedAnalytes.map((linked: any) => linked);
+    // Newly checked analytes not yet in the DB-fetched list
+    const newlyAdded = analytes.filter(a =>
+      formData.selectedAnalytes.includes(a.id) && !linkedIds.has(a.id)
+    );
+    const analytePool = [...base, ...newlyAdded].filter(a =>
+      formData.selectedAnalytes.includes(a.id)
+    );
+    // Sort by sort_order (0 means unset, put those last)
+    return [...analytePool].sort((a, b) => {
+      const oa = analyteMetadata[a.id]?.sort_order ?? 0;
+      const ob = analyteMetadata[b.id]?.sort_order ?? 0;
+      if (oa === 0 && ob === 0) return 0;
+      if (oa === 0) return 1;
+      if (ob === 0) return -1;
+      return oa - ob;
+    });
+  })();
 
   return (
     <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center p-4" style={{ zIndex: 99999 }}>
@@ -1451,7 +1560,14 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             {formData.selectedAnalytes.length > 0 && (
               <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                 <div className="flex items-center justify-between mb-2">
-                  <h4 className="font-medium text-green-900">Selected Analytes ({formData.selectedAnalytes.length})</h4>
+                  <h4 className="font-medium text-green-900">
+                    Selected Analytes ({formData.selectedAnalytes.length}
+                    {Object.values(analyteMetadata).filter(m => !m.is_visible).length > 0 && (
+                      <span className="text-orange-600 ml-1 text-sm font-normal">
+                        · {Object.values(analyteMetadata).filter(m => !m.is_visible).length} hidden on report
+                      </span>
+                    )})
+                  </h4>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -1491,25 +1607,59 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 <p className="text-xs text-gray-500 mb-3">Set sort order and optional section sub-headings for PDF report grouping.</p>
                 <div className="space-y-2">
                   {selectedAnalyteDetails.map((analyte) => {
-                    const meta = analyteMetadata[analyte.id] || { sort_order: 0, section_heading: '' };
+                    const meta = analyteMetadata[analyte.id] || { sort_order: 0, section_heading: '', is_visible: true };
+                    const isHidden = !meta.is_visible;
                     return (
-                      <div key={analyte.id} className="bg-white p-2 rounded border border-green-100 shadow-sm">
+                      <div key={analyte.id} className={`p-2 rounded border shadow-sm ${isHidden ? 'bg-gray-50 border-gray-200 opacity-75' : 'bg-white border-green-100'}`}>
                         <div className="flex items-center justify-between mb-1">
-                          <div className="flex items-center">
-                            <span className="font-medium text-gray-800 text-sm">{analyte.name}</span>
-                            <span className="ml-2 text-xs text-gray-500">
+                          <div className="flex items-center gap-2">
+                            {meta.sort_order > 0 && (
+                              <span className="text-xs font-bold text-gray-400 w-5 text-right">{meta.sort_order}.</span>
+                            )}
+                            <span className={`font-medium text-sm ${isHidden ? 'text-gray-500' : 'text-gray-800'}`}>{analyte.name}</span>
+                            <span className="text-xs text-gray-400">
                               {analyte.referenceRange ? `(${analyte.referenceRange})` : ''}
                               {analyte.unit ? ` [${analyte.unit}]` : ''}
                             </span>
+                            {isHidden && (
+                              <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">Hidden on Report</span>
+                            )}
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => setEditingAttachedAnalyte(analyte)}
-                            className="text-blue-600 hover:text-blue-800 text-xs font-medium px-2 py-1 rounded hover:bg-blue-50 flex items-center"
-                          >
-                            <Edit className="w-3 h-3 mr-1" />
-                            Edit
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              title={isHidden ? 'Show on report' : 'Hide on report'}
+                              onClick={() => setAnalyteMetadata(prev => ({
+                                ...prev,
+                                [analyte.id]: { ...meta, is_visible: !meta.is_visible }
+                              }))}
+                              className={`p-1 rounded hover:bg-gray-100 ${isHidden ? 'text-orange-500' : 'text-gray-400 hover:text-gray-600'}`}
+                            >
+                              {isHidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingAttachedAnalyte(analyte)}
+                              className="text-blue-600 hover:text-blue-800 text-xs font-medium px-2 py-1 rounded hover:bg-blue-50 flex items-center"
+                            >
+                              <Edit className="w-3 h-3 mr-1" />
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              title="Delink analyte from this test group"
+                              onClick={() => {
+                                if (confirm(`Remove "${analyte.name}" from this test group?`)) {
+                                  setFormData(prev => ({ ...prev, selectedAnalytes: prev.selectedAnalytes.filter((id: string) => id !== analyte.id) }));
+                                  setAllLinkedAnalytes(prev => prev.filter(a => a.id !== analyte.id));
+                                  setAnalyteMetadata(prev => { const next = { ...prev }; delete next[analyte.id]; return next; });
+                                }
+                              }}
+                              className="text-red-400 hover:text-red-600 p-1 rounded hover:bg-red-50"
+                            >
+                              <Unlink className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
                         <div className="flex gap-2 mt-1">
                           <div className="flex items-center gap-1">

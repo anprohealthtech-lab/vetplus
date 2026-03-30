@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 
 // Supabase configuration
 const supabaseUrl = 'https://scqhzbkkradflywariem.supabase.co';
-
+const supabaseServiceKey = 'sb_secret_keQYH9kFby0OSyjdyczGsA_HJ7WoBE4';
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 

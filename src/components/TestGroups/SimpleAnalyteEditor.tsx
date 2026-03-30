@@ -41,6 +41,9 @@ interface SimpleAnalyteEditorProps {
     ref_range_knowledge?: any;
     expected_normal_values?: string[];
     expected_value_flag_map?: Record<string, string>;
+    value_type?: string;
+    expected_value_codes?: Record<string, string>;
+    default_value?: string | null;
     // Calculated parameter fields
     is_calculated?: boolean;
     formula?: string;
@@ -69,6 +72,12 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
   // Separate state for expected_normal_values as newline-separated text
   const [expectedNormalValuesText, setExpectedNormalValuesText] = useState(
     analyte.expected_normal_values?.join('\n') || ''
+  );
+  const [valueType, setValueType] = useState<string>(analyte.value_type || '');
+  const [defaultValue, setDefaultValue] = useState<string>(analyte.default_value || '');
+  // Quick codes state: array of { code, value } pairs for UI editing
+  const [quickCodes, setQuickCodes] = useState<Array<{ code: string; value: string }>>(
+    Object.entries(analyte.expected_value_codes || {}).map(([code, value]) => ({ code, value }))
   );
   // Formula state for calculated parameters
   const [formulaData, setFormulaData] = useState({
@@ -171,6 +180,13 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
   }, [showSourcePicker]);
 
   const inGroupSet = useMemo(() => new Set(testGroupAnalyteIds), [testGroupAnalyteIds]);
+  // Name set for fallback — a source analyte with a different ID but same name counts as "in group"
+  const inGroupNameSet = useMemo(
+    () => new Set(availableAnalytes.filter(a => inGroupSet.has(a.id)).map(a => a.name.toLowerCase())),
+    [availableAnalytes, inGroupSet]
+  );
+  const isInGroup = (source: { id: string; name: string }) =>
+    inGroupSet.has(source.id) || inGroupNameSet.has(source.name.toLowerCase());
 
   const filteredSourceAnalytes = useMemo(() => {
     const filtered = availableAnalytes.filter(a => {
@@ -184,8 +200,8 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     });
     // Sort: analytes in this test group appear first
     filtered.sort((a, b) => {
-      const aIn = inGroupSet.has(a.id) ? 0 : 1;
-      const bIn = inGroupSet.has(b.id) ? 0 : 1;
+      const aIn = isInGroup(a) ? 0 : 1;
+      const bIn = isInGroup(b) ? 0 : 1;
       return aIn - bIn;
     });
     return filtered.slice(0, 30);
@@ -246,8 +262,18 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       const expected_normal_values = expectedNormalValuesText
         ? expectedNormalValuesText.split('\n').map(v => v.trim()).filter(Boolean)
         : [];
+      // Build expected_value_codes map from quick codes rows (filter blank entries)
+      const expected_value_codes = quickCodes
+        .filter(r => r.code.trim() && r.value.trim())
+        .reduce<Record<string, string>>((acc, r) => { acc[r.code.trim().toUpperCase()] = r.value.trim(); return acc; }, {});
 
-      // Update lab_analytes table (lab-specific) instead of global analytes
+      // Resolve formula variables from picker or text input
+      const parsedVars = selectedSources.length > 0
+        ? selectedSources.map(s => s.variableName)
+        : formulaVariablesText.split(',').map(v => v.trim()).filter(Boolean);
+
+      // Update lab_analytes table (lab-specific) — formula fields are stored here,
+      // NOT in the global analytes table, so one lab's formula change never affects others.
       const { data, error: updateError } = await database.labAnalytes.updateLabSpecific(
         labId,
         formData.id, // analyte_id
@@ -275,51 +301,45 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           lab_specific_interpretation_normal: formData.interpretation_normal,
           lab_specific_interpretation_high: formData.interpretation_high,
           ref_range_knowledge: formData.ref_range_knowledge,
-          // Dropdown options for qualitative values
+          // Value type (numeric, qualitative, semi_quantitative, descriptive)
+          value_type: valueType || null,
+          // Default pre-fill value for result entry
+          default_value: defaultValue.trim() || null,
+          // Dropdown options for qualitative/dropdown values
           expected_normal_values: expected_normal_values,
-          // Dropdown value → flag mapping
-          expected_value_flag_map: expectedValueFlagMap,
+          // Dropdown value → flag mapping (not used for qualitative type)
+          expected_value_flag_map: valueType === 'qualitative' ? {} : expectedValueFlagMap,
+          // Quick code shortcuts for qualitative type
+          expected_value_codes: Object.keys(expected_value_codes).length > 0 ? expected_value_codes : null,
+          // AI processing config — stored at lab level so labs can override global defaults
+          ai_processing_type: (formData as any).ai_processing_type || null,
+          group_ai_mode: formData.group_ai_mode || null,
+          ai_prompt_override: formData.ai_prompt_override ?? null,
+          // Calculated parameter config — stored at lab level so edits are lab-specific
+          is_calculated: formulaData.is_calculated ?? false,
+          formula: formulaData.formula || null,
+          formula_variables: parsedVars.length > 0 ? parsedVars : [],
+          formula_description: formulaData.formula_description || null,
         }
       );
 
       if (updateError) throw updateError;
 
-      // If calculated fields changed, update the global analytes table too
-      if (formulaData.is_calculated || analyte.is_calculated) {
-        // Use selectedSources variable names if picker was used, else fall back to text input
-        const parsedVars = selectedSources.length > 0
-          ? selectedSources.map(s => s.variableName)
-          : formulaVariablesText.split(',').map(v => v.trim()).filter(Boolean);
-        const { error: globalUpdateError } = await supabase
-          .from('analytes')
-          .update({
-            is_calculated: formulaData.is_calculated,
-            formula: formulaData.formula || null,
-            formula_variables: parsedVars.length > 0 ? parsedVars : null,
-            formula_description: formulaData.formula_description || null,
-          })
-          .eq('id', formData.id);
+      // Save lab-specific analyte_dependencies if source analytes were selected via picker
+      if ((formulaData.is_calculated || analyte.is_calculated) && selectedSources.length > 0) {
+        const deps = selectedSources
+          .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
+          .map(s => ({ source_analyte_id: s.id, variable_name: s.variableName }));
 
-        if (globalUpdateError) {
-          console.error('Failed to update global analyte formula:', globalUpdateError);
-        }
-
-        // Save analyte_dependencies if source analytes were selected via picker
-        if (selectedSources.length > 0) {
-          const deps = selectedSources
-            .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
-            .map(s => ({ source_analyte_id: s.id, variable_name: s.variableName }));
-
-          if (deps.length > 0) {
-            const { error: depError } = await database.analyteDependencies.setDependencies(formData.id, deps);
-            if (depError) {
-              console.error('Failed to save analyte dependencies:', depError);
-            }
+        if (deps.length > 0) {
+          const { error: depError } = await database.analyteDependencies.setDependencies(formData.id, deps, labId);
+          if (depError) {
+            console.error('Failed to save analyte dependencies:', depError);
           }
         }
       }
 
-      onSave({ ...formData, expected_normal_values, expected_value_flag_map: expectedValueFlagMap, ...formulaData });
+      onSave({ ...formData, value_type: valueType || null, default_value: defaultValue.trim() || null, expected_normal_values, expected_value_flag_map: valueType === 'qualitative' ? {} : expectedValueFlagMap, expected_value_codes: Object.keys(expected_value_codes).length > 0 ? expected_value_codes : null, ...formulaData });
     } catch (error) {
       console.error('Failed to update analyte:', error);
       setError(error instanceof Error ? error.message : 'Failed to update analyte');
@@ -421,6 +441,24 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
               </div>
 
               <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Value Type</label>
+                <select
+                  value={valueType}
+                  onChange={(e) => setValueType(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
+                  <option value="">Default (auto-detect)</option>
+                  <option value="numeric">Numeric — auto flag H/L/H*/L*</option>
+                  <option value="qualitative">Qualitative — no auto flag, free text + quick codes</option>
+                  <option value="semi_quantitative">Semi-Quantitative — 1+/2+/Trace patterns</option>
+                  <option value="descriptive">Descriptive — free text, never flagged</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  <strong>Qualitative</strong>: use for Blood Group, Culture results, etc. Supports quick-code shortcuts and optional ref range display. No auto flag calculation.
+                </p>
+              </div>
+
+              <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Category *</label>
                 <select
                   value={formData.category}
@@ -430,15 +468,16 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                 >
                   <option value="">Select Category</option>
                   <option value="Hematology">Hematology</option>
-                  <option value="Chemistry">Chemistry</option>
-                  <option value="Immunology">Immunology</option>
+                  <option value="Biochemistry">Biochemistry</option>
+                  <option value="Serology">Serology</option>
                   <option value="Microbiology">Microbiology</option>
-                  <option value="Blood Banking">Blood Banking</option>
+                  <option value="Immunology">Immunology</option>
                   <option value="Immunohematology">Immunohematology</option>
-                  <option value="Clinical Pathology">Clinical Pathology</option>
+                  <option value="Blood Banking">Blood Banking</option>
                   <option value="Molecular Diagnostics">Molecular Diagnostics</option>
-                  <option value="Cytology">Cytology</option>
+                  <option value="Clinical Pathology">Clinical Pathology</option>
                   <option value="Histopathology">Histopathology</option>
+                  <option value="Cytology">Cytology</option>
                   <option value="Toxicology">Toxicology</option>
                   <option value="Endocrinology">Endocrinology</option>
                   <option value="Cardiology">Cardiology</option>
@@ -537,66 +576,175 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                 <p className="text-xs text-red-600 mt-1">Values requiring immediate physician notification</p>
               </div>
 
-              {/* Expected Normal Values - Dropdown Options */}
+              {/* Expected Values section — behaviour differs by value_type */}
               <div className="mt-4 pt-4 border-t border-blue-200">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Expected Values (Dropdown Options)
-                </label>
-                <textarea
-                  value={expectedNormalValuesText}
-                  onChange={(e) => setExpectedNormalValuesText(e.target.value)}
-                  rows={4}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="Enter one value per line, e.g.:&#10;Negative&#10;Positive&#10;Reactive&#10;Non-Reactive"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  For qualitative analytes (HIV, Blood Group, etc.). Enter one option per line. When set, users will see a dropdown instead of free text input.
-                </p>
-                {expectedNormalValuesText && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {expectedNormalValuesText.split('\n').filter(v => v.trim()).map((val, idx) => (
-                      <span key={idx} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
-                        {val.trim()}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {/* Flag Mapping for each dropdown option */}
-                {expectedNormalValuesText && expectedNormalValuesText.split('\n').filter(v => v.trim()).length > 0 && (
-                  <div className="mt-3 bg-white border border-blue-200 rounded-lg p-3">
-                    <h5 className="text-sm font-medium text-gray-700 mb-2 flex items-center">
-                      <Flag className="h-4 w-4 mr-1.5 text-orange-500" />
-                      Flag Mapping (auto-set flag when value is selected)
-                    </h5>
-                    <div className="space-y-2">
-                      {expectedNormalValuesText.split('\n').filter(v => v.trim()).map((val, idx) => {
-                        const trimmed = val.trim();
-                        return (
-                          <div key={idx} className="flex items-center gap-3">
-                            <span className="text-sm text-gray-800 min-w-[140px] font-medium">{trimmed}</span>
-                            <span className="text-gray-400 text-xs">&rarr;</span>
-                            <select
-                              value={expectedValueFlagMap[trimmed] ?? ''}
-                              onChange={(e) => {
-                                setExpectedValueFlagMap(prev => ({
-                                  ...prev,
-                                  [trimmed]: e.target.value
-                                }));
-                              }}
-                              className="px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                            >
-                              {labFlagOptions.map((opt, i) => (
-                                <option key={i} value={opt.value}>{opt.label}{opt.value ? ` (${opt.value})` : ''}</option>
-                              ))}
-                            </select>
+                {valueType === 'qualitative' ? (
+                  <>
+                    {/* Qualitative: quick codes + optional values list */}
+                    <div className="mb-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Quick Codes
+                        <span className="ml-1 text-xs text-gray-400 font-normal">(shorthand for fast entry)</span>
+                      </label>
+                      <p className="text-xs text-gray-500 mb-2">
+                        Define short codes that auto-fill the full value during result entry. E.g. type "P" → "Positive". Codes are case-insensitive.
+                      </p>
+                      <div className="space-y-2">
+                        {quickCodes.map((row, idx) => (
+                          <div key={idx} className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={row.code}
+                              onChange={e => setQuickCodes(prev => prev.map((r, i) => i === idx ? { ...r, code: e.target.value.toUpperCase() } : r))}
+                              placeholder="Code"
+                              maxLength={6}
+                              className="w-20 px-2 py-1.5 border border-gray-300 rounded-md text-sm font-mono focus:ring-2 focus:ring-purple-400 focus:outline-none uppercase"
+                            />
+                            <span className="text-gray-400 text-xs">→</span>
+                            <input
+                              type="text"
+                              value={row.value}
+                              onChange={e => setQuickCodes(prev => prev.map((r, i) => i === idx ? { ...r, value: e.target.value } : r))}
+                              placeholder="Full value"
+                              className="flex-1 px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-purple-400 focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setQuickCodes(prev => prev.filter((_, i) => i !== idx))}
+                              className="text-red-400 hover:text-red-600 text-xs px-1"
+                            >✕</button>
                           </div>
-                        );
-                      })}
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => setQuickCodes(prev => [...prev, { code: '', value: '' }])}
+                          className="mt-1 text-sm text-purple-600 hover:text-purple-800 flex items-center gap-1"
+                        >
+                          <Plus className="h-3.5 w-3.5" /> Add code
+                        </button>
+                      </div>
                     </div>
-                    <p className="text-xs text-gray-500 mt-2">
-                      When a user selects a dropdown value during result entry, the flag will auto-set to the mapped value.
+
+                    {/* Optional values list for autocomplete suggestions */}
+                    <div className="mt-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Allowed Values
+                        <span className="ml-1 text-xs text-gray-400 font-normal">(optional — shown as autocomplete suggestions)</span>
+                      </label>
+                      <textarea
+                        value={expectedNormalValuesText}
+                        onChange={e => setExpectedNormalValuesText(e.target.value)}
+                        rows={3}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-purple-400 focus:border-transparent"
+                        placeholder="Enter one value per line, e.g.:&#10;Non-Reactive&#10;Reactive&#10;Equivocal"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Optional. If set, these appear as suggestions in the result entry field. Quick codes above take priority for keyboard shortcut entry.
+                      </p>
+                    </div>
+
+                    {/* Default value for result entry pre-fill */}
+                    <div className="mt-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Default Value
+                        <span className="ml-1 text-xs text-gray-400 font-normal">(pre-filled in result entry)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={defaultValue}
+                        onChange={e => setDefaultValue(e.target.value)}
+                        placeholder={quickCodes.length > 0 ? `e.g. ${quickCodes[0]?.value || 'Non-Reactive'}` : 'e.g. Non-Reactive'}
+                        className="w-full px-3 py-2 border border-amber-300 rounded-md focus:ring-2 focus:ring-amber-400 focus:border-transparent bg-amber-50"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        When a new result is being entered, this value is shown pre-filled (amber highlight). The tech can change or clear it before submitting.
+                      </p>
+                    </div>
+
+                    <p className="text-xs text-blue-600 bg-blue-50 rounded px-2 py-1 mt-2">
+                      Flag auto-calculation is disabled for Qualitative type. Use the Reference Range field above to show a descriptive normal value (e.g. "Negative") in reports.
                     </p>
-                  </div>
+                  </>
+                ) : (
+                  <>
+                    {/* Non-qualitative: dropdown options + flag mapping */}
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Expected Values (Dropdown Options)
+                    </label>
+                    <textarea
+                      value={expectedNormalValuesText}
+                      onChange={(e) => setExpectedNormalValuesText(e.target.value)}
+                      rows={4}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="Enter one value per line, e.g.:&#10;Negative&#10;Positive&#10;Reactive&#10;Non-Reactive"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Enter one option per line. When set, users will see a dropdown instead of free text input.
+                    </p>
+                    {expectedNormalValuesText && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {expectedNormalValuesText.split('\n').filter(v => v.trim()).map((val, idx) => (
+                          <span key={idx} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
+                            {val.trim()}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {/* Default value for result entry pre-fill */}
+                    <div className="mt-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Default Value
+                        <span className="ml-1 text-xs text-gray-400 font-normal">(pre-filled in result entry)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={defaultValue}
+                        onChange={e => setDefaultValue(e.target.value)}
+                        placeholder="e.g. Negative, 0, Normal"
+                        className="w-full px-3 py-2 border border-amber-300 rounded-md focus:ring-2 focus:ring-amber-400 focus:border-transparent bg-amber-50"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Pre-fills this value in result entry for new results (amber highlight). Tech can change before submitting.
+                      </p>
+                    </div>
+
+                    {expectedNormalValuesText && expectedNormalValuesText.split('\n').filter(v => v.trim()).length > 0 && (
+                      <div className="mt-3 bg-white border border-blue-200 rounded-lg p-3">
+                        <h5 className="text-sm font-medium text-gray-700 mb-2 flex items-center">
+                          <Flag className="h-4 w-4 mr-1.5 text-orange-500" />
+                          Flag Mapping (auto-set flag when value is selected)
+                        </h5>
+                        <div className="space-y-2">
+                          {expectedNormalValuesText.split('\n').filter(v => v.trim()).map((val, idx) => {
+                            const trimmed = val.trim();
+                            return (
+                              <div key={idx} className="flex items-center gap-3">
+                                <span className="text-sm text-gray-800 min-w-[140px] font-medium">{trimmed}</span>
+                                <span className="text-gray-400 text-xs">&rarr;</span>
+                                <select
+                                  value={expectedValueFlagMap[trimmed] ?? ''}
+                                  onChange={(e) => {
+                                    setExpectedValueFlagMap(prev => ({
+                                      ...prev,
+                                      [trimmed]: e.target.value
+                                    }));
+                                  }}
+                                  className="px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                >
+                                  {labFlagOptions.map((opt, i) => (
+                                    <option key={i} value={opt.value}>{opt.label}{opt.value ? ` (${opt.value})` : ''}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-2">
+                          When a user selects a dropdown value during result entry, the flag will auto-set to the mapped value.
+                        </p>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -864,15 +1012,15 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                     {selectedSources.length > 0 && (
                       <div className="mb-3 space-y-2">
                         {selectedSources.map(source => (
-                          <div key={source.id} className={`flex items-center gap-2 bg-white rounded-lg p-2 ${inGroupSet.has(source.id) ? 'border border-green-300' : 'border border-amber-200'}`}>
+                          <div key={source.id} className={`flex items-center gap-2 bg-white rounded-lg p-2 ${isInGroup(source) ? 'border border-green-300' : 'border border-amber-200'}`}>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-1.5">
                                 <span className="text-sm font-medium text-gray-900 truncate">{source.name}</span>
-                                {inGroupSet.has(source.id) && (
+                                {isInGroup(source) && (
                                   <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">In group</span>
                                 )}
-                                {!inGroupSet.has(source.id) && source.id && !source.id.startsWith('_manual_') && (
-                                  <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-yellow-100 text-yellow-700 rounded-full font-medium" title="This analyte is not in the current test group — formula may not calculate if a different copy is used">⚠ Not in group</span>
+                                {!isInGroup(source) && source.id && !source.id.startsWith('_manual_') && (
+                                  <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-yellow-100 text-yellow-700 rounded-full font-medium" title="This analyte is not in the current test group — add it to ensure the formula calculates">⚠ Not in group</span>
                                 )}
                               </div>
                               {source.unit && <div className="text-xs text-gray-500">{source.unit}</div>}
@@ -938,10 +1086,10 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                                 <div className="p-3 text-sm text-gray-500 text-center">No matching analytes found</div>
                               ) : (
                                 filteredSourceAnalytes.map((a, idx) => {
-                                  const isInGroup = inGroupSet.has(a.id);
+                                  const isInGrp = isInGroup(a);
                                   // Show section header when transitioning from in-group to others
-                                  const prevIsInGroup = idx > 0 ? inGroupSet.has(filteredSourceAnalytes[idx - 1].id) : true;
-                                  const showSeparator = !isInGroup && prevIsInGroup && filteredSourceAnalytes.some(x => inGroupSet.has(x.id));
+                                  const prevIsInGroup = idx > 0 ? isInGroup(filteredSourceAnalytes[idx - 1]) : true;
+                                  const showSeparator = !isInGrp && prevIsInGroup && filteredSourceAnalytes.some(x => isInGroup(x));
                                   return (
                                     <React.Fragment key={a.id}>
                                       {showSeparator && (
@@ -949,13 +1097,13 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                                           Other analytes
                                         </div>
                                       )}
-                                      {idx === 0 && isInGroup && (
+                                      {idx === 0 && isInGrp && (
                                         <div className="px-3 py-1 bg-green-50 border-b border-green-100 text-xs text-green-700 font-medium uppercase tracking-wide">
                                           In this test group
                                         </div>
                                       )}
                                       <div
-                                        className={`px-3 py-2 cursor-pointer flex items-center justify-between ${isInGroup ? 'hover:bg-green-50 bg-green-50/30' : 'hover:bg-amber-50'}`}
+                                        className={`px-3 py-2 cursor-pointer flex items-center justify-between ${isInGrp ? 'hover:bg-green-50 bg-green-50/30' : 'hover:bg-amber-50'}`}
                                         onClick={() => handleAddSource(a)}
                                       >
                                         <div className="flex items-center gap-2 min-w-0">
@@ -963,7 +1111,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                                             <div className="text-sm font-medium text-gray-900">{a.name}</div>
                                             <div className="text-xs text-gray-500">{a.unit}{a.category ? ` • ${a.category}` : ''}</div>
                                           </div>
-                                          {isInGroup && (
+                                          {isInGrp && (
                                             <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">
                                               In group
                                             </span>

@@ -1,0 +1,30 @@
+commit d83e0397b478d74f7d993a37edaa1204c6f01400
+Author: LIMS Developer <developer@lims.local>
+Date:   Sat Mar 28 14:38:06 2026 +0530
+
+    Update OrderDetailsModal, QuickResultEntryModal, and supabase.ts from lims-actual upstream
+
+commit 40a7abda8e9c7dbcc8bf3b0df351b5497a1fb1c3
+Author: LIMS Developer <developer@lims.local>
+Date:   Sat Mar 28 09:50:08 2026 +0530
+
+    Functional updates sync with branding preserved
+
+commit 4c64855006c6a5ea9eca0793d6fa7e0a9a301deb
+Merge: 7f49f0f e231871
+Author: LIMS Developer <developer@lims.local>
+Date:   Sat Mar 28 09:28:08 2026 +0530
+
+    Merge branch 'feat/white-label-sync'
+
+commit 7f49f0f1c4c6d78aaa52a1fbcadc9244b1340d7f
+Author: LIMS Developer <developer@lims.local>
+Date:   Sat Mar 28 09:24:57 2026 +0530
+
+    feat: sync functional updates from lims-actual (lab+analyte scope) while preserving white-label branding
+
+commit e23187139bb5683820856ae0640014dabcbdd586
+Author: LIMS Developer <developer@lims.local>
+Date:   Sat Mar 28 09:24:57 2026 +0530
+
+    feat: sync functional updates from lims-actual (lab+analyte scope) while preserving white-label branding

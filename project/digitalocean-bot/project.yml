@@ -1,9 +1,0 @@
-# DigitalOcean Function Configuration
-# Place this in digitalocean-bot/project.yml
-
-functions:
-  - name: search-placeholders
-    runtime: nodejs:20
-    main: functions/search-placeholders.js
-    environment:
-      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
