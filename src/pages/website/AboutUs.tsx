@@ -70,7 +70,7 @@ const AboutUs: React.FC = () => {
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
                         <div className="order-2 lg:order-1 relative h-80 rounded-3xl overflow-hidden shadow-2xl">
                             <img 
-                                src="https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Veterinary_pathologists_discussi__202604071001.jpeg?tr=w-800,q-80,fo-auto" 
+                                src="https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Veterinary_pathologists_discussi__202604071022.jpeg?tr=w-800,q-80,fo-auto" 
                                 alt="Expert Veterinary Team" 
                                 className="w-full h-full object-cover"
                             />
