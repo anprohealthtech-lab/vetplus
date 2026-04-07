@@ -1,29 +1,44 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, ShieldCheck, Clock, Activity, FileText } from 'lucide-react';
 import { getSiteBasePath } from '../../utils/domain';
 
 const Home: React.FC = () => {
     const basePath = getSiteBasePath();
+    const [currentVideoIdx, setCurrentVideoIdx] = useState(0);
+
+    const videos = [
+        "https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Veterinarian_comforting_puppy_202604071011.mp4",
+        "https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Veterinarian_comforting_puppy_202604071011%20(1).mp4"
+    ];
     return (
         <div className="flex flex-col">
-            {/* Hero Section */}
-            <div className="relative bg-blue-900 overflow-hidden text-white">
-                <div className="absolute inset-0 opacity-40">
-                    <div className="absolute inset-0 bg-gradient-to-r from-blue-900 via-blue-900/80 to-transparent z-10" />
-                    <img 
-                        src="https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Veterinarian_petting_Golden_202604070854.jpeg?tr=w-1600,q-80,fo-auto" 
-                        alt="Veterinarian with pet" 
-                        className="w-full h-full object-cover object-center"
-                    />
+            {/* Hero Section with Video Loop */}
+            <div className="relative bg-black overflow-hidden text-white min-h-[90vh] flex items-center">
+                <div className="absolute inset-0 opacity-60">
+                    <video 
+                        key={videos[currentVideoIdx]} // Forces video reload when source changes
+                        autoPlay 
+                        muted 
+                        playsInline 
+                        onEnded={() => setCurrentVideoIdx((prev) => (prev + 1) % videos.length)}
+                        className="w-full h-full object-cover object-center transition-opacity duration-1000"
+                    >
+                        <source src={videos[currentVideoIdx]} type="video/mp4" />
+                    </video>
+                    <div className="absolute inset-0 bg-gradient-to-r from-blue-900 via-blue-900/70 to-transparent z-10" />
                 </div>
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-20 py-20 lg:py-32">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-20 py-20 lg:py-32 w-full">
                     <div className="md:w-2/3">
-                        <h1 className="text-4xl md:text-6xl font-extrabold tracking-tight mb-6 leading-tight">
-                            Advanced Diagnostics for <span className="text-blue-400">Animal Health</span>
+                        <span className="inline-block py-1 px-3 rounded-full bg-blue-100/20 border border-blue-200/30 text-blue-100 font-semibold tracking-wider text-sm mb-6 backdrop-blur-sm shadow-sm">
+                            India's Most Advanced Veterinary Lab
+                        </span>
+                        <h1 className="text-4xl md:text-5xl lg:text-7xl font-extrabold tracking-tight mb-6 leading-tight drop-shadow-lg">
+                            Accurate Diagnostics, <br className="hidden md:block"/>
+                            <span className="text-blue-300">Unmatched Compassion.</span>
                         </h1>
-                        <p className="text-xl md:text-2xl text-blue-100 mb-10 max-w-2xl leading-relaxed">
-                            Experience state-of-the-art veterinary testing with Vetplus Diagnostics. Accurate clinical results for your pets and farm animals, delivered on time to your phone.
+                        <p className="text-xl md:text-2xl text-gray-200 mb-10 max-w-2xl leading-relaxed drop-shadow-md">
+                            Welcome to Vetplus Diagnostics. We leverage state-of-the-art robotic technology and an expert team of veterinary pathologists to guarantee 100% accurate results for your beloved pets.
                         </p>
                         <div className="flex flex-col sm:flex-row gap-4">
                             <Link to={`${basePath}/home-collection`} className="inline-flex justify-center items-center px-8 py-4 text-lg font-bold rounded-xl text-blue-900 bg-white hover:bg-blue-50 transition-colors shadow-lg hover:shadow-xl transform hover:-translate-y-1">
@@ -33,6 +48,45 @@ const Home: React.FC = () => {
                             <Link to="/patient/login" className="inline-flex justify-center items-center px-8 py-4 text-lg font-bold rounded-xl text-white bg-green-600 hover:bg-green-700 transition-colors border border-green-500 shadow-lg hover:shadow-xl transform hover:-translate-y-1">
                                 Download Reports
                             </Link>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Moving Hero Image Downwards */}
+            <div className="py-20 bg-gray-50">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
+                        <div className="order-2 lg:order-1 relative h-96 sm:h-[30rem] rounded-3xl overflow-hidden shadow-2xl">
+                            <img 
+                                src="https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Veterinarian_petting_Golden_202604070854.jpeg?tr=w-800,q-80,fo-auto" 
+                                alt="Veterinarian performing health checkup" 
+                                className="w-full h-full object-cover object-center"
+                            />
+                            <div className="absolute inset-0 bg-blue-900/10 hover:bg-transparent transition-colors duration-500 rounded-3xl ring-1 ring-inset ring-black/10"></div>
+                        </div>
+                        <div className="order-1 lg:order-2">
+                            <h2 className="text-3xl font-bold text-gray-900 sm:text-4xl mb-6 leading-tight">
+                                Because your pet deserves the absolute best.
+                            </h2>
+                            <p className="text-lg text-gray-700 leading-relaxed mb-6">
+                                We know that waiting for a diagnostic report is stressful. That's why Vetplus was built to eliminate the waiting and the guesswork. 
+                            </p>
+                            <p className="text-lg text-gray-700 leading-relaxed mb-8">
+                                With a fully integrated laboratory ecosystem, we seamlessly hand off your pet's sample to automated analyzers monitored globally by top-tier veterinary pathologists, ensuring peace of mind for both you and your local vet.
+                            </p>
+                            
+                            <ul className="space-y-4">
+                                <li className="flex items-center text-gray-800 font-medium">
+                                    <ShieldCheck className="w-6 h-6 text-green-500 mr-3" /> State and Federal Compliant Testing
+                                </li>
+                                <li className="flex items-center text-gray-800 font-medium">
+                                    <Clock className="w-6 h-6 text-green-500 mr-3" /> Same-day Results via WhatsApp
+                                </li>
+                                <li className="flex items-center text-gray-800 font-medium">
+                                    <Activity className="w-6 h-6 text-green-500 mr-3" /> Dedicated Animal Diagnostic Algorithms
+                                </li>
+                            </ul>
                         </div>
                     </div>
                 </div>
