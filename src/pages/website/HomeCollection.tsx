@@ -17,11 +17,20 @@ const HomeCollection: React.FC = () => {
         <div className="py-16 bg-white min-h-[80vh]">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 {/* Hero section */}
-                <div className="text-center max-w-3xl mx-auto mb-16">
+                <div className="text-center max-w-3xl mx-auto mb-10">
                     <h1 className="text-4xl font-extrabold text-gray-900 mb-6">Home Sample Collection</h1>
                     <p className="text-xl text-gray-600 leading-relaxed">
-                        Get your test samples collected from the comfort of your home. Our expert phlebotomists ensure a safe, hygienic, and painless experience.
+                        Get your pet's test samples collected securely from the comfort of your home. Our expert veterinary technicians ensure a safe, hygienic, and stress-free experience for your animals.
                     </p>
+                </div>
+
+                <div className="max-w-5xl mx-auto mb-16 relative h-64 sm:h-80 md:h-96 rounded-3xl overflow-hidden shadow-2xl">
+                    <img 
+                        src="https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Veterinary_phlebotomist_collecti__202604071002.jpeg?tr=w-1200,q-80,fo-auto" 
+                        alt="Veterinary Home Collection" 
+                        className="w-full h-full object-cover object-center"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-blue-900/40 to-transparent"></div>
                 </div>
 
                 {bookingSuccess && (
@@ -29,7 +38,7 @@ const HomeCollection: React.FC = () => {
                         <CheckCircle2 className="h-8 w-8 text-green-500 mr-4 flex-shrink-0" />
                         <div>
                             <h3 className="text-lg font-bold text-green-900 mb-1">Booking Confirmed!</h3>
-                            <p className="text-green-800">Your home collection request has been successfully submitted. Our team will contact you shortly to confirm the exact time.</p>
+                            <p className="text-green-800">Your home collection request has been successfully submitted. Our team will contact you shortly to confirm the exact time for your pet.</p>
                         </div>
                     </div>
                 )}
@@ -39,7 +48,7 @@ const HomeCollection: React.FC = () => {
                     <div className="bg-blue-50 p-10 rounded-3xl border border-blue-100 text-center lg:text-left transition-all hover:shadow-lg">
                         <h2 className="text-3xl font-bold text-gray-900 mb-4">Book Your Slot Now</h2>
                         <p className="text-gray-600 mb-8 max-w-md mx-auto lg:mx-0">
-                            Select your tests and choose a convenient time. We'll handle the rest.
+                            Select the veterinary tests and choose a convenient time. We'll handle the rest.
                         </p>
                         <button 
                             onClick={() => setIsBookingModalOpen(true)}
@@ -59,7 +68,7 @@ const HomeCollection: React.FC = () => {
                             </div>
                             <div>
                                 <h4 className="text-lg font-bold text-gray-900 mb-1">1. Book a Test</h4>
-                                <p className="text-gray-600 leading-relaxed">Search tests or upload a prescription, enter your details, and pick a time slot.</p>
+                                <p className="text-gray-600 leading-relaxed">Search tests or upload a vet's prescription, enter your pet's details, and pick a time slot.</p>
                             </div>
                         </div>
 
@@ -69,7 +78,7 @@ const HomeCollection: React.FC = () => {
                             </div>
                             <div>
                                 <h4 className="text-lg font-bold text-gray-900 mb-1">2. Safe Sample Collection</h4>
-                                <p className="text-gray-600 leading-relaxed">Our certified technician arrives at your home equipped with sterile kits.</p>
+                                <p className="text-gray-600 leading-relaxed">Our certified veterinary technician arrives at your home equipped with sterile animal kits.</p>
                             </div>
                         </div>
 
@@ -79,7 +88,7 @@ const HomeCollection: React.FC = () => {
                             </div>
                             <div>
                                 <h4 className="text-lg font-bold text-gray-900 mb-1">3. Get Reports Online</h4>
-                                <p className="text-gray-600 leading-relaxed">Receive a WhatsApp alert as soon as the tests are processed and verified.</p>
+                                <p className="text-gray-600 leading-relaxed">Receive a WhatsApp alert for you and your vet as soon as the tests are processed.</p>
                             </div>
                         </div>
                     </div>
