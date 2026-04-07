@@ -1,4 +1,4 @@
-﻿// src/App.tsx
+// src/App.tsx
 import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -29,6 +29,7 @@ import WhatsAppTemplates from './pages/WhatsAppTemplates';
 import { useWhatsAppAutoSync } from './hooks/useWhatsAppAutoSync';
 import { warmupPuppeteer } from './utils/pdfService';
 import { initializeNativePlatform, cleanupNativePlatform } from './utils/nativeInit';
+import { isPublicWebsiteDomain, getSiteBasePath } from './utils/domain';
 import "./styles/print.css";
 
 // Γ¼ç∩╕Å New modern dashboard page
@@ -87,6 +88,14 @@ import DoctorCommissionReport from './pages/DoctorCommissionReport';
 // WhatsApp Hybrid System Components
 import { FailedNotificationToast } from './components/WhatsApp/FailedNotificationToast';
 
+// Γ¼ç∩╕Å Vetplus Diagnostics Public Website
+import WebsiteLayout from './pages/website/WebsiteLayout';
+import Home from './pages/website/Home';
+import AboutUs from './pages/website/AboutUs';
+import TestsOffered from './pages/website/TestsOffered';
+import HomeCollection from './pages/website/HomeCollection';
+import LatestUpdates from './pages/website/LatestUpdates';
+import ContactUs from './pages/website/ContactUs';
 
 const AppRoutes: React.FC = () => {
   const { user, loading } = useAuth();
@@ -131,16 +140,31 @@ const AppRoutes: React.FC = () => {
       {/* Public routes */}
       <Route
         path="/login"
-        element={user ? <Navigate to="/" replace /> : <Login />}
+        element={user ? <Navigate to={isPublicWebsiteDomain() ? "/dashboard2" : "/"} replace /> : <Login />}
       />
       <Route
         path="/signup"
-        element={user ? <Navigate to="/" replace /> : <Signup />}
+        element={user ? <Navigate to={isPublicWebsiteDomain() ? "/dashboard2" : "/"} replace /> : <Signup />}
       />
       <Route
         path="/onboard"
         element={<LabOnboarding />}
       />
+
+      {/* Domain-based Website Routes */}
+      <Route path={getSiteBasePath() || '/'} element={<WebsiteLayout />}>
+        <Route index element={<Home />} />
+        <Route path="about-us" element={<AboutUs />} />
+        <Route path="tests-offered" element={<TestsOffered />} />
+        <Route path="home-collection" element={<HomeCollection />} />
+        <Route path="latest-updates" element={<LatestUpdates />} />
+        <Route path="contact-us" element={<ContactUs />} />
+      </Route>
+
+      {/* Redirect explicit /vetplus to root if on public domain */}
+      {isPublicWebsiteDomain() && (
+        <Route path="/vetplus/*" element={<Navigate to="/" replace />} />
+      )}
 
       {/* Public Verification Route */}
       <Route
@@ -207,8 +231,12 @@ const AppRoutes: React.FC = () => {
           <ProtectedRoute>
             <Layout>
               <Routes>
-                <Route path="/" element={<Dashboard />} />
-                {/* New modern dashboard route */}
+                {/* Default root goes to Dashboard only if NOT public domain */}
+                {!isPublicWebsiteDomain() && (
+                  <Route path="/" element={<Dashboard />} />
+                )}
+                
+                {/* Modern dashboard route */}
                 <Route path="/dashboard2" element={<Dashboard2 />} />
 
                 <Route path="/patients" element={<Patients />} />

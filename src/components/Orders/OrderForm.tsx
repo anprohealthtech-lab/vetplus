@@ -20,7 +20,8 @@ import {
   DollarSign,
   Gift,
   UserPlus,
-  Truck
+  Truck,
+  ChevronDown
 } from 'lucide-react';
 import { database, supabase, formatAge, LabPatientFieldConfig } from '../../utils/supabase';
 import { notificationTriggerService, formatName } from '../../utils/notificationTriggerService';
@@ -145,6 +146,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [selectedAccount, setSelectedAccount] = useState<string>(''); // bill-to account
   const [paymentType, setPaymentType] = useState<PaymentType>('self');
   const [priority, setPriority] = useState<'Normal' | 'Urgent' | 'STAT'>('Normal');
+  const [orderDetailsOpen, setOrderDetailsOpen] = useState(false);
   const [expectedDate, setExpectedDate] = useState<string>(() =>
     new Date().toISOString().split('T')[0]
   );
@@ -1252,8 +1254,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
     // Doctor is optional — 'SELF' means self-referred / walk-in
 
-    if (selectedTests.length === 0) {
-      errors.push('❌ Tests: Please select at least one test');
+    if (selectedTests.length === 0 && selectedBillingItems.length === 0) {
+      errors.push('❌ Tests or Billing Items: Please select at least one test or add a billing item');
     }
 
     if (
@@ -1431,7 +1433,6 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             tax: 0,
             due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
             status: amountPaid >= finalAmount ? 'Paid' : (amountPaid > 0 ? 'Partial' : 'Draft'),
-            invoice_number: (result as any)?.order_number ? `INV-${(result as any).order_number}` : `INV-${Date.now().toString().slice(-6)}`,
             ...(discountAmount > 0 ? { discount_source: discountBy } : {}),
           };
 
@@ -2211,8 +2212,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               </div>
             )}
 
-            {selectedTests.length > 0 && (
+            {(selectedTests.length > 0 || selectedBillingItems.length > 0 || billingItemTypes.length > 0) && (
               <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                {selectedTests.length > 0 && (<>
                 <h4 className="font-medium text-green-900 mb-2 flex items-center gap-2">
                   <TestTube className="h-4 w-4" />
                   Selected Tests & Packages ({selectedTests.length})
@@ -2321,6 +2323,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   <span>Tests Subtotal:</span>
                   <span>₹{totalAmount}</span>
                 </div>
+                </>)}
 
                 {/* Extra Charges (Lab Billing Items) */}
                 {selectedBillingItems.length > 0 && (
@@ -2445,9 +2448,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     </p>
                   </div>
                 )}
+                {selectedTests.length > 0 && (
                 <div className="mt-2 text-xs text-green-700 bg-green-100 p-2 rounded">
                   💡 Tip: Select "In-house" for tests performed in your lab, or choose an outsourced lab if test is sent externally
                 </div>
+                )}
               </div>
             )}
           </section>
@@ -2523,106 +2528,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             </section>
           )}
 
-          {/* Order Details */}
+          {/* Referring Doctor, Location, Bill-to Account */}
           <section className="space-y-4">
-            <h3 className="text-lg font-medium text-gray-900 flex items-center gap-2">
-              <Calendar className="h-5 w-5" />
-              Order Details
-            </h3>
-
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* Priority */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Priority</label>
-                <select
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value as any)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  {['Normal', 'Urgent', 'STAT'].map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Expected Date */}
-
-
-              {/* Admin: Backdated Order */}
-              {isAdmin && (
-                <div>
-                  <label className="block text-sm font-medium text-purple-700 mb-1 flex items-center gap-1">
-                    <ClockIcon className="w-3.5 h-3.5" />
-                    Order Date (Admin)
-                  </label>
-                  <input
-                    type="datetime-local"
-                    value={customOrderDate}
-                    onChange={(e) => setCustomOrderDate(e.target.value)}
-                    max={new Date().toISOString().slice(0, 16)}
-                    className="w-full px-3 py-2 border border-purple-300 bg-purple-50 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
-                  />
-                  <p className="text-[10px] text-purple-600 mt-0.5">Leave empty for today (now)</p>
-                </div>
-              )}
-
-              {/* Expected Date */}
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Expected Date
-                </label>
-                <input
-                  type="date"
-                  value={expectedDate}
-                  onChange={(e) => setExpectedDate(e.target.value)}
-                  min={new Date().toISOString().split('T')[0]}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              {/* Expected TAT Display */}
-              {selectedTests.length > 0 && (
-                <div className="md:col-span-3 bg-gray-50 p-3 rounded-md border border-gray-200 flex items-center gap-2">
-                  <ClockIcon className="w-4 h-4 text-gray-500" />
-                  <span className="text-sm text-gray-700">
-                    <span className="font-medium">Expected TAT:</span>{' '}
-                    {(() => {
-                      const selectedDetails = testGroups.filter(t => selectedTests.includes(t.id));
-                      const tats = selectedDetails.map(t => t.turnaroundTime).filter(Boolean);
-                      if (tats.length === 0) return 'Not specified';
-                      // Simple logic: return the longest string or just list them if few
-                      // For now, just join unique ones
-                      const uniqueTats = Array.from(new Set(tats));
-                      return uniqueTats.join(', ');
-                    })()}
-                  </span>
-                </div>
-              )}
-
-              {/* Payment Type */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Payment Type
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {(['self', 'credit', 'insurance', 'corporate'] as const).map((type) => (
-                    <button
-                      key={type}
-                      type="button"
-                      onClick={() => setPaymentType(type)}
-                      className={`px-3 py-2 rounded-md text-sm font-medium ${paymentType === type
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                        }`}
-                    >
-                      {type.charAt(0).toUpperCase() + type.slice(1)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
               {/* Referring Doctor */}
               <div className="md:col-span-3 relative" style={{ minHeight: showDoctorDropdown ? '230px' : 'auto' }}>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -2863,6 +2771,115 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             )}
           </section>
 
+          {/* Order Details — collapsible */}
+          <section className="border border-gray-200 rounded-lg overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setOrderDetailsOpen((v) => !v)}
+              className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50 transition-colors"
+            >
+              <span className="text-base font-medium text-gray-900 flex items-center gap-2">
+                <Calendar className="h-4 w-4" />
+                Order Details
+              </span>
+              <ChevronDown
+                className={`h-4 w-4 text-gray-500 transition-transform ${orderDetailsOpen ? 'rotate-180' : ''}`}
+              />
+            </button>
+            {orderDetailsOpen && (
+              <div className="px-4 pb-4 border-t border-gray-100">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4">
+                  {/* Priority */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Priority</label>
+                    <select
+                      value={priority}
+                      onChange={(e) => setPriority(e.target.value as any)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      {['Normal', 'Urgent', 'STAT'].map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Admin: Backdated Order */}
+                  {isAdmin && (
+                    <div>
+                      <label className="block text-sm font-medium text-purple-700 mb-1 flex items-center gap-1">
+                        <ClockIcon className="w-3.5 h-3.5" />
+                        Order Date (Admin)
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={customOrderDate}
+                        onChange={(e) => setCustomOrderDate(e.target.value)}
+                        max={new Date().toISOString().slice(0, 16)}
+                        className="w-full px-3 py-2 border border-purple-300 bg-purple-50 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+                      />
+                      <p className="text-[10px] text-purple-600 mt-0.5">Leave empty for today (now)</p>
+                    </div>
+                  )}
+
+                  {/* Expected Date */}
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Expected Date
+                    </label>
+                    <input
+                      type="date"
+                      value={expectedDate}
+                      onChange={(e) => setExpectedDate(e.target.value)}
+                      min={new Date().toISOString().split('T')[0]}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  {/* Expected TAT Display */}
+                  {selectedTests.length > 0 && (
+                    <div className="md:col-span-3 bg-gray-50 p-3 rounded-md border border-gray-200 flex items-center gap-2">
+                      <ClockIcon className="w-4 h-4 text-gray-500" />
+                      <span className="text-sm text-gray-700">
+                        <span className="font-medium">Expected TAT:</span>{' '}
+                        {(() => {
+                          const selectedDetails = testGroups.filter(t => selectedTests.includes(t.id));
+                          const tats = selectedDetails.map(t => t.turnaroundTime).filter(Boolean);
+                          if (tats.length === 0) return 'Not specified';
+                          const uniqueTats = Array.from(new Set(tats));
+                          return uniqueTats.join(', ');
+                        })()}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Payment Type */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Payment Type
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(['self', 'credit', 'insurance', 'corporate'] as const).map((type) => (
+                        <button
+                          key={type}
+                          type="button"
+                          onClick={() => setPaymentType(type)}
+                          className={`px-3 py-2 rounded-md text-sm font-medium ${paymentType === type
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                            }`}
+                        >
+                          {type.charAt(0).toUpperCase() + type.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+
           {/* Notes */}
           <section>
             <label className="block text-sm font-medium text-gray-700 mb-1">Clinical Notes</label>
@@ -2876,7 +2893,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           </section>
 
           {/* Discount & Payment Section */}
-          {selectedTests.length > 0 && (
+          {(selectedTests.length > 0 || selectedBillingItems.length > 0) && (
             <section className="space-y-4 border-t pt-4">
               <h3 className="text-lg font-medium text-gray-900 flex items-center gap-2">
                 <DollarSign className="h-5 w-5" />
@@ -2885,10 +2902,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
               {/* Amount Breakdown */}
               <div className="bg-gray-50 p-4 rounded-lg space-y-2">
+                {selectedTests.length > 0 && (
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-600">Subtotal ({selectedTests.length} tests)</span>
                   <span className="font-medium">{currencySymbol}{totalAmount.toLocaleString()}</span>
                 </div>
+                )}
 
                 {/* Sample Collection Charge */}
                 <div className="flex items-center justify-between text-sm border-t pt-2">
@@ -3107,10 +3126,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           {/* Actions */}
           <div className="flex items-center justify-between border-t pt-6">
             <div className="text-sm text-gray-600">
-              {selectedTests.length > 0 ? (
-                <span className="font-medium">Total: {currencySymbol}{totalAmount}</span>
+              {(selectedTests.length > 0 || selectedBillingItems.length > 0) ? (
+                <span className="font-medium">Total: {currencySymbol}{finalAmount}</span>
               ) : (
-                <span>Select tests now or continue—tests can be added later.</span>
+                <span>Select tests or add billing items to proceed.</span>
               )}
             </div>
             <div className="flex items-center gap-3">
@@ -3133,7 +3152,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     <span>Creating Order...</span>
                   </>
                 ) : (
-                  <span>Create Order{selectedTests.length > 0 ? ` – ${currencySymbol}${finalAmount}` : ''}</span>
+                  <span>Create Order{(selectedTests.length > 0 || selectedBillingItems.length > 0) ? ` – ${currencySymbol}${finalAmount}` : ''}</span>
                 )}
               </button>
             </div>
