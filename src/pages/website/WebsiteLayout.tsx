@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
-import { Menu, X, Phone, Mail, MapPin, ChevronRight, Download } from 'lucide-react';
+import { Menu, X, Phone, Mail, MapPin, ChevronRight, Download, Facebook, Instagram, Linkedin, Twitter } from 'lucide-react';
 import { getSiteBasePath } from '../../utils/domain';
 
 const WebsiteLayout: React.FC = () => {
@@ -8,6 +8,11 @@ const WebsiteLayout: React.FC = () => {
     const location = useLocation();
     
     const basePath = getSiteBasePath();
+
+    // Auto-scroll to top on route change
+    useEffect(() => {
+        window.scrollTo(0, 0);
+    }, [location.pathname]);
     
     // Vetplus Diagnostics data
     const labName = "Vetplus Diagnostics";
@@ -136,9 +141,23 @@ const WebsiteLayout: React.FC = () => {
                                 </div>
                                 <span className="font-bold text-2xl tracking-tight">{labName}</span>
                             </div>
-                            <p className="text-gray-400 leading-relaxed mb-6">
-                                Providing accurate, reliable, and timely diagnostic services. Your health is our priority. Get comprehensive checkups with precision.
+                            <p className="text-gray-400 leading-relaxed mb-6 block">
+                                Providing accurate, reliable, and timely diagnostic services. Your pet's health is our priority. Get comprehensive checkups with precision.
                             </p>
+                            <div className="flex space-x-4">
+                                <a href="#" className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-gray-400 hover:bg-blue-600 hover:text-white transition-colors">
+                                    <Facebook className="w-5 h-5" />
+                                </a>
+                                <a href="#" className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-gray-400 hover:bg-pink-600 hover:text-white transition-colors">
+                                    <Instagram className="w-5 h-5" />
+                                </a>
+                                <a href="#" className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-gray-400 hover:bg-blue-500 hover:text-white transition-colors">
+                                    <Twitter className="w-5 h-5" />
+                                </a>
+                                <a href="#" className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-gray-400 hover:bg-blue-700 hover:text-white transition-colors">
+                                    <Linkedin className="w-5 h-5" />
+                                </a>
+                            </div>
                         </div>
                         <div>
                             <h3 className="text-lg font-bold mb-6 border-b border-gray-800 pb-3">
