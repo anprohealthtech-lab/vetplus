@@ -9,6 +9,7 @@ const Home: React.FC = () => {
 
     const videos = [
         "https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Veterinarian_comforting_puppy_202604071011.mp4",
+        "https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Veterinarian_comforting_puppy_202604071018.mp4",
         "https://ik.imagekit.io/18tsendxqy/Vetplus%20veterinary/Veterinarian_comforting_puppy_202604071011%20(1).mp4"
     ];
     return (
