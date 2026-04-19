@@ -40,6 +40,7 @@ export interface Invoice {
   account_id?: string;
   payment_type: string;
   notes?: string;
+  custom_fields?: Record<string, string>;
   invoice_items?: InvoiceItem[];
   lab?: {
     name: string;
@@ -53,11 +54,24 @@ export interface Invoice {
     phone?: string;
     email?: string;
     address?: string;
+    gender?: string;
+    age?: number | string;
+    age_unit?: string;
+    date_of_birth?: string;
+    custom_fields?: Record<string, unknown>;
   };
   doctor?: string;
   account?: {
     name: string;
     billing_mode?: string;
+    address_line1?: string;
+    address_line2?: string;
+    city?: string;
+    state?: string;
+    pincode?: string;
+    billing_phone?: string;
+    billing_email?: string;
+    gst_number?: string;
   };
 }
 
@@ -92,7 +106,9 @@ export interface InvoiceTemplate {
   };
   tax_disclaimer?: string;
   page_size?: 'A4' | 'A5' | 'Letter';
-  letterhead_space_mm?: number; // top margin reserved for pre-printed letterhead paper
+  letterhead_space_mm?: number; // top spacer height (mm) for letterhead header area
+  letterhead_image_url?: string; // full-page background image URL — activates table-spacer PDF mode
+  letterhead_bottom_mm?: number; // bottom spacer height (mm) for letterhead footer area
   // Thermal printer support
   format_type?: 'a4' | 'thermal_80mm' | 'thermal_58mm';
   print_mode?: 'pdf' | 'thermal' | 'both';
@@ -198,7 +214,8 @@ export async function generateInvoicePDF(
       invoiceId,
       invoice.lab_id,
       template.page_size || 'A4',
-      template.letterhead_space_mm || 0
+      template.letterhead_space_mm || 0,
+      !!template.letterhead_image_url
     );
 
     // 7. Update invoice record
@@ -226,8 +243,11 @@ export async function generateConsolidatedInvoicePDF(
     // 2. Fetch lab details
     const { data: lab } = await supabase.from('labs').select('*').eq('id', labId).single();
 
-    // 3. Build HTML
-    const html = buildConsolidatedInvoiceHtml(data, lab);
+    // 3. Use the lab's default invoice template for consolidated PDFs too.
+    const template = await fetchDefaultTemplate(labId);
+    const html = template
+      ? await buildConsolidatedInvoiceHtmlBundle(data, lab, template)
+      : buildConsolidatedInvoiceHtml(data, lab);
 
     // 4. Generate PDF via Edge Function
     const filename = `CONSOLIDATED-${data.billing_period}-${(data.account_name || 'Account').replace(/\s+/g, '-')}`;
@@ -235,7 +255,10 @@ export async function generateConsolidatedInvoicePDF(
       html,
       filename,
       consolidatedInvoiceId, // Using consolidated ID as invoice ID for storage
-      labId
+      labId,
+      template?.page_size || 'A4',
+      template?.letterhead_space_mm || 0,
+      !!template?.letterhead_image_url
     );
 
     // 5. Update record? (Optional, maybe store URL if schema supported it)
@@ -250,7 +273,7 @@ export async function generateConsolidatedInvoicePDF(
 async function fetchConsolidatedInvoiceData(id: string) {
   const { data: consolidated, error } = await supabase
     .from('consolidated_invoices')
-    .select('*, account:accounts(name, address, phone, email, gst_number)')
+    .select('*, account:accounts!consolidated_invoices_account_id_fkey(name, address_line1, address_line2, city, state, pincode, billing_phone, billing_email, gst_number)')
     .eq('id', id)
     .single();
 
@@ -267,8 +290,9 @@ async function fetchConsolidatedInvoiceData(id: string) {
   const normalized = {
     ...consolidated,
     account_name: consolidated.account?.name || 'Account',
-    account_address: consolidated.account?.address || '',
-    account_phone: consolidated.account?.phone || '',
+    account_address: formatAccountAddress(consolidated.account),
+    account_email: consolidated.account?.billing_email || '',
+    account_phone: consolidated.account?.billing_phone || '',
     account_gst: consolidated.account?.gst_number || '',
     // billing_period_start is YYYY-MM-DD, derive readable period
     billing_period: (() => {
@@ -280,9 +304,137 @@ async function fetchConsolidatedInvoiceData(id: string) {
     tax: consolidated.tax_amount || 0,
     total: consolidated.total_amount || 0,
     invoices: invoices || [],
+    invoice_count: (invoices || []).length,
+    patient_count: (() => {
+      const uniquePatients = new Set(
+        (invoices || []).map((inv: any) => inv.patient_id || inv.patient?.name || inv.patient_name || inv.id)
+      );
+      return uniquePatients.size;
+    })(),
   };
 
   return normalized;
+}
+
+async function buildConsolidatedInvoiceHtmlBundle(
+  data: any,
+  lab: any,
+  template: InvoiceTemplate
+): Promise<string> {
+  let html = template.gjs_html || getDefaultInvoiceHtml();
+  let css = template.gjs_css || getDefaultInvoiceCss();
+
+  const placeholders: Record<string, string> = {
+    '{{invoice_number}}': data.invoice_number || 'N/A',
+    '{{invoice_date}}': formatDate(data.created_at || new Date().toISOString()),
+    '{{due_date}}': data.due_date ? formatDate(data.due_date) : '',
+    '{{billing_period}}': data.billing_period || '',
+    '{{billing_period_start}}': data.billing_period_start ? formatDate(data.billing_period_start) : '',
+    '{{billing_period_end}}': data.billing_period_end ? formatDate(data.billing_period_end) : '',
+    '{{patient_name}}': data.account_name || 'Account',
+    '{{patient_phone}}': data.account_phone || '',
+    '{{patient_email}}': data.account_email || '',
+    '{{patient_address}}': data.account_address || '',
+    '{{doctor}}': '',
+    '{{subtotal}}': formatCurrency(data.subtotal || 0),
+    '{{discount}}': formatCurrency(data.total_discount || 0),
+    '{{tax}}': formatCurrency(data.tax || 0),
+    '{{cgst}}': formatCurrency((data.tax || 0) / 2),
+    '{{sgst}}': formatCurrency((data.tax || 0) / 2),
+    '{{total}}': formatCurrency(data.total || 0),
+    '{{amount_paid}}': formatCurrency(0),
+    '{{balance_due}}': formatCurrency(data.total || 0),
+    '{{payment_type}}': 'Bill to Account',
+    '{{payment_status}}': String(data.status || 'sent').toUpperCase(),
+    '{{lab_name}}': lab?.name || '',
+    '{{lab_address}}': lab?.address || '',
+    '{{lab_phone}}': lab?.phone || '',
+    '{{lab_email}}': lab?.email || '',
+    '{{lab_license}}': lab?.license_number || '',
+    '{{lab_registration}}': lab?.registration_number || '',
+    '{{lab_gst}}': lab?.gst_number || '',
+    '{{lab_upi}}': (lab as any)?.upi_id || (lab as any)?.bank_details?.upi_id || template.bank_details?.upi_id || '',
+    '{{notes}}': data.notes || '',
+    '{{current_date}}': formatDate(new Date().toISOString()),
+    '{{invoice_time}}': data.created_at
+      ? new Date(data.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+      : '',
+    '{{invoice_datetime}}': data.created_at
+      ? `${new Date(data.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })} ${new Date(data.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}`
+      : '',
+    '{{account_name}}': data.account_name || '',
+    '{{account_address}}': data.account_address || '',
+    '{{account_phone}}': data.account_phone || '',
+    '{{account_email}}': data.account_email || '',
+    '{{account_gst}}': data.account_gst || '',
+    '{{invoice_count}}': String(data.invoice_count || 0),
+    '{{patient_count}}': String(data.patient_count || 0),
+  };
+
+  Object.entries(placeholders).forEach(([key, value]) => {
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    html = html.replace(new RegExp(escapedKey, 'g'), value);
+  });
+
+  const consolidatedRowsHtml = buildConsolidatedInvoiceRows(data.invoices || []);
+  html = html.replace(/{{consolidated_invoice_rows}}/g, consolidatedRowsHtml);
+  html = html.replace(/{{invoice_items}}/g, consolidatedRowsHtml);
+
+  if (template.include_payment_terms && template.payment_terms_text) {
+    html = html.replace(/{{payment_terms}}/g, `
+      <div class="payment-terms">
+        <h4>Payment Terms</h4>
+        <p>${template.payment_terms_text}</p>
+      </div>
+    `);
+  } else {
+    html = html.replace(/{{payment_terms}}/g, '');
+  }
+
+  if (template.include_bank_details && template.bank_details) {
+    html = html.replace(/{{bank_details}}/g, buildBankDetailsHtml(template.bank_details));
+  } else {
+    html = html.replace(/{{bank_details}}/g, '');
+  }
+
+  html = html.replace(/{{upi_qr_code}}/g, '');
+  html = html.replace(/{{partial_badge}}/g, '');
+  html = html.replace(
+    /{{payment_status_badge}}/g,
+    `<div class="payment-status-badge pending">${String(data.status || 'sent').toUpperCase()}</div>`
+  );
+  html = html.replace(/{{tax_disclaimer}}/g, template.tax_disclaimer || '');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    ${css}
+    .payment-status-badge { display: inline-block; padding: 8px 16px; border-radius: 4px; font-weight: bold; font-size: 14px; }
+    .payment-status-badge.pending { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+  </style>
+</head>
+<body>
+  ${html}
+</body>
+</html>`;
+}
+
+function buildConsolidatedInvoiceRows(invoices: any[]): string {
+  if (!invoices || invoices.length === 0) {
+    return '<tr><td colspan="4">No items</td></tr>';
+  }
+
+  return invoices.map((inv: any) => `
+    <tr>
+      <td>${inv.patient?.name || inv.patient_name || 'Unknown'}<br><span style="font-size:11px;color:#666;">${inv.invoice_number || '-'}</span></td>
+      <td style="text-align:center;">1</td>
+      <td style="text-align:right;">${formatCurrency(inv.subtotal || inv.total || 0)}</td>
+      <td style="text-align:right;">${formatCurrency(inv.total || 0)}</td>
+    </tr>
+  `).join('');
 }
 
 function buildConsolidatedInvoiceHtml(data: any, lab: any): string {
@@ -407,10 +559,11 @@ async function fetchInvoiceData(invoiceId: string): Promise<Invoice | null> {
     .select(`
       *,
       lab:labs(name, address, phone, email, license_number, registration_number, upi_id, bank_details, gst_number),
-      patient:patients(phone, email, address),
-      account:accounts(name, billing_mode),
+      patient:patients(name, phone, email, address, date_of_birth, age, age_unit, gender, custom_fields),
+      account:accounts(name, billing_mode, address_line1, address_line2, city, state, pincode, billing_phone, billing_email, gst_number),
       invoice_items(*),
-      location:locations(id, name, address, phone, email, contact_person, upi_id, bank_details)
+      location:locations(id, name, address, phone, email, contact_person, upi_id, bank_details),
+      referring_doctor:doctors(name)
     `)
     .eq('id', invoiceId)
     .single();
@@ -420,7 +573,95 @@ async function fetchInvoiceData(invoiceId: string): Promise<Invoice | null> {
     throw new Error(`Failed to fetch invoice: ${error.message}`);
   }
 
-  return data as Invoice;
+  const invoice = data as Invoice;
+
+  // Always use live patient name from the patients table, not the stored snapshot
+  if ((data as any).patient?.name) {
+    invoice.patient_name = (data as any).patient.name;
+  }
+
+  // Populate doctor name — try invoice join first, then fall back to the order
+  (invoice as any).doctor = (data as any).referring_doctor?.name || '';
+  if (!(invoice as any).doctor && invoice.order_id) {
+    const { data: orderData } = await supabase
+      .from('orders')
+      .select('referring_doctor:doctors(name)')
+      .eq('id', invoice.order_id)
+      .single();
+    (invoice as any).doctor = (orderData as any)?.referring_doctor?.name || '';
+  }
+
+  // Consolidate all invoice_items across every invoice for the same order so
+  // charges billed on a separate invoice still appear in one PDF.
+  // Source 1: invoice_items sharing the same order_id (tests on a later invoice)
+  // Source 2: invoice_items linked via order_billing_item_id (charges whose
+  //           invoice_item ended up with a different order_id)
+  // The DB trigger trg_link_invoice_item_to_billing_item ensures invoice_item_id
+  // is always written back to order_billing_items on insert, so no synthesis needed.
+  if (invoice.order_id) {
+    // Fetch all sibling invoices for this order (needed for both items and financials)
+    const { data: allOrderInvoices } = await supabase
+      .from('invoices')
+      .select('id, subtotal, discount, tax, total, amount_paid')
+      .eq('order_id', invoice.order_id);
+
+    const siblingInvoiceIds = (allOrderInvoices || []).map((inv: any) => inv.id);
+
+    const { data: billingItems } = await supabase
+      .from('order_billing_items')
+      .select('id')
+      .eq('order_id', invoice.order_id)
+      .eq('is_invoiced', true);
+
+    const billingItemIds = (billingItems || []).map((b: any) => b.id);
+
+    // Source 1: items where invoice_items.order_id matches (populated on newer records)
+    // Source 2: items belonging to any sibling invoice by invoice_id (catches items
+    //           where invoice_items.order_id is null — older records or separate invoices)
+    // Source 3: items linked via order_billing_item_id
+    const queries: Promise<any>[] = [
+      supabase.from('invoice_items').select('*').eq('order_id', invoice.order_id),
+    ];
+    if (siblingInvoiceIds.length > 0) {
+      queries.push(
+        supabase.from('invoice_items').select('*').in('invoice_id', siblingInvoiceIds)
+      );
+    }
+    if (billingItemIds.length > 0) {
+      queries.push(
+        supabase.from('invoice_items').select('*').in('order_billing_item_id', billingItemIds)
+      );
+    }
+
+    const results = await Promise.all(queries);
+    const seen = new Set<string>();
+    const allItems: any[] = [];
+    for (const { data } of results) {
+      for (const item of (data || [])) {
+        if (!seen.has(item.id)) {
+          seen.add(item.id);
+          allItems.push(item);
+        }
+      }
+    }
+
+    if (allItems.length > 0) {
+      invoice.invoice_items = allItems;
+    }
+
+    // Recalculate ALL financials by summing across every invoice for this order.
+    // This ensures discount, paid, subtotal and total are always consistent with
+    // the consolidated item list regardless of which invoice triggered the PDF.
+    if (allOrderInvoices && allOrderInvoices.length > 0) {
+      invoice.subtotal    = allOrderInvoices.reduce((s: number, inv: any) => s + (parseFloat(inv.subtotal)    || 0), 0);
+      invoice.discount    = allOrderInvoices.reduce((s: number, inv: any) => s + (parseFloat(inv.discount)    || 0), 0);
+      invoice.tax         = allOrderInvoices.reduce((s: number, inv: any) => s + (parseFloat(inv.tax)         || 0), 0);
+      invoice.total       = allOrderInvoices.reduce((s: number, inv: any) => s + (parseFloat(inv.total)       || 0), 0);
+      invoice.amount_paid = allOrderInvoices.reduce((s: number, inv: any) => s + (parseFloat(inv.amount_paid) || 0), 0);
+    }
+  }
+
+  return invoice;
 }
 
 /**
@@ -520,6 +761,11 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
   const location = (invoice as any).location;
 
   // Replace basic placeholders
+  const accountAddress = formatAccountAddress(invoice.account);
+  const accountPhone = invoice.account?.billing_phone || '';
+  const accountEmail = invoice.account?.billing_email || '';
+  const accountGst = invoice.account?.gst_number || '';
+
   const placeholders: Record<string, string> = {
     '{{invoice_number}}': invoice.invoice_number || 'N/A',
     '{{invoice_date}}': formatDate(invoice.invoice_date),
@@ -528,9 +774,47 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
     '{{patient_name}}': invoice.account 
       ? `${invoice.account.name}<br><span style="font-size: 0.9em; font-weight: normal;">Patient: ${invoice.patient_name}</span>`
       : (invoice.patient_name || 'N/A'),
-    '{{patient_phone}}': invoice.patient?.phone || '',
-    '{{patient_email}}': invoice.patient?.email || '',
-    '{{patient_address}}': invoice.patient?.address || '',
+    '{{patient_phone}}': invoice.account ? accountPhone : (invoice.patient?.phone || ''),
+    '{{patient_email}}': invoice.account ? accountEmail : (invoice.patient?.email || ''),
+    '{{patient_address}}': invoice.account ? accountAddress : (invoice.patient?.address || ''),
+    '{{patient_gender}}': (invoice.patient as any)?.gender || '',
+    '{{patient_age}}': (() => {
+      const dob = (invoice.patient as any)?.date_of_birth;
+      if (dob) {
+        const birthDate = new Date(dob);
+        const today = new Date();
+        let age = today.getFullYear() - birthDate.getFullYear();
+        const m = today.getMonth() - birthDate.getMonth();
+        if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) age--;
+        if (age >= 0) return `${age} yrs`;
+      }
+      const age = (invoice.patient as any)?.age;
+      const ageUnit = (invoice.patient as any)?.age_unit || 'years';
+      return age != null ? `${age} ${ageUnit}` : '';
+    })(),
+    '{{patient_age_gender}}': (() => {
+      const genderRaw: string = (invoice.patient as any)?.gender || '';
+      const gender = genderRaw
+        ? genderRaw.charAt(0).toUpperCase() + genderRaw.slice(1).toLowerCase()
+        : '';
+      const dob = (invoice.patient as any)?.date_of_birth;
+      let ageStr = '';
+      if (dob) {
+        const birthDate = new Date(dob);
+        const today = new Date();
+        let age = today.getFullYear() - birthDate.getFullYear();
+        const m = today.getMonth() - birthDate.getMonth();
+        if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) age--;
+        if (age >= 0) ageStr = `${age} yrs`;
+      }
+      if (!ageStr) {
+        const age = (invoice.patient as any)?.age;
+        const ageUnit = (invoice.patient as any)?.age_unit || 'yrs';
+        ageStr = age != null ? `${age} ${ageUnit}` : '';
+      }
+      if (gender && ageStr) return `${gender} / ${ageStr}`;
+      return gender || ageStr;
+    })(),
     '{{doctor}}': invoice.doctor || '',
     '{{subtotal}}': formatCurrency(invoice.subtotal),
     '{{discount}}': formatCurrency(invoice.discount),
@@ -545,6 +829,11 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
       : formatCurrency(balanceDue),
     '{{payment_type}}': invoice.account ? 'Bill to Account' : formatPaymentType(invoice.payment_type),
     '{{payment_status}}': isPaid ? 'PAID' : 'PENDING',
+    '{{account_name}}': invoice.account?.name || '',
+    '{{account_address}}': accountAddress,
+    '{{account_phone}}': accountPhone,
+    '{{account_email}}': accountEmail,
+    '{{account_gst}}': accountGst,
     '{{lab_name}}': invoice.lab?.name || '',
     '{{lab_address}}': invoice.lab?.address || '',
     '{{lab_phone}}': invoice.lab?.phone || '',
@@ -562,11 +851,27 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
     '{{location_contact}}': location?.contact_person || '',
     '{{notes}}': invoice.notes || '',
     '{{current_date}}': formatDate(new Date().toISOString()),
+    '{{invoice_time}}': (() => {
+      const ts = (invoice as any).created_at || invoice.invoice_date;
+      if (!ts) return '';
+      return new Date(ts).toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+      });
+    })(),
+    '{{invoice_datetime}}': (() => {
+      const ts = (invoice as any).created_at || invoice.invoice_date;
+      if (!ts) return '';
+      const d = new Date(ts);
+      return `${d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })} ${d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}`;
+    })(),
   };
 
-  // Replace all placeholders
+  // Replace all placeholders (escape regex special chars so {{ }} are treated literally)
   Object.entries(placeholders).forEach(([key, value]) => {
-    html = html.replace(new RegExp(key, 'g'), value);
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    html = html.replace(new RegExp(escapedKey, 'g'), value);
   });
 
   // Build invoice items table
@@ -622,6 +927,17 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
     : '<div class="payment-status-badge pending">PAYMENT PENDING</div>';
   html = html.replace(/{{payment_status_badge}}/g, statusBadge);
 
+  // Replace custom field tokens: {{custom.field_key}}
+  // Patient custom_fields are merged in (invoice-level values take priority)
+  const patientCustomFields = (invoice.patient as any)?.custom_fields || {};
+  const customFields = { ...patientCustomFields, ...(invoice.custom_fields || {}) };
+  Object.entries(customFields).forEach(([key, value]) => {
+    const safeKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    html = html.replace(new RegExp(`{{custom\\.${safeKey}}}`, 'g'), String(value ?? ''));
+  });
+  // Clear any remaining unmatched {{custom.*}} tokens so they don't render literally
+  html = html.replace(/\{\{custom\.[^}]+\}\}/g, '');
+
   // Add status badge CSS
   const statusBadgeCss = `
     .payment-status-badge {
@@ -646,14 +962,74 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
     }
   `;
 
-  // Inject @page size CSS so PDF.co respects the correct paper size
   const pageSize = template.page_size || 'A4';
-  // Letterhead override comes LAST so it wins over any @page block in the template CSS
+  const letterheadUrl = template.letterhead_image_url;
+
+  // ── LETTERHEAD BACKGROUND MODE ──────────────────────────────────────────
+  // When an image URL is set, use the position:fixed background + HTML table
+  // spacer technique so the image shows through on every page (same as reports).
+  if (letterheadUrl) {
+    const PAGE_DIM: Record<string, { w: string; h: string }> = {
+      A4: { w: '210mm', h: '297mm' },
+      A5: { w: '148mm', h: '210mm' },
+      Letter: { w: '216mm', h: '279mm' },
+    };
+    const dim = PAGE_DIM[pageSize] || PAGE_DIM['A4'];
+    const topMm = template.letterhead_space_mm || 40;
+    const botMm = template.letterhead_bottom_mm || 20;
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Invoice ${invoice.invoice_number}</title>
+  <style>
+    @page { size: ${pageSize}; margin: 0; }
+    html, body { margin: 0; padding: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    /* Full-page letterhead background — position:fixed repeats on every PDF page */
+    #inv-lh-bg {
+      position: fixed;
+      top: 0; left: 0;
+      width: ${dim.w}; height: ${dim.h};
+      z-index: 0; pointer-events: none;
+      background-image: url('${letterheadUrl}');
+      background-repeat: no-repeat;
+      background-position: top center;
+      background-size: cover;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+    #inv-content-wrap { position: relative; z-index: 1; }
+    ${statusBadgeCss}
+    ${css}
+  </style>
+</head>
+<body>
+  <div id="inv-lh-bg"></div>
+  <!-- Table spacer technique: thead/tfoot repeat on every page, creating
+       consistent header/footer space that aligns with the letterhead image -->
+  <table style="width:100%;border:none;border-collapse:collapse;position:relative;z-index:1;">
+    <thead style="display:table-header-group;">
+      <tr><td style="border:none;padding:0;"><div style="height:${topMm}mm;"></div></td></tr>
+    </thead>
+    <tfoot style="display:table-footer-group;">
+      <tr><td style="border:none;padding:0;"><div style="height:${botMm}mm;"></div></td></tr>
+    </tfoot>
+    <tbody>
+      <tr><td style="border:none;padding:0 6mm;">
+        <div id="inv-content-wrap">${html}</div>
+      </td></tr>
+    </tbody>
+  </table>
+</body>
+</html>`;
+  }
+
+  // ── STANDARD MODE (no letterhead image) ─────────────────────────────────
   const topMargin = template.letterhead_space_mm ? `${template.letterhead_space_mm}mm` : '5mm';
   const pageSizeCss = `@page { size: ${pageSize}; margin: 5mm; }\n`;
   const letterheadCss = `@page { margin-top: ${topMargin}; }\n`;
 
-  // Wrap in complete HTML document
   return `
     <!DOCTYPE html>
     <html lang="en">
@@ -661,7 +1037,7 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Invoice ${invoice.invoice_number}</title>
-        <style>${pageSizeCss}${css}${statusBadgeCss}${letterheadCss}</style>
+        <style>${pageSizeCss}${statusBadgeCss}${css}${letterheadCss}</style>
       </head>
       <body>
         ${html}
@@ -731,7 +1107,8 @@ async function callEdgeFunctionPdfGeneration(
   invoiceId: string,
   labId: string,
   pageSize: string = 'A4',
-  letterheadSpaceMm: number = 0
+  letterheadSpaceMm: number = 0,
+  hasLetterhead: boolean = false
 ): Promise<string> {
   // Get auth token for edge function call
   const { data: { session } } = await supabase.auth.getSession();
@@ -753,6 +1130,7 @@ async function callEdgeFunctionPdfGeneration(
       labId,
       pageSize,
       letterheadSpaceMm,
+      hasLetterhead,
     }),
   });
 
@@ -1004,6 +1382,22 @@ function formatPaymentType(type: string): string {
     corporate: 'Corporate',
   };
   return types[type] || type;
+}
+
+function formatAccountAddress(account?: {
+  address_line1?: string;
+  address_line2?: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
+} | null): string {
+  return [
+    account?.address_line1,
+    account?.address_line2,
+    account?.city,
+    account?.state,
+    account?.pincode,
+  ].filter(Boolean).join(', ');
 }
 
 /**

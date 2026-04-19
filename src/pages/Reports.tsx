@@ -148,6 +148,8 @@ interface OrderSettingsGroupItem {
 
 type PreparedReport = ReportData;
 
+const REPORT_WEEK_OPTIONS = { weekStartsOn: 1 as const };
+
 const Reports: React.FC = () => {
   const [approvedResults, setApprovedResults] = useState<ApprovedResult[]>([]);
   const [loading, setLoading] = useState(true);
@@ -326,8 +328,8 @@ const Reports: React.FC = () => {
           break;
         }
         case 'week':
-          dateRange.start = startOfWeek(now);
-          dateRange.end = endOfWeek(now);
+          dateRange.start = startOfWeek(now, REPORT_WEEK_OPTIONS);
+          dateRange.end = endOfWeek(now, REPORT_WEEK_OPTIONS);
           break;
         case 'month':
           dateRange.start = startOfMonth(now);
@@ -599,17 +601,17 @@ const Reports: React.FC = () => {
       const searchLower = searchTerm.toLowerCase();
       filtered = filtered.filter(
         (result) =>
-          result.patient_full_name.toLowerCase().includes(searchLower) ||
-          result.test_name.toLowerCase().includes(searchLower) ||
-          result.sample_id.toLowerCase().includes(searchLower) ||
-          result.order_id.toLowerCase().includes(searchLower)
+          (result.patient_full_name || '').toLowerCase().includes(searchLower) ||
+          (result.test_name || '').toLowerCase().includes(searchLower) ||
+          (result.sample_id || '').toLowerCase().includes(searchLower) ||
+          (result.order_id || '').toLowerCase().includes(searchLower)
       );
     }
 
     // Apply test type filter
     if (selectedTestType !== 'all') {
       filtered = filtered.filter(result =>
-        result.test_name.toLowerCase().includes(selectedTestType.toLowerCase())
+        (result.test_name || '').toLowerCase().includes(selectedTestType.toLowerCase())
       );
     }
 
@@ -647,10 +649,10 @@ const Reports: React.FC = () => {
           age: r.age,
           gender: r.gender,
           order_date: r.order_date,
-          sample_ids: [r.sample_id],
+          sample_ids: r.sample_id ? [r.sample_id] : [],
           verified_at: r.verified_at,
           verified_by: r.verified_by,
-          test_names: [r.test_name],
+          test_names: r.test_name ? [r.test_name] : [],
           results: [r],
           is_report_ready: r.is_report_ready || false
         };
@@ -661,8 +663,8 @@ const Reports: React.FC = () => {
         if (!existingResult) {
           group.results.push(r);
         }
-        if (!group.sample_ids.includes(r.sample_id)) group.sample_ids.push(r.sample_id);
-        if (!group.test_names.includes(r.test_name)) group.test_names.push(r.test_name);
+        if (r.sample_id && !group.sample_ids.includes(r.sample_id)) group.sample_ids.push(r.sample_id);
+        if (r.test_name && !group.test_names.includes(r.test_name)) group.test_names.push(r.test_name);
         if (new Date(r.verified_at) > new Date(group.verified_at)) {
           group.verified_at = r.verified_at;
           group.verified_by = r.verified_by;
@@ -685,8 +687,8 @@ const Reports: React.FC = () => {
           bValue = new Date(b.order_date).getTime();
           break;
         case 'test_name':
-          aValue = a.test_names.join(', ');
-          bValue = b.test_names.join(', ');
+          aValue = (a.test_names || []).join(', ');
+          bValue = (b.test_names || []).join(', ');
           break;
         default:
           aValue = new Date(a.verified_at).getTime();
@@ -734,10 +736,13 @@ const Reports: React.FC = () => {
     setViewingOrder(group);
   };
 
-  const handleDownload = useCallback(async (orderId: string, forceDraft = false) => {
+  const isTempPdfUrl = (url?: string | null): boolean =>
+    !!url && url.includes('pdf-temp-files.s3.amazonaws.com');
+
+  const handleDownload = useCallback(async (orderId: string, forceDraft = false, draftVariant: 'ecopy' | 'print' = 'ecopy') => {
     try {
       setGeneratingOrderId(orderId);
-      await generatePDF(orderId, forceDraft);
+      await generatePDF(orderId, forceDraft, draftVariant);
       // Keep button disabled for 3 seconds after generation to prevent double-clicking
       // The queue polling will show the actual status
       setTimeout(async () => {
@@ -760,12 +765,12 @@ const Reports: React.FC = () => {
     }
   }, [generatePDF, loadApprovedResults]);
 
-  const handleRetryStuckJob = useCallback(async (orderId: string, forceDraft = false) => {
+  const handleRetryStuckJob = useCallback(async (orderId: string, forceDraft = false, draftVariant: 'ecopy' | 'print' = 'ecopy') => {
     try {
       await supabase.from('pdf_generation_queue').delete().eq('order_id', orderId);
       setPdfQueueStatus(prev => { const next = new Map(prev); next.delete(orderId); return next; });
       setGeneratingOrderId(null);
-      await handleDownload(orderId, forceDraft);
+      await handleDownload(orderId, forceDraft, draftVariant);
     } catch (error) {
       console.error('Retry stuck job failed:', error);
       alert('Retry failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
@@ -2088,7 +2093,7 @@ const Reports: React.FC = () => {
 
                         <div className="col-span-2">
                           <div className="space-y-1">
-                            {group.test_names.map((testName, idx) => (
+                            {(group.test_names || []).map((testName, idx) => (
                               <div key={idx} className="flex items-center space-x-2">
                                 <TestTube className="w-3 h-3 text-gray-400" />
                                 <span className="text-sm text-gray-900">{testName}</span>
@@ -2103,7 +2108,7 @@ const Reports: React.FC = () => {
                               {safeFormatDate(group.order_date, 'MMM d, yyyy')}
                             </div>
                             <div className="text-gray-600">
-                              Sample: {group.sample_ids.join(', ')}
+                              Sample: {(group.sample_ids || []).join(', ')}
                             </div>
                           </div>
                         </div>
@@ -2142,6 +2147,33 @@ const Reports: React.FC = () => {
                             {!(group.results[0] as ApprovedResult)?.has_final_report ? (
                               /* Not generated yet */
                               <>
+                                {(group.results[0] as ApprovedResult)?.has_draft_report && (
+                                  <div className="flex items-center gap-0.5">
+                                    <button
+                                      className="flex items-center space-x-1 px-2 py-1 text-xs bg-amber-600 text-white rounded-l hover:bg-amber-700 transition-colors"
+                                      onClick={() => {
+                                        const url = (group.results[0] as ApprovedResult)?.draft_report?.pdf_url;
+                                        if (url && !isTempPdfUrl(url)) window.open(url, '_blank');
+                                        else void handleDownload(group.order_id, true, 'ecopy');
+                                      }}
+                                      title="Download eCopy draft"
+                                    >
+                                      <Download className="w-3.5 h-3.5" />
+                                      <span>eCopy</span>
+                                    </button>
+                                    <button
+                                      className={`flex items-center px-1.5 py-1 text-xs rounded-r transition-colors border-l border-amber-700 ${(group.results[0] as ApprovedResult)?.draft_report?.print_pdf_url ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+                                      onClick={() => {
+                                        const url = (group.results[0] as ApprovedResult)?.draft_report?.print_pdf_url;
+                                        if (url) window.open(url, '_blank');
+                                      }}
+                                      disabled={!(group.results[0] as ApprovedResult)?.draft_report?.print_pdf_url}
+                                      title="Download print draft"
+                                    >
+                                      <Printer className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                )}
                                 <button
                                   className={`flex items-center space-x-1 px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'opacity-50 cursor-not-allowed' : ''}`}
                                   onClick={() => handleDownload(group.order_id, false)}
@@ -2183,16 +2215,16 @@ const Reports: React.FC = () => {
                               /* Already generated */
                               <>
                                 <button
-                                  className="flex items-center space-x-1 px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
+                                  className={`flex items-center space-x-1 px-2 py-1 text-xs rounded transition-colors ${isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-green-600 text-white hover:bg-green-700'}`}
                                   onClick={() => {
                                     const finalReport = (group.results[0] as ApprovedResult)?.final_report;
-                                    if (finalReport?.pdf_url) window.open(finalReport.pdf_url, '_blank');
-                                    else handleDownload(group.order_id, false);
+                                    if (finalReport?.pdf_url && !isTempPdfUrl(finalReport.pdf_url)) window.open(finalReport.pdf_url, '_blank');
+                                    else void handleLetterheadGeneration(group.order_id);
                                   }}
-                                  title="Download final report"
+                                  title={isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'PDF link expired — click to regenerate' : 'Download final report'}
                                 >
                                   <Download className="w-3.5 h-3.5" />
-                                  <span>Download</span>
+                                  <span>{isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'Re-generate' : 'Download'}</span>
                                 </button>
 
                                 <button
@@ -2255,10 +2287,10 @@ const Reports: React.FC = () => {
                                     return (
                                       <QuickSendReport
                                         reportUrl={customDomainSmartUrl}
-                                        reportName={`Smart Report - ${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                        reportName={`Smart Report - ${group.patient_full_name} - ${(group.test_names || []).join(', ')}`}
                                         patientName={group.patient_full_name}
                                         patientPhone={result?.phone}
-                                        testName={group.test_names.join(', ')}
+                                        testName={(group.test_names || []).join(', ')}
                                         label="Smart Report via WhatsApp"
                                         onSent={(result) => alert(result.success ? 'Smart Report sent via WhatsApp!' : 'Failed: ' + result.message)}
                                       />
@@ -2277,10 +2309,10 @@ const Reports: React.FC = () => {
                                       <>
                                         <QuickSendReport
                                           reportUrl={customDomainReportUrl || `#demo-report-${group.order_id}`}
-                                          reportName={`${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                          reportName={`${group.patient_full_name} - ${(group.test_names || []).join(', ')}`}
                                           patientName={group.patient_full_name}
                                           patientPhone={result?.phone}
-                                          testName={group.test_names.join(', ')}
+                                          testName={(group.test_names || []).join(', ')}
                                           onSent={(result) => alert(result.success ? 'Report sent via WhatsApp!' : 'Failed: ' + result.message)}
                                         />
                                         <button
@@ -2300,15 +2332,26 @@ const Reports: React.FC = () => {
                           </>
                         ) : (
                           <>
-                            <button
-                              className={`flex items-center space-x-1 px-2 py-1 text-xs bg-amber-600 text-white rounded hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'opacity-50 cursor-not-allowed' : ''}`}
-                              onClick={() => handleDownload(group.order_id, true)}
-                              disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
-                              title="Generate draft report"
-                            >
-                              {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                              <span>Draft</span>
-                            </button>
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                className={`flex items-center space-x-1 px-2 py-1 text-xs bg-amber-600 text-white rounded-l hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                onClick={() => handleDownload(group.order_id, true, 'ecopy')}
+                                disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
+                                title="Generate eCopy draft (letterhead)"
+                              >
+                                {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                                <span>eCopy</span>
+                              </button>
+                              <button
+                                className={`flex items-center space-x-1 px-2 py-1 text-xs bg-amber-500 text-white rounded-r hover:bg-amber-600 transition-colors border-l border-amber-700 ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                onClick={() => handleDownload(group.order_id, true, 'print')}
+                                disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
+                                title="Generate print draft (no letterhead)"
+                              >
+                                <Printer className="w-3.5 h-3.5" />
+                                <span>Print</span>
+                              </button>
+                            </div>
                             {(() => {
                               const job = pdfQueueStatus.get(group.order_id);
                               const isStuck = job && (job.status === 'processing' || job.status === 'pending') &&
@@ -2374,14 +2417,14 @@ const Reports: React.FC = () => {
                           <div className="flex items-center justify-between">
                             <span className="text-sm text-gray-600">Tests:</span>
                             <span className="text-sm text-gray-900">
-                              {group.test_names.length} test{group.test_names.length !== 1 ? 's' : ''}
+                              {(group.test_names || []).length} test{(group.test_names || []).length !== 1 ? 's' : ''}
                             </span>
                           </div>
 
                           <div className="flex items-center justify-between">
                             <span className="text-sm text-gray-600">Sample ID:</span>
                             <span className="text-sm font-mono text-gray-900">
-                              {group.sample_ids.join(', ')}
+                              {(group.sample_ids || []).join(', ')}
                             </span>
                           </div>
                         </div>
@@ -2406,6 +2449,33 @@ const Reports: React.FC = () => {
                             <>
                               {!(group.results[0] as ApprovedResult)?.has_final_report ? (
                                 <>
+                                  {(group.results[0] as ApprovedResult)?.has_draft_report && (
+                                    <div className="flex items-center gap-0.5">
+                                      <button
+                                        className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-amber-600 text-white rounded-l-md hover:bg-amber-700 transition-colors"
+                                        onClick={() => {
+                                          const url = (group.results[0] as ApprovedResult)?.draft_report?.pdf_url;
+                                          if (url && !isTempPdfUrl(url)) window.open(url, '_blank');
+                                          else void handleDownload(group.order_id, true, 'ecopy');
+                                        }}
+                                        title="Download eCopy draft"
+                                      >
+                                        <Download className="w-4 h-4" />
+                                        <span>eCopy</span>
+                                      </button>
+                                      <button
+                                        className={`flex items-center justify-center px-3 py-2 text-sm rounded-r-md transition-colors border-l border-amber-700 ${(group.results[0] as ApprovedResult)?.draft_report?.print_pdf_url ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+                                        onClick={() => {
+                                          const url = (group.results[0] as ApprovedResult)?.draft_report?.print_pdf_url;
+                                          if (url) window.open(url, '_blank');
+                                        }}
+                                        disabled={!(group.results[0] as ApprovedResult)?.draft_report?.print_pdf_url}
+                                        title="Download print draft"
+                                      >
+                                        <Printer className="w-4 h-4" />
+                                      </button>
+                                    </div>
+                                  )}
                                   <button
                                     className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors ${previewingOrderId === group.order_id ? 'opacity-80 cursor-not-allowed' : ''
                                       }`}
@@ -2488,19 +2558,19 @@ const Reports: React.FC = () => {
                               ) : (
                                 <>
                                   <button
-                                    className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm rounded-md transition-colors ${isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-green-600 text-white hover:bg-green-700'}`}
                                     onClick={() => {
                                       const finalReport = (group.results[0] as ApprovedResult)?.final_report;
-                                      if (finalReport?.pdf_url) {
+                                      if (finalReport?.pdf_url && !isTempPdfUrl(finalReport.pdf_url)) {
                                         window.open(finalReport.pdf_url, '_blank');
                                       } else {
-                                        handleDownload(group.order_id, false);
+                                        void handleLetterheadGeneration(group.order_id);
                                       }
                                     }}
-                                    title="Download final report"
+                                    title={isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'PDF link expired — click to regenerate' : 'Download final report'}
                                   >
                                     <Download className="w-4 h-4" />
-                                    <span>Download</span>
+                                    <span>{isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'Re-generate' : 'Download'}</span>
                                   </button>
                                   {false && (
                                     <>
@@ -2556,10 +2626,10 @@ const Reports: React.FC = () => {
                                         <div className="flex-1">
                                           <QuickSendReport
                                             reportUrl={customDomainSmartUrl}
-                                            reportName={`Smart Report - ${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                            reportName={`Smart Report - ${group.patient_full_name} - ${(group.test_names || []).join(', ')}`}
                                             patientName={group.patient_full_name}
                                             patientPhone={result?.phone}
-                                            testName={group.test_names.join(', ')}
+                                            testName={(group.test_names || []).join(', ')}
                                             label="Smart Report via WhatsApp"
                                             onSent={(result) => {
                                               if (result.success) {
@@ -2620,10 +2690,10 @@ const Reports: React.FC = () => {
                                         <div className="flex-1">
                                           <QuickSendReport
                                             reportUrl={reportUrl || `#demo-report-${group.order_id}`}
-                                            reportName={`${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                            reportName={`${group.patient_full_name} - ${(group.test_names || []).join(', ')}`}
                                             patientName={group.patient_full_name}
                                             patientPhone={result?.phone}
-                                            testName={group.test_names.join(', ')}
+                                            testName={(group.test_names || []).join(', ')}
                                             onSent={(result) => {
                                               if (result.success) {
                                                 alert('Report sent successfully via WhatsApp!');
@@ -2642,26 +2712,40 @@ const Reports: React.FC = () => {
                             </>
                           ) : (
                             <>
-                              <button
-                                className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
-                                  ? 'opacity-50 cursor-not-allowed'
-                                  : ''
-                                  }`}
-                                onClick={() => handleDownload(group.order_id, true)}
-                                disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
-                              >
-                                {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? (
-                                  <div className="flex items-center space-x-1">
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                    {pdfQueueStatus.get(group.order_id)?.progress_percent && (
-                                      <span className="text-xs">{pdfQueueStatus.get(group.order_id).progress_percent}%</span>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <Download className="w-4 h-4" />
-                                )}
-                                <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Gen...' : 'Draft'}</span>
-                              </button>
+                              <div className="flex-1 flex items-center gap-0.5">
+                                <button
+                                  className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-amber-600 text-white rounded-l-md hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
+                                    ? 'opacity-50 cursor-not-allowed'
+                                    : ''
+                                    }`}
+                                  onClick={() => handleDownload(group.order_id, true, 'ecopy')}
+                                  disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
+                                  title="Generate eCopy draft (letterhead)"
+                                >
+                                  {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? (
+                                    <div className="flex items-center space-x-1">
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                      {pdfQueueStatus.get(group.order_id)?.progress_percent && (
+                                        <span className="text-xs">{pdfQueueStatus.get(group.order_id).progress_percent}%</span>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <Download className="w-4 h-4" />
+                                  )}
+                                  <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Gen...' : 'eCopy'}</span>
+                                </button>
+                                <button
+                                  className={`flex items-center justify-center px-3 py-2 text-sm bg-amber-500 text-white rounded-r-md hover:bg-amber-600 transition-colors border-l border-amber-700 ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
+                                    ? 'opacity-50 cursor-not-allowed'
+                                    : ''
+                                    }`}
+                                  onClick={() => handleDownload(group.order_id, true, 'print')}
+                                  disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
+                                  title="Generate print draft (no letterhead)"
+                                >
+                                  <Printer className="w-4 h-4" />
+                                </button>
+                              </div>
                               {(() => {
                                 const job = pdfQueueStatus.get(group.order_id);
                                 const isStuck = job && (job.status === 'processing' || job.status === 'pending') &&
@@ -2918,7 +3002,7 @@ const Reports: React.FC = () => {
           orderId={viewingOrder.order_id}
           patientName={viewingOrder.patient_full_name}
           patientPhone={viewingOrder.results[0]?.phone}
-          testNames={viewingOrder.test_names}
+          testNames={Array.isArray(viewingOrder.test_names) ? viewingOrder.test_names : []}
           doctorName={viewingOrder.results[0]?.doctor}
         />
       )}

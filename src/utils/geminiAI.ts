@@ -258,7 +258,11 @@ class SecureGeminiAIService {
           group_level_prompt: response.testGroup.group_level_prompt || 'Extract and validate results for listed analytes. Return structured, analyte-mapped output with confidence.',
           to_be_copied: false
         },
-        analytes: (response.analytes || []).map((analyte: any) => ({
+        analytes: (response.analytes || []).map((analyte: any) => {
+          const expectedNormalValues = Array.isArray(analyte.expected_normal_values)
+            ? analyte.expected_normal_values.map(String).map((value: string) => value.trim()).filter(Boolean)
+            : [];
+          return {
           name: analyte.name || '',
           unit: analyte.unit || '',
           reference_range: this.formatReferenceRange(analyte.reference_min, analyte.reference_max),
@@ -279,9 +283,9 @@ class SecureGeminiAIService {
           formula: null,
           formula_variables: [],
           formula_description: null,
-          value_type: 'numeric',
-          expected_normal_values: []
-        })),
+          value_type: normalizeAnalyteValueType(analyte.value_type, expectedNormalValues, analyte.unit) || 'numeric',
+          expected_normal_values: expectedNormalValues
+        }}),
         test_group_analytes: (response.analytes || []).map((analyte: any) => ({
           test_group_code: this.generateTestCode(response.testGroup.name || ''),
           analyte_name: analyte.name || ''
@@ -330,6 +334,115 @@ class SecureGeminiAIService {
 // Export the secure service instance
 export const geminiAI = new SecureGeminiAIService();
 export { SecureGeminiAIService as GeminiAIService };
+
+// ─── Analyte Configuration ───────────────────────────────────────────────────
+
+export interface AnalyteConfigurationResponse {
+  name: string;
+  code: string;
+  unit: string;
+  reference_range: string;
+  low_critical: string | null;
+  high_critical: string | null;
+  interpretation_low: string;
+  interpretation_normal: string;
+  interpretation_high: string;
+  category: string;
+  value_type: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
+  expected_normal_values: string[];
+  description: string;
+  ai_processing_type: string;
+  group_ai_mode: 'individual' | 'group_only' | 'both';
+  ai_prompt_override: string | null;
+  is_calculated: boolean;
+  formula: string | null;
+  formula_variables: string[];
+  formula_description: string | null;
+  confidence: number;
+  reasoning: string;
+}
+
+export function normalizeAnalyteValueType(
+  rawValueType?: string | null,
+  expectedNormalValues?: string[] | null,
+  unit?: string | null,
+): 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive' | null {
+  const normalized = (rawValueType || '').trim().toLowerCase();
+  const unitNormalized = (unit || '').trim().toLowerCase();
+  const hasExpectedValues = Array.isArray(expectedNormalValues) && expectedNormalValues.length > 0;
+
+  if (
+    normalized === 'numeric' ||
+    normalized === 'number' ||
+    normalized === 'quantitative'
+  ) {
+    return 'numeric';
+  }
+
+  if (
+    normalized === 'qualitative' ||
+    normalized === 'categorical' ||
+    normalized === 'category'
+  ) {
+    return 'qualitative';
+  }
+
+  if (
+    normalized === 'semi_quantitative' ||
+    normalized === 'semi-quantitative' ||
+    normalized === 'semiquantitative' ||
+    normalized === 'graded'
+  ) {
+    return 'semi_quantitative';
+  }
+
+  if (
+    normalized === 'descriptive' ||
+    normalized === 'text' ||
+    normalized === 'free_text' ||
+    normalized === 'free-text' ||
+    normalized === 'comment' ||
+    normalized === 'comments'
+  ) {
+    return 'descriptive';
+  }
+
+  if (hasExpectedValues) {
+    return 'qualitative';
+  }
+
+  if (unitNormalized === 'qualitative') {
+    return 'qualitative';
+  }
+
+  return null;
+}
+
+/**
+ * Generate a complete analyte configuration using AI
+ */
+export async function generateAnalyteConfiguration(
+  analyteName: string,
+  options?: { description?: string; category?: string }
+): Promise<AnalyteConfigurationResponse> {
+  const { data, error } = await supabase.functions.invoke('ai-analyte-configurator', {
+    body: {
+      analyteName,
+      description: options?.description,
+      category: options?.category,
+    },
+  });
+
+  if (error) {
+    throw new Error(`Edge Function failed: ${error.message || 'Unknown error'}`);
+  }
+
+  if (!data?.success) {
+    throw new Error(data?.error || 'AI analyte configurator returned unsuccessful response');
+  }
+
+  return data.data as AnalyteConfigurationResponse;
+}
 
 // Export the generateTestConfiguration function directly for easier use
 export const generateTestConfiguration = geminiAI.generateTestConfiguration.bind(geminiAI);

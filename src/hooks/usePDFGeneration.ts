@@ -1,4 +1,5 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useContext } from 'react';
+import { QZTrayContext } from '../contexts/QZTrayContext';
 import type { LabTemplateRecord, PreparedPDFBundle, PdfCoRequestOptions } from '../utils/pdfService';
 import {
   generateAndSavePDFReportWithProgress,
@@ -29,6 +30,7 @@ interface PDFGenerationState {
 }
 
 export const usePDFGeneration = () => {
+  const { autoPrintReport } = useContext(QZTrayContext);
   const [state, setState] = useState<PDFGenerationState>({
     isGenerating: false,
     stage: '',
@@ -39,7 +41,7 @@ export const usePDFGeneration = () => {
   const lastBundleRef = useRef<PreparedPDFBundle | null>(null);
   const lastReportDataRef = useRef<ReportData | null>(null);
 
-  const generatePDF = useCallback(async (orderId: string, forceDraft = false) => {
+  const generatePDF = useCallback(async (orderId: string, forceDraft = false, draftVariant: 'ecopy' | 'print' = 'ecopy') => {
     setState({
       isGenerating: true,
       stage: 'Initializing...',
@@ -55,7 +57,7 @@ export const usePDFGeneration = () => {
       if (!authData?.session) {
         throw new Error('Not authenticated');
       }
-      
+
       // Get current user ID for WhatsApp integration
       const triggeredByUserId = authData.session.user?.id;
 
@@ -74,15 +76,19 @@ export const usePDFGeneration = () => {
       }
 
       const result = response.data;
-      
+
       if (!result || !result.pdfUrl) {
         throw new Error('No PDF URL returned from Edge Function');
       }
 
       setState(prev => ({ ...prev, stage: 'PDF generated, downloading...', progress: 80 }));
 
-      // Download the E-Copy PDF (Edge function returns 'pdfUrl' for e-copy)
-      const pdfUrl = result.pdfUrl;
+      // Choose eCopy or Print URL based on draftVariant
+      const usePrint = draftVariant === 'print' && !!result.printPdfUrl;
+      if (draftVariant === 'print' && !result.printPdfUrl) {
+        console.warn('Print PDF URL not available, falling back to eCopy');
+      }
+      const pdfUrl = usePrint ? result.printPdfUrl : result.pdfUrl;
       const fetchResponse = await fetch(pdfUrl);
       
       if (fetchResponse.ok) {
@@ -93,7 +99,7 @@ export const usePDFGeneration = () => {
         const { data: context } = await database.reports.getTemplateContext(orderId);
         const safePatientName = context?.patient?.name?.replace(/\s+/g, '_') || 'Patient';
         const isDraft = result.status === 'draft';
-        const filename = `${safePatientName}_${orderId}${isDraft ? '_DRAFT' : ''}.pdf`;
+        const filename = `${safePatientName}_${orderId}${isDraft ? '_DRAFT' : ''}${usePrint ? '_PRINT' : ''}.pdf`;
         
         const link = document.createElement('a');
         link.href = downloadUrl;
@@ -108,7 +114,12 @@ export const usePDFGeneration = () => {
           stage: 'PDF downloaded successfully!',
           progress: 100
         }));
-        
+
+        // Auto-print report via QZ Tray if enabled (only for final/approved reports, not drafts)
+        if (!isDraft) {
+          autoPrintReport(pdfUrl).catch(() => {});
+        }
+
         // Auto-hide after 2 seconds on success
         setTimeout(() => {
           setState(prev => ({ ...prev, isGenerating: false }));

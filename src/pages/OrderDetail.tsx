@@ -42,6 +42,8 @@ type TestGroupForOrder = {
   test_group_name: string;
   order_test_group_id: string | null;
   order_test_id: string | null;
+  result_id?: string | null;
+  is_section_only?: boolean;
   analytes: AnalyteLite[];
 };
 
@@ -129,8 +131,10 @@ export default function OrderDetail() {
               code,
               category,
               lab_id,
+              is_section_only,
               test_group_analytes(
                 analyte_id,
+                lab_analyte_id,
                 analytes(
                   id,
                   name,
@@ -138,6 +142,16 @@ export default function OrderDetail() {
                   reference_range,
                   ai_processing_type,
                   ai_prompt_override,
+                  is_calculated,
+                  formula,
+                  formula_variables
+                ),
+                lab_analytes(
+                  id,
+                  name,
+                  unit,
+                  reference_range,
+                  lab_specific_reference_range,
                   is_calculated,
                   formula,
                   formula_variables
@@ -156,8 +170,10 @@ export default function OrderDetail() {
               code,
               category,
               lab_id,
+              is_section_only,
               test_group_analytes(
                 analyte_id,
+                lab_analyte_id,
                 analytes(
                   id,
                   name,
@@ -165,6 +181,16 @@ export default function OrderDetail() {
                   reference_range,
                   ai_processing_type,
                   ai_prompt_override,
+                  is_calculated,
+                  formula,
+                  formula_variables
+                ),
+                lab_analytes(
+                  id,
+                  name,
+                  unit,
+                  reference_range,
+                  lab_specific_reference_range,
                   is_calculated,
                   formula,
                   formula_variables
@@ -221,18 +247,31 @@ export default function OrderDetail() {
             test_group_name: otg.test_groups.name,
             order_test_group_id: otg.id,
             order_test_id: null,
+            result_id: data.results?.find((r: any) => r.order_test_group_id === otg.id || r.test_group_id === otg.test_groups.id)?.id || null,
+            is_section_only: !!otg.test_groups.is_section_only,
             analytes:
-              otg.test_groups.test_group_analytes?.map((tga: any) => ({
-                ...tga.analytes,
-                code: otg.test_groups.code,
-                units: tga.analytes.unit,
-                existing_result:
-                  data.results
-                    ?.find((r: any) => r.order_test_group_id === otg.id)
-                    ?.result_values?.find(
-                      (rv: any) => rv.analyte_id === tga.analytes.id
-                    ) || null,
-              })) || [],
+              otg.test_groups.test_group_analytes?.map((tga: any) => {
+                const a = tga.analytes;
+                const la = tga.lab_analyte_id ? tga.lab_analytes : null;
+                return {
+                  ...a,
+                  lab_analyte_id: tga.lab_analyte_id || la?.id || null,
+                  name: la?.name || a.name,
+                  unit: la?.unit || a.unit,
+                  reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a.reference_range,
+                  is_calculated: la?.is_calculated ?? a.is_calculated,
+                  formula: la?.formula ?? a.formula,
+                  formula_variables: la?.formula_variables ?? a.formula_variables,
+                  code: otg.test_groups.code,
+                  units: la?.unit || a.unit,
+                  existing_result:
+                    data.results
+                      ?.find((r: any) => r.order_test_group_id === otg.id)
+                      ?.result_values?.find(
+                        (rv: any) => rv.analyte_id === a.id
+                      ) || null,
+                };
+              }) || [],
           })) || [];
 
       const testGroupsFromOT =
@@ -243,18 +282,31 @@ export default function OrderDetail() {
             test_group_name: ot.test_groups.name,
             order_test_group_id: null,
             order_test_id: ot.id,
+            result_id: data.results?.find((r: any) => r.order_test_id === ot.id || r.test_group_id === ot.test_groups.id)?.id || null,
+            is_section_only: !!ot.test_groups.is_section_only,
             analytes:
-              ot.test_groups.test_group_analytes?.map((tga: any) => ({
-                ...tga.analytes,
-                code: ot.test_groups.code,
-                units: tga.analytes.unit,
-                existing_result:
-                  data.results
-                    ?.find((r: any) => r.order_test_id === ot.id)
-                    ?.result_values?.find(
-                      (rv: any) => rv.analyte_id === tga.analytes.id
-                    ) || null,
-              })) || [],
+              ot.test_groups.test_group_analytes?.map((tga: any) => {
+                const a = tga.analytes;
+                const la = tga.lab_analyte_id ? tga.lab_analytes : null;
+                return {
+                  ...a,
+                  lab_analyte_id: tga.lab_analyte_id || la?.id || null,
+                  name: la?.name || a.name,
+                  unit: la?.unit || a.unit,
+                  reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a.reference_range,
+                  is_calculated: la?.is_calculated ?? a.is_calculated,
+                  formula: la?.formula ?? a.formula,
+                  formula_variables: la?.formula_variables ?? a.formula_variables,
+                  code: ot.test_groups.code,
+                  units: la?.unit || a.unit,
+                  existing_result:
+                    data.results
+                      ?.find((r: any) => r.order_test_id === ot.id)
+                      ?.result_values?.find(
+                        (rv: any) => rv.analyte_id === a.id
+                      ) || null,
+                };
+              }) || [],
           })) || [];
 
       // Merge by test_group_id & union analytes
@@ -275,6 +327,8 @@ export default function OrderDetail() {
               order_test_group_id:
                 existing.order_test_group_id || current.order_test_group_id,
               order_test_id: existing.order_test_id || current.order_test_id,
+              result_id: existing.result_id || current.result_id,
+              is_section_only: existing.is_section_only || current.is_section_only,
             };
           }
           return acc;

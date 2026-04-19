@@ -1,9 +1,10 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { X, Save, AlertCircle, Flag, Calculator, Link2, Search, Plus, Trash2, ChevronDown } from 'lucide-react';
+import { X, Save, AlertCircle, Flag, Calculator, Link2, Search, Plus, Trash2, ChevronDown, Activity } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
 
 interface SourceAnalyte {
   id: string;
+  lab_analyte_id?: string | null;
   name: string;
   unit: string;
   category?: string;
@@ -51,6 +52,8 @@ interface SimpleAnalyteEditorProps {
     formula_description?: string;
     // Lab-level display name override (highest priority in PDF reports)
     display_name?: string | null;
+    // lab_analytes PK — used to load/save lab_analyte_interface_config
+    lab_analyte_id?: string | null;
   };
   availableAnalytes?: SourceAnalyte[];
   onSave: (analyte: any) => void;
@@ -99,6 +102,24 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
   const [expectedValueFlagMap, setExpectedValueFlagMap] = useState<Record<string, string>>(
     analyte.expected_value_flag_map || {}
   );
+
+  useEffect(() => {
+    setFormData(analyte);
+    setExpectedNormalValuesText(analyte.expected_normal_values?.join('\n') || '');
+    setValueType(analyte.value_type || '');
+    setDefaultValue(analyte.default_value || '');
+    setQuickCodes(
+      Object.entries(analyte.expected_value_codes || {}).map(([code, value]) => ({ code, value }))
+    );
+    setFormulaData({
+      is_calculated: analyte.is_calculated || false,
+      formula: analyte.formula || '',
+      formula_variables: analyte.formula_variables || [],
+      formula_description: analyte.formula_description || ''
+    });
+    setFormulaVariablesText((analyte.formula_variables || []).join(', '));
+    setExpectedValueFlagMap(analyte.expected_value_flag_map || {});
+  }, [analyte]);
   const [labFlagOptions, setLabFlagOptions] = useState<Array<{value: string; label: string}>>([
     { value: '', label: 'Normal' },
     { value: 'H', label: 'High' },
@@ -106,6 +127,19 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     { value: 'A', label: 'Abnormal' },
     { value: 'C', label: 'Critical' },
   ]);
+
+  // Analyzer interface config state (lab_analyte_interface_config row)
+  const [interfaceConfigId, setInterfaceConfigId] = useState<string | null>(null);
+  const [interfaceConfig, setInterfaceConfig] = useState({
+    instrument_unit: '',
+    lims_unit: '',
+    multiply_by: '1',
+    add_offset: '0',
+    dilution_factor: '1',
+    dilution_mode: 'auto',
+    auto_verify: false,
+    notes: '',
+  });
 
   React.useEffect(() => {
     const loadLabOptions = async () => {
@@ -124,7 +158,35 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       }
     };
 
+    const loadInterfaceConfig = async () => {
+      const labAnalyteId = analyte.lab_analyte_id;
+      if (!labAnalyteId) return;
+      try {
+        const { data } = await supabase
+          .from('lab_analyte_interface_config')
+          .select('id, instrument_unit, lims_unit, multiply_by, add_offset, dilution_factor, dilution_mode, auto_verify, notes')
+          .eq('lab_analyte_id', labAnalyteId)
+          .maybeSingle();
+        if (data) {
+          setInterfaceConfigId(data.id);
+          setInterfaceConfig({
+            instrument_unit: data.instrument_unit || '',
+            lims_unit: data.lims_unit || '',
+            multiply_by: String(data.multiply_by ?? 1),
+            add_offset: String(data.add_offset ?? 0),
+            dilution_factor: String(data.dilution_factor ?? 1),
+            dilution_mode: data.dilution_mode || 'auto',
+            auto_verify: data.auto_verify ?? false,
+            notes: data.notes || '',
+          });
+        }
+      } catch (e) {
+        console.error('Failed to load interface config:', e);
+      }
+    };
+
     loadLabOptions();
+    loadInterfaceConfig();
   }, []);
 
   // Generate a short variable slug from analyte name
@@ -147,19 +209,60 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     return words.map(w => w.substring(0, 3)).join('').toUpperCase().substring(0, 6);
   };
 
-  // Pre-populate selectedSources from existing formula_variables on mount
+  // Pre-populate selectedSources from saved dependency rows first.
+  // Falling back to formula_variables slug matching is lossy and can reopen
+  // the wrong analyte (for example ALB matching "Albumin, Urine").
   useEffect(() => {
-    if (analyte.formula_variables && analyte.formula_variables.length > 0 && availableAnalytes.length > 0) {
-      const sources = analyte.formula_variables.map((varName: string) => {
-        const matched = availableAnalytes.find(a => generateVariableSlug(a.name) === varName);
-        return matched
-          ? { ...matched, variableName: varName }
-          : { id: `_manual_${varName}`, name: varName, unit: '', variableName: varName };
-      });
-      setSelectedSources(sources);
-    }
+    const loadSelectedSources = async () => {
+      if (!formulaData.is_calculated && !analyte.is_calculated) {
+        setSelectedSources([]);
+        return;
+      }
+
+      try {
+        const labId = await database.getCurrentUserLabId();
+        const { data: existingDeps, error: depsError } = await database.analyteDependencies.getByAnalyte(analyte.id, {
+          labId: labId || undefined,
+          calculatedLabAnalyteId: analyte.lab_analyte_id || null,
+        });
+
+        if (!depsError && existingDeps && existingDeps.length > 0) {
+          const sources = existingDeps.map((dep: any) => {
+            const sourceLabAnalyte = dep.source_lab_analyte;
+            const sourceAnalyte = dep.source_analyte;
+            return {
+              id: sourceLabAnalyte?.analyte_id || sourceAnalyte?.id || dep.source_analyte_id,
+              lab_analyte_id: dep.source_lab_analyte_id || sourceLabAnalyte?.id || null,
+              name: sourceLabAnalyte?.name || sourceAnalyte?.name || dep.variable_name,
+              unit: sourceLabAnalyte?.unit || sourceAnalyte?.unit || '',
+              category: sourceLabAnalyte?.category,
+              variableName: dep.variable_name,
+            };
+          });
+          setSelectedSources(sources);
+          return;
+        }
+      } catch (e) {
+        console.error('Failed to load analyte dependencies for editor:', e);
+      }
+
+      if (analyte.formula_variables && analyte.formula_variables.length > 0 && availableAnalytes.length > 0) {
+        const sources = analyte.formula_variables.map((varName: string) => {
+          const matched = availableAnalytes.find(a => generateVariableSlug(a.name) === varName);
+          return matched
+            ? { ...matched, variableName: varName }
+            : { id: `_manual_${varName}`, name: varName, unit: '', variableName: varName };
+        });
+        setSelectedSources(sources);
+        return;
+      }
+
+      setSelectedSources([]);
+    };
+
+    loadSelectedSources();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [analyte.id, analyte.lab_analyte_id, analyte.formula_variables, availableAnalytes]);
 
   // Sync selectedSources → formulaVariablesText
   useEffect(() => {
@@ -180,13 +283,10 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
   }, [showSourcePicker]);
 
   const inGroupSet = useMemo(() => new Set(testGroupAnalyteIds), [testGroupAnalyteIds]);
-  // Name set for fallback — a source analyte with a different ID but same name counts as "in group"
-  const inGroupNameSet = useMemo(
-    () => new Set(availableAnalytes.filter(a => inGroupSet.has(a.id)).map(a => a.name.toLowerCase())),
-    [availableAnalytes, inGroupSet]
-  );
-  const isInGroup = (source: { id: string; name: string }) =>
-    inGroupSet.has(source.id) || inGroupNameSet.has(source.name.toLowerCase());
+  // Treat "in group" as an exact analyte attachment check only.
+  // Name-based fallback makes duplicate same-name analytes (for example multiple
+  // Albumin rows) all appear as if they belong to this test group.
+  const isInGroup = (source: { id: string }) => inGroupSet.has(source.id);
 
   const filteredSourceAnalytes = useMemo(() => {
     const filtered = availableAnalytes.filter(a => {
@@ -198,13 +298,40 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       }
       return true;
     });
+
+    // Collapse obvious duplicate choices in the picker. This keeps the source
+    // list aligned with what the user expects from test_group_analytes while
+    // still preserving distinct analytes when their displayed unit differs.
+    const dedupedMap = new Map<string, SourceAnalyte>();
+    for (const item of filtered) {
+      const key = `${item.name.trim().toLowerCase()}|${(item.unit || '').trim().toLowerCase()}`;
+      const existing = dedupedMap.get(key);
+      if (!existing) {
+        dedupedMap.set(key, item);
+        continue;
+      }
+
+      const existingScore =
+        (isInGroup(existing) ? 10 : 0) +
+        (existing.lab_analyte_id ? 2 : 0);
+      const itemScore =
+        (isInGroup(item) ? 10 : 0) +
+        (item.lab_analyte_id ? 2 : 0);
+
+      if (itemScore > existingScore) {
+        dedupedMap.set(key, item);
+      }
+    }
+
+    const deduped = Array.from(dedupedMap.values());
     // Sort: analytes in this test group appear first
-    filtered.sort((a, b) => {
+    deduped.sort((a, b) => {
       const aIn = isInGroup(a) ? 0 : 1;
       const bIn = isInGroup(b) ? 0 : 1;
-      return aIn - bIn;
+      if (aIn !== bIn) return aIn - bIn;
+      return a.name.localeCompare(b.name);
     });
-    return filtered.slice(0, 30);
+    return deduped.slice(0, 30);
   }, [availableAnalytes, selectedSources, sourceSearchTerm, analyte.id, inGroupSet]);
 
   const handleAddSource = (source: SourceAnalyte) => {
@@ -252,6 +379,11 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     setError(null);
 
     try {
+      // Validate required fields (e.preventDefault bypasses browser native validation)
+      if (!formData.category) {
+        throw new Error('Category is required. Please select a category.');
+      }
+
       // Get current lab ID
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
@@ -274,10 +406,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
 
       // Update lab_analytes table (lab-specific) — formula fields are stored here,
       // NOT in the global analytes table, so one lab's formula change never affects others.
-      const { data, error: updateError } = await database.labAnalytes.updateLabSpecific(
-        labId,
-        formData.id, // analyte_id
-        {
+      const updates = {
           // Update actual values
           name: formData.name,
           unit: formData.unit,
@@ -320,22 +449,60 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           formula: formulaData.formula || null,
           formula_variables: parsedVars.length > 0 ? parsedVars : [],
           formula_description: formulaData.formula_description || null,
-        }
-      );
+        };
+
+      const { data, error: updateError } = formData.lab_analyte_id
+        ? await database.labAnalytes.updateFieldsById(formData.lab_analyte_id, updates)
+        : await database.labAnalytes.updateLabSpecific(
+            labId,
+            formData.id, // legacy fallback by analyte_id
+            updates
+          );
 
       if (updateError) throw updateError;
 
-      // Save lab-specific analyte_dependencies if source analytes were selected via picker
-      if ((formulaData.is_calculated || analyte.is_calculated) && selectedSources.length > 0) {
-        const deps = selectedSources
-          .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
-          .map(s => ({ source_analyte_id: s.id, variable_name: s.variableName }));
+      // Save lab_analyte_interface_config (dilution, unit conversion, auto-verify)
+      const labAnalyteId = analyte.lab_analyte_id;
+      if (labAnalyteId) {
+        const configPayload = {
+          lab_id: labId,
+          lab_analyte_id: labAnalyteId,
+          instrument_unit: interfaceConfig.instrument_unit || null,
+          lims_unit: interfaceConfig.lims_unit || null,
+          multiply_by: parseFloat(interfaceConfig.multiply_by) || 1,
+          add_offset: parseFloat(interfaceConfig.add_offset) || 0,
+          dilution_factor: Math.max(1, parseFloat(interfaceConfig.dilution_factor) || 1),
+          dilution_mode: interfaceConfig.dilution_mode || 'auto',
+          auto_verify: interfaceConfig.auto_verify,
+          notes: interfaceConfig.notes || null,
+          updated_at: new Date().toISOString(),
+        };
+        if (interfaceConfigId) {
+          await supabase
+            .from('lab_analyte_interface_config')
+            .update(configPayload)
+            .eq('id', interfaceConfigId);
+        } else {
+          const { data: newConfig } = await supabase
+            .from('lab_analyte_interface_config')
+            .insert(configPayload)
+            .select('id')
+            .single();
+          if (newConfig?.id) setInterfaceConfigId(newConfig.id);
+        }
+      }
 
-        if (deps.length > 0) {
-          const { error: depError } = await database.analyteDependencies.setDependencies(formData.id, deps, labId);
-          if (depError) {
-            console.error('Failed to save analyte dependencies:', depError);
-          }
+      // Save lab-specific analyte_dependencies if source analytes were selected via picker
+        if ((formulaData.is_calculated || analyte.is_calculated) && selectedSources.length > 0) {
+          const deps = selectedSources
+            .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
+            .map(s => ({ source_analyte_id: s.id, source_lab_analyte_id: s.lab_analyte_id || null, variable_name: s.variableName }));
+
+          if (deps.length > 0) {
+            const { error: depError } = await database.analyteDependencies.setDependencies(formData.id, deps, labId, analyte.lab_analyte_id || null);
+            if (depError) {
+              console.error('Failed to save analyte dependencies:', depError);
+            }
         }
       }
 
@@ -931,43 +1098,6 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                 <p className="text-xs text-gray-500 mt-1">Provide specific context, conditions, or rules that the AI should follow when determining reference ranges</p>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="flex items-start space-x-3">
-                  <input
-                    type="checkbox"
-                    id="is_global"
-                    checked={formData.is_global || false}
-                    onChange={(e) => setFormData(prev => ({ ...prev, is_global: e.target.checked }))}
-                    className="mt-1 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                  />
-                  <div>
-                    <label htmlFor="is_global" className="text-sm font-medium text-gray-700">
-                      Global Analyte
-                    </label>
-                    <p className="text-xs text-gray-500 mt-1">
-                      Available across all lab branches/locations
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-start space-x-3">
-                  <input
-                    type="checkbox"
-                    id="to_be_copied"
-                    checked={formData.to_be_copied || false}
-                    onChange={(e) => setFormData(prev => ({ ...prev, to_be_copied: e.target.checked }))}
-                    className="mt-1 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-                  />
-                  <div>
-                    <label htmlFor="to_be_copied" className="text-sm font-medium text-gray-700">
-                      To Be Copied
-                    </label>
-                    <p className="text-xs text-gray-500 mt-1">
-                      Mark for replication to other systems
-                    </p>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
 
@@ -1242,6 +1372,138 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
               </p>
             </div>
           </div>
+
+          {/* Analyzer Interface Config — only shown when this analyte has a lab_analyte_id */}
+          {analyte.lab_analyte_id && (
+            <div className="bg-teal-50 p-4 rounded-lg border border-teal-200">
+              <h4 className="text-lg font-medium text-gray-900 mb-1 flex items-center">
+                <Activity className="w-5 h-5 mr-2 text-teal-600" />
+                Analyzer Interface Config
+              </h4>
+              <p className="text-xs text-teal-700 mb-4">
+                Lab-specific settings for how this analyte is processed on the analyzer. These override global defaults per lab.
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Dilution Factor
+                    <span className="ml-1 text-xs text-gray-400 font-normal">(1 = neat, 2 = 1:2, 5 = 1:5)</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="0.5"
+                    value={interfaceConfig.dilution_factor}
+                    onChange={(e) => setInterfaceConfig(prev => ({ ...prev, dilution_factor: e.target.value }))}
+                    className="w-full px-3 py-2 border border-teal-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Dilution Mode</label>
+                  <select
+                    value={interfaceConfig.dilution_mode}
+                    onChange={(e) => setInterfaceConfig(prev => ({ ...prev, dilution_mode: e.target.value }))}
+                    className="w-full px-3 py-2 border border-teal-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  >
+                    <option value="auto">Auto — analyzer dilutes automatically</option>
+                    <option value="manual">Manual — technician dilutes before loading</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Instrument Unit
+                    <span className="ml-1 text-xs text-gray-400 font-normal">(unit the analyzer reports in)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={interfaceConfig.instrument_unit}
+                    onChange={(e) => setInterfaceConfig(prev => ({ ...prev, instrument_unit: e.target.value }))}
+                    placeholder="e.g., mmol/L"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    LIMS Unit
+                    <span className="ml-1 text-xs text-gray-400 font-normal">(unit shown in reports)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={interfaceConfig.lims_unit}
+                    onChange={(e) => setInterfaceConfig(prev => ({ ...prev, lims_unit: e.target.value }))}
+                    placeholder="e.g., mg/dL"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Multiply By
+                    <span className="ml-1 text-xs text-gray-400 font-normal">(unit conversion factor)</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={interfaceConfig.multiply_by}
+                    onChange={(e) => setInterfaceConfig(prev => ({ ...prev, multiply_by: e.target.value }))}
+                    placeholder="1"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    result = (instrument_value × multiply_by) + add_offset
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Add Offset
+                    <span className="ml-1 text-xs text-gray-400 font-normal">(applied after multiply)</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={interfaceConfig.add_offset}
+                    onChange={(e) => setInterfaceConfig(prev => ({ ...prev, add_offset: e.target.value }))}
+                    placeholder="0"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 flex items-start space-x-3">
+                <input
+                  type="checkbox"
+                  id="auto_verify"
+                  checked={interfaceConfig.auto_verify}
+                  onChange={(e) => setInterfaceConfig(prev => ({ ...prev, auto_verify: e.target.checked }))}
+                  className="mt-1 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                />
+                <div>
+                  <label htmlFor="auto_verify" className="text-sm font-medium text-gray-700">
+                    Auto-Verify Results
+                  </label>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Skip manual verification for this analyte when received from analyzer (use only for low-risk parameters).
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Interface Notes</label>
+                <textarea
+                  value={interfaceConfig.notes}
+                  onChange={(e) => setInterfaceConfig(prev => ({ ...prev, notes: e.target.value }))}
+                  rows={2}
+                  placeholder="Any special handling notes for this analyte on the analyzer..."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                />
+              </div>
+            </div>
+          )}
 
           <div className="flex justify-end space-x-3 pt-4 border-t">
             <button

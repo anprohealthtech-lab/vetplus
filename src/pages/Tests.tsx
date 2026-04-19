@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, EyeOff, Edit, Link2, Calculator, RefreshCw, Brain, ChevronDown, ShieldAlert } from 'lucide-react';
+import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, EyeOff, Edit, Link2, Calculator, RefreshCw, Brain, ChevronDown, ShieldAlert, FlaskConical } from 'lucide-react';
 import { database, supabase } from '../utils/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import TestGroupForm from '../components/Tests/TestGroupForm';
@@ -13,7 +13,7 @@ import PackageDetailModal from '../components/Tests/PackageDetailModal';
 import { SimpleAnalyteEditor } from '../components/TestGroups/SimpleAnalyteEditor';
 import AnalyteDependencyManager from '../components/Tests/AnalyteDependencyManager';
 import { AITestConfigurator } from '../components/AITools/AITestConfigurator';
-import { TestConfigurationResponse } from '../utils/geminiAI';
+import { TestConfigurationResponse, normalizeAnalyteValueType } from '../utils/geminiAI';
 
 interface Test {
   id: string;
@@ -35,6 +35,7 @@ interface Test {
 interface Analyte {
   id: string;
   lab_analyte_id?: string; // lab_analytes primary key (used for per-row deactivation)
+  testGroupCount?: number;
   name: string;
   unit: string;
   referenceRange?: string;
@@ -88,6 +89,7 @@ interface TestGroup {
   createdDate?: string;
   default_ai_processing_type?: string;
   group_level_prompt?: string;
+  global_test_catalog_id?: string | null;
   testType?: string;
   gender?: string;
   sampleColor?: string;
@@ -109,6 +111,7 @@ interface TestGroup {
   required_patient_inputs?: string[];
   is_outsourced?: boolean;
   default_outsourced_lab_id?: string;
+  is_section_only?: boolean;
 }
 
 interface PackageType {
@@ -160,6 +163,7 @@ const Tests: React.FC = () => {
   const [inactiveAnalytes, setInactiveAnalytes] = useState<Analyte[]>([]);
   const [showInactiveAnalytes, setShowInactiveAnalytes] = useState(false);
   const [loadingInactiveAnalytes, setLoadingInactiveAnalytes] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [packages, setPackages] = useState<PackageType[]>([]);
   const [showTestForm, setShowTestForm] = useState(false);
   const [showAnalyteForm, setShowAnalyteForm] = useState(false);
@@ -197,9 +201,17 @@ const Tests: React.FC = () => {
   // State for AI Configurator
   const [showAIConfigurator, setShowAIConfigurator] = useState(false);
   const [analyteSort, setAnalyteSort] = useState<'asc' | 'desc' | null>(null);
+  const [outsourcedFilter, setOutsourcedFilter] = useState<'all' | 'inhouse' | 'outsourced'>('all');
 
   // Lab-level flag options for analyte flag mapping
   const [labFlagOptions, setLabFlagOptions] = useState<Array<{value: string; label: string}>>([]);
+
+  // Analyte linked test groups popup
+  const [analyteGroupsPopup, setAnalyteGroupsPopup] = useState<{
+    analyte: Analyte;
+    groups: { id: string; name: string; code?: string; category: string }[];
+    loading: boolean;
+  } | null>(null);
 
   console.log('✅ Tests component state initialized');
 
@@ -252,6 +264,7 @@ const Tests: React.FC = () => {
       const testGroupData = {
         name: config.test_group.name,
         code: config.test_group.code,
+        global_test_catalog_id: null,
         category: config.test_group.category,
         clinical_purpose: config.test_group.clinical_purpose,
         price: parseFloat(config.test_group.price),
@@ -283,20 +296,28 @@ const Tests: React.FC = () => {
       const finalAnalyteIds = [];
       const createdAnalytesInfo = [];
 
-      // We process analytes sequentially
-      for (const analyteData of config.analytes) {
-        let analyteId = null;
-        const isCalculated = toBoolean((analyteData as any).is_calculated);
-        const formula = typeof (analyteData as any).formula === 'string' ? (analyteData as any).formula.trim() : '';
-        const formulaVariables = parseFormulaVariables((analyteData as any).formula_variables);
+	      // We process analytes sequentially
+	      for (const analyteData of config.analytes) {
+	        let analyteId = null;
+	        const isCalculated = toBoolean((analyteData as any).is_calculated);
+	        const formula = typeof (analyteData as any).formula === 'string' ? (analyteData as any).formula.trim() : '';
+	        const formulaVariables = parseFormulaVariables((analyteData as any).formula_variables);
+	        const expectedNormalValues = Array.isArray((analyteData as any).expected_normal_values)
+	          ? (analyteData as any).expected_normal_values.map((value: unknown) => String(value).trim()).filter(Boolean)
+	          : [];
+	        const normalizedValueType = normalizeAnalyteValueType(
+	          (analyteData as any).value_type,
+	          expectedNormalValues,
+	          analyteData.unit,
+	        ) || (isCalculated ? 'numeric' : null);
 
-        // A. Check if analyte already exists (exact name match)
-        const { data: existingAnalyte } = await supabase
-          .from('analytes')
-          .select('id, name, is_calculated, formula')
-          .ilike('name', analyteData.name.trim())
-          .limit(1)
-          .single();
+	        // A. Check if analyte already exists (exact name match)
+	        const { data: existingAnalyte } = await supabase
+	          .from('analytes')
+	          .select('id, name, is_calculated, formula, value_type, expected_normal_values')
+	          .ilike('name', analyteData.name.trim())
+	          .limit(1)
+	          .single();
 
         if (existingAnalyte) {
           console.log(`♻️ Reusing existing analyte: ${existingAnalyte.name} (${existingAnalyte.id})`);
@@ -316,14 +337,14 @@ const Tests: React.FC = () => {
             is_active: true,
             is_global: false, // Lab specific
             ai_processing_type: normalizeAIProcessingType(analyteData.ai_processing_type || config.test_group.default_ai_processing_type),
-            group_ai_mode: analyteData.group_ai_mode || 'individual',
-            is_calculated: isCalculated,
-            formula: formula || null,
-            formula_variables: formulaVariables,
-            formula_description: (analyteData as any).formula_description || null,
-            value_type: (analyteData as any).value_type || (isCalculated ? 'numeric' : null),
-            expected_normal_values: Array.isArray((analyteData as any).expected_normal_values) ? (analyteData as any).expected_normal_values : []
-          };
+	            group_ai_mode: analyteData.group_ai_mode || 'individual',
+	            is_calculated: isCalculated,
+	            formula: formula || null,
+	            formula_variables: formulaVariables,
+	            formula_description: (analyteData as any).formula_description || null,
+	            value_type: normalizedValueType,
+	            expected_normal_values: expectedNormalValues
+	          };
 
           const { data: newAnalyte, error: analyteError } = await supabase
             .from('analytes')
@@ -340,26 +361,37 @@ const Tests: React.FC = () => {
           }
         }
 
-        if (existingAnalyte && analyteId && isCalculated && formula && (!(existingAnalyte as any).is_calculated || !(existingAnalyte as any).formula)) {
-          const { error: updateExistingError } = await supabase
-            .from('analytes')
-            .update({
-              is_calculated: true,
-              formula,
-              formula_variables: formulaVariables,
-              formula_description: (analyteData as any).formula_description || null,
-              value_type: (analyteData as any).value_type || 'numeric',
-              reference_range: analyteData.reference_range || null,
-              interpretation_low: analyteData.interpretation_low || null,
-              interpretation_normal: analyteData.interpretation_normal || null,
-              interpretation_high: analyteData.interpretation_high || null
-            })
-            .eq('id', existingAnalyte.id);
+	        const existingExpectedValues = Array.isArray((existingAnalyte as any)?.expected_normal_values)
+	          ? (existingAnalyte as any).expected_normal_values
+	          : [];
+	        const shouldBackfillValueType = !!(existingAnalyte && analyteId && normalizedValueType && !(existingAnalyte as any).value_type);
+	        const shouldBackfillExpectedValues = !!(existingAnalyte && analyteId && expectedNormalValues.length > 0 && existingExpectedValues.length === 0);
+	        const shouldBackfillCalculated =
+	          !!(existingAnalyte && analyteId && isCalculated && formula && (!(existingAnalyte as any).is_calculated || !(existingAnalyte as any).formula));
 
-          if (updateExistingError) {
-            console.warn(`Failed to update existing calculated analyte ${existingAnalyte.name}:`, updateExistingError);
-          }
-        }
+	        if (shouldBackfillCalculated || shouldBackfillValueType || shouldBackfillExpectedValues) {
+	          const { error: updateExistingError } = await supabase
+	            .from('analytes')
+	            .update({
+	              ...(shouldBackfillCalculated ? {
+	                is_calculated: true,
+	                formula,
+	                formula_variables: formulaVariables,
+	                formula_description: (analyteData as any).formula_description || null,
+	                reference_range: analyteData.reference_range || null,
+	                interpretation_low: analyteData.interpretation_low || null,
+	                interpretation_normal: analyteData.interpretation_normal || null,
+	                interpretation_high: analyteData.interpretation_high || null,
+	              } : {}),
+	              ...(shouldBackfillValueType ? { value_type: normalizedValueType } : {}),
+	              ...(shouldBackfillExpectedValues ? { expected_normal_values: expectedNormalValues } : {}),
+	            })
+	            .eq('id', existingAnalyte.id);
+
+	          if (updateExistingError) {
+	            console.warn(`Failed to enrich existing analyte ${existingAnalyte.name}:`, updateExistingError);
+	          }
+	        }
 
         if (analyteId) {
           finalAnalyteIds.push({ id: analyteId });
@@ -370,9 +402,26 @@ const Tests: React.FC = () => {
 
       // 3. Link Analytes to Test Group
       if (newTestGroup && finalAnalyteIds.length > 0) {
+        // Resolve lab_analyte_id for each analyte
+        let labAnalyteMap: Record<string, string> = {};
+        if (newTestGroup.lab_id) {
+          const { data: laRows } = await supabase
+            .from('lab_analytes')
+            .select('id, analyte_id')
+            .eq('lab_id', newTestGroup.lab_id)
+            .in('analyte_id', finalAnalyteIds.map(a => a.id))
+            .order('created_at', { ascending: true });
+          if (laRows) {
+            for (const la of laRows) {
+              if (!labAnalyteMap[la.analyte_id]) labAnalyteMap[la.analyte_id] = la.id;
+            }
+          }
+        }
+
         const relationships = finalAnalyteIds.map((a, index) => ({
           test_group_id: newTestGroup.id,
           analyte_id: a.id,
+          lab_analyte_id: labAnalyteMap[a.id] || null,
           is_visible: true,
           display_order: index + 1
         }));
@@ -427,10 +476,7 @@ const Tests: React.FC = () => {
     setDangerTypeInput('');
   };
 
-  // Load data on component mount
-  React.useEffect(() => {
-    console.log('📊 Loading data from database...');
-    const loadData = async () => {
+  const loadData = React.useCallback(async () => {
       try {
         console.log('🔄 Starting parallel data load');
 
@@ -450,6 +496,7 @@ const Tests: React.FC = () => {
           const transformedAnalytes = (dbAnalytesData || []).map(analyte => ({
             id: analyte.id,
             lab_analyte_id: analyte.lab_analyte_id,
+            testGroupCount: analyte.test_group_count ?? 0,
             name: analyte.name,
             unit: analyte.unit,
             referenceRange: analyte.reference_range || analyte.referenceRange,
@@ -531,8 +578,11 @@ const Tests: React.FC = () => {
             ref_range_ai_config: group.ref_range_ai_config,
             required_patient_inputs: group.required_patient_inputs || [],
             group_interpretation: group.group_interpretation || null,
-            analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
-          }));
+		            global_test_catalog_id: group.global_test_catalog_id || null,
+		            analyzer_connection_id: group.analyzer_connection_id || null,
+		            is_section_only: group.is_section_only || false,
+	            analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
+	          }));
           setTestGroups(transformedTestGroups);
         }
 
@@ -572,8 +622,11 @@ const Tests: React.FC = () => {
         setTests([]);
         setPackages([]);
       }
-    };
+  }, []);
 
+  // Load data on component mount
+  React.useEffect(() => {
+    console.log('📊 Loading data from database...');
     loadData().then(() => {
       console.log('✅ All data loaded successfully');
     });
@@ -626,7 +679,10 @@ const Tests: React.FC = () => {
       const matchesSearch = group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         (group.code?.toLowerCase().includes(searchTerm.toLowerCase()) ?? false);
       const matchesCategory = selectedCategory === 'All' || group.category === selectedCategory;
-      return isVisible && matchesSearch && matchesCategory;
+      const matchesOutsourced = outsourcedFilter === 'all' ||
+        (outsourcedFilter === 'outsourced' && group.is_outsourced) ||
+        (outsourcedFilter === 'inhouse' && !group.is_outsourced);
+      return isVisible && matchesSearch && matchesCategory && matchesOutsourced;
     });
     if (analyteSort === null) return filtered;
     return [...filtered].sort((a, b) => {
@@ -900,10 +956,19 @@ const Tests: React.FC = () => {
 
   const handleEditAnalyte = async (analyte: Analyte) => {
     try {
-      const labId = await database.getCurrentUserLabId();
-      if (labId) {
-        const { data: labAnalyte } = await database.labAnalytes.getByLabAndAnalyte(labId, analyte.id);
-        if (labAnalyte) {
+      let labAnalyte: any = null;
+      if (analyte.lab_analyte_id) {
+        const { data } = await database.labAnalytes.getById(analyte.lab_analyte_id);
+        labAnalyte = data;
+      } else {
+        const labId = await database.getCurrentUserLabId();
+        if (labId) {
+          const { data } = await database.labAnalytes.getByLabAndAnalyte(labId, analyte.id);
+          labAnalyte = data;
+        }
+      }
+
+      if (labAnalyte) {
           const analyteSource = Array.isArray(labAnalyte.analytes) ? labAnalyte.analytes[0] : labAnalyte.analytes;
           const normalizeNumber = (value: any) => {
             if (value === null || value === undefined || value === '') return undefined;
@@ -914,9 +979,9 @@ const Tests: React.FC = () => {
           setEditingAnalyte({
             ...analyte,
             name: labAnalyte.name || analyte.name,
-            unit: labAnalyte.unit || analyte.unit,
-            category: labAnalyte.category || analyte.category,
-            referenceRange: labAnalyte.lab_specific_reference_range || labAnalyte.reference_range || analyte.referenceRange,
+            unit: labAnalyte.unit ?? analyte.unit,
+            category: labAnalyte.category || analyte.category || 'General',
+            referenceRange: (labAnalyte.lab_specific_reference_range ?? labAnalyte.reference_range ?? analyte.referenceRange) ?? '',
             lowCritical: normalizeNumber(labAnalyte.low_critical) ?? analyte.lowCritical,
             highCritical: normalizeNumber(labAnalyte.high_critical) ?? analyte.highCritical,
             interpretation: {
@@ -932,17 +997,17 @@ const Tests: React.FC = () => {
             ref_range_knowledge: labAnalyte.ref_range_knowledge || analyte.ref_range_knowledge,
             expected_normal_values: labAnalyte.expected_normal_values || analyte.expected_normal_values || [],
             expected_value_flag_map: labAnalyte.expected_value_flag_map || (analyteSource as any)?.expected_value_flag_map || analyte.expected_value_flag_map || {},
-            // Calculated parameter fields (from global analyte record)
-            isCalculated: analyteSource?.is_calculated || analyte.isCalculated || false,
-            formula: analyteSource?.formula || analyte.formula || '',
-            formulaVariables: analyteSource?.formula_variables || analyte.formulaVariables || [],
-            formulaDescription: analyteSource?.formula_description || analyte.formulaDescription || '',
+            // Calculated parameter fields: lab_analytes is source of truth, global analyte is fallback
+            isCalculated: labAnalyte.is_calculated ?? analyteSource?.is_calculated ?? analyte.isCalculated ?? false,
+            formula: labAnalyte.formula ?? analyteSource?.formula ?? analyte.formula ?? '',
+            formulaVariables: labAnalyte.formula_variables ?? analyteSource?.formula_variables ?? analyte.formulaVariables ?? [],
+            formulaDescription: labAnalyte.formula_description ?? analyteSource?.formula_description ?? analyte.formulaDescription ?? '',
             // Lab-level display name override
             display_name: labAnalyte.display_name || null,
+            lab_analyte_id: labAnalyte.id || analyte.lab_analyte_id,
           });
           setShowEditAnalyteModal(true);
           return;
-        }
       }
     } catch (error) {
       console.error('Failed to load lab analyte for edit:', error);
@@ -1070,11 +1135,14 @@ const Tests: React.FC = () => {
           ref_range_ai_config: updatedTestGroup.ref_range_ai_config,
           required_patient_inputs: updatedTestGroup.required_patient_inputs,
           is_outsourced: updatedTestGroup.is_outsourced,
-          default_outsourced_lab_id: updatedTestGroup.default_outsourced_lab_id,
-          default_template_style: updatedTestGroup.default_template_style || null,
-          print_options: updatedTestGroup.print_options ?? null,
-          group_interpretation: updatedTestGroup.group_interpretation || null,
-        };
+	          default_outsourced_lab_id: updatedTestGroup.default_outsourced_lab_id,
+	          default_template_style: updatedTestGroup.default_template_style || null,
+	          print_options: updatedTestGroup.print_options ?? null,
+		          group_interpretation: updatedTestGroup.group_interpretation || null,
+		          global_test_catalog_id: updatedTestGroup.global_test_catalog_id || null,
+		          analyzer_connection_id: updatedTestGroup.analyzer_connection_id || null,
+		          is_section_only: updatedTestGroup.is_section_only || false,
+	        };
         setTestGroups(prev => prev.map(tg => tg.id === editingTestGroup.id ? transformedGroup : tg));
         setShowTestGroupForm(false);
         setEditingTestGroup(null);
@@ -1117,10 +1185,7 @@ const Tests: React.FC = () => {
       }
 
       // Update lab_analytes table (lab-specific copy) instead of global analytes
-      const { data: updatedAnalyte, error } = await database.labAnalytes.updateLabSpecific(
-        labId,
-        editingAnalyte.id, // This is the analyte_id
-        {
+      const analyteUpdates = {
           // Update actual values in lab_analytes
           name: formData.name,
           unit: formData.unit,
@@ -1150,8 +1215,15 @@ const Tests: React.FC = () => {
           expected_normal_values: formData.expected_normal_values || [],
           // Dropdown value → flag mapping
           expected_value_flag_map: formData.expected_value_flag_map || {},
-        }
-      );
+        };
+
+      const { data: updatedAnalyte, error } = editingAnalyte.lab_analyte_id
+        ? await database.labAnalytes.updateFieldsById(editingAnalyte.lab_analyte_id, analyteUpdates)
+        : await database.labAnalytes.updateLabSpecific(
+            labId,
+            editingAnalyte.id, // This is the analyte_id
+            analyteUpdates
+          );
 
       if (error) {
         console.error('Error updating lab analyte:', error);
@@ -1162,6 +1234,7 @@ const Tests: React.FC = () => {
       if (updatedAnalyte) {
         const transformedAnalyte = {
           id: updatedAnalyte.analyte_id || editingAnalyte.id, // Use analyte_id from lab_analytes
+          lab_analyte_id: updatedAnalyte.id || editingAnalyte.lab_analyte_id,
           name: updatedAnalyte.name,
           unit: updatedAnalyte.unit,
           referenceRange: updatedAnalyte.reference_range ?? referenceRange,
@@ -1208,6 +1281,68 @@ const Tests: React.FC = () => {
       console.error('Unexpected error:', error);
       alert('Failed to update analyte. Please try again.');
     }
+  };
+
+  // Fetch test groups linked to an analyte and show popup
+  const handleShowAnalyteGroups = async (analyte: Analyte) => {
+    setAnalyteGroupsPopup({ analyte, groups: [], loading: true });
+    const labId = await database.getCurrentUserLabId();
+    const { data, error } = await supabase
+      .from('test_group_analytes')
+      .select('test_groups!inner(id, name, code, category, lab_id)')
+      .eq('analyte_id', analyte.id)
+      .eq('test_groups.lab_id', labId);
+    if (!error && data) {
+      const groups = data
+        .map((r: any) => Array.isArray(r.test_groups) ? r.test_groups[0] : r.test_groups)
+        .filter(Boolean);
+      setAnalyteGroupsPopup({ analyte, groups, loading: false });
+    } else {
+      setAnalyteGroupsPopup({ analyte, groups: [], loading: false });
+    }
+  };
+
+  // Handler for SimpleAnalyteEditor which already saves to lab_analytes directly.
+  // Do NOT save to DB again — a second partial save strips fields like
+  // value_type, expected_value_codes, default_value, formula that were just written.
+  const handleSimpleEditorSave = (formData: any) => {
+    if (!editingAnalyte) return;
+
+    const transformedAnalyte = {
+      ...editingAnalyte,
+      name: formData.name,
+      unit: formData.unit,
+      referenceRange: formData.reference_range ?? editingAnalyte.referenceRange,
+      lowCritical: formData.low_critical ?? editingAnalyte.lowCritical,
+      highCritical: formData.high_critical ?? editingAnalyte.highCritical,
+      interpretation: {
+        low: formData.interpretation_low ?? editingAnalyte.interpretationLow,
+        normal: formData.interpretation_normal ?? editingAnalyte.interpretationNormal,
+        high: formData.interpretation_high ?? editingAnalyte.interpretationHigh,
+      },
+      category: formData.category || editingAnalyte.category || 'General',
+      isActive: formData.is_active ?? editingAnalyte.isActive,
+      interpretationLow: formData.interpretation_low ?? editingAnalyte.interpretationLow,
+      interpretationNormal: formData.interpretation_normal ?? editingAnalyte.interpretationNormal,
+      interpretationHigh: formData.interpretation_high ?? editingAnalyte.interpretationHigh,
+      method: formData.method ?? editingAnalyte.method,
+      description: formData.description ?? editingAnalyte.description,
+      isCritical: formData.is_critical ?? editingAnalyte.isCritical,
+      aiProcessingType: formData.ai_processing_type ?? editingAnalyte.aiProcessingType,
+      groupAiMode: formData.group_ai_mode ?? editingAnalyte.groupAiMode,
+      aiPromptOverride: formData.ai_prompt_override ?? editingAnalyte.aiPromptOverride,
+      ref_range_knowledge: formData.ref_range_knowledge,
+      expected_normal_values: formData.expected_normal_values || [],
+      expected_value_flag_map: formData.expected_value_flag_map || {},
+      isCalculated: formData.is_calculated ?? editingAnalyte.isCalculated ?? false,
+      formula: formData.formula ?? editingAnalyte.formula ?? '',
+      formulaVariables: formData.formula_variables ?? editingAnalyte.formulaVariables ?? [],
+      formulaDescription: formData.formula_description ?? editingAnalyte.formulaDescription ?? '',
+    };
+
+    setAnalytes(prev => prev.map(a => a.id === editingAnalyte.id ? transformedAnalyte : a));
+    setShowEditAnalyteModal(false);
+    setEditingAnalyte(null);
   };
 
   const handleUpdateTest = (formData: any) => {
@@ -1333,8 +1468,10 @@ const Tests: React.FC = () => {
 	          report_priority: group.report_priority ?? null,
 	          default_template_style: group.default_template_style || null,
           print_options: group.print_options ?? null,
-          group_interpretation: group.group_interpretation || null,
-          analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
+	          group_interpretation: group.group_interpretation || null,
+	          global_test_catalog_id: group.global_test_catalog_id || null,
+	          analyzer_connection_id: group.analyzer_connection_id || null,
+	          analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
         }));
         setTestGroups(transformedTestGroups);
       }
@@ -1345,6 +1482,8 @@ const Tests: React.FC = () => {
       if (!analytesError && dbAnalytesData) {
         const transformedAnalytes = (dbAnalytesData || []).map(analyte => ({
           id: analyte.id,
+          lab_analyte_id: analyte.lab_analyte_id,
+          testGroupCount: analyte.test_group_count ?? 0,
           name: analyte.name,
           unit: analyte.unit,
           referenceRange: analyte.reference_range || analyte.referenceRange,
@@ -1468,7 +1607,9 @@ const Tests: React.FC = () => {
 	          report_priority: group.report_priority ?? null,
 	          default_template_style: group.default_template_style || null,
           print_options: group.print_options ?? null,
-          analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
+	          global_test_catalog_id: group.global_test_catalog_id || null,
+	          analyzer_connection_id: group.analyzer_connection_id || null,
+	          analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
         }));
         setTestGroups(transformedTestGroups);
       }
@@ -1514,6 +1655,10 @@ const Tests: React.FC = () => {
   };
 
   const handleDeleteAnalyte = async (analyte: Analyte) => {
+    if ((analyte.testGroupCount ?? 0) > 0) {
+      alert(`This analyte is still attached to ${analyte.testGroupCount} test group(s). Remove those links first, or deactivate it instead.`);
+      return;
+    }
     if (!window.confirm(`Are you sure you want to delete/hide analyte "${analyte.name}"?`)) return;
 
     try {
@@ -1573,6 +1718,9 @@ const Tests: React.FC = () => {
           return {
             id: a?.id || item.analyte_id,
             lab_analyte_id: item.id,
+            testGroupCount: Array.isArray(item.test_group_analytes)
+              ? (item.test_group_analytes[0]?.count ?? 0)
+              : 0,
             name: a?.name || item.name || "Unknown",
             unit: a?.unit || item.unit || "",
             category: item.category || a?.category || "General",
@@ -1650,6 +1798,19 @@ const Tests: React.FC = () => {
             <p className="text-gray-500 text-sm">Manage analytes, test groups, and diagnostic panels</p>
           </div>
           <div className="flex space-x-2">
+            <button
+              onClick={async () => {
+                setRefreshing(true);
+                await loadData();
+                setRefreshing(false);
+              }}
+              disabled={refreshing}
+              className="flex items-center px-3 py-1.5 text-sm border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+              title="Refresh data"
+            >
+              <RefreshCw className={`h-4 w-4 mr-1 ${refreshing ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
             {isAdmin && <div className="relative" ref={dangerDropdownRef}>
               <button
                 onClick={() => setShowDangerDropdown(v => !v)}
@@ -1710,13 +1871,15 @@ const Tests: React.FC = () => {
               <Plus className="h-4 w-4 mr-1" />
               Create Package
             </button>
-            <button
-              onClick={() => setShowTestGroupForm(true)}
-              className="flex items-center px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <Plus className="h-4 w-4 mr-1" />
-              Create Test Group
-            </button>
+            {isAdmin && (
+              <button
+                onClick={() => setShowTestGroupForm(true)}
+                className="flex items-center px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Create Test Group
+              </button>
+            )}
           </div>
         </div>
 
@@ -1843,6 +2006,17 @@ const Tests: React.FC = () => {
                 <option key={category} value={category}>{category}</option>
               ))}
             </select>
+            {activeTab === 'groups' && (
+              <select
+                value={outsourcedFilter}
+                onChange={(e) => setOutsourcedFilter(e.target.value as 'all' | 'inhouse' | 'outsourced')}
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                <option value="all">All (In-house &amp; Outsourced)</option>
+                <option value="inhouse">In-house Only</option>
+                <option value="outsourced">Outsourced Only</option>
+              </select>
+            )}
             <button className="flex items-center px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
               <Filter className="h-4 w-4 mr-1" />
               More Filters
@@ -1879,24 +2053,31 @@ const Tests: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {filteredTestGroups.map((group) => (
-                      <tr key={group.id} className={`hover:bg-gray-50 transition-colors ${(group.analytes?.length || 0) === 0 ? 'bg-red-50' : ''}`}>
-                        <td className="px-3 py-2">
-                          <div>
-                            <div className="font-medium text-gray-900 text-sm">{group.name}</div>
-                            <div className="text-xs text-gray-500">Code: {group.code} • {group.turnaroundTime}</div>
-                          </div>
-                        </td>
+	                    {filteredTestGroups.map((group) => (
+	                      <tr key={group.id} className="hover:bg-gray-50 transition-colors">
+	                        <td className="px-3 py-2">
+	                          <div>
+	                            <div className="flex items-center gap-2 flex-wrap">
+	                              <div className="font-medium text-gray-900 text-sm">{group.name}</div>
+	                              {group.is_section_only && (
+	                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-purple-100 text-purple-800 border border-purple-200">
+	                                  Section Only
+	                                </span>
+	                              )}
+	                            </div>
+	                            <div className="text-xs text-gray-500">Code: {group.code} • {group.turnaroundTime}</div>
+	                          </div>
+	                        </td>
                         <td className="px-3 py-2">
                           <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(group.category)}`}>
                             {group.category}
                           </span>
                         </td>
-                        <td className="px-3 py-2">
-                          <div className={`text-sm font-medium ${(group.analytes?.length || 0) === 0 ? 'text-red-600' : 'text-gray-900'}`}>
-                            {group.analytes?.length || 0}
-                          </div>
-                        </td>
+	                        <td className="px-3 py-2">
+	                          <div className="text-sm font-medium text-gray-900">
+	                            {group.is_section_only ? '—' : (group.analytes?.length || 0)}
+	                          </div>
+	                        </td>
                         <td className="px-3 py-2">
                           <div className="font-medium text-gray-900">₹{group.price || 0}</div>
                         </td>
@@ -1911,20 +2092,24 @@ const Tests: React.FC = () => {
                           >
                             <Eye className="h-4 w-4" />
                           </button>
-                          <button
-                            onClick={() => handleEditTestGroup(group)}
-                            className="text-gray-600 hover:text-gray-900 p-1 rounded"
-                            title="Edit Test Group"
-                          >
-                            <Edit className="h-4 w-4" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteTestGroup(group)}
-                            className="text-red-500 hover:text-red-700 p-1 rounded"
-                            title="Delete Test Group"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                          {isAdmin && (
+                            <>
+                              <button
+                                onClick={() => handleEditTestGroup(group)}
+                                className="text-gray-600 hover:text-gray-900 p-1 rounded"
+                                title="Edit Test Group"
+                              >
+                                <Edit className="h-4 w-4" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteTestGroup(group)}
+                                className="text-red-500 hover:text-red-700 p-1 rounded"
+                                title="Delete Test Group"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1957,13 +2142,14 @@ const Tests: React.FC = () => {
 
               <div className="overflow-x-auto">
                 <table className="w-full divide-y divide-gray-200 text-sm">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Analyte Details</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Reference Range</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Critical Values</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+	                  <thead className="bg-gray-50">
+	                    <tr>
+	                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Analyte Details</th>
+	                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
+	                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Attached Groups</th>
+	                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Reference Range</th>
+	                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Critical Values</th>
+	                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
@@ -1979,6 +2165,14 @@ const Tests: React.FC = () => {
                                   Calc
                                 </span>
                               )}
+                              <button
+                                onClick={() => handleShowAnalyteGroups(analyte)}
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 text-xs font-medium hover:bg-blue-100 border border-blue-200"
+                                title="View linked test groups"
+                              >
+                                <FlaskConical className="h-3 w-3" />
+                                Groups
+                              </button>
                             </div>
                             <div className="text-xs text-gray-500">Unit: {analyte.unit}</div>
                             {analyte.isCalculated && analyte.formula && (
@@ -1986,14 +2180,23 @@ const Tests: React.FC = () => {
                             )}
                           </div>
                         </td>
-                        <td className="px-3 py-2">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(analyte.category)}`}>
-                            {analyte.category}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="text-gray-900 text-xs">{analyte.referenceRange || 'N/A'}</div>
-                        </td>
+	                        <td className="px-3 py-2">
+	                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(analyte.category)}`}>
+	                            {analyte.category}
+	                          </span>
+	                        </td>
+	                        <td className="px-3 py-2">
+	                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+	                            (analyte.testGroupCount ?? 0) > 0
+	                              ? 'bg-amber-100 text-amber-800'
+	                              : 'bg-green-100 text-green-800'
+	                          }`}>
+	                            {analyte.testGroupCount ?? 0}
+	                          </span>
+	                        </td>
+	                        <td className="px-3 py-2">
+	                          <div className="text-gray-900 text-xs">{analyte.referenceRange || 'N/A'}</div>
+	                        </td>
                         <td className="px-3 py-2">
                           <div className="text-xs">
                             {analyte.lowCritical && <div className="text-red-600">Low: {analyte.lowCritical}</div>}
@@ -2026,13 +2229,22 @@ const Tests: React.FC = () => {
                                 <EyeOff className="h-4 w-4" />
                               </button>
                             )}
-                            <button
-                              onClick={() => handleDeleteAnalyte(analyte)}
-                              className="text-red-500 hover:text-red-700 p-1 rounded"
-                              title="Delete Analyte"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
+	                            <button
+	                              onClick={() => handleDeleteAnalyte(analyte)}
+	                              disabled={(analyte.testGroupCount ?? 0) > 0}
+	                              className={`p-1 rounded ${
+	                                (analyte.testGroupCount ?? 0) > 0
+	                                  ? 'text-gray-300 cursor-not-allowed'
+	                                  : 'text-red-500 hover:text-red-700'
+	                              }`}
+	                              title={
+	                                (analyte.testGroupCount ?? 0) > 0
+	                                  ? `Cannot delete: attached to ${analyte.testGroupCount} test group(s)`
+	                                  : 'Delete Analyte'
+	                              }
+	                            >
+	                              <Trash2 className="h-4 w-4" />
+	                            </button>
                             {analyte.isCalculated && (
                               <button
                                 onClick={() => {
@@ -2206,7 +2418,7 @@ const Tests: React.FC = () => {
               onClose={handleCloseAnalyteForm}
               onSubmit={editingAnalyte ? handleUpdateAnalyte : handleAddAnalyte}
               analyte={editingAnalyte}
-              availableAnalytes={analytes.filter(a => !a.isCalculated).map(a => ({
+              availableAnalytes={analytes.filter(a => a.id !== undefined).map(a => ({
                 id: a.id,
                 name: a.name,
                 unit: a.unit,
@@ -2330,9 +2542,9 @@ const Tests: React.FC = () => {
                 display_name: (editingAnalyte as any).display_name || null,
               }}
               availableAnalytes={analytes
-                .filter(a => !a.isCalculated && a.id !== editingAnalyte.id)
+                .filter(a => a.id !== editingAnalyte.id)
                 .map(a => ({ id: a.id, name: a.name, unit: a.unit || '', category: a.category }))}
-              onSave={handleUpdateAnalyte}
+              onSave={handleSimpleEditorSave}
               onCancel={handleCloseAnalyteModal}
             />
           )
@@ -2344,6 +2556,7 @@ const Tests: React.FC = () => {
             <AnalyteDependencyManager
               analyte={{
                 id: dependencyAnalyte.id,
+                lab_analyte_id: dependencyAnalyte.lab_analyte_id || null,
                 name: dependencyAnalyte.name,
                 formula: dependencyAnalyte.formula || '',
                 formulaVariables: dependencyAnalyte.formulaVariables || []
@@ -2359,6 +2572,53 @@ const Tests: React.FC = () => {
             />
           )
         }
+
+        {/* Analyte Linked Test Groups Popup */}
+        {analyteGroupsPopup && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setAnalyteGroupsPopup(null)}>
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+              <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900">Linked Test Groups</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">{analyteGroupsPopup.analyte.name}</p>
+                </div>
+                <button onClick={() => setAnalyteGroupsPopup(null)} className="text-gray-400 hover:text-gray-600 p-1 rounded">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="p-4">
+                {analyteGroupsPopup.loading ? (
+                  <p className="text-xs text-gray-500 text-center py-4">Loading...</p>
+                ) : analyteGroupsPopup.groups.length === 0 ? (
+                  <div className="text-center py-4">
+                    <p className="text-xs text-red-600 font-medium">No test groups linked</p>
+                    <p className="text-xs text-gray-400 mt-1">This analyte can be safely deleted.</p>
+                  </div>
+                ) : (
+                  <ul className="divide-y divide-gray-100">
+                    {analyteGroupsPopup.groups.map(g => (
+                      <li key={g.id} className="py-2 flex items-center justify-between">
+                        <div>
+                          <span className="text-sm font-medium text-gray-900">{g.name}</span>
+                          {g.code && <span className="ml-1.5 text-xs text-gray-400">({g.code})</span>}
+                        </div>
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${getCategoryColor(g.category)}`}>{g.category}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="px-4 py-3 border-t border-gray-100 flex justify-between items-center bg-gray-50 rounded-b-lg">
+                <span className="text-xs text-gray-500">
+                  {analyteGroupsPopup.loading ? '...' : `${analyteGroupsPopup.groups.length} group${analyteGroupsPopup.groups.length !== 1 ? 's' : ''} linked`}
+                </span>
+                <button onClick={() => setAnalyteGroupsPopup(null)} className="text-xs px-3 py-1.5 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* AI Configurator Modal */}
         {showAIConfigurator && (

@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { database, supabase, formatAge, LabPatientFieldConfig } from '../../utils/supabase';
 import { notificationTriggerService, formatName } from '../../utils/notificationTriggerService';
+import { useQZTray } from '../../contexts/QZTrayContext';
 import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
 import { getLabCurrency } from '../../utils/currency';
 import {
@@ -121,6 +122,7 @@ interface OrderFormProps {
 }
 
 const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPatientId, initialBookingData }) => {
+  const { autoPrintBarcode } = useQZTray();
   // Masters
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -514,6 +516,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [showNewPatientModal, setShowNewPatientModal] = useState<boolean>(false);
   const [creatingPatient, setCreatingPatient] = useState<boolean>(false);
   const [nameCaseFormat, setNameCaseFormat] = useState<'proper' | 'upper'>('proper');
+  const [autoCollectOnRegistration, setAutoCollectOnRegistration] = useState(false);
   const [newPatient, setNewPatient] = useState<{
     name: string;
     age: string;
@@ -576,13 +579,15 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     return { age: String(Math.floor(diffDays / 365.25)), age_unit: 'years' };
   };
 
-  // Load name case format from lab notification settings
+  // Load name case format and workflow settings from lab
   useEffect(() => {
-    database.getCurrentUserLabId().then(labId => {
+    database.getCurrentUserLabId().then(async labId => {
       if (!labId) return;
       notificationTriggerService.getSettings(labId).then(s => {
         if (s?.name_case_format) setNameCaseFormat(s.name_case_format);
       });
+      const { data: labData } = await supabase.from('labs').select('auto_collect_on_registration').eq('id', labId).single();
+      if (labData?.auto_collect_on_registration) setAutoCollectOnRegistration(true);
     }).catch(() => {});
   }, []);
 
@@ -1376,6 +1381,14 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         }
       };
 
+      // Auto-collect: mark sample as collected at registration time
+      if (autoCollectOnRegistration) {
+        const { data: { user: currentUser } } = await supabase.auth.getUser();
+        const collectorName = currentUser?.user_metadata?.name || currentUser?.email || 'Reception';
+        orderData.sample_collected_at = new Date().toISOString();
+        orderData.sample_collected_by = collectorName;
+      }
+
       if (testsPayload) orderData.tests = testsPayload;
       if (testRequestFile) orderData.testRequestFile = testRequestFile;
       // Pass TRF attachment ID so Orders.tsx links only this specific attachment
@@ -1391,6 +1404,27 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       const result = await onSubmit(orderData);
       // Mark TRF attachment as linked so handleClose won't delete it
       trfAttachmentLinked.current = true;
+
+      // Auto-print barcode via QZ Tray if enabled
+      const newOrderId = result?.id || result;
+      if (newOrderId) {
+        supabase
+          .from('orders')
+          .select('sample_id, sample_type')
+          .eq('id', newOrderId)
+          .single()
+          .then(({ data: orderRow }) => {
+            if (orderRow?.sample_id) {
+              autoPrintBarcode({
+                sampleId: orderRow.sample_id,
+                patientName: selectedPatient?.name || '',
+                sampleType: orderRow.sample_type || undefined,
+              });
+            }
+          })
+          .catch(() => {});
+      }
+
       // Auto-create invoice and payment if discount or payment is provided
       if (discountValue > 0 || amountPaid > 0) {
         try {
@@ -1519,9 +1553,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           }
 
           // Insert extra lab billing items as order_billing_items + invoice_items
+          // Each billing item is inserted individually so we can write invoice_item_id
+          // back to order_billing_items immediately — prevents orphaned billing items
+          // where is_invoiced=true but no invoice_item row exists.
           if (selectedBillingItems.length > 0) {
             for (const item of selectedBillingItems) {
-              const { data: obi } = await supabase.from('order_billing_items').insert({
+              const { data: obi, error: obiError } = await supabase.from('order_billing_items').insert({
                 lab_id: labId,
                 order_id: orderId,
                 lab_billing_item_type_id: item.typeId || null,
@@ -1532,9 +1569,15 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 is_invoiced: true,
               }).select('id').single();
 
-              invoiceItemsData.push({
+              if (obiError || !obi?.id) {
+                console.error('Error creating order_billing_item:', obiError);
+                continue;
+              }
+
+              // Insert invoice_item immediately and write back invoice_item_id
+              const { data: invoiceItem, error: iiError } = await supabase.from('invoice_items').insert({
                 invoice_id: invoice.id,
-                order_billing_item_id: obi?.id || null,
+                order_billing_item_id: obi.id,
                 order_test_id: null,
                 test_name: item.name,
                 price: item.amount,
@@ -1547,8 +1590,17 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 order_id: orderId,
                 location_receivable: null,
                 outsourced_lab_id: null,
-                outsourced_cost: null
-              } as any);
+                outsourced_cost: null,
+              } as any).select('id').single();
+
+              if (iiError) {
+                console.error('Error creating invoice_item for billing charge:', iiError);
+              } else if (invoiceItem?.id) {
+                // Link invoice_item back to order_billing_items
+                await supabase.from('order_billing_items')
+                  .update({ invoice_item_id: invoiceItem.id, updated_at: new Date().toISOString() })
+                  .eq('id', obi.id);
+              }
             }
           }
 
