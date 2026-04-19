@@ -168,10 +168,10 @@ const PatientPortal: React.FC = () => {
   const readyCount = orders.filter((o) => ['Report Ready', 'Completed', 'Delivered'].includes(o.status)).length;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 pb-safe-bottom">
 
       {/* Header */}
-      <header className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-10">
+      <header className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-10 pt-safe-top">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <img
@@ -195,6 +195,7 @@ const PatientPortal: React.FC = () => {
           </button>
         </div>
       </header>
+
 
       <main className="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-6">
 

@@ -165,22 +165,22 @@ const WebsiteBookingModal: React.FC<WebsiteBookingModalProps> = ({ labId, onClos
                 <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-6">
                     <div className="space-y-4">
                         <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                            <User className="w-4 h-4" /> Patient Details
+                            <User className="w-4 h-4" /> Pet & Owner Details
                         </h3>
                         <div className="grid grid-cols-2 gap-4">
                             <div className="col-span-2 md:col-span-1">
-                                <label className="block text-xs font-medium text-gray-500 mb-1">Name *</label>
+                                <label className="block text-xs font-medium text-gray-500 mb-1">Pet Name *</label>
                                 <input
                                     type="text"
                                     required
                                     value={patient.name}
                                     onChange={e => setPatient({ ...patient, name: e.target.value })}
                                     className="w-full border rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 outline-none border-gray-300"
-                                    placeholder="Patient Name"
+                                    placeholder="Pet's Name"
                                 />
                             </div>
                             <div>
-                                <label className="block text-xs font-medium text-gray-500 mb-1">Phone *</label>
+                                <label className="block text-xs font-medium text-gray-500 mb-1">Owner's Phone *</label>
                                 <input
                                     type="tel"
                                     required
@@ -192,18 +192,18 @@ const WebsiteBookingModal: React.FC<WebsiteBookingModalProps> = ({ labId, onClos
                             </div>
                             <div className="flex gap-4">
                                 <div className="flex-1">
-                                    <label className="block text-xs font-medium text-gray-500 mb-1">Age *</label>
+                                    <label className="block text-xs font-medium text-gray-500 mb-1">Pet's Age *</label>
                                     <input
                                         type="number"
                                         required
                                         value={patient.age}
                                         onChange={e => setPatient({ ...patient, age: e.target.value })}
                                         className="w-full border rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 outline-none border-gray-300"
-                                        placeholder="Age"
+                                        placeholder="Age (Years/Months)"
                                     />
                                 </div>
                                 <div className="flex-1">
-                                    <label className="block text-xs font-medium text-gray-500 mb-1">Gender</label>
+                                    <label className="block text-xs font-medium text-gray-500 mb-1">Pet's Gender</label>
                                     <select
                                         value={patient.gender}
                                         onChange={e => setPatient({ ...patient, gender: e.target.value })}
@@ -216,7 +216,7 @@ const WebsiteBookingModal: React.FC<WebsiteBookingModalProps> = ({ labId, onClos
                                 </div>
                             </div>
                             <div className="col-span-2 md:col-span-1">
-                                <label className="block text-xs font-medium text-gray-500 mb-1">Email (optional)</label>
+                                <label className="block text-xs font-medium text-gray-500 mb-1">Owner's Email (optional)</label>
                                 <input
                                     type="email"
                                     value={patient.email}

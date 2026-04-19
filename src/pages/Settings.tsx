@@ -1019,38 +1019,41 @@ const Settings: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen w-full bg-gray-50">
-      {/* Header and Tabs - Fixed at top */}
-      <div className="flex-none p-6 pb-0 space-y-6">
+    <div className="flex flex-col min-h-full w-full bg-gray-50">
+      {/* Header and Tabs — sticky so tabs stay visible while scrolling content */}
+      <div className="flex-none sticky top-0 z-20 bg-gray-50 px-4 sm:px-6 pt-4 sm:pt-6 pb-0 space-y-4 border-b border-gray-200 shadow-sm">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
-            <p className="text-gray-600 mt-1">Manage your LIMS system configuration and team</p>
+            <h1 className="text-xl sm:text-3xl font-bold text-gray-900">Settings</h1>
+            <p className="text-gray-600 mt-1 text-sm hidden sm:block">Manage your LIMS system configuration and team</p>
           </div>
         </div>
 
-        {/* Tab Navigation */}
+        {/* Tab Navigation — horizontally scrollable on mobile */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-1">
-          <div className="flex space-x-1 overflow-x-auto scrollbar-hide">
+          <div className="flex space-x-1 overflow-x-auto scrollbar-hide pb-0.5">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
-                className={`flex items-center px-4 py-3 rounded-md text-sm font-medium transition-all whitespace-nowrap ${activeTab === tab.id
+                className={`flex items-center px-3 sm:px-4 py-2.5 rounded-md text-xs sm:text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
                   ? 'bg-blue-600 text-white shadow-sm'
                   : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
                   }`}
               >
-                <tab.icon className="h-4 w-4 mr-2" />
-                {tab.name}
+                <tab.icon className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1.5 sm:mr-2 flex-shrink-0" />
+                <span className="hidden xs:inline sm:inline">{tab.name}</span>
+                {/* Icon-only fallback on very small screens */}
+                <span className="xs:hidden sm:hidden sr-only">{tab.name}</span>
               </button>
             ))}
           </div>
         </div>
       </div>
 
-      {/* Content Area - Scrollable */}
-      <div className="flex-1 overflow-y-auto p-6 pt-4">
+      {/* Content Area — no separate overflow since parent <main> scrolls */}
+      <div className="flex-1 p-4 sm:p-6 pt-4">
+
 
         {/* Team Management Tab */}
         {activeTab === 'team' && (
@@ -2718,9 +2721,9 @@ const Settings: React.FC = () => {
           </div>
         )}
 
-        {/* Patient Portal Tab */}
-        {activeTab === 'patient_portal' && labId && (
-          <div className="p-6">
+        {/* Patient Portal Tab — always mounted so PIN state persists when switching tabs */}
+        {labId && (
+          <div className="p-6" style={{ display: activeTab === 'patient_portal' ? 'block' : 'none' }}>
             <PatientPortalSettings labId={labId} />
           </div>
         )}

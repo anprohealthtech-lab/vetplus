@@ -37,6 +37,7 @@
 * {
   -webkit-tap-highlight-color: transparent;
   box-sizing: border-box;
+  /* NOTE: Do NOT add max-width here — it breaks sticky/fixed elements inside scroll containers */
 }
 
 /* Apply touch-action only to interactive elements, not to body/html */
@@ -243,6 +244,15 @@ body > .ck.ck-reset_all {
   clear: both;
 }
 
+/* Scrollbar hide utility */
+.scrollbar-hide {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;     /* Firefox */
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;             /* Chrome, Safari, Opera */
+}
+
 /* Mobile-specific margin utilities */
 @layer utilities {
   .safe-area-top {
@@ -271,6 +281,11 @@ body > .ck.ck-reset_all {
     padding-bottom: max(var(--safe-area-inset-bottom), 8px);
   }
 
+  /* Capacitor native bottom safe area (for bottom nav) */
+  .pb-safe-bottom {
+    padding-bottom: max(var(--safe-area-inset-bottom), 80px);
+  }
+
   .safe-area-all {
     padding-top: max(var(--safe-area-inset-top), 8px);
     padding-right: max(var(--safe-area-inset-right), var(--mobile-edge-margin));
@@ -280,10 +295,7 @@ body > .ck.ck-reset_all {
 
   /* Mobile edge margins */
   @media (max-width: 768px) {
-    * {
-      max-width: 100vw;
-    }
-
+    /* NOTE: do NOT set max-width:100vw on * — breaks sticky/fixed elements */
     body,
     html,
     #root {

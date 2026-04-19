@@ -3,6 +3,9 @@ export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
+      screens: {
+        'xs': '475px',   // Extra small — small phones (below sm:640px)
+      },
       colors: {
         // Vetplus Diagnostics Brand Colors (from logo)
         brand: {
@@ -50,5 +53,18 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    // Scrollbar hide utility (.scrollbar-hide class)
+    function({ addUtilities }) {
+      addUtilities({
+        '.scrollbar-hide': {
+          '-ms-overflow-style': 'none',
+          'scrollbar-width': 'none',
+        },
+        '.scrollbar-hide::-webkit-scrollbar': {
+          display: 'none',
+        },
+      });
+    },
+  ],
 };

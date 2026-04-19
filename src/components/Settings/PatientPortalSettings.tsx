@@ -3,11 +3,13 @@
 // Requires: supabase client, lab_id, SUPABASE_URL env for edge function calls.
 // Edge functions needed: create-patient-portal-user, bulk-create-patient-portal-users
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../../utils/supabase';
+import { WhatsAppAPI } from '../../utils/whatsappAPI';
 import {
   Smartphone, Users, CheckCircle, AlertCircle,
-  Download, RefreshCw, Loader2, PhoneOff, KeyRound, Copy, Check
+  Download, RefreshCw, Loader2, PhoneOff, KeyRound, Copy, Check,
+  Send, MessageSquare
 } from 'lucide-react';
 
 interface PortalStats {
@@ -25,6 +27,16 @@ interface BulkResult {
   error?: string;
 }
 
+// Activated patient loaded from database (PIN may not be available in plaintext)
+interface ActivatedPatient {
+  id: string;
+  name: string;
+  phone: string;
+  portal_access_enabled: boolean;
+  // PIN is only available if just created in this session
+  pin?: string;
+}
+
 interface PatientPortalSettingsProps {
   labId: string;
 }
@@ -38,8 +50,19 @@ const PatientPortalSettings: React.FC<PatientPortalSettingsProps> = ({ labId }) 
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
+  // Persistent activated patients table (always visible, survives tab switches)
+  const [activatedPatients, setActivatedPatients] = useState<ActivatedPatient[]>([]);
+  const [activatedLoading, setActivatedLoading] = useState(false);
+
+  // WhatsApp sending state: map of patient_id -> status
+  const [waSending, setWaSending] = useState<Record<string, 'sending' | 'sent' | 'failed'>>({});
+  const [waMessage, setWaMessage] = useState<Record<string, string>>({});
+
   useEffect(() => {
-    if (labId) loadStats();
+    if (labId) {
+      loadStats();
+      loadActivatedPatients();
+    }
   }, [labId]);
 
   const loadStats = async () => {
@@ -65,6 +88,59 @@ const PatientPortalSettings: React.FC<PatientPortalSettingsProps> = ({ labId }) 
       setStatsLoading(false);
     }
   };
+
+  // Load all activated patients from DB (persists across tab navigation)
+  const loadActivatedPatients = useCallback(async () => {
+    setActivatedLoading(true);
+    try {
+      const { data, error: dbError } = await supabase
+        .from('patients')
+        .select('id, name, phone, portal_access_enabled')
+        .eq('lab_id', labId)
+        .eq('is_active', true)
+        .eq('portal_access_enabled', true)
+        .order('name', { ascending: true });
+
+      if (dbError) throw dbError;
+
+      setActivatedPatients((data || []).map((p) => ({
+        id: p.id,
+        name: p.name,
+        phone: p.phone,
+        portal_access_enabled: p.portal_access_enabled,
+      })));
+    } catch (err) {
+      console.error('PatientPortalSettings: loadActivatedPatients error', err);
+    } finally {
+      setActivatedLoading(false);
+    }
+  }, [labId]);
+
+  // Merge fresh PINs from bulk results into activatedPatients
+  useEffect(() => {
+    if (!bulkResults) return;
+    const pinMap: Record<string, string> = {};
+    bulkResults.forEach((r) => { if (r.pin) pinMap[r.patient_id] = r.pin; });
+    if (Object.keys(pinMap).length === 0) return;
+
+    setActivatedPatients((prev) =>
+      prev.map((p) => pinMap[p.id] ? { ...p, pin: pinMap[p.id] } : p)
+    );
+    // Also add newly activated patients that weren't in the list yet
+    setActivatedPatients((prev) => {
+      const existingIds = new Set(prev.map((p) => p.id));
+      const newPatients = bulkResults
+        .filter((r) => r.pin && !existingIds.has(r.patient_id))
+        .map((r) => ({
+          id: r.patient_id,
+          name: r.name,
+          phone: r.phone,
+          portal_access_enabled: true,
+          pin: r.pin,
+        }));
+      return newPatients.length > 0 ? [...prev, ...newPatients] : prev;
+    });
+  }, [bulkResults]);
 
   const callBulkFunction = async (forceReset: boolean) => {
     setBulkLoading(true);
@@ -93,6 +169,7 @@ const PatientPortalSettings: React.FC<PatientPortalSettingsProps> = ({ labId }) 
       setBulkResults(results);
       setBulkSummary({ total: json.total, created: json.created, failed: json.failed });
       await loadStats();
+      await loadActivatedPatients();
 
       // Auto-download CSV immediately so PINs are not lost
       const successRows = results.filter((r) => r.pin);
@@ -152,6 +229,43 @@ const PatientPortalSettings: React.FC<PatientPortalSettingsProps> = ({ labId }) 
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  // Send PIN (or portal login info) via WhatsApp
+  const sendPinViaWhatsApp = async (patient: ActivatedPatient) => {
+    if (!patient.phone) return;
+
+    setWaSending((prev) => ({ ...prev, [patient.id]: 'sending' }));
+    setWaMessage((prev) => ({ ...prev, [patient.id]: '' }));
+
+    let message: string;
+    if (patient.pin) {
+      // Fresh PIN available — send it directly
+      message = `Hi ${patient.name}, your Patient Portal PIN is *${patient.pin}*.\n\nLog in at *${window.location.origin}/patient/login* using your mobile number and this PIN to view your reports.\n\nThank you!`;
+    } else {
+      // PIN not available in plaintext (already hashed in DB) — send login link only
+      message = `Hi ${patient.name}, your Patient Portal access is active.\n\nLog in at *${window.location.origin}/patient/login* using your registered mobile number and your PIN to view your reports.\n\nIf you've forgotten your PIN, please contact us.`;
+    }
+
+    try {
+      const result = await WhatsAppAPI.sendTextMessage(patient.phone, message);
+      if (result.success) {
+        setWaSending((prev) => ({ ...prev, [patient.id]: 'sent' }));
+        setWaMessage((prev) => ({ ...prev, [patient.id]: 'Sent!' }));
+      } else {
+        setWaSending((prev) => ({ ...prev, [patient.id]: 'failed' }));
+        setWaMessage((prev) => ({ ...prev, [patient.id]: result.message || 'Failed' }));
+      }
+    } catch (err) {
+      setWaSending((prev) => ({ ...prev, [patient.id]: 'failed' }));
+      setWaMessage((prev) => ({ ...prev, [patient.id]: 'Error sending' }));
+    }
+
+    // Clear status after 5 seconds
+    setTimeout(() => {
+      setWaSending((prev) => { const n = { ...prev }; delete n[patient.id]; return n; });
+      setWaMessage((prev) => { const n = { ...prev }; delete n[patient.id]; return n; });
+    }, 5000);
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -166,7 +280,7 @@ const PatientPortalSettings: React.FC<PatientPortalSettingsProps> = ({ labId }) 
           </p>
         </div>
         <button
-          onClick={loadStats}
+          onClick={() => { loadStats(); loadActivatedPatients(); }}
           disabled={statsLoading}
           className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
         >
@@ -269,92 +383,147 @@ const PatientPortalSettings: React.FC<PatientPortalSettingsProps> = ({ labId }) 
         )}
       </div>
 
-      {/* Bulk Results */}
+      {/* Bulk Results — shown after a bulk operation */}
       {bulkSummary && (
-        <div className="space-y-4">
-          {/* Summary */}
-          <div className="flex items-center justify-between flex-wrap gap-3">
-            <div className="flex items-center gap-4 text-sm">
-              <span className="flex items-center gap-1.5 text-teal-700 font-medium">
-                <CheckCircle className="h-4 w-4" />
-                {bulkSummary.created} created
+        <div className="space-y-2">
+          <div className="flex items-center gap-4 text-sm flex-wrap">
+            <span className="flex items-center gap-1.5 text-teal-700 font-medium">
+              <CheckCircle className="h-4 w-4" />
+              {bulkSummary.created} created
+            </span>
+            {bulkSummary.failed > 0 && (
+              <span className="flex items-center gap-1.5 text-red-600">
+                <AlertCircle className="h-4 w-4" />
+                {bulkSummary.failed} failed
               </span>
-              {bulkSummary.failed > 0 && (
-                <span className="flex items-center gap-1.5 text-red-600">
-                  <AlertCircle className="h-4 w-4" />
-                  {bulkSummary.failed} failed
-                </span>
-              )}
-              <span className="text-gray-500">(of {bulkSummary.total} processed)</span>
-            </div>
+            )}
+            <span className="text-gray-500">(of {bulkSummary.total} processed)</span>
             {bulkResults && bulkResults.some((r) => r.pin) && (
               <button
                 onClick={reDownloadCSV}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors ml-auto"
               >
                 <Download className="h-4 w-4" />
                 Download PINs CSV
               </button>
             )}
           </div>
+        </div>
+      )}
 
-          {/* Results Table */}
-          {bulkResults && bulkResults.length > 0 && (
-            <div className="border border-gray-200 rounded-xl overflow-hidden">
-              <div className="max-h-72 overflow-y-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
-                    <tr>
-                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase">Patient</th>
-                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase">Phone</th>
-                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase">PIN</th>
-                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {bulkResults.map((r) => (
-                      <tr key={r.patient_id} className="hover:bg-gray-50">
-                        <td className="px-4 py-2.5 font-medium text-gray-900">{r.name}</td>
-                        <td className="px-4 py-2.5 text-gray-600 font-mono">{r.phone}</td>
+      {/* ── PERSISTENT ACTIVATED PATIENTS TABLE ── */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+            <Users className="h-4 w-4 text-teal-600" />
+            All Activated Patients
+            {activatedPatients.length > 0 && (
+              <span className="ml-1 px-2 py-0.5 text-xs font-medium bg-teal-100 text-teal-700 rounded-full">
+                {activatedPatients.length}
+              </span>
+            )}
+          </h3>
+          <button
+            onClick={loadActivatedPatients}
+            disabled={activatedLoading}
+            className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-teal-600 transition-colors"
+          >
+            <RefreshCw className={`h-3 w-3 ${activatedLoading ? 'animate-spin' : ''}`} />
+            Reload
+          </button>
+        </div>
+
+        {activatedLoading ? (
+          <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            Loading patients...
+          </div>
+        ) : activatedPatients.length === 0 ? (
+          <div className="text-center py-8 text-sm text-gray-400 bg-gray-50 rounded-xl border border-dashed border-gray-200">
+            <Smartphone className="h-8 w-8 mx-auto mb-2 text-gray-300" />
+            No patients have portal access yet. Click "Generate Access" above to get started.
+          </div>
+        ) : (
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            <div className="max-h-96 overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">Patient</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">Phone</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">PIN</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">Status</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">WhatsApp</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {activatedPatients.map((p) => {
+                    const waSendStatus = waSending[p.id];
+                    const waMsg = waMessage[p.id];
+                    return (
+                      <tr key={p.id} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-4 py-2.5 font-medium text-gray-900">{p.name}</td>
+                        <td className="px-4 py-2.5 text-gray-600 font-mono text-xs">{p.phone}</td>
                         <td className="px-4 py-2.5">
-                          {r.pin ? (
+                          {p.pin ? (
                             <div className="flex items-center gap-2">
-                              <span className="font-mono font-bold text-teal-700 tracking-widest">{r.pin}</span>
+                              <span className="font-mono font-bold text-teal-700 tracking-widest">{p.pin}</span>
                               <button
-                                onClick={() => copyPin(r.patient_id, r.pin!)}
+                                onClick={() => copyPin(p.id, p.pin!)}
                                 className="text-gray-400 hover:text-teal-600 transition-colors"
                                 title="Copy PIN"
                               >
-                                {copiedId === r.patient_id
+                                {copiedId === p.id
                                   ? <Check className="h-3.5 w-3.5 text-teal-500" />
                                   : <Copy className="h-3.5 w-3.5" />}
                               </button>
                             </div>
                           ) : (
-                            <span className="text-gray-400">—</span>
+                            <span className="text-xs text-gray-400 italic">Hidden (reset to reveal)</span>
                           )}
                         </td>
                         <td className="px-4 py-2.5">
-                          {r.error ? (
-                            <span className="text-xs text-red-600" title={r.error}>Failed</span>
+                          <span className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full">
+                            <CheckCircle className="h-3 w-3" />
+                            Active
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          {waMsg ? (
+                            <span className={`text-xs font-medium ${waSendStatus === 'sent' ? 'text-teal-600' : 'text-red-500'}`}>
+                              {waMsg}
+                            </span>
                           ) : (
-                            <span className="text-xs text-teal-600 font-medium">Created</span>
+                            <button
+                              onClick={() => sendPinViaWhatsApp(p)}
+                              disabled={!p.phone || waSendStatus === 'sending'}
+                              title={p.pin ? 'Send PIN via WhatsApp' : 'Send portal login link via WhatsApp'}
+                              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-lg hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            >
+                              {waSendStatus === 'sending' ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <MessageSquare className="h-3.5 w-3.5" />
+                              )}
+                              {p.pin ? 'Send PIN' : 'Send Link'}
+                            </button>
                           )}
                         </td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          )}
+          </div>
+        )}
 
-          <p className="text-xs text-gray-500">
-            Share each patient's PIN via WhatsApp or SMS. Patients log in at{' '}
-            <span className="font-mono text-gray-700">/patient/login</span> using their registered mobile number + PIN.
-          </p>
-        </div>
-      )}
+        <p className="text-xs text-gray-500">
+          Share each patient's PIN via WhatsApp or SMS. Patients log in at{' '}
+          <span className="font-mono text-gray-700">/patient/login</span> using their registered mobile number + PIN.
+          {' '}PINs are only visible immediately after generation — download the CSV to keep a record.
+        </p>
+      </div>
     </div>
   );
 };
