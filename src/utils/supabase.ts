@@ -162,6 +162,30 @@ export interface LabPatientFieldConfig {
   created_at?: string;
 }
 
+export interface LabPatientFormSettings {
+  show_salutation: boolean;
+  salutation_options: string[];
+  show_middle_name: boolean;
+  age_mode: "age" | "dob" | "both";
+  show_gender: boolean;
+  gender_options: string[];
+  phone_required: boolean;
+  show_email: boolean;
+  email_required: boolean;
+}
+
+export const DEFAULT_PATIENT_FORM_SETTINGS: LabPatientFormSettings = {
+  show_salutation: false,
+  salutation_options: ["Mr.", "Mrs.", "Ms.", "Dr.", "Master", "Baby"],
+  show_middle_name: false,
+  age_mode: "age",
+  show_gender: true,
+  gender_options: ["Male", "Female", "Other"],
+  phone_required: false,
+  show_email: false,
+  email_required: false,
+};
+
 interface LabContactRecord {
   id: string;
   name: string | null;
@@ -1836,6 +1860,86 @@ export const database = {
         .eq("searchable", true)
         .order("sort_order", { ascending: true });
       return data || [];
+    },
+  },
+
+  patientFormSettings: {
+    get: async (): Promise<{
+      data: Partial<LabPatientFormSettings> | null;
+      error: any;
+    }> => {
+      try {
+        const labId = await database.getCurrentUserLabId();
+        if (!labId) {
+          return { data: null, error: new Error("No lab_id found") };
+        }
+
+        const { data, error } = await supabase
+          .from("labs")
+          .select("patient_form_settings")
+          .eq("id", labId)
+          .maybeSingle();
+
+        if (error) {
+          return { data: null, error };
+        }
+
+        const rawSettings = data?.patient_form_settings;
+        if (!rawSettings) {
+          return { data: null, error: null };
+        }
+
+        const parsedSettings =
+          typeof rawSettings === "string"
+            ? JSON.parse(rawSettings)
+            : rawSettings;
+
+        if (!parsedSettings || typeof parsedSettings !== "object") {
+          return { data: null, error: null };
+        }
+
+        return {
+          data: parsedSettings as Partial<LabPatientFormSettings>,
+          error: null,
+        };
+      } catch (error) {
+        console.error("Error fetching patient form settings:", error);
+        return { data: null, error };
+      }
+    },
+
+    upsert: async (
+      settings: LabPatientFormSettings,
+    ): Promise<{ data: Partial<LabPatientFormSettings> | null; error: any }> => {
+      try {
+        const labId = await database.getCurrentUserLabId();
+        if (!labId) {
+          return { data: null, error: new Error("No lab_id found") };
+        }
+
+        const { data, error } = await supabase
+          .from("labs")
+          .update({
+            patient_form_settings: settings,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", labId)
+          .select("patient_form_settings")
+          .maybeSingle();
+
+        if (error) {
+          return { data: null, error };
+        }
+
+        return {
+          data: (data?.patient_form_settings as Partial<LabPatientFormSettings>) ??
+            settings,
+          error: null,
+        };
+      } catch (error) {
+        console.error("Error saving patient form settings:", error);
+        return { data: null, error };
+      }
     },
   },
 
