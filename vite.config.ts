@@ -10,10 +10,14 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
+      external: ['qz-tray'],
       input: {
         main: './index.html'
       },
       output: {
+        globals: {
+          'qz-tray': 'qz',
+        },
         manualChunks: {
           'vendor-react': ['react', 'react-dom', 'react-router-dom'],
           'vendor-supabase': ['@supabase/supabase-js'],
