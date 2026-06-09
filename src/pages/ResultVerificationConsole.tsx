@@ -25,7 +25,8 @@ import {
   Filter as FilterIcon,
   X,
   ChevronRight,
-  Eye,
+	  Eye,
+	  EyeOff,
   Expand,
   Minimize,
   FileImage,
@@ -34,14 +35,14 @@ import {
   Stethoscope,
   Mail,
   Calculator,
-  Undo2,
-  Lock
+	  Undo2,
+	  Lock
 } from "lucide-react";
 import { supabase, database } from "../utils/supabase";
 import AttachmentSelector from "../components/Reports/AttachmentSelector";
 import OrderVerificationView from "./OrderVerificationView";
 import { useAIResultIntelligence, type VerifierSummaryResponse, type ClinicalSummaryResponse, type GeneratedInterpretation, type ResultValue, type DeltaCheckResponse } from "../hooks/useAIResultIntelligence";
-import { generateAndSaveTrendCharts, saveClinicalSummary } from "../utils/reportExtrasService";
+import { saveClinicalSummary } from "../utils/reportExtrasService";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
 import AIResultSuggestionCard from "../components/Results/AIResultSuggestionCard";
 import SectionEditor, { type SectionEditorRef } from "../components/Results/SectionEditor";
@@ -63,6 +64,7 @@ type PanelRow = {
   result_id: string;
   test_group_id: string | null;
   test_group_name: string | null;
+  has_result?: boolean;
   is_section_only?: boolean;
   expected_analytes: number;
   entered_analytes: number;
@@ -71,8 +73,16 @@ type PanelRow = {
   result_verification_status?: string | null;
   patient_id: string;
   patient_name: string;
-  order_date: string;
-  department?: string | null;
+  patient_age?: string | number | null;
+  patient_gender?: string | null;
+	  order_date: string;
+	  department?: string | null;
+  sample_id?: string | null;
+  order_number?: number | null;
+  doctor?: string | null;
+  account_id?: string | null;
+  account_name?: string | null;
+  priority?: "Normal" | "Urgent" | "STAT" | null;
 };
 
 type Analyte = {
@@ -92,7 +102,9 @@ type Analyte = {
   // Calculated parameter fields
   is_auto_calculated?: boolean;
   calculation_inputs?: Record<string, number>;
-  calculated_at?: string;
+	  calculated_at?: string;
+	  is_hidden_from_report?: boolean | null;
+	  hidden_reason?: string | null;
 };
 
 type CalcDebugHintsByResult = Record<string, Record<string, string[]>>;
@@ -117,6 +129,16 @@ type Attachment = {
 
 type StateFilter = "all" | "pending" | "partial" | "ready";
 type ViewMode = "panel" | "order";
+type PanelSortMode = "sample_desc" | "sample_asc" | "date_desc" | "patient_az";
+
+type BulkApprovalProgress = {
+  total: number;
+  attempted: number;
+  approved: number;
+  failed: number;
+  skipped: number;
+  status: "running" | "completed" | "failed";
+};
 
 /* =========================================
    Helpers
@@ -138,6 +160,12 @@ const fmtDate = (iso: string) =>
   });
 
 const normalizeIdForSearch = (value: string) => value.replace(/-/g, "").toLowerCase();
+const getDailySeq = (row: Pick<PanelRow, "order_number" | "sample_id">) => {
+  if (typeof row.order_number === "number" && Number.isFinite(row.order_number)) return row.order_number;
+  const tail = String(row.sample_id || "").match(/(?:^|[/-])(\d+)\s*$/)?.[1] || "";
+  const parsed = parseInt(tail, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 const toNumber = (raw: string | number | null | undefined): number | null => {
   if (raw === null || raw === undefined) return null;
   const parsed = Number(String(raw).replace(/,/g, "").trim());
@@ -203,6 +231,23 @@ const normalizeFlagToken = (flag: string | null | undefined) =>
     .replace(/[-\s]/g, "_")
     .replace(/[^a-z0-9_]/g, "");
 
+const normalizeFormulaForPanelEvaluation = (formula: string): string => {
+  let expression = formula.trim().replace(/\bpow\s*\(/g, "Math.pow(");
+
+  // JavaScript cannot parse `base ** -0.411`; convert lab-style ^ powers to Math.pow().
+  // Handles common LIMS formulas like: 141 * (CREAT / 0.9) ^ -0.411 * 0.993 ^ AGE
+  const powerPattern =
+    /(\([^()]+\)|-?\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*)\s*\^\s*(\([^()]+\)|-?\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*)/g;
+
+  for (let i = 0; i < 10; i++) {
+    const next = expression.replace(powerPattern, "Math.pow($1, $2)");
+    if (next === expression) break;
+    expression = next;
+  }
+
+  return expression;
+};
+
 const getCanonicalFlag = (flag: string | null | undefined): CanonicalFlag | null => {
   const token = normalizeFlagToken(flag);
   if (!token) return null;
@@ -249,6 +294,85 @@ const getFlagBadgeStyles = (flag: string | null | undefined) => {
   }
 
   return { bg: "bg-gray-100", text: "text-gray-800" };
+};
+
+const describeSupabaseError = (error: unknown) => {
+  if (!error || typeof error !== "object") return { message: String(error) };
+  const err = error as {
+    message?: string;
+    code?: string;
+    details?: string;
+    hint?: string;
+    name?: string;
+    status?: number;
+  };
+
+  return {
+    message: err.message,
+    code: err.code,
+    details: err.details,
+    hint: err.hint,
+    name: err.name,
+    status: err.status,
+  };
+};
+
+const fetchRowsByIds = async (
+  table: string,
+  select: string,
+  ids: string[],
+  chunkSize = 80,
+) => {
+  const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+  if (uniqueIds.length === 0) return [] as any[];
+
+  const rows: any[] = [];
+  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+    const chunk = uniqueIds.slice(i, i + chunkSize);
+    const { data, error } = await supabase
+      .from(table)
+      .select(select)
+      .in("id", chunk);
+
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  return rows;
+};
+
+const fetchPanelStatusRows = async (
+  labId: string,
+  from: string,
+  to: string,
+  shouldFilter: boolean,
+  locationIds: string[],
+) => {
+  const pageSize = 1000;
+  const rows: any[] = [];
+
+  for (let start = 0; ; start += pageSize) {
+    let query = supabase
+      .from("v_result_panel_status")
+      .select("*")
+      .eq("lab_id", labId)
+      .gte("order_date", from)
+      .lte("order_date", to)
+      .order("order_date", { ascending: false })
+      .range(start, start + pageSize - 1);
+
+    if (shouldFilter && locationIds.length > 0) {
+      query = query.in("location_id", locationIds);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+
+  return rows;
 };
 
 const toStoredFlagValue = (canonicalFlag: string | null | undefined): string | null => {
@@ -531,10 +655,13 @@ const ResultVerificationConsole: React.FC = () => {
   // filters
   const [from, setFrom] = useState(fromYesterdayISO());
   const [to, setTo] = useState(todayISO());
-  const [q, setQ] = useState("");
-  const [stateFilter, setStateFilter] = useState<StateFilter>("all");
-  const [viewMode, setViewMode] = useState<ViewMode>("order");
-  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+	  const [q, setQ] = useState("");
+	  const [stateFilter, setStateFilter] = useState<StateFilter>("all");
+	  const [viewMode, setViewMode] = useState<ViewMode>("order");
+	  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [doctorFilter, setDoctorFilter] = useState("all");
+  const [accountFilter, setAccountFilter] = useState("all");
+  const [panelSortMode, setPanelSortMode] = useState<PanelSortMode>("sample_desc");
 
   // attachment view mode
   const [attachmentViewMode, setAttachmentViewMode] = useState<'test' | 'all'>('test');
@@ -557,6 +684,7 @@ const ResultVerificationConsole: React.FC = () => {
   // bulk operations
   const [selectedPanels, setSelectedPanels] = useState<Set<string>>(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [bulkApprovalProgress, setBulkApprovalProgress] = useState<BulkApprovalProgress | null>(null);
 
   // AI intelligence
   const aiIntelligence = useAIResultIntelligence();
@@ -570,6 +698,7 @@ const ResultVerificationConsole: React.FC = () => {
   // AI Delta Check results - quality control check comparing current vs historical values
   const [aiDeltaCheckResults, setAiDeltaCheckResults] = useState<Record<string, DeltaCheckResponse>>({});
   const [currentLabId, setCurrentLabId] = useState<string | null>(null);
+  const currentVerifierIdRef = useRef<string | null | undefined>(undefined);
   const [trendData, setTrendData] = useState<Record<string, TrendData[]>>({});
   const [showTrendModal, setShowTrendModal] = useState(false);
   const [selectedAnalyteTrend, setSelectedAnalyteTrend] = useState<{ parameter: string; patientId: string } | null>(null);
@@ -659,43 +788,59 @@ const ResultVerificationConsole: React.FC = () => {
     // ✅ Apply location filtering for access control
     const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
 
-    // Build query with optional location filter
-    let query = supabase
-      .from("v_result_panel_status")
-      .select("*")
-      .eq("lab_id", labId)
-      .gte("order_date", from)
-      .lte("order_date", to)
-      .order("order_date", { ascending: false });
-
-    // Apply location filter if user is restricted
-    if (shouldFilter && locationIds.length > 0) {
-      query = query.in("location_id", locationIds);
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
-      setErr(error.message);
-      setPanels([]);
-    } else {
+    try {
+      const data = await fetchPanelStatusRows(labId, from, to, shouldFilter, locationIds);
       const basePanels = (data || []) as PanelRow[];
-      const resultIds = Array.from(new Set(basePanels.map((row) => row.result_id).filter(Boolean)));
+      const needsStatusFallback = basePanels.some((row) => !Object.prototype.hasOwnProperty.call(row, "result_verification_status"));
+      const statusFallbackIds = needsStatusFallback
+        ? Array.from(new Set(basePanels
+          .filter((row) =>
+            row.has_result === true ||
+            (row.has_result === undefined && (
+              (row.entered_analytes || 0) > 0 ||
+              row.panel_ready ||
+              !!row.is_section_only
+            ))
+          )
+          .map((row) => row.result_id)
+          .filter(Boolean)))
+        : [];
+      const patientIds = Array.from(new Set(basePanels.map((row) => row.patient_id).filter(Boolean)));
+	      const orderIds = Array.from(new Set(basePanels.map((row) => row.order_id).filter(Boolean)));
 
-      if (resultIds.length > 0) {
-        const { data: resultStatuses } = await supabase
-          .from("results")
-          .select("id, verification_status")
-          .in("id", resultIds);
+	      const [resultStatuses, patientRows, orderRows] = await Promise.all([
+	        fetchRowsByIds("results", "id, verification_status", statusFallbackIds),
+	        fetchRowsByIds("patients", "id, age, gender", patientIds),
+	        fetchRowsByIds("orders", "id, sample_id, order_number, doctor, account_id, priority, accounts(name)", orderIds),
+	      ]);
 
-        const statusMap = new Map((resultStatuses || []).map((row: any) => [row.id, row.verification_status || null]));
-        setPanels(basePanels.map((row) => ({
+	      const statusMap = new Map(resultStatuses.map((row: any) => [row.id, row.verification_status || null]));
+	      const patientMap = new Map(patientRows.map((patient: any) => [patient.id, patient]));
+	      const orderMap = new Map(orderRows.map((order: any) => {
+        const accountInfo = Array.isArray(order.accounts) ? order.accounts[0] : order.accounts;
+        return [order.id, {
+          sample_id: order.sample_id || null,
+          order_number: order.order_number ?? null,
+          doctor: order.doctor || null,
+          account_id: order.account_id || null,
+          account_name: accountInfo?.name || null,
+          priority: order.priority || "Normal",
+        }];
+      }));
+      setPanels(basePanels.map((row) => {
+        const patient = patientMap.get(row.patient_id) as any;
+        const order = orderMap.get(row.order_id) as Partial<PanelRow> | undefined;
+        return {
           ...row,
-          result_verification_status: statusMap.has(row.result_id) ? statusMap.get(row.result_id) ?? null : null,
-        })));
-      } else {
-        setPanels(basePanels);
-      }
+	          ...(order || {}),
+          result_verification_status: row.result_verification_status ?? (statusMap.has(row.result_id) ? statusMap.get(row.result_id) ?? null : null),
+          patient_age: row.patient_age ?? patient?.age ?? null,
+		          patient_gender: row.patient_gender ?? patient?.gender ?? null,
+	        };
+	      }));
+    } catch (error: any) {
+      setErr(error?.message || "Failed to load verification panels");
+      setPanels([]);
     }
     if (!silent) setLoading(false);
   };
@@ -707,25 +852,37 @@ const ResultVerificationConsole: React.FC = () => {
   }, [from, to, currentLabId]);
 
   /* ----------------- Filter panels ----------------- */
-  const filteredPanels = useMemo(() => {
+	  const filteredPanels = useMemo(() => {
     const k = q.trim().toLowerCase();
     const normalizedSearchId = normalizeIdForSearch(k);
 
-    // Show analyte-backed panels once values are entered, and always allow
-    // section-only panels because they are verified via report sections.
-    let list = (panels || []).filter((r) =>
-      (r?.entered_analytes || 0) > 0 ||
-      !!r.is_section_only
-    );
+	    // Prefer the view's real-result marker. Older databases do not expose it,
+	    // so fall back to the previous entered-analyte/section-only behavior.
+	    let list = (panels || []).filter((r) =>
+	      r.has_result === true ||
+	      (r.has_result === undefined && (
+	        (r?.entered_analytes || 0) > 0 ||
+	        !!r.is_section_only
+	      ))
+	    );
 
     if (k) {
       list = list.filter(
         (r) =>
-          (r.patient_name || "").toLowerCase().includes(k) ||
-          (r.test_group_name || "").toLowerCase().includes(k) ||
-          (r.order_id || "").toLowerCase().includes(k) ||
-          normalizeIdForSearch(r.order_id || "").includes(normalizedSearchId)
-      );
+	          (r.patient_name || "").toLowerCase().includes(k) ||
+	          (r.test_group_name || "").toLowerCase().includes(k) ||
+          (r.sample_id || "").toLowerCase().includes(k) ||
+	          (r.order_id || "").toLowerCase().includes(k) ||
+	          normalizeIdForSearch(r.order_id || "").includes(normalizedSearchId)
+	      );
+	    }
+
+    if (doctorFilter !== "all") {
+      list = list.filter((r) => (r.doctor || "").toLowerCase().includes(doctorFilter.toLowerCase()));
+    }
+
+    if (accountFilter !== "all") {
+      list = list.filter((r) => (r.account_name || "").toLowerCase().includes(accountFilter.toLowerCase()));
     }
 
     if (stateFilter === "ready") {
@@ -748,12 +905,38 @@ const ResultVerificationConsole: React.FC = () => {
       );
     }
 
-    return list;
-  }, [panels, q, stateFilter]);
+    list = [...list].sort((a, b) => {
+      if (panelSortMode === "patient_az") return (a.patient_name || "").localeCompare(b.patient_name || "");
+      if (panelSortMode === "date_desc") {
+        const dateDiff = new Date(b.order_date).getTime() - new Date(a.order_date).getTime();
+        if (dateDiff !== 0) return dateDiff;
+      }
 
-  /* ----------------- Load analytes for panel ----------------- */
-  const ensureAnalytesLoaded = async (result_id: string) => {
-    if (rowsByResult[result_id]) return;
+      const nA = getDailySeq(a);
+      const nB = getDailySeq(b);
+      if (nA !== nB) return panelSortMode === "sample_asc" ? nA - nB : nB - nA;
+      return new Date(b.order_date).getTime() - new Date(a.order_date).getTime();
+    });
+
+		    return list;
+		  }, [panels, q, stateFilter, doctorFilter, accountFilter, panelSortMode]);
+
+  const doctorOptions = useMemo(() => (
+    Array.from(new Set((panels || []).map(row => row.doctor).filter(Boolean) as string[])).sort()
+  ), [panels]);
+
+  const accountOptions = useMemo(() => (
+    Array.from(new Set((panels || []).map(row => row.account_name).filter(Boolean) as string[])).sort()
+  ), [panels]);
+
+	  const allFilteredPanelsSelected = useMemo(
+	    () => filteredPanels.length > 0 && filteredPanels.every((panel) => selectedPanels.has(panel.result_id)),
+	    [filteredPanels, selectedPanels]
+	  );
+
+	  /* ----------------- Load analytes for panel ----------------- */
+  const ensureAnalytesLoaded = async (result_id: string): Promise<Analyte[]> => {
+    if (rowsByResult[result_id]) return rowsByResult[result_id];
 
     const { data, error } = await supabase
       .from("result_values")
@@ -774,14 +957,18 @@ const ResultVerificationConsole: React.FC = () => {
           "verified_at",
           "is_auto_calculated",
           "calculation_inputs",
-          "calculated_at",
+	          "calculated_at",
+	          "is_hidden_from_report",
+	          "hidden_reason",
         ].join(",")
       )
       .eq("result_id", result_id)
       .order("parameter", { ascending: true });
 
     if (!error && data) {
-      setRowsByResult((s) => ({ ...s, [result_id]: data as unknown as Analyte[] }));
+      const analytes = data as unknown as Analyte[];
+      setRowsByResult((s) => ({ ...s, [result_id]: analytes }));
+      return analytes;
     } else {
       // Fallback if verify_* columns do not exist
       if (String(error.message || "").includes("column") && String(error.message).includes("verify_status")) {
@@ -808,12 +995,18 @@ const ResultVerificationConsole: React.FC = () => {
             verified_at: null,
             is_auto_calculated: r.is_auto_calculated,
             calculation_inputs: r.calculation_inputs,
-            calculated_at: r.calculated_at,
-          })) as Analyte[];
+	            calculated_at: r.calculated_at,
+	            is_hidden_from_report: false,
+	            hidden_reason: null,
+	          })) as Analyte[];
           setRowsByResult((s) => ({ ...s, [result_id]: mapped }));
+          return mapped;
         }
       }
     }
+
+    console.warn("[ResultVerification] No analytes loaded for result", { result_id, error });
+    return [];
   };
 
   /* ----------------- Load trend data for analyte ----------------- */
@@ -873,6 +1066,7 @@ const ResultVerificationConsole: React.FC = () => {
 
   /* ----------------- Selection handlers ----------------- */
   const togglePanelSelection = (resultId: string) => {
+    setBulkApprovalProgress(null);
     setSelectedPanels(prev => {
       const newSet = new Set(prev);
       if (newSet.has(resultId)) {
@@ -885,21 +1079,30 @@ const ResultVerificationConsole: React.FC = () => {
   };
 
   const selectAllPanels = () => {
+    setBulkApprovalProgress(null);
     setSelectedPanels(new Set(filteredPanels.map(p => p.result_id)));
   };
 
   const clearSelection = () => {
+    setBulkApprovalProgress(null);
     setSelectedPanels(new Set());
   };
 
   /* ----------------- Mutations ----------------- */
   const setBusyFor = (key: string, v: boolean) => setBusy((s) => ({ ...s, [key]: v }));
+  const getCurrentVerifierId = async () => {
+    if (currentVerifierIdRef.current !== undefined) return currentVerifierIdRef.current;
+    const { data: { user } } = await supabase.auth.getUser();
+    currentVerifierIdRef.current = user?.id || null;
+    return currentVerifierIdRef.current;
+  };
 
   const approveAnalyte = async (rv_id: string) => {
     setBusyFor(rv_id, true);
+    const verifiedBy = await getCurrentVerifierId();
     const { error } = await supabase
       .from("result_values")
-      .update({ verify_status: "approved", verified_at: new Date().toISOString() })
+      .update({ verify_status: "approved", verified_at: new Date().toISOString(), verified_by: verifiedBy })
       .eq("id", rv_id);
     setBusyFor(rv_id, false);
 
@@ -1099,6 +1302,7 @@ const ResultVerificationConsole: React.FC = () => {
     if (row.is_section_only) {
       setBusyFor(row.result_id, true);
       try {
+        const verifiedBy = await getCurrentVerifierId();
         const sectionEditor = sectionEditorRefs.current[row.result_id];
         if (sectionEditor) {
           await sectionEditor.save();
@@ -1109,6 +1313,7 @@ const ResultVerificationConsole: React.FC = () => {
           .update({
             verification_status: "verified",
             verified_at: new Date().toISOString(),
+            verified_by: verifiedBy,
             manually_verified: true,
           })
           .eq("id", row.result_id);
@@ -1127,17 +1332,42 @@ const ResultVerificationConsole: React.FC = () => {
       return;
     }
 
-    const list = rowsByResult[row.result_id] || [];
-    if (!list.length) return;
+    const list = rowsByResult[row.result_id] || await ensureAnalytesLoaded(row.result_id);
+    if (!list.length) {
+      console.warn("[ResultVerification] Approval skipped because no analytes were found", {
+        result_id: row.result_id,
+        order_id: row.order_id,
+        test_group_name: row.test_group_name,
+      });
+      return;
+    }
     const ids = list.map((a) => a.id);
     setBusyFor(row.result_id, true);
     setSavingReportExtras(prev => ({ ...prev, [row.order_id]: true }));
 
     try {
+      const verifiedBy = await getCurrentVerifierId();
+      console.info("[ResultVerification] Approving panel analytes", {
+        result_id: row.result_id,
+        order_id: row.order_id,
+        test_group_name: row.test_group_name,
+        analyte_count: ids.length,
+      });
+
       const { error } = await supabase
         .from("result_values")
-        .update({ verify_status: "approved", verified_at: new Date().toISOString() })
+        .update({ verify_status: "approved", verified_at: new Date().toISOString(), verified_by: verifiedBy })
         .in("id", ids);
+
+      if (error) {
+        console.error("[ResultVerification] Failed to approve panel analytes", {
+          result_id: row.result_id,
+          order_id: row.order_id,
+          error: describeSupabaseError(error),
+          raw_error: error,
+        });
+        throw error;
+      }
 
       if (!error) {
         setRowsByResult((s) => ({
@@ -1147,22 +1377,7 @@ const ResultVerificationConsole: React.FC = () => {
 
         // Generate and save report extras (trends and clinical summary) if enabled
         try {
-          // Save trend charts if enabled and there are flagged analytes
-          if (includeTrendsInReport[row.order_id]) {
-            const flaggedAnalytes = list.filter(a => isAbnormalFlag(a.flag));
-            if (flaggedAnalytes.length > 0) {
-              console.log(`Generating trend charts for ${flaggedAnalytes.length} flagged analytes...`);
-              await generateAndSaveTrendCharts(
-                row.result_id,
-                row.order_id,
-                row.patient_id,
-                flaggedAnalytes.map(a => ({ name: a.parameter, flag: a.flag })),
-                true  // includeInReport
-              );
-            }
-          }
-
-          // Save clinical summary if enabled and exists
+	          // Save clinical summary if enabled and exists
           if (includeSummaryInReport[row.order_id] && aiClinicalSummary[row.order_id]) {
             console.log('Saving clinical summary to report extras...');
             const summaryResponse = aiClinicalSummary[row.order_id];
@@ -1342,6 +1557,20 @@ const ResultVerificationConsole: React.FC = () => {
           if (analyteSlug) valueLookup.set(analyteSlug, num);
         }
       }
+      const patientAge = toNumber(row.patient_age);
+      if (patientAge !== null) {
+        valueLookup.set('AGE', patientAge);
+        valueLookup.set('age', patientAge);
+      }
+      const patientGender = String(row.patient_gender || '').trim().toLowerCase();
+      const isMale = patientGender === 'male' || patientGender === 'm';
+      const isFemale = patientGender === 'female' || patientGender === 'f';
+      valueLookup.set('GENDER_MALE', isMale ? 1 : 0);
+      valueLookup.set('gender_male', isMale ? 1 : 0);
+      valueLookup.set('GENDER_FEMALE', isFemale ? 1 : 0);
+      valueLookup.set('gender_female', isFemale ? 1 : 0);
+      valueLookup.set('GENDER', isMale ? 1 : (isFemale ? 0 : 0.5));
+      valueLookup.set('gender', isMale ? 1 : (isFemale ? 0 : 0.5));
 
       const parseVars = (raw: any): string[] => {
         if (!raw) return [];
@@ -1352,96 +1581,206 @@ const ResultVerificationConsole: React.FC = () => {
 
       const updates: Array<{ id: string; value: string; inputs: Record<string, number> }> = [];
       const debugHintsForResult: Record<string, string[]> = {};
+      const recalcLogPrefix = `[Panel Recalculate][${row.result_id}]`;
 
-      for (const calcRow of calcRows) {
-        const fi = (formulas || []).find((f: any) => f.id === calcRow.analyte_id);
-        if (!fi?.formula) continue;
+      console.groupCollapsed(`${recalcLogPrefix} ${row.test_group_name || 'Panel'}: ${calcRows.length} calculated analyte(s)`);
+      console.info(`${recalcLogPrefix} Source values`, srcRows.map((r) => ({
+        row_id: r.id,
+        analyte_id: r.analyte_id,
+        lab_analyte_id: r.lab_analyte_id,
+        parameter: r.parameter,
+        value: r.value,
+      })));
+      console.info(`${recalcLogPrefix} Formulas loaded`, formulas.map((f: any) => ({
+        analyte_id: f.id,
+        formula: f.formula,
+        formula_variables: f.formula_variables,
+      })));
+      console.info(`${recalcLogPrefix} Dependencies loaded`, deps);
 
-          const rowDeps = (deps || []).filter((d: any) =>
-            (calcRow.lab_analyte_id && d.calculated_lab_analyte_id === calcRow.lab_analyte_id) ||
-            (!d.calculated_lab_analyte_id && d.calculated_analyte_id === calcRow.analyte_id)
-          );
-        const scope: Record<string, number> = {};
-        let allFound = true;
-        const missingVariables: string[] = [];
-
-        if (rowDeps.length > 0) {
-          for (const dep of rowDeps) {
-            let val = valueLookup.get(dep.source_lab_analyte_id || '') ??
-                      valueLookup.get(dep.source_analyte_id) ??
-                      valueLookup.get((dep.variable_name as string).toLowerCase());
-            if (val === undefined && dep.source_lab_analyte_id) {
-              const sourceName = sourceNameByLabAnalyteId.get(dep.source_lab_analyte_id);
-              if (sourceName) {
-                val = valueLookup.get(sourceName.toLowerCase());
-                if (val === undefined) {
-                  const slug = toVariableSlug(sourceName);
-                  if (slug) val = valueLookup.get(slug);
-                }
-              }
-            }
-            if (val === undefined && dep.source_analyte_id) {
-              const sourceName = sourceNameByAnalyteId.get(dep.source_analyte_id);
-              const sourceCode = sourceCodeByAnalyteId.get(dep.source_analyte_id);
-              if (sourceName) {
-                val = valueLookup.get(sourceName.toLowerCase());
-                if (val === undefined) {
-                  const slug = toVariableSlug(sourceName);
-                  if (slug) val = valueLookup.get(slug);
-                }
-              }
-              if (val === undefined && sourceCode) {
-                val = valueLookup.get(sourceCode.toLowerCase());
-              }
-            }
-            if (val === undefined) {
-              allFound = false;
-              missingVariables.push(dep.variable_name);
-              break;
-            }
-            scope[dep.variable_name] = val;
-          }
-        } else {
-          // Fallback: use formula_variables
-          for (const v of parseVars(fi.formula_variables)) {
-            const val = valueLookup.get(v.toLowerCase()) ?? valueLookup.get(v) ?? valueLookup.get(toVariableSlug(v));
-            if (val === undefined) {
-              allFound = false;
-              missingVariables.push(v);
-              break;
-            }
-            scope[v] = val;
-          }
-        }
-
-        if (!allFound || Object.keys(scope).length === 0) {
-          debugHintsForResult[calcRow.id] = missingVariables.length > 0 ? missingVariables : ["source values"];
-          continue;
-        }
-
-        let resolved = (fi.formula as string).trim();
-        for (const [k, v] of Object.entries(scope)) {
-          const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          resolved = resolved.replace(new RegExp(`\\b${esc}\\b`, 'g'), String(v));
-        }
-        resolved = resolved
-          .replace(/\bpow\s*\(/g, 'Math.pow(')
-          .replace(/\^/g, '**');
-        if (!/^[0-9+\-*/().\sA-Za-z,_]+$/.test(resolved)) {
-          debugHintsForResult[calcRow.id] = ["formula syntax"];
-          continue;
-        }
-        try {
-          const computed = Function('"use strict"; return (' + resolved + ');')();
-          if (!Number.isFinite(computed)) {
-            debugHintsForResult[calcRow.id] = ["non-finite result"];
+      try {
+        for (const calcRow of calcRows) {
+          const calcLogBase = {
+            row_id: calcRow.id,
+            analyte_id: calcRow.analyte_id,
+            lab_analyte_id: calcRow.lab_analyte_id,
+            parameter: calcRow.parameter,
+          };
+          const fi = (formulas || []).find((f: any) => f.id === calcRow.analyte_id);
+          if (!fi?.formula) {
+            debugHintsForResult[calcRow.id] = ["formula not configured"];
+            console.warn(`${recalcLogPrefix} Skipped calculated analyte: no formula`, calcLogBase);
             continue;
           }
-          updates.push({ id: calcRow.id, value: String(Math.round(Number(computed) * 100) / 100), inputs: { ...scope } });
-        } catch {
-          debugHintsForResult[calcRow.id] = ["formula evaluation"];
-          continue;
+
+          const exactLabDeps = calcRow.lab_analyte_id
+            ? (deps || []).filter((d: any) => d.calculated_lab_analyte_id === calcRow.lab_analyte_id)
+            : [];
+          const fallbackDeps = (deps || []).filter((d: any) =>
+            !d.calculated_lab_analyte_id && d.calculated_analyte_id === calcRow.analyte_id
+          );
+          const rowDeps = exactLabDeps.length > 0 ? exactLabDeps : fallbackDeps;
+          const scope: Record<string, number> = {};
+          let allFound = true;
+          const missingVariables: string[] = [];
+
+          console.debug(`${recalcLogPrefix} Calculating`, {
+            ...calcLogBase,
+            formula: fi.formula,
+            formula_variables: parseVars(fi.formula_variables),
+            dependency_mode: exactLabDeps.length > 0 ? 'lab-specific' : (fallbackDeps.length > 0 ? 'fallback/global' : 'formula_variables'),
+            dependencies: rowDeps,
+          });
+
+          if (rowDeps.length > 0) {
+            for (const dep of rowDeps) {
+              let val = valueLookup.get(dep.source_lab_analyte_id || '') ??
+                        valueLookup.get(dep.source_analyte_id) ??
+                        valueLookup.get((dep.variable_name as string).toLowerCase());
+              if (val === undefined && dep.source_lab_analyte_id) {
+                const sourceName = sourceNameByLabAnalyteId.get(dep.source_lab_analyte_id);
+                if (sourceName) {
+                  val = valueLookup.get(sourceName.toLowerCase());
+                  if (val === undefined) {
+                    const slug = toVariableSlug(sourceName);
+                    if (slug) val = valueLookup.get(slug);
+                  }
+                }
+              }
+              if (val === undefined && dep.source_analyte_id) {
+                const sourceName = sourceNameByAnalyteId.get(dep.source_analyte_id);
+                const sourceCode = sourceCodeByAnalyteId.get(dep.source_analyte_id);
+                if (sourceName) {
+                  val = valueLookup.get(sourceName.toLowerCase());
+                  if (val === undefined) {
+                    const slug = toVariableSlug(sourceName);
+                    if (slug) val = valueLookup.get(slug);
+                  }
+                }
+                if (val === undefined && sourceCode) {
+                  val = valueLookup.get(sourceCode.toLowerCase());
+                }
+              }
+              if (val === undefined) {
+                allFound = false;
+                missingVariables.push(dep.variable_name);
+                console.warn(`${recalcLogPrefix} Missing dependency value`, {
+                  ...calcLogBase,
+                  dependency: dep,
+                  known_lookup_keys: Array.from(valueLookup.keys()),
+                });
+                break;
+              }
+              scope[dep.variable_name] = val;
+              scope[String(dep.variable_name).toUpperCase()] = val;
+
+              const aliasCandidates = [
+                dep.source_lab_analyte_id ? sourceNameByLabAnalyteId.get(dep.source_lab_analyte_id) : null,
+                dep.source_analyte_id ? sourceNameByAnalyteId.get(dep.source_analyte_id) : null,
+                dep.source_analyte_id ? sourceCodeByAnalyteId.get(dep.source_analyte_id) : null,
+              ].filter(Boolean) as string[];
+
+              for (const alias of aliasCandidates) {
+                scope[alias] = val;
+                scope[alias.toUpperCase()] = val;
+                scope[alias.toLowerCase()] = val;
+                const slug = toVariableSlug(alias);
+                if (slug) {
+                  scope[slug] = val;
+                  scope[slug.toUpperCase()] = val;
+                }
+              }
+            }
+	          } else {
+	            // Fallback: use formula_variables
+	            for (const v of parseVars(fi.formula_variables)) {
+	              const val = valueLookup.get(v.toLowerCase()) ?? valueLookup.get(v) ?? valueLookup.get(toVariableSlug(v));
+              if (val === undefined) {
+                allFound = false;
+                missingVariables.push(v);
+                console.warn(`${recalcLogPrefix} Missing formula variable value`, {
+                  ...calcLogBase,
+                  variable: v,
+                  known_lookup_keys: Array.from(valueLookup.keys()),
+                });
+                break;
+              }
+	              scope[v] = val;
+	            }
+	          }
+
+	          // Patient context is not an analyte dependency, but formulas like eGFR
+	          // commonly require AGE / GENDER_MALE alongside source analytes.
+	          for (const contextKey of ['AGE', 'age', 'GENDER_MALE', 'gender_male', 'GENDER_FEMALE', 'gender_female', 'GENDER', 'gender']) {
+	            const contextValue = valueLookup.get(contextKey);
+	            if (contextValue !== undefined) {
+	              scope[contextKey] = contextValue;
+	            }
+	          }
+
+	          if (!allFound || Object.keys(scope).length === 0) {
+            debugHintsForResult[calcRow.id] = missingVariables.length > 0 ? missingVariables : ["source values"];
+            console.warn(`${recalcLogPrefix} Not calculated: missing source values`, {
+              ...calcLogBase,
+              missing: debugHintsForResult[calcRow.id],
+              scope,
+            });
+            continue;
+          }
+
+          let resolved = (fi.formula as string).trim();
+          for (const [k, v] of Object.entries(scope)) {
+            const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            resolved = resolved.replace(new RegExp(`\\b${esc}\\b`, 'g'), String(v));
+          }
+          resolved = normalizeFormulaForPanelEvaluation(resolved);
+          if (!/^[0-9+\-*/().\sA-Za-z,_?:<>=!]+$/.test(resolved)) {
+            debugHintsForResult[calcRow.id] = ["formula syntax"];
+            console.warn(`${recalcLogPrefix} Not calculated: formula syntax check failed`, {
+              ...calcLogBase,
+              formula: fi.formula,
+              resolved,
+              scope,
+            });
+            continue;
+          }
+          try {
+            const computed = Function('"use strict"; return (' + resolved + ');')();
+            if (!Number.isFinite(computed)) {
+              debugHintsForResult[calcRow.id] = ["non-finite result"];
+              console.warn(`${recalcLogPrefix} Not calculated: non-finite result`, {
+                ...calcLogBase,
+                formula: fi.formula,
+                resolved,
+                scope,
+                computed,
+              });
+              continue;
+            }
+            const roundedValue = String(Math.round(Number(computed) * 100) / 100);
+            updates.push({ id: calcRow.id, value: roundedValue, inputs: { ...scope } });
+            console.info(`${recalcLogPrefix} Calculated successfully`, {
+              ...calcLogBase,
+              value: roundedValue,
+              formula: fi.formula,
+              resolved,
+              scope,
+            });
+          } catch (err) {
+            debugHintsForResult[calcRow.id] = ["formula evaluation"];
+	            console.warn(`${recalcLogPrefix} Not calculated: formula evaluation error`, {
+	              ...calcLogBase,
+	              formula: fi.formula,
+	              resolved,
+	              scope,
+	              error_message: err instanceof Error ? err.message : String(err),
+	              error: err,
+	            });
+            continue;
+          }
         }
+      } finally {
+        console.groupEnd();
       }
 
       setCalcDebugHints(prev => ({ ...prev, [row.result_id]: debugHintsForResult }));
@@ -1505,17 +1844,88 @@ const ResultVerificationConsole: React.FC = () => {
   };
 
   const bulkApproveSelected = async () => {
-    if (selectedPanels.size === 0) return;
-
-    setBulkProcessing(true);
-    const promises = Array.from(selectedPanels).map(resultId => {
-      const row = filteredPanels.find(p => p.result_id === resultId);
-      return row ? approveAllInPanel(row) : Promise.resolve();
+    const selectedResultIds = Array.from(selectedPanels);
+    console.info("[ResultVerification] Bulk approve selected clicked", {
+      selected_count: selectedResultIds.length,
+      selected_result_ids: selectedResultIds,
     });
 
-    await Promise.all(promises);
-    clearSelection();
-    setBulkProcessing(false);
+    if (selectedResultIds.length === 0) return;
+
+    setBulkProcessing(true);
+    try {
+      const selectedRows = selectedResultIds
+        .map(resultId => filteredPanels.find(p => p.result_id === resultId))
+        .filter((row): row is PanelRow => !!row);
+
+      const missingRows = selectedResultIds.length - selectedRows.length;
+      if (missingRows > 0) {
+        console.warn("[ResultVerification] Some selected panels were not found in the current filter", {
+          missing_count: missingRows,
+          selected_result_ids: selectedResultIds,
+        });
+      }
+
+      const failedRows: Array<{ row: PanelRow; error: unknown }> = [];
+      setBulkApprovalProgress({
+        total: selectedResultIds.length,
+        attempted: 0,
+        approved: 0,
+        failed: 0,
+        skipped: missingRows,
+        status: "running",
+      });
+
+      for (const row of selectedRows) {
+        try {
+          await approveAllInPanel(row);
+          setBulkApprovalProgress(prev => prev ? ({
+            ...prev,
+            attempted: prev.attempted + 1,
+            approved: prev.approved + 1,
+          }) : prev);
+        } catch (error) {
+          failedRows.push({ row, error });
+          setBulkApprovalProgress(prev => prev ? ({
+            ...prev,
+            attempted: prev.attempted + 1,
+            failed: prev.failed + 1,
+          }) : prev);
+          console.error("[ResultVerification] Bulk approve panel failed", {
+            result_id: row.result_id,
+            order_id: row.order_id,
+            test_group_name: row.test_group_name,
+            error: describeSupabaseError(error),
+            raw_error: error,
+          });
+        }
+      }
+
+      if (failedRows.length === 0) {
+        setSelectedPanels(new Set());
+      } else {
+        setSelectedPanels(new Set(failedRows.map(({ row }) => row.result_id)));
+        alert(`${failedRows.length} of ${selectedRows.length} selected panels failed approval. The failed panels are still selected. Check the console for the database error message.`);
+      }
+      setBulkApprovalProgress(prev => prev ? ({
+        ...prev,
+        status: failedRows.length > 0 ? "failed" : "completed",
+      }) : prev);
+
+      console.info("[ResultVerification] Bulk approve selected completed", {
+        attempted_count: selectedRows.length,
+        failed_count: failedRows.length,
+      });
+    } catch (error) {
+      console.error("[ResultVerification] Bulk approve selected failed", {
+        error: describeSupabaseError(error),
+        raw_error: error,
+      });
+      setBulkApprovalProgress(prev => prev ? ({ ...prev, status: "failed" }) : prev);
+      alert("Bulk approval failed. Please check the console for details.");
+    } finally {
+      setBulkProcessing(false);
+    }
   };
 
   const handleEmailReport = async (row: PanelRow) => {
@@ -1682,24 +2092,31 @@ const ResultVerificationConsole: React.FC = () => {
     const cacheKey = `${row.patient_id}-${a.parameter}`;
     const hasTrend = trendData[cacheKey] && trendData[cacheKey].length > 0;
     const showAISuggestion = !!showAISuggestionMap[a.id];
-    const isEditing = editingAnalyteId === a.id;
-    const isRerunRequest = a.verify_note && a.verify_note.toUpperCase().includes("RE-RUN");
-    const debugMissing = calcDebugHints[a.result_id]?.[a.id] || [];
+	    const isEditing = editingAnalyteId === a.id;
+	    const isRerunRequest = a.verify_note && a.verify_note.toUpperCase().includes("RE-RUN");
+	    const isHidden = !!a.is_hidden_from_report;
+	    const debugMissing = calcDebugHints[a.result_id]?.[a.id] || [];
     const canVerify = canVerifyRow(row);
     const canUnapprove = canUnapproveResults;
 
     return (
       <>
-        <tr className={`hover:bg-blue-50 transition-colors ${a.is_auto_calculated ? 'bg-amber-50/50' : ''} ${isRerunRequest ? 'bg-orange-50' : ''}`}>
+	        <tr className={`hover:bg-blue-50 transition-colors ${isHidden ? 'bg-slate-50 text-slate-500' : a.is_auto_calculated ? 'bg-amber-50/50' : ''} ${isRerunRequest ? 'bg-orange-50' : ''}`}>
           <td className="px-4 py-4">
             <div className="flex items-center space-x-2">
               <div className="font-semibold text-gray-900">{a.parameter}</div>
-              {isRerunRequest && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-200">
+	              {isRerunRequest && (
+	                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-200">
                   <RefreshCcw className="h-3 w-3 mr-1" />
                   RE-RUN
-                </span>
-              )}
+	                </span>
+	              )}
+	              {isHidden && (
+	                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-200 text-slate-700 border border-slate-300">
+	                  <EyeOff className="h-3 w-3 mr-1" />
+	                  Hidden from report
+	                </span>
+	              )}
               {a.is_auto_calculated && (
                 <span
                   className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
@@ -1744,11 +2161,16 @@ const ResultVerificationConsole: React.FC = () => {
                 <Sparkles className="h-4 w-4" />
               </button>
             </div>
-            {isRerunRequest && a.verify_note && (
-              <div className="mt-1 text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-200">
-                {a.verify_note}
-              </div>
-            )}
+	            {isRerunRequest && a.verify_note && (
+	              <div className="mt-1 text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-200">
+	                {a.verify_note}
+	              </div>
+	            )}
+	            {isHidden && (
+	              <div className="mt-1 text-xs text-slate-500">
+	                {a.hidden_reason || "Will not print on final report"}
+	              </div>
+	            )}
             {a.is_auto_calculated && !a.value && (
               <div className="mt-1 text-xs text-red-600 bg-red-50 px-2 py-1 rounded border border-red-200">
                 Missing source values — enter all required analytes then click Recalculate
@@ -2067,6 +2489,15 @@ const ResultVerificationConsole: React.FC = () => {
                       <FileText className="h-4 w-4 mr-1" />
                       #{row.order_id.slice(-8)}
                     </span>
+                    {row.priority && row.priority !== "Normal" && (
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-lg text-xs font-bold border ${
+                        row.priority === "STAT"
+                          ? "bg-red-100 text-red-800 border-red-300 animate-pulse"
+                          : "bg-orange-100 text-orange-800 border-orange-300"
+                      }`}>
+                        {row.priority === "STAT" ? "🚨 STAT" : "⚡ Urgent"}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2269,7 +2700,7 @@ const ResultVerificationConsole: React.FC = () => {
                             // Also fetch external/outsourced results if available
                             const { data: externalData } = await supabase
                               .from('external_result_values')
-                              .select('value, original_analyte_name, created_at, external_reports!fk_erv_report(patient_id)')
+                              .select('value, original_analyte_name, created_at, external_reports!fk_erv_report!inner(patient_id)')
                               .eq('external_reports.patient_id', patientId)
                               .ilike('original_analyte_name', `%${a.parameter}%`)
                               .order('created_at', { ascending: false })
@@ -2490,7 +2921,7 @@ const ResultVerificationConsole: React.FC = () => {
               <TrendGraphPanel
                 orderId={row.order_id}
                 patientId={row.patient_id}
-                analyteIds={analytes.filter(a => a.analyte_id).map(a => a.analyte_id)}
+                analyteIds={analytes.map(a => a.analyte_id || '')}
                 analyteNames={analytes.map(a => a.parameter)}
                 includeInReport={includeTrendsInReport[row.order_id] ?? false}
                 onIncludeInReportChange={(include) => {
@@ -3187,6 +3618,13 @@ const ResultVerificationConsole: React.FC = () => {
   }
 
   /* ----------------- Render ----------------- */
+  const showBulkApprovalStatus = selectedPanels.size > 0 || !!bulkApprovalProgress;
+  const bulkApprovalStatusLabel = bulkApprovalProgress
+    ? bulkApprovalProgress.status === "running"
+      ? `Approving ${bulkApprovalProgress.attempted}/${bulkApprovalProgress.total}`
+      : `Approved ${bulkApprovalProgress.approved}/${bulkApprovalProgress.total}`
+    : "Ready for bulk verification operations";
+  const bulkApprovalHasIssues = !!bulkApprovalProgress && (bulkApprovalProgress.failed > 0 || bulkApprovalProgress.skipped > 0);
 
   return (
     <div className="bg-gradient-to-br from-gray-50 to-blue-50">
@@ -3248,7 +3686,9 @@ const ResultVerificationConsole: React.FC = () => {
                   ) : (
                     <Zap className="h-5 w-5 mr-2" />
                   )}
-                  Bulk Approve ({selectedPanels.size})
+                  {bulkProcessing && bulkApprovalProgress
+                    ? `Approving ${bulkApprovalProgress.attempted}/${bulkApprovalProgress.total}`
+                    : `Bulk Approve (${selectedPanels.size})`}
                 </button>
               )}
             </div>
@@ -3303,7 +3743,7 @@ const ResultVerificationConsole: React.FC = () => {
                 <input
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
-                  placeholder="Search patients, tests, or order IDs..."
+	                  placeholder="Search patients, tests, sample IDs, or order IDs..."
                   className="w-full pl-12 pr-4 py-3 sm:py-4 text-base sm:text-lg border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 transition-all duration-200"
                 />
                 {q && (
@@ -3329,10 +3769,10 @@ const ResultVerificationConsole: React.FC = () => {
                   <option value="ready">Verified Only</option>
                 </select>
 
-                <button
-                  onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
-                  className={`inline-flex items-center justify-center px-4 py-3 sm:py-4 border-2 rounded-xl transition-all duration-200 font-semibold ${showAdvancedFilters
-                    ? 'bg-blue-100 border-blue-300 text-blue-700'
+	                <button
+	                  onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+	                  className={`inline-flex items-center justify-center px-4 py-3 sm:py-4 border-2 rounded-xl transition-all duration-200 font-semibold ${showAdvancedFilters
+	                    ? 'bg-blue-100 border-blue-300 text-blue-700'
                     : 'border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50'
                     }`}
                 >
@@ -3341,16 +3781,24 @@ const ResultVerificationConsole: React.FC = () => {
                   {showAdvancedFilters ? (
                     <ChevronUp className="h-4 w-4 ml-2" />
                   ) : (
-                    <ChevronDown className="h-4 w-4 ml-2" />
-                  )}
-                </button>
-              </div>
-            </div>
+	                    <ChevronDown className="h-4 w-4 ml-2" />
+	                  )}
+	                </button>
+	                <button
+	                  onClick={selectAllPanels}
+	                  disabled={filteredPanels.length === 0 || allFilteredPanelsSelected}
+	                  className="inline-flex items-center justify-center px-4 py-3 sm:py-4 border-2 border-blue-200 text-blue-700 rounded-xl hover:bg-blue-50 hover:border-blue-300 transition-all duration-200 font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+	                >
+	                  <CheckSquare className="h-5 w-5 mr-2" />
+	                  {allFilteredPanelsSelected ? 'All Selected' : `Select All (${filteredPanels.length})`}
+	                </button>
+	              </div>
+	            </div>
 
             {/* Advanced Filters Panel */}
             {showAdvancedFilters && (
               <div className="mt-6 pt-6 border-t border-gray-100">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+	                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-3">Date Range</label>
                     <div className="space-y-3">
@@ -3376,8 +3824,8 @@ const ResultVerificationConsole: React.FC = () => {
                     </div>
                   </div>
 
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-3">Quick Presets</label>
+	                  <div>
+	                    <label className="block text-sm font-semibold text-gray-700 mb-3">Quick Presets</label>
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         onClick={setToday}
@@ -3404,23 +3852,65 @@ const ResultVerificationConsole: React.FC = () => {
                         90 Days
                       </button>
                     </div>
+	                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-3">Ref Doctor</label>
+                    <select
+                      value={doctorFilter}
+                      onChange={(e) => setDoctorFilter(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="all">All Doctors</option>
+                      {doctorOptions.map(doctor => (
+                        <option key={doctor} value={doctor}>{doctor}</option>
+                      ))}
+                    </select>
                   </div>
 
                   <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-3">B2B Client</label>
+                    <select
+                      value={accountFilter}
+                      onChange={(e) => setAccountFilter(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="all">All B2B Clients</option>
+                      {accountOptions.map(account => (
+                        <option key={account} value={account}>{account}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-3">Sort By</label>
+                    <select
+                      value={panelSortMode}
+                      onChange={(e) => setPanelSortMode(e.target.value as PanelSortMode)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="sample_desc">Sample ID newest first</option>
+                      <option value="sample_asc">Sample ID oldest first</option>
+                      <option value="date_desc">Order date newest first</option>
+                      <option value="patient_az">Patient A-Z</option>
+                    </select>
+                  </div>
+
+	                  <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-3">Bulk Actions</label>
                     <div className="space-y-2">
-                      <button
-                        onClick={selectAllPanels}
-                        disabled={filteredPanels.length === 0}
-                        className="w-full px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium disabled:opacity-50"
-                      >
+	                      <button
+	                        onClick={selectAllPanels}
+	                        disabled={filteredPanels.length === 0 || bulkProcessing}
+	                        className="w-full px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium disabled:opacity-50"
+	                      >
                         Select All ({filteredPanels.length})
                       </button>
-                      <button
-                        onClick={clearSelection}
-                        disabled={selectedPanels.size === 0}
-                        className="w-full px-4 py-2 text-sm border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium disabled:opacity-50"
-                      >
+	                      <button
+	                        onClick={clearSelection}
+	                        disabled={(selectedPanels.size === 0 && !bulkApprovalProgress) || bulkProcessing}
+	                        className="w-full px-4 py-2 text-sm border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium disabled:opacity-50"
+	                      >
                         Clear Selection
                       </button>
                       <button
@@ -3451,41 +3941,84 @@ const ResultVerificationConsole: React.FC = () => {
         </div>
 
         {/* Selection Summary */}
-        {selectedPanels.size > 0 && (
+        {showBulkApprovalStatus && (
           <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl p-4 sm:p-6 text-white shadow-lg">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-start gap-3">
                 <div className="bg-white/20 p-3 rounded-xl">
-                  <CheckSquare className="h-6 w-6" />
+                  {bulkProcessing ? (
+                    <Loader2 className="h-6 w-6 animate-spin" />
+                  ) : bulkApprovalProgress && !bulkApprovalHasIssues ? (
+                    <CheckCircle2 className="h-6 w-6" />
+                  ) : bulkApprovalHasIssues ? (
+                    <AlertTriangle className="h-6 w-6" />
+                  ) : (
+                    <CheckSquare className="h-6 w-6" />
+                  )}
                 </div>
-                <div>
+                <div className="space-y-2">
                   <div className="text-lg sm:text-xl font-bold">
-                    {selectedPanels.size} panel{selectedPanels.size !== 1 ? 's' : ''} selected
+                    {selectedPanels.size > 0
+                      ? `${selectedPanels.size} panel${selectedPanels.size !== 1 ? 's' : ''} selected`
+                      : `Bulk approval ${bulkApprovalHasIssues ? 'completed with issues' : 'complete'}`}
                   </div>
                   <div className="text-blue-100 text-sm sm:text-base">
-                    Ready for bulk verification operations
+                    {bulkApprovalStatusLabel}
                   </div>
+                  {bulkApprovalProgress && (
+                    <div className="flex flex-wrap gap-2 text-xs sm:text-sm">
+                      <span className="rounded-full bg-white/20 px-3 py-1">
+                        Attempted {bulkApprovalProgress.attempted}/{bulkApprovalProgress.total}
+                      </span>
+                      <span className="rounded-full bg-emerald-400/25 px-3 py-1">
+                        Approved {bulkApprovalProgress.approved}
+                      </span>
+                      {bulkApprovalProgress.failed > 0 && (
+                        <span className="rounded-full bg-red-400/25 px-3 py-1">
+                          Failed {bulkApprovalProgress.failed}
+                        </span>
+                      )}
+                      {bulkApprovalProgress.skipped > 0 && (
+                        <span className="rounded-full bg-amber-400/25 px-3 py-1">
+                          Skipped {bulkApprovalProgress.skipped}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {bulkApprovalProgress && bulkApprovalProgress.total > 0 && (
+                    <div className="h-2 max-w-xl overflow-hidden rounded-full bg-white/20">
+                      <div
+                        className="h-full rounded-full bg-white transition-all duration-300"
+                        style={{ width: `${Math.round(((bulkApprovalProgress.attempted + bulkApprovalProgress.skipped) / bulkApprovalProgress.total) * 100)}%` }}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
                 <button
                   onClick={clearSelection}
-                  className="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors font-medium"
+                  disabled={bulkProcessing}
+                  className="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors font-medium disabled:opacity-50"
                 >
                   Clear
                 </button>
-                <button
-                  onClick={bulkApproveSelected}
-                  disabled={bulkProcessing}
-                  className="inline-flex items-center justify-center px-6 py-3 bg-white text-blue-600 rounded-xl hover:bg-gray-50 transition-colors font-bold shadow-sm disabled:opacity-50"
-                >
-                  {bulkProcessing ? (
-                    <Loader2 className="h-5 w-5 mr-2 animate-spin inline" />
-                  ) : (
-                    <Zap className="h-5 w-5 mr-2 inline" />
-                  )}
-                  Approve Selected
-                </button>
+                {selectedPanels.size > 0 && (
+                  <button
+                    onClick={bulkApproveSelected}
+                    disabled={bulkProcessing}
+                    className="inline-flex items-center justify-center px-6 py-3 bg-white text-blue-600 rounded-xl hover:bg-gray-50 transition-colors font-bold shadow-sm disabled:opacity-50"
+                  >
+                    {bulkProcessing ? (
+                      <Loader2 className="h-5 w-5 mr-2 animate-spin inline" />
+                    ) : (
+                      <Zap className="h-5 w-5 mr-2 inline" />
+                    )}
+                    {bulkProcessing && bulkApprovalProgress
+                      ? `Approving ${bulkApprovalProgress.attempted}/${bulkApprovalProgress.total}`
+                      : "Approve Selected"}
+                  </button>
+                )}
               </div>
             </div>
           </div>

@@ -1,8 +1,8 @@
 // src/pages/Orders.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus, Search, Clock as ClockIcon, CheckCircle, AlertTriangle,
-  Eye, User, Calendar, TestTube, ChevronDown, ChevronUp, TrendingUp, ToggleLeft, ToggleRight, X, RefreshCcw, Activity
+  Eye, User, Calendar, TestTube, ChevronDown, ChevronUp, TrendingUp, ToggleLeft, ToggleRight, X, RefreshCcw, Activity, Building2, ArrowDownUp
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { database, supabase, formatAge } from "../utils/supabase";
@@ -80,6 +80,9 @@ type CardOrder = {
   total_amount: number;
   final_amount?: number;
   doctor: string | null;
+  account_id?: string | null;
+  account_name?: string | null;
+  account_billing_mode?: "standard" | "monthly" | null;
 
   order_number?: number | null;
 
@@ -111,6 +114,35 @@ type CardOrder = {
   tatStarted?: boolean;
 };
 
+type OrderBucketStatus = "All Done" | "Mostly Done" | "Pending" | "Approval";
+type OrderSortMode = "sample_desc" | "sample_asc" | "date_desc" | "patient_az";
+
+const ORDER_BUCKET_STATUSES: OrderBucketStatus[] = ["All Done", "Mostly Done", "Pending", "Approval"];
+
+const formatOrderCreationError = (error: any) => {
+  const message = String(error?.message || error || "Failed to create order");
+  if (message.includes("unique_sample_id_per_lab")) {
+    return "Sample ID conflict while creating the order. The system will try the next available ID; please submit again if this still appears.";
+  }
+  return message;
+};
+
+const hasMeaningfulProgressRows = (rows: ProgressRow[] | undefined) =>
+  !!rows?.some((row) =>
+    Number(row.expected_analytes || 0) > 0 ||
+    Number(row.entered_analytes || 0) > 0 ||
+    Number(row.total_values || 0) > 0 ||
+    !!row.has_results
+  );
+
+const getOrderBucket = (o: CardOrder): OrderBucketStatus => {
+  if (o.status === "Report Ready" || o.status === "Completed" || o.status === "Delivered" ||
+      (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal)) return "All Done";
+  if (o.status === "Pending Approval") return "Approval";
+  if (o.enteredTotal > 0 && o.enteredTotal >= o.expectedTotal * 0.75) return "Mostly Done";
+  return "Pending";
+};
+
 /* ===========================
    Component
 =========================== */
@@ -126,6 +158,9 @@ const Orders: React.FC = () => {
   const [openOnResults, setOpenOnResults] = useState(false);
   const [quickEntryOrder, setQuickEntryOrder] = useState<CardOrder | null>(null);
   const [viewMode, setViewMode] = useState<'standard' | 'enhanced'>('standard');
+  const [orderSortMode, setOrderSortMode] = useState<OrderSortMode>("sample_desc");
+  const [isRefreshingOrders, setIsRefreshingOrders] = useState(false);
+  const progressRowsCacheRef = useRef<Map<string, ProgressRow[]>>(new Map());
 
   // Filter state
   const [filters, setFilters] = useState<OrderFilters>({
@@ -143,6 +178,7 @@ const Orders: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoadingTests, setIsLoadingTests] = useState(false);
   const [locations, setLocations] = useState<{ id: string; name: string }[]>([]);
+  const [accounts, setAccounts] = useState<{ id: string; name: string }[]>([]);
 
   // Load locations on mount
   useEffect(() => {
@@ -164,6 +200,19 @@ const Orders: React.FC = () => {
     loadLocations();
   }, []);
 
+  useEffect(() => {
+    const loadAccounts = async () => {
+      const { data, error } = await database.accounts.getAll();
+      if (error) {
+        console.error("accounts load error", error);
+        return;
+      }
+      setAccounts((data || []).map((account: any) => ({ id: account.id, name: account.name })));
+    };
+
+    loadAccounts();
+  }, []);
+
   // dashboard counters
   const [summary, setSummary] = useState({ allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 });
 
@@ -177,6 +226,10 @@ const Orders: React.FC = () => {
     rerunRequests.forEach(r => map.set(r.order_id, { count: r.count, analytes: r.analytes }));
     return map;
   }, [rerunRequests]);
+
+  const toggleStatusFilter = (status: NonNullable<OrderFilters["status"]>) => {
+    setFilters(f => ({ ...f, status: f.status === status ? "All" : status }));
+  };
 
   // Fetch RE-RUN requests
   const fetchRerunRequests = async () => {
@@ -261,14 +314,14 @@ const Orders: React.FC = () => {
     labId: userLabId,
     enabled: !!userLabId, // Only enable when we have lab_id
     onInsert: async (newOrder) => {
-      console.log('📡 Realtime: New order created', newOrder.id);
 
       // Fetch full order data with relations
       const { data: fullOrderData } = await supabase
         .from("orders")
         .select(`
-          id, lab_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, final_amount, doctor,
+          id, lab_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, final_amount, doctor, account_id,
           order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
+          accounts(name, billing_mode),
           patients(name, age, gender),
           order_tests(id, test_group_id, test_name, outsourced_lab_id, outsourced_labs(name))
         `)
@@ -292,6 +345,9 @@ const Orders: React.FC = () => {
           total_amount: orderRow.total_amount,
           final_amount: orderRow.final_amount || orderRow.total_amount,
           doctor: orderRow.doctor,
+          account_id: orderRow.account_id,
+          account_name: orderRow.accounts?.name || null,
+          account_billing_mode: orderRow.accounts?.billing_mode || null,
           order_number: orderRow.order_number ?? null,
           sample_id: orderRow.sample_id,
           color_code: orderRow.color_code,
@@ -313,12 +369,10 @@ const Orders: React.FC = () => {
       }
     },
     onUpdate: (updatedOrder) => {
-      console.log('📡 Realtime: Order updated', updatedOrder.id);
       // Refresh that specific order
       fetchOrders();
     },
     onDelete: (deletedOrderId) => {
-      console.log('📡 Realtime: Order deleted', deletedOrderId);
       setOrders(prev => prev.filter(order => order.id !== deletedOrderId));
     }
   });
@@ -330,7 +384,9 @@ const Orders: React.FC = () => {
       if (updatedOrder && (
         updatedOrder.status !== selectedOrder.status ||
         updatedOrder.sample_collected_at !== selectedOrder.sample_collected_at ||
-        updatedOrder.sample_collected_by !== selectedOrder.sample_collected_by
+        updatedOrder.sample_collected_by !== selectedOrder.sample_collected_by ||
+        updatedOrder.tests.length !== selectedOrder.tests.length ||
+        (updatedOrder.order_tests?.length || 0) !== (selectedOrder.order_tests?.length || 0)
       )) {
         console.log(`Updating modal order data: ${selectedOrder.status} → ${updatedOrder.status}`);
         console.log(`Sample collection: ${selectedOrder.sample_collected_at} → ${updatedOrder.sample_collected_at}`);
@@ -499,25 +555,47 @@ const Orders: React.FC = () => {
   // Read daily sequence (prefer order_number; fallback to tail of sample_id)
   const getDailySeq = (o: CardOrder) => {
     if (typeof o.order_number === "number" && !Number.isNaN(o.order_number)) return o.order_number;
-    const tail = String(o.sample_id || "").split("-").pop() || "";
+    const tail = String(o.sample_id || "").match(/(?:^|[/-])(\d+)\s*$/)?.[1] || "";
     const n = parseInt(tail, 10);
     return Number.isFinite(n) ? n : 0;
   };
 
-  const fetchOrders = async () => {
-    // Get current user's lab_id
-    const lab_id = await database.getCurrentUserLabId();
-    if (!lab_id) {
-      console.error('No lab_id found for current user');
-      return;
+  const compareOrders = (a: CardOrder, b: CardOrder) => {
+    if (orderSortMode === "patient_az") {
+      return (a.patient?.name || a.patient_name).localeCompare(b.patient?.name || b.patient_name);
     }
 
-    // 1) base orders
-    let query = supabase
-      .from("orders")
-      .select(`
-        id, lab_id, location_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, final_amount, doctor,
+    if (orderSortMode === "date_desc") {
+      const dateDiff = new Date(b.order_date).getTime() - new Date(a.order_date).getTime();
+      if (dateDiff !== 0) return dateDiff;
+    }
+
+    const nA = getDailySeq(a);
+    const nB = getDailySeq(b);
+    if (nA !== nB) {
+      return orderSortMode === "sample_asc" ? nA - nB : nB - nA;
+    }
+
+    return new Date(b.order_date).getTime() - new Date(a.order_date).getTime();
+  };
+
+  const fetchOrders = async () => {
+    setIsRefreshingOrders(true);
+    // Get current user's lab_id
+    try {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        console.error('No lab_id found for current user');
+        return;
+      }
+
+      // 1) base orders
+      let query = supabase
+        .from("orders")
+        .select(`
+        id, lab_id, location_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, final_amount, doctor, account_id,
         order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
+        accounts(name, billing_mode),
         patients(name, age, gender),
         order_tests(
           id, test_group_id, test_name, outsourced_lab_id,
@@ -525,28 +603,29 @@ const Orders: React.FC = () => {
           test_groups(sample_type, sample_color)
         )
       `)
-      .eq('lab_id', lab_id)
-      .order("order_date", { ascending: false });
+        .eq('lab_id', lab_id)
+        .order("order_date", { ascending: false });
 
-    // Apply location filtering
-    const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
-    if (shouldFilter && locationIds.length > 0) {
-      query = query.in('location_id', locationIds);
-    }
+      // Apply location filtering
+      const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
+      if (shouldFilter && locationIds.length > 0) {
+        query = query.in('location_id', locationIds);
+      }
 
-    const { data: rows, error } = await query;
+      const { data: rows, error } = await query;
 
-    if (error) {
-      console.error("orders load error", error);
-      return;
-    }
+      if (error) {
+        console.error("orders load error", error);
+        return;
+      }
 
-    const orderRows = (rows || []) as any[]; // Use any temporarily to solve complex relation casting
-    const orderIds = orderRows.map((o) => o.id);
-    if (orderIds.length === 0) {
-      setOrders([]);
-      return;
-    }
+      const orderRows = (rows || []) as any[]; // Use any temporarily to solve complex relation casting
+      const orderIds = orderRows.map((o) => o.id);
+      if (orderIds.length === 0) {
+        setOrders([]);
+        setSummary({ allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 });
+        return;
+      }
 
     // 2) view-based progress (Using ENHANCED view for TAT)
     const { data: prog, error: pErr } = await supabase
@@ -556,12 +635,25 @@ const Orders: React.FC = () => {
 
     if (pErr) console.error("progress view error", pErr);
 
-    const byOrder = new Map<string, ProgressRow[]>();
-    (prog || []).forEach((r) => {
-      const arr = byOrder.get(r.order_id) || [];
-      arr.push(r as ProgressRow);
-      byOrder.set(r.order_id, arr);
-    });
+	    const byOrder = new Map<string, ProgressRow[]>();
+	    (prog || []).forEach((r) => {
+	      const arr = byOrder.get(r.order_id) || [];
+	      arr.push(r as ProgressRow);
+	      byOrder.set(r.order_id, arr);
+	    });
+
+	    for (const orderId of orderIds) {
+	      const freshRows = byOrder.get(orderId) || [];
+	      if (hasMeaningfulProgressRows(freshRows)) {
+	        progressRowsCacheRef.current.set(orderId, freshRows);
+	        continue;
+	      }
+
+	      const cachedRows = progressRowsCacheRef.current.get(orderId);
+	      if (hasMeaningfulProgressRows(cachedRows)) {
+	        byOrder.set(orderId, cachedRows!);
+	      }
+	    }
 
     // 3) invoice aggregation — single batched query instead of one per order
     const { data: allInvoices } = await supabase
@@ -689,6 +781,9 @@ const Orders: React.FC = () => {
         total_amount: o.total_amount,
         final_amount: effectiveDisplayAmount,
         doctor: o.doctor,
+        account_id: o.account_id,
+        account_name: o.accounts?.name || null,
+        account_billing_mode: o.accounts?.billing_mode || null,
 
         order_number: o.order_number ?? null,
         sample_id: o.sample_id,
@@ -725,21 +820,28 @@ const Orders: React.FC = () => {
       return nB - nA;
     });
 
-    // dashboard summary (kept)
-    const s = sorted.reduce(
-      (acc, o) => {
-        if (o.status === "Completed" || o.status === "Delivered" ||
-            (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal)) acc.allDone++;
-        else if (o.status === "Pending Approval") acc.awaitingApproval++;
-        else if (o.enteredTotal > 0 && o.enteredTotal >= o.expectedTotal * 0.75) acc.mostlyDone++;
-        else acc.pending++;
-        return acc;
-      },
-      { allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 }
+	    // dashboard summary (kept)
+	    const s = sorted.reduce(
+	      (acc, o) => {
+	        const bucket = getOrderBucket(o);
+	        if (bucket === "All Done") acc.allDone++;
+	        else if (bucket === "Approval") acc.awaitingApproval++;
+	        else if (bucket === "Mostly Done") acc.mostlyDone++;
+	        else acc.pending++;
+	        return acc;
+	      },
+	      { allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 }
     );
 
-    setOrders(sorted);
-    setSummary(s);
+      setOrders(sorted);
+      setSummary(s);
+    } finally {
+      setIsRefreshingOrders(false);
+    }
+  };
+
+  const refreshOrdersData = async () => {
+    await Promise.all([fetchOrders(), fetchRerunRequests()]);
   };
 
   /* ------------- filtering + grouping ------------- */
@@ -753,9 +855,13 @@ const Orders: React.FC = () => {
         (o.id || "").toLowerCase().includes(q) ||
         (o.doctor || "").toLowerCase().includes(q);
 
-      // Status filter
-      const matchesStatus = !filters.status || filters.status === "All" || 
-        (filters.status === "Re-Run Requests" ? rerunByOrder.has(o.id) : o.status === filters.status);
+	      // Status filter
+	      const matchesStatus = !filters.status || filters.status === "All" ||
+	        (filters.status === "Re-Run Requests"
+	          ? rerunByOrder.has(o.id)
+	          : ORDER_BUCKET_STATUSES.includes(filters.status as OrderBucketStatus)
+	            ? getOrderBucket(o) === filters.status
+	            : o.status === filters.status);
 
       // Priority filter
       const matchesPriority = !filters.priority || filters.priority === "All" || o.priority === filters.priority;
@@ -776,12 +882,15 @@ const Orders: React.FC = () => {
       const matchesDoctor = !filters.doctor ||
         (o.doctor || "").toLowerCase().includes((filters.doctor || "").toLowerCase());
 
+      const matchesAccount = !filters.account ||
+        (o.account_name || "").toLowerCase().includes((filters.account || "").toLowerCase());
+
       // Location filter
       const matchesLocation = !filters.locationId || o.location_id === filters.locationId;
 
-      return matchesQ && matchesStatus && matchesPriority && matchesDateRange() && matchesDoctor && matchesLocation;
+      return matchesQ && matchesStatus && matchesPriority && matchesDateRange() && matchesDoctor && matchesAccount && matchesLocation;
     });
-  }, [orders, filters]);
+	  }, [orders, filters, rerunByOrder]);
 
   // Calculate order counts for filter bar
   const orderCounts = useMemo(() => {
@@ -803,15 +912,15 @@ const Orders: React.FC = () => {
 
   // Calculate filtered summary stats that update based on filters
   const filteredSummary = useMemo(() => {
-    return filtered.reduce(
-      (acc, o) => {
-        if (o.status === "Completed" || o.status === "Delivered" ||
-            (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal)) acc.allDone++;
-        else if (o.status === "Pending Approval") acc.awaitingApproval++;
-        else if (o.enteredTotal > 0 && o.enteredTotal >= o.expectedTotal * 0.75) acc.mostlyDone++;
-        else acc.pending++;
-        return acc;
-      },
+	    return filtered.reduce(
+	      (acc, o) => {
+	        const bucket = getOrderBucket(o);
+	        if (bucket === "All Done") acc.allDone++;
+	        else if (bucket === "Approval") acc.awaitingApproval++;
+	        else if (bucket === "Mostly Done") acc.mostlyDone++;
+	        else acc.pending++;
+	        return acc;
+	      },
       { allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 }
     );
   }, [filtered]);
@@ -826,10 +935,18 @@ const Orders: React.FC = () => {
       total_amount: order.final_amount ?? order.total_amount,
       order_date: order.order_date,
       created_at: order.order_date,
+      order_number: order.order_number ?? null,
       sample_id: order.sample_id || undefined,
       sample_type: order.sample_type,
       color_name: order.color_name || undefined,
       tests: order.tests,
+      panels: order.panels.map(panel => ({
+        name: panel.name,
+        expected: panel.expected,
+        entered: panel.entered,
+        status: panel.status,
+        verified: panel.verified,
+      })),
       can_add_tests: !['Completed', 'Delivered'].includes(order.status),
       visit_group_id: order.sample_id ? `sample - ${order.sample_id} ` : `${order.patient_id} -${order.order_date.slice(0, 10)} `,
       order_type: 'initial' as const
@@ -857,17 +974,16 @@ const Orders: React.FC = () => {
           month: "long",
           year: "numeric",
         }),
-        orders: v.orders.sort((a, b) => {
-          const nA = getDailySeq(a);
-          const nB = getDailySeq(b);
-          if (nA !== nB) return nB - nA;
-          return new Date(b.order_date).getTime() - new Date(a.order_date).getTime();
-        }),
+        orders: v.orders.sort(compareOrders),
       }));
-  }, [filtered]);
+  }, [filtered, orderSortMode]);
 
   const openDetails = (o: CardOrder) => { setOpenOnResults(false); setSelectedOrder(o); };
   const openResultEntry = (o: CardOrder) => { setQuickEntryOrder(o); };
+  const openEnhancedResultEntry = (order: { id: string }) => {
+    const fullOrder = orders.find((o) => o.id === order.id);
+    if (fullOrder) setQuickEntryOrder(fullOrder);
+  };
 
   // Enhanced view handlers
   const handleAddOrder = async (orderData: any) => {
@@ -891,7 +1007,7 @@ const Orders: React.FC = () => {
       const { data: order, error: orderError } = await database.orders.create(orderData);
       if (orderError) {
         console.error('Error creating order:', orderError);
-        const errorMessage = orderError.message || 'Failed to create order';
+        const errorMessage = formatOrderCreationError(orderError);
         alert(`❌ Order Creation Failed: ${errorMessage} `);
         throw orderError;
       }
@@ -973,9 +1089,10 @@ const Orders: React.FC = () => {
         const { data: newOrderData, error: fetchError } = await supabase
           .from("orders")
           .select(`
-    id, lab_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, final_amount, doctor,
-      order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
-      patients(name, age, gender),
+	    id, lab_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, final_amount, doctor, account_id,
+	      order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
+	      accounts(name, billing_mode),
+	      patients(name, age, gender),
       order_tests(id, test_group_id, test_name, outsourced_lab_id, outsourced_labs(name))
         `)
           .eq('id', order.id)
@@ -1034,6 +1151,9 @@ const Orders: React.FC = () => {
             total_amount: orderRow.total_amount,
             final_amount: orderRow.final_amount || orderRow.total_amount,
             doctor: orderRow.doctor,
+            account_id: orderRow.account_id,
+            account_name: orderRow.accounts?.name || null,
+            account_billing_mode: orderRow.accounts?.billing_mode || null,
             order_number: orderRow.order_number ?? null,
             sample_id: orderRow.sample_id,
             color_code: orderRow.color_code,
@@ -1128,6 +1248,16 @@ const Orders: React.FC = () => {
               </button>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={refreshOrdersData}
+            disabled={isRefreshingOrders}
+            className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+            title="Refresh orders"
+          >
+            <RefreshCcw className={`h-4 w-4 mr-2 ${isRefreshingOrders ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
         </div>
 
         {/* Filters Bar */}
@@ -1136,6 +1266,7 @@ const Orders: React.FC = () => {
           onChange={setFilters}
           orderCounts={orderCounts}
           locations={locations}
+          accounts={accounts}
         />
 
         <EnhancedOrdersPage
@@ -1143,6 +1274,7 @@ const Orders: React.FC = () => {
           onAddOrder={handleAddOrder}
           onUpdateStatus={handleUpdateStatus}
           onRefreshOrders={fetchOrders}
+          onQuickResultEntry={openEnhancedResultEntry}
           onNewSession={handleNewSession}
           onNewPatientVisit={handleNewPatientVisit}
         />
@@ -1193,11 +1325,11 @@ const Orders: React.FC = () => {
   =========================== */
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
       {/* Header with View Mode Toggle */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center space-x-4">
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Test Orders</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Test Orders</h1>
           <div className="flex items-center space-x-2 bg-gray-100 rounded-lg p-1">
             <button
               onClick={() => setViewMode('standard')}
@@ -1215,45 +1347,77 @@ const Orders: React.FC = () => {
             </button>
           </div>
         </div>
+        <button
+          type="button"
+          onClick={refreshOrdersData}
+          disabled={isRefreshingOrders}
+          className="inline-flex items-center justify-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+          title="Refresh orders"
+        >
+          <RefreshCcw className={`h-4 w-4 mr-2 ${isRefreshingOrders ? "animate-spin" : ""}`} />
+          Refresh
+        </button>
       </div>
 
       {/* Overview cards */}
       {/* Overview cards - Compact Mobile Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
-        <div className="bg-green-50 border border-green-200 rounded-lg p-3 md:p-4 relative overflow-hidden">
-          <div className="relative z-10">
-            <div className="text-xl md:text-2xl font-bold text-green-900">{filteredSummary.allDone}</div>
-            <div className="text-xs md:text-sm text-green-700 font-medium">All Done</div>
-          </div>
-          <CheckCircle className="absolute right-2 bottom-2 h-8 w-8 text-green-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-green-500 md:p-1 md:rounded-lg md:opacity-100" />
-        </div>
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 md:p-4 relative overflow-hidden">
-          <div className="relative z-10">
-            <div className="text-xl md:text-2xl font-bold text-blue-900">{filteredSummary.mostlyDone}</div>
-            <div className="text-xs md:text-sm text-blue-700 font-medium">Mostly Done</div>
-          </div>
-          <TrendingUp className="absolute right-2 bottom-2 h-8 w-8 text-blue-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-blue-500 md:p-1 md:rounded-lg md:opacity-100" />
-        </div>
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 md:p-4 relative overflow-hidden">
-          <div className="relative z-10">
-            <div className="text-xl md:text-2xl font-bold text-yellow-900">{filteredSummary.pending}</div>
-            <div className="text-xs md:text-sm text-yellow-700 font-medium">Pending</div>
-          </div>
-          <ClockIcon className="absolute right-2 bottom-2 h-8 w-8 text-yellow-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-yellow-500 md:p-1 md:rounded-lg md:opacity-100" />
-        </div>
-        <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 md:p-4 relative overflow-hidden">
-          <div className="relative z-10">
-            <div className="text-xl md:text-2xl font-bold text-orange-900">{filteredSummary.awaitingApproval}</div>
-            <div className="text-xs md:text-sm text-orange-700 font-medium">Approval</div>
-          </div>
-          <AlertTriangle className="absolute right-2 bottom-2 h-8 w-8 text-orange-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-orange-500 md:p-1 md:rounded-lg md:opacity-100" />
-        </div>
-        {/* RE-RUN Requests Card */}
-        <div 
-          onClick={() => totalRerunCount > 0 && setFilters(f => ({ ...f, status: filters.status === 'Re-Run Requests' ? 'All' : 'Re-Run Requests' }))}
-          className={`border rounded-lg p-3 md:p-4 relative overflow-hidden cursor-pointer transition-all ${totalRerunCount > 0 ? 'bg-red-50 border-red-300 ring-2 ring-red-400 ring-opacity-50' : 'bg-gray-50 border-gray-200'} ${filters.status === 'Re-Run Requests' ? 'ring-2 ring-red-600 ring-opacity-80' : ''}`}>
-          <div className="relative z-10">
-            <div className={`text-xl md:text-2xl font-bold ${totalRerunCount > 0 ? 'text-red-900 animate-pulse' : 'text-gray-600'}`}>
+	      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 md:gap-3">
+	        <button
+	          type="button"
+	          onClick={() => toggleStatusFilter("All Done")}
+	          aria-pressed={filters.status === "All Done"}
+	          className={`text-left bg-green-50 border border-green-200 rounded-lg p-2 md:p-3 relative overflow-hidden cursor-pointer transition-all hover:border-green-400 hover:shadow-sm ${filters.status === "All Done" ? "ring-2 ring-green-600 ring-opacity-80" : ""}`}
+	        >
+	          <div className="relative z-10">
+	            <div className="text-lg md:text-xl font-bold text-green-900">{filteredSummary.allDone}</div>
+	            <div className="text-xs md:text-sm text-green-700 font-medium">All Done</div>
+	          </div>
+	          <CheckCircle className="absolute right-2 bottom-2 h-8 w-8 text-green-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-green-500 md:p-1 md:rounded-lg md:opacity-100" />
+	        </button>
+	        <button
+	          type="button"
+	          onClick={() => toggleStatusFilter("Mostly Done")}
+	          aria-pressed={filters.status === "Mostly Done"}
+	          className={`text-left bg-blue-50 border border-blue-200 rounded-lg p-2 md:p-3 relative overflow-hidden cursor-pointer transition-all hover:border-blue-400 hover:shadow-sm ${filters.status === "Mostly Done" ? "ring-2 ring-blue-600 ring-opacity-80" : ""}`}
+	        >
+	          <div className="relative z-10">
+	            <div className="text-lg md:text-xl font-bold text-blue-900">{filteredSummary.mostlyDone}</div>
+	            <div className="text-xs md:text-sm text-blue-700 font-medium">Mostly Done</div>
+	          </div>
+	          <TrendingUp className="absolute right-2 bottom-2 h-8 w-8 text-blue-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-blue-500 md:p-1 md:rounded-lg md:opacity-100" />
+	        </button>
+	        <button
+	          type="button"
+	          onClick={() => toggleStatusFilter("Pending")}
+	          aria-pressed={filters.status === "Pending"}
+	          className={`text-left bg-yellow-50 border border-yellow-200 rounded-lg p-2 md:p-3 relative overflow-hidden cursor-pointer transition-all hover:border-yellow-400 hover:shadow-sm ${filters.status === "Pending" ? "ring-2 ring-yellow-600 ring-opacity-80" : ""}`}
+	        >
+	          <div className="relative z-10">
+	            <div className="text-lg md:text-xl font-bold text-yellow-900">{filteredSummary.pending}</div>
+	            <div className="text-xs md:text-sm text-yellow-700 font-medium">Pending</div>
+	          </div>
+	          <ClockIcon className="absolute right-2 bottom-2 h-8 w-8 text-yellow-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-yellow-500 md:p-1 md:rounded-lg md:opacity-100" />
+	        </button>
+	        <button
+	          type="button"
+	          onClick={() => toggleStatusFilter("Approval")}
+	          aria-pressed={filters.status === "Approval"}
+	          className={`text-left bg-orange-50 border border-orange-200 rounded-lg p-2 md:p-3 relative overflow-hidden cursor-pointer transition-all hover:border-orange-400 hover:shadow-sm ${filters.status === "Approval" ? "ring-2 ring-orange-600 ring-opacity-80" : ""}`}
+	        >
+	          <div className="relative z-10">
+	            <div className="text-lg md:text-xl font-bold text-orange-900">{filteredSummary.awaitingApproval}</div>
+	            <div className="text-xs md:text-sm text-orange-700 font-medium">Approval</div>
+	          </div>
+	          <AlertTriangle className="absolute right-2 bottom-2 h-8 w-8 text-orange-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-orange-500 md:p-1 md:rounded-lg md:opacity-100" />
+	        </button>
+	        {/* RE-RUN Requests Card */}
+	        <button
+	          type="button"
+	          onClick={() => toggleStatusFilter("Re-Run Requests")}
+	          aria-pressed={filters.status === "Re-Run Requests"}
+	          className={`border rounded-lg p-2 md:p-3 relative overflow-hidden cursor-pointer transition-all ${totalRerunCount > 0 ? 'bg-red-50 border-red-300 ring-2 ring-red-400 ring-opacity-50' : 'bg-gray-50 border-gray-200'} ${filters.status === 'Re-Run Requests' ? 'ring-2 ring-red-600 ring-opacity-80' : ''}`}>
+	          <div className="relative z-10">
+	            <div className={`text-lg md:text-xl font-bold ${totalRerunCount > 0 ? 'text-red-900 animate-pulse' : 'text-gray-600'}`}>
               {totalRerunCount}
             </div>
             <div className={`text-xs md:text-sm font-medium ${totalRerunCount > 0 ? 'text-red-700' : 'text-gray-500'}`}>
@@ -1263,11 +1427,11 @@ const Orders: React.FC = () => {
               <div className="text-xs text-red-600 mt-1">
                 {rerunRequests.length} order{rerunRequests.length !== 1 ? 's' : ''}
               </div>
-            )}
-          </div>
-          <RefreshCcw className={`absolute right-2 bottom-2 h-8 w-8 md:static md:h-5 md:w-5 md:p-1 md:rounded-lg md:opacity-100 ${totalRerunCount > 0 ? 'text-red-500/20 md:text-white md:bg-red-500 animate-spin-slow' : 'text-gray-400/20 md:text-white md:bg-gray-400'}`} />
-        </div>
-      </div>
+	            )}
+	          </div>
+	          <RefreshCcw className={`absolute right-2 bottom-2 h-8 w-8 md:static md:h-5 md:w-5 md:p-1 md:rounded-lg md:opacity-100 ${totalRerunCount > 0 ? 'text-red-500/20 md:text-white md:bg-red-500 animate-spin-slow' : 'text-gray-400/20 md:text-white md:bg-gray-400'}`} />
+	        </button>
+	      </div>
 
       {/* Filters Bar */}
       <OrderFiltersBar
@@ -1275,11 +1439,29 @@ const Orders: React.FC = () => {
         onChange={setFilters}
         orderCounts={orderCounts}
         locations={locations}
+        accounts={accounts}
       />
+
+      <div className="flex justify-end">
+        <div className="relative">
+          <ArrowDownUp className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+          <select
+            value={orderSortMode}
+            onChange={(e) => setOrderSortMode(e.target.value as OrderSortMode)}
+            className="h-9 rounded-lg border border-gray-300 bg-white pl-9 pr-8 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            title="Sort orders"
+          >
+            <option value="sample_desc">Sample ID high to low</option>
+            <option value="sample_asc">Sample ID low to high</option>
+            <option value="date_desc">Newest order date</option>
+            <option value="patient_az">Patient A-Z</option>
+          </select>
+        </div>
+      </div>
 
       {/* Groups + Cards */}
       <div className="bg-white rounded-lg border border-gray-200">
-        <div className="px-6 py-4 border-b border-gray-200">
+        <div className="px-4 py-3 border-b border-gray-200">
           <h3 className="text-lg font-semibold text-gray-900">Test Orders ({filtered.length})</h3>
         </div>
 
@@ -1289,17 +1471,19 @@ const Orders: React.FC = () => {
             <p className="text-gray-600">No Orders Found</p>
           </div>
         ) : (
-          <div className="space-y-8">
+          <div className="space-y-4">
             {groups.map((g) => (
-              <div key={g.key} className="px-6">
-                <div className="flex items-center justify-between py-4 border-b-2 mb-6 border-gray-200">
-                  <h4 className="text-lg font-semibold text-gray-700">{g.label}</h4>
+              <div key={g.key} className="px-4">
+                <div className="flex items-center justify-between py-3 border-b mb-3 border-gray-200">
+                  <h4 className="text-base font-semibold text-gray-700">{g.label}</h4>
                   <div className="text-sm text-gray-500">{g.orders.length} order{g.orders.length !== 1 ? "s" : ""}</div>
                 </div>
 
                 <div className="space-y-4">
-                  {g.orders.map((o) => {
-                    const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
+	                  {g.orders.map((o) => {
+	                    const pct = o.expectedTotal > 0
+	                      ? Math.min(100, Math.round((o.enteredTotal / o.expectedTotal) * 100))
+	                      : 0;
                     const canAddTests = !['Completed', 'Delivered'].includes(o.status);
                     const visiblePanels = mobile.isMobile ? o.panels.slice(0, 2) : o.panels;
                     const hiddenPanelCount = Math.max(0, o.panels.length - visiblePanels.length);
@@ -1332,8 +1516,14 @@ const Orders: React.FC = () => {
                                 </div>
                                 <div className="text-xs md:text-base text-gray-700">
                                   {formatAge(o.patient?.age, (o.patient as any)?.age_unit)} • {o.patient?.gender || "N/A"}
-                                  <span className="hidden sm:inline"> • ID: {o.patient_id}</span>
-                                </div>
+	                                  <span className="hidden sm:inline"> • ID: {o.patient_id}</span>
+	                                </div>
+	                                {o.account_name && (
+	                                  <div className="mt-1 inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700">
+	                                    <Building2 className="h-3 w-3" />
+	                                    {o.account_name}
+	                                  </div>
+	                                )}
                               </div>
                             </div>
                           </div>
@@ -1362,6 +1552,15 @@ const Orders: React.FC = () => {
                             <span className="inline-flex items-center px-2 py-0.5 md:px-3 md:py-1.5 rounded-lg text-xs md:text-sm font-bold border bg-blue-100 text-blue-800 border-blue-200 whitespace-nowrap">
                               {o.status === "In Progress" ? "In Process" : o.status}
                             </span>
+                            {o.priority !== "Normal" && (
+                              <span className={`inline-flex items-center px-2 py-0.5 md:px-2.5 md:py-1 rounded-lg text-xs md:text-sm font-bold border whitespace-nowrap ${
+                                o.priority === "STAT"
+                                  ? "bg-red-100 text-red-800 border-red-300 animate-pulse"
+                                  : "bg-orange-100 text-orange-800 border-orange-300"
+                              }`}>
+                                {o.priority === "STAT" ? "🚨 STAT" : "⚡ Urgent"}
+                              </span>
+                            )}
                             <button
                               className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg"
                               onClick={() => setExpanded((prev) => ({ ...prev, [o.id]: !prev[o.id] }))}
@@ -1602,34 +1801,32 @@ const Orders: React.FC = () => {
                             </span>
                           </div>
 
-                          {/* Enhanced progress bar with dynamic colors and segments */}
-                          <div className="relative w-full bg-gray-200 rounded-full h-4 mb-3 overflow-hidden border">
-                            {/* Background gradient based on overall progress */}
-                            <div
-                              className="absolute left-0 top-0 h-4 transition-all duration-700 rounded-full"
-                              style={{
-                                width: `${pct}% `,
-                                background: pct === 0 ? '#ef4444' : // red
-                                  pct < 25 ? `linear - gradient(90deg, #ef4444 0 %, #f97316 100 %)` : // red to orange
-                                    pct < 50 ? `linear - gradient(90deg, #f97316 0 %, #eab308 100 %)` : // orange to yellow  
-                                      pct < 75 ? `linear - gradient(90deg, #eab308 0 %, #84cc16 100 %)` : // yellow to lime
-                                        pct < 100 ? `linear - gradient(90deg, #84cc16 0 %, #22c55e 100 %)` : // lime to green
-                                          '#10b981', // emerald
-                                boxShadow: pct > 0 ? `0 0 12px ${pct < 50 ? '#ef444440' : '#22c55e40'} ` : 'none'
-                              }}
-                            />
-
-                            {/* Approved segment overlay (darker green) */}
-                            <div
-                              className="absolute left-0 top-0 h-4 bg-green-600 transition-all duration-500 rounded-full opacity-80"
-                              style={{ width: `${o.expectedTotal > 0 ? (o.approvedAnalytes / o.expectedTotal) * 100 : 0}% ` }}
-                            />
-
-                            {/* Progress indicator line */}
-                            <div
-                              className="absolute top-0 w-0.5 h-4 bg-white shadow-lg"
-                              style={{ left: `${pct}% ` }}
-                            />
+	                          {/* Result-entry progress bar. Verification pending is shown in the legend, not as incomplete entry progress. */}
+	                          <div className="relative w-full bg-gray-200 rounded-full h-4 mb-3 overflow-hidden border">
+	                            <div
+	                              className="absolute left-0 top-0 h-4 transition-all duration-700 rounded-full"
+	                              style={{
+	                                width: `${pct}%`,
+	                                background: pct === 0
+	                                  ? '#ef4444'
+	                                  : pct < 25
+	                                    ? 'linear-gradient(90deg, #ef4444 0%, #f97316 100%)'
+	                                    : pct < 50
+	                                      ? 'linear-gradient(90deg, #f97316 0%, #eab308 100%)'
+	                                      : pct < 75
+	                                        ? 'linear-gradient(90deg, #eab308 0%, #84cc16 100%)'
+	                                        : pct < 100
+	                                          ? 'linear-gradient(90deg, #84cc16 0%, #22c55e 100%)'
+	                                          : '#10b981',
+	                                boxShadow: pct > 0 ? `0 0 12px ${pct < 50 ? '#ef444440' : '#22c55e40'}` : 'none'
+	                              }}
+	                            />
+	
+	                            {/* Progress indicator line */}
+	                            <div
+	                              className="absolute top-0 w-0.5 h-4 bg-white shadow-lg"
+	                              style={{ left: `${pct}%` }}
+	                            />
 
                             {/* Sparkle effect for high progress */}
                             {pct > 75 && (
@@ -1649,7 +1846,7 @@ const Orders: React.FC = () => {
                             </div>
                             <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-amber-200">
                               <span className="inline-block w-3 h-3 bg-amber-500 rounded-full mr-2 shadow-sm" />
-                              <span className="text-amber-700">For approval: <strong>{o.forApprovalAnalytes}</strong></span>
+	                              <span className="text-amber-700">Verification pending: <strong>{o.forApprovalAnalytes}</strong></span>
                             </div>
                             <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-green-200">
                               <span className="inline-block w-3 h-3 bg-green-500 rounded-full mr-2 shadow-sm" />

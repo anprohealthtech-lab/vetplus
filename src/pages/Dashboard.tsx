@@ -50,6 +50,8 @@ import PhlebotomistSelector from "../components/Users/PhlebotomistSelector";
 import { SampleTypeIndicator } from "../components/Common/SampleTypeIndicator";
 import { SampleCollectionTracker } from "../components/Samples/SampleCollectionTracker";
 import BookingQueue from "../components/Dashboard/BookingQueue";
+import { useQZTray } from "../contexts/QZTrayContext";
+import * as qzTrayService from "../utils/qzTrayService";
 
 /* ===========================
    Types
@@ -230,6 +232,14 @@ type CardOrder = {
   tatStarted?: boolean;
 };
 
+const formatOrderCreationError = (error: any) => {
+  const message = String(error?.message || error || "Failed to create order");
+  if (message.includes("unique_sample_id_per_lab")) {
+    return "Sample ID conflict while creating the order. The system will try the next available ID; please submit again if this still appears.";
+  }
+  return message;
+};
+
 
 
 /* ===========================
@@ -238,6 +248,7 @@ type CardOrder = {
 
 const Dashboard: React.FC = () => {
   const { user, blockSendOnDue } = useAuth();
+  const { settings: qzSettings, connect: qzConnect } = useQZTray();
 
   const [orders, setOrders] = useState<CardOrder[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -250,9 +261,9 @@ const Dashboard: React.FC = () => {
   const [dashboardTab, setDashboardTab] = useState<"standard" | "patient-visits">("standard");
   const [bookingQueueOpen, setBookingQueueOpen] = useState(false);
 
-  // Date range state - default to last 7 days
+  // Date range state - default to last 5 calendar days
   const [dateFrom, setDateFrom] = useState<string>(() => {
-    return format(subDays(new Date(), 7), "yyyy-MM-dd");
+    return format(subDays(new Date(), 4), "yyyy-MM-dd");
   });
   const [dateTo, setDateTo] = useState<string>(() => format(new Date(), "yyyy-MM-dd"));
   const [allDates, setAllDates] = useState(false); // ✅ FIX: “All Dates” without breaking query
@@ -260,6 +271,10 @@ const Dashboard: React.FC = () => {
   const [showOrderForm, setShowOrderForm] = useState(false);
   const [processingBooking, setProcessingBooking] = useState<any>(null); // State for booking being processed
   const [selectedOrder, setSelectedOrder] = useState<CardOrder | null>(null);
+
+  // Auto-open collection modal after order creation
+  const [pendingAutoCollectOrderId, setPendingAutoCollectOrderId] = useState<string | null>(null);
+  const [autoOpenCollectModal, setAutoOpenCollectModal] = useState(false);
 
   // State for invoice modal
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
@@ -273,6 +288,7 @@ const Dashboard: React.FC = () => {
   // const { generatePDF } = usePDFGeneration(); // Currently unused
   const [isSendingReport, setIsSendingReport] = useState<string | null>(null);
   const [isSendingInvoice, setIsSendingInvoice] = useState<string | null>(null);
+  const [printingReportId, setPrintingReportId] = useState<string | null>(null);
 
   // dashboard counters
   const [summary, setSummary] = useState({
@@ -293,6 +309,34 @@ const Dashboard: React.FC = () => {
     fetchOrders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFrom, dateTo, allDates]);
+
+  // Load auto_open_collection_modal setting once
+  // eslint-disable-next-line no-console
+  useEffect(() => {
+    database.getCurrentUserLabId().then(async (labId) => {
+      if (!labId) { console.debug('[AutoCollect] No labId found'); return; }
+      const { data, error } = await supabase
+        .from('labs')
+        .select('auto_open_collection_modal')
+        .eq('id', labId)
+        .single();
+      console.debug('[AutoCollect] DB row:', data, 'error:', error);
+      const enabled = !!data?.auto_open_collection_modal;
+      console.debug('[AutoCollect] Setting autoOpenCollectModal =', enabled);
+      if (enabled) setAutoOpenCollectModal(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && e.key === 'n') {
+        e.preventDefault();
+        setShowOrderForm(true);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Read daily sequence (prefer order_number; fallback to tail of sample_id)
   const getDailySeq = (o: CardOrder) => {
@@ -700,7 +744,7 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
 
       const { data: order, error: orderError } = await database.orders.create(orderDataWithLab);
       if (orderError) {
-        const errorMessage = orderError.message || "Failed to create order";
+        const errorMessage = formatOrderCreationError(orderError);
         alert(`❌ Order Creation Failed: ${errorMessage} `);
         throw orderError;
       }
@@ -883,13 +927,25 @@ id,
     setShowCollectionModal(true);
   };
 
+  useEffect(() => {
+    if (!pendingAutoCollectOrderId) return;
+
+    const order = orders.find((o) => o.id === pendingAutoCollectOrderId);
+    if (!order) return;
+
+    setPendingAutoCollectOrderId(null);
+    handleOpenCollectionModal(order);
+  }, [pendingAutoCollectOrderId, orders]);
+
   const handleSaveCollection = async () => {
     if (!collectionOrder) return;
 
     try {
-      if (selectedPhlebotomistId) {
-        await database.orders.markSampleCollected(collectionOrder.id, selectedPhlebotomistName || undefined, selectedPhlebotomistId);
-      }
+      await database.orders.markSampleCollected(
+        collectionOrder.id,
+        selectedPhlebotomistName || undefined,
+        selectedPhlebotomistId || undefined,
+      );
       await database.orders.checkAndUpdateStatus(collectionOrder.id);
       setShowCollectionModal(false);
       fetchOrders();
@@ -1451,6 +1507,57 @@ id,
     }
   };
 
+  const handlePrintReport = async (order: CardOrder) => {
+    const pdfUrl = order.report_print_url || order.report_url;
+    console.debug('[PrintBridge][ReportPrint] dashboard print clicked', {
+      orderId: order.id,
+      patientName: order.patient_name,
+      reportUrl: order.report_url,
+      reportPrintUrl: order.report_print_url,
+      selectedPdfUrl: pdfUrl,
+      configuredPrinter: qzSettings.reportPrinterName,
+      queueReady: qzTrayService.isConnected(),
+    });
+
+    if (!pdfUrl) {
+      console.warn('[PrintBridge][ReportPrint] print blocked: no report PDF URL', { orderId: order.id });
+      alert("Report PDF not generated yet.");
+      return;
+    }
+
+    if (!qzSettings.reportPrinterName) {
+      console.warn('[PrintBridge][ReportPrint] print blocked: report printer is not configured', { orderId: order.id });
+      alert("Report Printer is not configured in Workflow Settings.");
+      return;
+    }
+
+    try {
+      setPrintingReportId(order.id);
+
+      if (!qzTrayService.isConnected()) {
+        console.debug('[PrintBridge][ReportPrint] queue paused, resuming', { orderId: order.id });
+        await qzConnect();
+      }
+
+      console.debug('[PrintBridge][ReportPrint] queueing report PDF', {
+        orderId: order.id,
+        printerName: qzSettings.reportPrinterName,
+        pdfUrl,
+      });
+      await qzTrayService.printPDFFromUrl(qzSettings.reportPrinterName, pdfUrl);
+      console.debug('[PrintBridge][ReportPrint] print job queued', {
+        orderId: order.id,
+        printerName: qzSettings.reportPrinterName,
+        pdfUrl,
+      });
+    } catch (error: any) {
+      console.error("Print bridge report queue failed:", error);
+      alert(error?.message || "Failed to queue report for LIMS Utility.");
+    } finally {
+      setPrintingReportId(null);
+    }
+  };
+
   const getBillingBadge = (order: any) => {
     if (order.billing_status === "billed") {
       return (
@@ -1520,7 +1627,7 @@ id,
   const setDateRange = (days: number) => {
     const to = new Date();
     const from = new Date();
-    from.setDate(to.getDate() - days);
+    from.setDate(to.getDate() - Math.max(days - 1, 0));
 
     setAllDates(false);
     setDateTo(to.toISOString().split("T")[0]);
@@ -1805,8 +1912,8 @@ id,
                       <button onClick={setToday} className="px-3 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm">
                         Today
                       </button>
-                      <button onClick={() => setDateRange(7)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
-                        7 days
+                      <button onClick={() => setDateRange(5)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
+                        5 days
                       </button>
                       <button onClick={() => setDateRange(30)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
                         30 days
@@ -1884,8 +1991,8 @@ id,
                           <button onClick={setToday} className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
                             Today
                           </button>
-                          <button onClick={() => setDateRange(7)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
-                            7 days
+                          <button onClick={() => setDateRange(5)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+                            5 days
                           </button>
                           <button onClick={() => setDateRange(30)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
                             30 days
@@ -2480,15 +2587,15 @@ id,
 
                                 {o.report_url && (
                                   <button
-                                    onClick={(e) => {
+                                    onClick={async (e) => {
                                       e.stopPropagation();
-                                      if (o.report_print_url) window.open(o.report_print_url, "_blank");
-                                      else window.open(o.report_url!, "_blank");
+                                      await handlePrintReport(o);
                                     }}
-                                    className="inline-flex items-center justify-center px-2 py-1.5 text-sm font-medium rounded-lg text-white bg-emerald-700 hover:bg-emerald-800 transition-colors"
-                                    title={o.report_print_url ? "Print PDF (print version)" : "Print (opens report PDF)"}
+                                    disabled={printingReportId === o.id}
+                                    className="inline-flex items-center justify-center px-2 py-1.5 text-sm font-medium rounded-lg text-white bg-emerald-700 hover:bg-emerald-800 disabled:bg-emerald-300 disabled:cursor-not-allowed transition-colors"
+                                    title={o.report_print_url ? "Queue report for LIMS Utility" : "Queue report PDF for LIMS Utility"}
                                   >
-                                    <Printer className="h-4 w-4" />
+                                    {printingReportId === o.id ? "..." : <Printer className="h-4 w-4" />}
                                   </button>
                                 )}
 
@@ -2743,11 +2850,19 @@ id,
           <OrderForm
             initialBookingData={processingBooking}
             onClose={() => {
-              setProcessingBooking(null); // Clear processing booking
+              setProcessingBooking(null);
               setShowOrderForm(false);
               fetchOrders();
             }}
             onSubmit={handleAddOrder}
+            onOrderCreated={autoOpenCollectModal ? (orderId) => {
+              console.debug('[AutoCollect] onOrderCreated fired, orderId:', orderId, '| autoOpenCollectModal:', autoOpenCollectModal);
+              setShowOrderForm(false);
+              setProcessingBooking(null);
+              setPendingAutoCollectOrderId(orderId);
+              console.debug('[AutoCollect] pending collection order set, dashboard modal will open after refresh');
+              fetchOrders();
+            } : undefined}
           />
         )
       }
@@ -2856,6 +2971,7 @@ id,
                   <SampleCollectionTracker
                     orderId={collectionOrder.id}
                     collectedById={selectedPhlebotomistId || undefined}
+                    showFinishButton={false}
                     onSampleCollected={() => {
                       fetchOrders();
                     }}

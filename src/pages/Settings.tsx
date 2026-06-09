@@ -16,6 +16,7 @@ import PatientPortalSettings from '../components/Settings/PatientPortalSettings'
 import PatientFormSettings from '../components/Settings/PatientFormSettings';
 import LabBillingItemSettings from '../components/Settings/LabBillingItemSettings';
 import PriceMasterSettings from '../components/Settings/PriceMasterSettings';
+import PaymentGatewaySettings from '../components/Settings/PaymentGatewaySettings';
 import {
   Users,
   Shield,
@@ -47,7 +48,8 @@ import {
   Star,
   Smartphone,
   Tag,
-  Printer
+  Printer,
+  CreditCard
 } from 'lucide-react';
 import { LANGUAGE_DISPLAY_NAMES, type SupportedLanguage } from '../hooks/useAIResultIntelligence';
 import { COUNTRY_CODE_OPTIONS } from '../utils/phoneFormatter';
@@ -140,20 +142,34 @@ interface LabSettings {
     layout: 'table' | 'inline';
     fields: string[];
   } | null;
-  print_options?: {
-    tableBorders?: boolean;
-    flagColumn?: boolean;
-    flagAsterisk?: boolean;
-    flagAsteriskCritical?: boolean;
-    headerBackground?: string;
-    alternateRows?: boolean;
-    baseFontSize?: number;
-    showSampleType?: boolean;
-  } | null;
+	  print_options?: {
+	    tableBorders?: boolean;
+	    flagColumn?: boolean;
+	    flagAsterisk?: boolean;
+	    flagAsteriskCritical?: boolean;
+	    headerBackground?: string;
+	    alternateRows?: boolean;
+	    baseFontSize?: number;
+	    showSampleType?: boolean;
+	    testNameBold?: boolean;
+	    testNameAlignment?: 'left' | 'center' | 'right';
+	    boldAllValues?: boolean;
+	    boldAbnormalValues?: boolean;
+	    calcMarker?: 'asterisk' | 'cal' | 'none';
+	    sectionHeaderInline?: boolean;
+	    flagSymbol?: 'none' | 'before' | 'after';
+	    showFlagLegend?: boolean;
+	    testGroupTitlePosition?: 'below_headers' | 'above_headers_center' | 'above_headers_left';
+	    qrHorizontalOffset?: number;
+	    signatureMaxHeight?: number;
+	    signatureMaxWidth?: number;
+	    sectionFieldNamePct?: number;
+	  } | null;
   _pdf_layout_settings_raw?: Record<string, unknown> | null;
   barcode_printer_name?: string | null;
   report_printer_name?: string | null;
   auto_collect_on_registration?: boolean;
+  auto_open_collection_modal?: boolean;
   auto_print_barcode_on_order?: boolean;
   auto_print_report_on_approval?: boolean;
 }
@@ -524,7 +540,7 @@ const Settings: React.FC = () => {
   const { user: authUser } = useAuth();
   const { loading: permissionsLoading, hasPermission } = usePermissions();
   const { status: qzStatus, connect: qzConnect, disconnect: qzDisconnect } = useQZTray();
-  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters' | 'patient_form'>('team');
+  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters' | 'patient_form' | 'payment_gateway'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -638,6 +654,7 @@ const Settings: React.FC = () => {
             barcode_printer_name: (labData as any).barcode_printer_name ?? null,
             report_printer_name: (labData as any).report_printer_name ?? null,
             auto_collect_on_registration: (labData as any).auto_collect_on_registration ?? false,
+            auto_open_collection_modal: (labData as any).auto_open_collection_modal ?? false,
             auto_print_barcode_on_order: (labData as any).auto_print_barcode_on_order ?? false,
             auto_print_report_on_approval: (labData as any).auto_print_report_on_approval ?? false,
           });
@@ -817,6 +834,7 @@ const Settings: React.FC = () => {
     { id: 'patient_form', name: 'Patient Form', icon: UserCheck },
     { id: 'billing_items', name: 'Billing Items', icon: FileText },
     { id: 'price_masters', name: 'Price Masters', icon: Tag },
+    { id: 'payment_gateway', name: 'Payment Gateway', icon: CreditCard },
   ];
 
   const roles = availableRoles.length > 0
@@ -959,6 +977,7 @@ const Settings: React.FC = () => {
         barcode_printer_name: labSettings.barcode_printer_name || null,
         report_printer_name: labSettings.report_printer_name || null,
         auto_collect_on_registration: labSettings.auto_collect_on_registration ?? false,
+        auto_open_collection_modal: labSettings.auto_open_collection_modal ?? false,
         auto_print_barcode_on_order: labSettings.auto_print_barcode_on_order ?? false,
         auto_print_report_on_approval: labSettings.auto_print_report_on_approval ?? false,
         pdf_layout_settings: {
@@ -2825,31 +2844,45 @@ const Settings: React.FC = () => {
                       <p className="text-xs text-gray-500 mb-3">
                         For labs that collect samples at the front desk (walk-in). When enabled, every new order is automatically marked as <strong>Sample Collected</strong> at the time of registration — bypassing the separate collection step. Barcode can be printed immediately.
                       </p>
-                      <label className="flex items-center cursor-pointer gap-3">
-                        <input
-                          type="checkbox"
-                          checked={labSettings.auto_collect_on_registration ?? false}
-                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, auto_collect_on_registration: e.target.checked } : prev)}
-                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                        />
-                        <div>
-                          <span className="text-sm font-medium text-gray-800">Auto-collect at registration</span>
-                          <p className="text-xs text-gray-400 mt-0.5">Marks sample as collected when the order is created. No separate "Sample Collection" step required.</p>
-                        </div>
-                      </label>
+                      <div className="space-y-3">
+                        <label className="flex items-center cursor-pointer gap-3">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.auto_collect_on_registration ?? false}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, auto_collect_on_registration: e.target.checked } : prev)}
+                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">Auto-collect at registration</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Marks sample as collected when the order is created. No separate "Sample Collection" step required.</p>
+                          </div>
+                        </label>
+
+                        <label className="flex items-center cursor-pointer gap-3">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.auto_open_collection_modal ?? false}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, auto_open_collection_modal: e.target.checked } : prev)}
+                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">Auto-open collection modal after order creation</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Immediately opens the Collect Sample dialog after each order is saved — ideal for front-desk walk-in labs that need to print barcodes on the spot.</p>
+                          </div>
+                        </label>
+                      </div>
                     </div>
 
-                    {/* QZ Tray Auto-Print */}
+                    {/* LIMS Utility Auto-Print */}
                     <div className="border-t border-gray-100 pt-5">
-                      <h4 className="text-sm font-semibold text-gray-700 mb-1">Auto-Print via QZ Tray</h4>
+                      <h4 className="text-sm font-semibold text-gray-700 mb-1">Auto-Print via LIMS Utility</h4>
                       <p className="text-xs text-gray-500 mb-3">
-                        Requires <strong>QZ Tray</strong> to be installed on this workstation.{' '}
-                        <a href="https://qz.io/download/" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">Download QZ Tray</a>.
-                        On first connect, QZ Tray will ask you to allow unsigned printing — check "Remember" and click Allow.
-                        Printer names above must match exactly.
+                        Sends print jobs to the local LIMS Bridge Utility queue. The installed utility polls the cloud queue,
+                        prints on the configured desktop printer, and reports success or failure back to LIMS.
+                        Printer names above must match the utility/Windows printer names exactly.
                       </p>
 
-                      {/* Connection status + connect button */}
+                      {/* Queue status */}
                       <div className="flex items-center gap-3 mb-4 p-3 rounded-lg bg-gray-50 border border-gray-200">
                         <span className={`inline-block w-2.5 h-2.5 rounded-full flex-shrink-0 ${
                           qzStatus === 'connected' ? 'bg-green-500' :
@@ -2857,15 +2890,15 @@ const Settings: React.FC = () => {
                           qzStatus === 'error' ? 'bg-red-500' : 'bg-gray-400'
                         }`} />
                         <span className="text-sm text-gray-700 flex-1">
-                          QZ Tray:{' '}
+                          Print queue:{' '}
                           <span className={`font-medium ${
                             qzStatus === 'connected' ? 'text-green-600' :
                             qzStatus === 'connecting' ? 'text-yellow-600' :
                             qzStatus === 'error' ? 'text-red-600' : 'text-gray-500'
                           }`}>
-                            {qzStatus === 'connected' ? 'Connected' :
+                            {qzStatus === 'connected' ? 'Ready' :
                              qzStatus === 'connecting' ? 'Connecting…' :
-                             qzStatus === 'error' ? 'Error (QZ Tray not running?)' : 'Not connected'}
+                             qzStatus === 'error' ? 'Queue unavailable' : 'Paused'}
                           </span>
                         </span>
                         {qzStatus === 'connected' ? (
@@ -2883,7 +2916,7 @@ const Settings: React.FC = () => {
                             disabled={qzStatus === 'connecting'}
                             className="text-xs px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300"
                           >
-                            {qzStatus === 'connecting' ? 'Connecting…' : 'Connect'}
+                            {qzStatus === 'connecting' ? 'Connecting…' : 'Resume'}
                           </button>
                         )}
                       </div>
@@ -2898,7 +2931,7 @@ const Settings: React.FC = () => {
                           />
                           <div>
                             <span className="text-sm font-medium text-gray-800">Auto-print barcode label on order creation</span>
-                            <p className="text-xs text-gray-400 mt-0.5">Sends a ZPL label to the Barcode / Label Printer immediately after an order is saved. No dialog shown.</p>
+                            <p className="text-xs text-gray-400 mt-0.5">Queues a ZPL label for the Barcode / Label Printer immediately after an order is saved.</p>
                           </div>
                         </label>
 
@@ -2911,7 +2944,7 @@ const Settings: React.FC = () => {
                           />
                           <div>
                             <span className="text-sm font-medium text-gray-800">Auto-print report when results are approved</span>
-                            <p className="text-xs text-gray-400 mt-0.5">Sends the final PDF report to the Report Printer when results are approved. No dialog shown.</p>
+                            <p className="text-xs text-gray-400 mt-0.5">Queues the final PDF report for the Report Printer when results are approved.</p>
                           </div>
                         </label>
                       </div>
@@ -3024,6 +3057,13 @@ const Settings: React.FC = () => {
         {activeTab === 'price_masters' && (
           <div className="p-6">
             <PriceMasterSettings />
+          </div>
+        )}
+
+        {/* Payment Gateway Tab */}
+        {activeTab === 'payment_gateway' && labId && (
+          <div className="p-6">
+            <PaymentGatewaySettings labId={labId} />
           </div>
         )}
 

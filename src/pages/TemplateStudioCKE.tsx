@@ -37,7 +37,7 @@ import { database, supabase, LabBrandingAsset, LabUserSignature } from '../utils
 import { ensureReportRegions } from '../utils/reportTemplateRegions';
 import '../styles/report-baseline.css';
 
-type PlaceholderGroup = 'lab' | 'test' | 'patient' | 'branding' | 'signature' | 'section';
+type PlaceholderGroup = 'lab' | 'test' | 'patient' | 'branding' | 'signature' | 'section' | 'extras';
 
 interface LabTemplateRecord {
   id: string;
@@ -114,6 +114,15 @@ const REQUIRED_PLACEHOLDERS: Record<string, string> = {
 };
 
 const PLACEHOLDER_REGEX = /{{\s*([^{}]+)\s*}}/g;
+
+const slugPlaceholderKey = (value: string): string =>
+  value
+    .replace(/{{|}}/g, '')
+    .replace(/^section:/i, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
 
 const BRANDING_TYPE_LABELS: Record<LabBrandingAsset['asset_type'], string> = {
   logo: 'Logo',
@@ -846,7 +855,15 @@ const TemplateStudioCKE: React.FC = () => {
       { id: 'sampleCollectedAt', label: 'Sample Collected At', placeholder: '{{sampleCollectedAt}}', group: 'patient' },
       { id: 'approvedAt', label: 'Approved / Verified At', placeholder: '{{approvedAt}}', group: 'patient' },
       { id: 'orderId', label: 'Order ID', placeholder: '{{orderId}}', group: 'patient' },
-      { id: 'approverSignature', label: 'Approver Signature (Dynamic)', placeholder: '{{approverSignature}}', group: 'patient' },
+      {
+        id: 'approverSignature',
+        label: 'Approver Signature (Dynamic)',
+        placeholder: '{{approverSignature}}',
+        group: 'signature',
+        assetType: 'signature',
+        preferredWidth: 160,
+        preferredHeight: 55,
+      },
       { id: 'approvedByName', label: 'Approved By Name', placeholder: '{{approvedByName}}', group: 'patient' },
       { id: 'approverName', label: 'Approver Name', placeholder: '{{approverName}}', group: 'patient' },
       { id: 'approverRole', label: 'Approver Role', placeholder: '{{approverRole}}', group: 'patient' },
@@ -885,7 +902,15 @@ const TemplateStudioCKE: React.FC = () => {
   // Signatory placeholders
   const SIGNATORY_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
     () => [
-      { id: 'approverSignature', label: 'Approver Signature Image', placeholder: '{{approverSignature}}', group: 'signature' },
+      {
+        id: 'approverSignature',
+        label: 'Approver Signature Image',
+        placeholder: '{{approverSignature}}',
+        group: 'signature',
+        assetType: 'signature',
+        preferredWidth: 160,
+        preferredHeight: 55,
+      },
       { id: 'approverName', label: 'Approver Name (Signatory)', placeholder: '{{approverName}}', group: 'signature' },
       { id: 'approvedByName', label: 'Approved By Name', placeholder: '{{approvedByName}}', group: 'signature' },
       { id: 'approverRole', label: 'Approver Role/Title', placeholder: '{{approverRole}}', group: 'signature' },
@@ -1222,16 +1247,59 @@ const TemplateStudioCKE: React.FC = () => {
         } else if (sectionRows?.length) {
           const sectionPlaceholders = sectionRows
             .filter((section: any) => section?.placeholder_key)
-            .map((section: any) => {
+            .flatMap((section: any) => {
               const rawKey = String(section.placeholder_key || '').trim();
-              const token = rawKey.startsWith('{{') ? rawKey : `{{${rawKey}}}`;
-              const label = section.section_name || toTitleCase(rawKey.replace(/{{|}}/g, '')) || 'Report Section';
-              return {
+              const cleanKey = rawKey
+                .replace(/^{{\s*/, '')
+                .replace(/\s*}}$/, '')
+                .replace(/^section:/i, '')
+                .trim();
+              const sectionKey = slugPlaceholderKey(cleanKey || rawKey);
+              const token = `{{${sectionKey || cleanKey || rawKey}}}`;
+              const label = section.section_name || toTitleCase(sectionKey || cleanKey || rawKey.replace(/{{|}}/g, '')) || 'Report Section';
+              const options: PlaceholderOption[] = [{
                 id: `section-${section.id || rawKey}`,
                 label,
                 placeholder: token,
                 group: 'section' as const,
-              } satisfies PlaceholderOption;
+              }];
+
+              const rawConfig = section.section_config;
+              const sectionConfig = typeof rawConfig === 'string'
+                ? (() => {
+                  try {
+                    return JSON.parse(rawConfig);
+                  } catch {
+                    return null;
+                  }
+                })()
+                : rawConfig;
+              const cascadeLevels = Array.isArray(sectionConfig?.cascade_levels)
+                ? sectionConfig.cascade_levels
+                : [];
+
+              const addCascadeLevelPlaceholders = (levels: any[]) => {
+                levels.forEach((level: any) => {
+                  const levelKey = slugPlaceholderKey(level?.label || level?.id || '');
+                  if (sectionKey && levelKey) {
+                    options.push({
+                      id: `section-${section.id || rawKey}-${level.id || levelKey}`,
+                      label: `${label} - ${level.label || toTitleCase(levelKey)}`,
+                      placeholder: `{{${sectionKey}_${levelKey}}}`,
+                      group: 'section',
+                    });
+                  }
+
+                  (level?.options || []).forEach((option: any) => {
+                    if (Array.isArray(option?.sub_levels)) {
+                      addCascadeLevelPlaceholders(option.sub_levels);
+                    }
+                  });
+                });
+              };
+
+              addCascadeLevelPlaceholders(cascadeLevels);
+              return options;
             });
 
           if (sectionPlaceholders.length) {
@@ -1332,7 +1400,15 @@ const TemplateStudioCKE: React.FC = () => {
     console.log('Final options after dedup:', finalOptions);
     console.log('Test group items after dedup:', finalOptions.filter(o => o.group === 'test'));
     return finalOptions;
-  }, [LAB_META_PLACEHOLDER_OPTIONS, PATIENT_PLACEHOLDER_OPTIONS, labId, templateMeta?.test_group_id, user?.id]);
+  }, [
+    LAB_META_PLACEHOLDER_OPTIONS,
+    PATIENT_PLACEHOLDER_OPTIONS,
+    REPORT_EXTRAS_PLACEHOLDER_OPTIONS,
+    SECTION_PLACEHOLDER_OPTIONS,
+    labId,
+    templateMeta?.test_group_id,
+    user?.id,
+  ]);
 
   const loadPlaceholderOptions = useCallback(async () => {
     setPlaceholderLoading(true);
@@ -1466,7 +1542,7 @@ const TemplateStudioCKE: React.FC = () => {
             instance.model.insertContent(modelFragment, selection);
           // For signature placeholders, insert as image tag instead of plain text
           } else if (token === '{{approverSignature}}' || token === '{{approvedBySignature}}') {
-            const imgHtml = `<img src="${token}" alt="Approver Signature" style="max-width:200px;height:auto;object-fit:contain;" />`;
+            const imgHtml = `<img class="ck-signature-img" src="${token}" alt="Approver Signature" width="160" height="55" style="display:block;width:160px;max-width:160px;height:55px;object-fit:contain;" onerror="this.style.visibility='hidden'" />`;
             const viewFragment = instance.data.processor.toView(imgHtml);
             const modelFragment = instance.data.toModel(viewFragment);
             instance.model.insertContent(modelFragment, selection);

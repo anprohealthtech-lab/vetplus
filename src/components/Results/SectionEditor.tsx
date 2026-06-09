@@ -47,6 +47,7 @@ interface MatrixConfig {
 
 interface SectionConfig {
   mode: 'flat' | 'cascading' | 'matrix';
+  icon?: string;
   cascade_levels: CascadeLevel[];
   matrix: MatrixConfig;
 }
@@ -85,6 +86,47 @@ function getVisibleLevels(levels: CascadeLevel[], selections: Record<string, str
   }
   traverse(levels);
   return visible;
+}
+
+function findCascadeOptionIdByValue(levels: CascadeLevel[], levelId: string, rawValue: string): string {
+  const normalized = rawValue.trim().toLowerCase();
+
+  function traverse(levs: CascadeLevel[]): string | null {
+    for (const level of levs) {
+      if (level.id === levelId) {
+        const match = level.options.find(option =>
+          option.id.toLowerCase() === normalized ||
+          option.value.trim().toLowerCase() === normalized
+        );
+        return match?.id || null;
+      }
+      for (const option of level.options) {
+        if (option.sub_levels?.length) {
+          const nested = traverse(option.sub_levels);
+          if (nested) return nested;
+        }
+      }
+    }
+    return null;
+  }
+
+  return traverse(levels) || rawValue;
+}
+
+function normalizeCascadeSelections(section: TemplateSection, rawSelections: Record<string, any> | undefined): Record<string, any> {
+  const selections = rawSelections || {};
+  if (section.section_config?.mode !== 'cascading' || !section.section_config.cascade_levels?.length) {
+    return selections;
+  }
+
+  const normalized: Record<string, string[]> = {};
+  for (const [levelId, raw] of Object.entries(selections)) {
+    const values = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+    normalized[levelId] = values
+      .map(value => findCascadeOptionIdByValue(section.section_config!.cascade_levels, levelId, String(value)))
+      .filter(Boolean);
+  }
+  return normalized;
 }
 
 const MATRIX_CELL_PREFIX = 'matrix:';
@@ -477,6 +519,19 @@ const SECTION_TYPE_ICONS: Record<string, string> = {
   custom: '📝',
 };
 
+const SECTION_TYPE_ICON_OVERRIDES: Record<string, string> = {
+  findings: '🔍',
+  impression: '💡',
+  recommendation: '📋',
+  technique: '🔬',
+  clinical_history: '📜',
+  conclusion: '✅',
+  custom: '📝',
+};
+
+const getSectionIcon = (section: TemplateSection) =>
+  section.section_config?.icon?.trim() || SECTION_TYPE_ICON_OVERRIDES[section.section_type] || '📝';
+
 const SECTION_TYPE_LABELS: Record<string, string> = {
   findings: 'Findings',
   impression: 'Impression',
@@ -564,17 +619,18 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
       const contentMap = new Map<string, SectionContent>();
       for (const section of filteredSections) {
         const existing = existingContent?.find((c: any) => c.section_id === section.id);
-        if (existing) {
-          contentMap.set(section.id, {
-            id: existing.id,
-            section_id: existing.section_id,
-            selected_options: existing.selected_options || [],
-            custom_text: existing.custom_text || '',
-            final_content: existing.final_content || '',
-            image_urls: existing.image_urls || [],
-            is_finalized: existing.is_finalized || false,
-            cascading_selections: existing.cascading_selections || {},
-          });
+	        if (existing) {
+          const cascadingSelections = normalizeCascadeSelections(section, existing.cascading_selections || {});
+	          contentMap.set(section.id, {
+	            id: existing.id,
+	            section_id: existing.section_id,
+	            selected_options: existing.selected_options || [],
+	            custom_text: existing.custom_text || '',
+	            final_content: existing.final_content || '',
+	            image_urls: existing.image_urls || [],
+	            is_finalized: existing.is_finalized || false,
+	            cascading_selections: cascadingSelections,
+	          });
         } else {
           // Initialize with defaults
           contentMap.set(section.id, {
@@ -1063,7 +1119,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
                 className="w-full flex items-center justify-between p-4 hover:bg-gray-50 transition-colors"
               >
                 <div className="flex items-center">
-                  <span className="text-xl mr-3">{SECTION_TYPE_ICONS[section.section_type] || '📝'}</span>
+                  <span className="text-xl mr-3">{getSectionIcon(section)}</span>
                   <div className="text-left">
                     <div className="font-medium text-gray-900">
                       {section.section_name}
