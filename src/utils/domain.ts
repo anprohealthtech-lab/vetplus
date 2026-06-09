@@ -10,7 +10,7 @@ export const isPublicWebsiteDomain = (): boolean => {
     'www.vetplusdiagnostics.in'
   ];
 
-  return publicDomains.some(domain => hostname === domain || hostname.endsWith(`.${domain}`));
+  return publicDomains.includes(hostname);
 };
 
 export const getSiteBasePath = (): string => {
