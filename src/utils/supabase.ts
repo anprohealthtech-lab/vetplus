@@ -6415,6 +6415,17 @@ export const database = {
       return { data, error };
     },
 
+    // Update editable lab-specific fields using the lab_analytes primary key.
+    updateFieldsById: async (labAnalyteId: string, updates: Record<string, any>) => {
+      const { data, error } = await supabase
+        .from("lab_analytes")
+        .update(updates)
+        .eq("id", labAnalyteId)
+        .select()
+        .single();
+      return { data, error };
+    },
+
     // Add global analytes to a specific lab
     addGlobalAnalytesToLab: async (labId: string) => {
       const { data, error } = await supabase.rpc("add_global_analytes_to_lab", {

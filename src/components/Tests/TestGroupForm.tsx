@@ -6,6 +6,10 @@ const CKEDITOR_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSI
 const CKEDITOR_CSS_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.css`;
 const LINKED_CKEDITOR_TEMPLATE_VALUE = '__linked_ckeditor_template__';
 import { database, supabase } from '../../utils/supabase';
+import {
+  CalculatedDependency,
+  selectPreferredCalculatedDependencies,
+} from '../../utils/calculatedDependencies';
 import AnalyteForm from './AnalyteForm';
 import { SimpleAnalyteEditor } from '../TestGroups/SimpleAnalyteEditor';
 import ReportImportWizard from './ReportImportWizard';
@@ -122,6 +126,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   });
 
   const [analytes, setAnalytes] = useState<any[]>([]);
+  const [calculatedDependencies, setCalculatedDependencies] = useState<CalculatedDependency[]>([]);
   const [outsourcedLabs, setOutsourcedLabs] = useState<any[]>([]);
   const [analyzerConnections, setAnalyzerConnections] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -149,6 +154,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     hiddenWhenRenderedAsSibling?: boolean;
   };
   type AnalyteMetadata = {
+    tga_id?: string;
+    lab_analyte_id?: string | null;
     sort_order: number;
     section_heading: string;
     is_visible: boolean;
@@ -256,7 +263,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 	        requests.push(
 	          supabase
 	            .from('test_group_analytes')
-	            .select('analyte_id, lab_analyte_id, sort_order, section_heading, is_visible, report_display_options')
+	            .select('id, analyte_id, lab_analyte_id, sort_order, section_heading, is_visible, report_display_options')
 	            .eq('test_group_id', testGroup.id) as unknown as Promise<any>
 	        );
 	      }
@@ -425,6 +432,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 	        const meta: Record<string, AnalyteMetadata> = {};
 	        for (const row of tgaRes.data) {
 	          meta[row.analyte_id] = {
+	            tga_id: row.id,
+	            lab_analyte_id: row.lab_analyte_id,
 	            sort_order: row.sort_order ?? 0,
 	            section_heading: row.section_heading ?? '',
 	            is_visible: row.is_visible ?? true,
@@ -503,6 +512,37 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     const matchesSelected = !showSelectedOnly || formData.selectedAnalytes.includes(analyte.id);
     return matchesSearch && matchesSelected;
   });
+
+  useEffect(() => {
+    const loadCalculatedDependencies = async () => {
+      const calculatedAnalyteIds = analytes
+        .filter((analyte) => analyte.is_calculated && formData.selectedAnalytes.includes(analyte.id))
+        .map((analyte) => analyte.id);
+
+      if (!testGroup?.id || calculatedAnalyteIds.length === 0) {
+        setCalculatedDependencies([]);
+        return;
+      }
+
+      const labId = await database.getCurrentUserLabId();
+      let query = supabase
+        .from('analyte_dependencies')
+        .select('calculated_analyte_id, calculated_lab_analyte_id, source_analyte_id, source_lab_analyte_id, variable_name, lab_id')
+        .in('calculated_analyte_id', calculatedAnalyteIds);
+      if (labId) {
+        query = query.or(`lab_id.eq.${labId},lab_id.is.null`);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        console.error('Error loading calculated dependency warnings:', error);
+        return;
+      }
+      setCalculatedDependencies((data || []) as CalculatedDependency[]);
+    };
+
+    loadCalculatedDependencies();
+  }, [testGroup?.id, analytes, formData.selectedAnalytes]);
 
   const handleAddNewAnalyte = async (analyteData: any) => {
     try {
@@ -817,6 +857,40 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       return oa - ob;
     });
   })();
+
+  const getCalculatedDependencyIssues = (analyte: any) => {
+    if (!analyte.is_calculated) return { missing: [] as CalculatedDependency[], duplicateCount: 0 };
+
+    const exact = analyte.lab_analyte_id
+      ? calculatedDependencies.filter(
+          (dependency) => dependency.calculated_lab_analyte_id === analyte.lab_analyte_id,
+        )
+      : [];
+    const candidates = exact.length > 0
+      ? exact
+      : calculatedDependencies.filter(
+          (dependency) =>
+            !dependency.calculated_lab_analyte_id &&
+            dependency.calculated_analyte_id === analyte.id,
+        );
+    const selectedIds = new Set(formData.selectedAnalytes);
+    const preferred = selectPreferredCalculatedDependencies(
+      calculatedDependencies,
+      analyte.id,
+      analyte.lab_analyte_id,
+      selectedIds,
+    );
+    const missing = preferred.filter(
+      (dependency) =>
+        !selectedIds.has(dependency.source_analyte_id) &&
+        (!dependency.source_lab_analyte_id || !selectedIds.has(dependency.source_lab_analyte_id)),
+    );
+
+    return {
+      missing,
+      duplicateCount: Math.max(0, candidates.length - preferred.length),
+    };
+  };
 
   const linkedCkeditorTemplates = testGroup?.id
     ? labReportTemplates.filter((template) => template.test_group_id === testGroup.id)
@@ -1924,10 +1998,18 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 </div>
                 <p className="text-xs text-gray-500 mb-3">Set sort order and optional section sub-headings for PDF report grouping.</p>
                 <div className="space-y-2">
-                  {selectedAnalyteDetails.map((analyte) => {
+	                  {selectedAnalyteDetails.map((analyte) => {
 	                    const meta = analyteMetadata[analyte.id] || { sort_order: 0, section_heading: '', is_visible: true, report_display_options: {} };
 	                    const isHidden = !meta.is_visible;
 	                    const reportOptions = meta.report_display_options || {};
+	                    const dependencyIssues = getCalculatedDependencyIssues(analyte);
+	                    const missingDependencyLabels = dependencyIssues.missing.map((dependency) => {
+	                      const source = analytes.find((candidate: any) =>
+	                        candidate.id === dependency.source_analyte_id ||
+	                        (!!dependency.source_lab_analyte_id && candidate.lab_analyte_id === dependency.source_lab_analyte_id)
+	                      );
+	                      return source?.name || dependency.variable_name;
+	                    });
 	                    const pairedWithName = selectedAnalyteDetails.find((item: any) =>
 	                      analyteMetadata[item.id]?.report_display_options?.sameRowSiblingAnalyteId === analyte.id
 	                    )?.name;
@@ -1948,6 +2030,24 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 	                            )}
 	                            {pairedWithName && (
 	                              <span className="text-xs bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-medium">Same row with {pairedWithName}</span>
+	                            )}
+	                            {missingDependencyLabels.length > 0 && (
+	                              <span
+	                                className="inline-flex items-center gap-1 text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-medium border border-red-200"
+	                                title={`Calculated source not in this group: ${missingDependencyLabels.join(', ')}`}
+	                              >
+	                                <AlertCircle className="w-3 h-3" />
+	                                Source not in group
+	                              </span>
+	                            )}
+	                            {dependencyIssues.duplicateCount > 0 && (
+	                              <span
+	                                className="inline-flex items-center gap-1 text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium border border-amber-200"
+	                                title={`${dependencyIssues.duplicateCount} duplicate dependency row(s) will be ignored during calculation`}
+	                              >
+	                                <AlertCircle className="w-3 h-3" />
+	                                {dependencyIssues.duplicateCount} duplicate ignored
+	                              </span>
 	                            )}
 	                          </div>
                           <div className="flex items-center gap-1">
@@ -1985,8 +2085,13 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                               <Unlink className="w-3.5 h-3.5" />
                             </button>
                           </div>
-                        </div>
-                        <div className="flex gap-2 mt-1">
+	                        </div>
+	                        {missingDependencyLabels.length > 0 && (
+	                          <div className="mb-2 rounded border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700">
+	                            Formula source not attached to this test group: <strong>{missingDependencyLabels.join(', ')}</strong>. Edit this analyte and choose the in-group source.
+	                          </div>
+	                        )}
+	                        <div className="flex gap-2 mt-1">
                           <div className="flex items-center gap-1">
                             <label className="text-xs text-gray-500 whitespace-nowrap">Order:</label>
                             <input
@@ -2289,9 +2394,11 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               methodology: formData.methodology,
               sampleType: formData.sampleType,
             }}
-            existingAnalytes={analytes.map(a => ({
+            existingAnalytes={analytes
+              .filter(a => Boolean(a.lab_analyte_id))
+              .map(a => ({
                 id: a.id,
-                lab_analyte_id: a.lab_analyte_id ?? a.id,
+                lab_analyte_id: a.lab_analyte_id,
                 name: a.name,
                 code: a.code ?? '',
                 category: a.category ?? 'General',
@@ -2301,7 +2408,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 reference_range_female: a.reference_range_female ?? null,
               }))}
             existingTga={Object.entries(analyteMetadata).map(([analyte_id, meta]) => ({
+              id: meta.tga_id,
               analyte_id,
+              lab_analyte_id: meta.lab_analyte_id ?? null,
               sort_order: meta.sort_order,
               section_heading: meta.section_heading,
             }))}
