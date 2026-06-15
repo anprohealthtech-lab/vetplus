@@ -15420,6 +15420,87 @@ const inventory = {
     }
   },
 
+  async consumeScopedItems(params: {
+    scope: "per_sample" | "per_order";
+    orderId: string;
+    sourceRef: string;
+    source?: "auto_sample" | "auto_order";
+    reason?: string;
+  }): Promise<{ data: { consumed: number; skipped: number } | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
+
+    const source = params.source ||
+      (params.scope === "per_sample" ? "auto_sample" : "auto_order");
+
+    try {
+      const { data: items, error: itemsError } = await supabase
+        .from("inventory_items")
+        .select("id, consumption_per_use, pack_contains, location_id")
+        .eq("lab_id", labId)
+        .eq("consumption_scope", params.scope)
+        .eq("is_active", true)
+        .gt("consumption_per_use", 0);
+
+      if (itemsError) return { data: null, error: itemsError };
+
+      let consumed = 0;
+      let skipped = 0;
+
+      for (const item of items || []) {
+        const { data: existingTx, error: existingError } = await supabase
+          .from("inventory_transactions")
+          .select("id")
+          .eq("lab_id", labId)
+          .eq("order_id", params.orderId)
+          .eq("item_id", item.id)
+          .eq("type", "out")
+          .contains("ai_input", {
+            source,
+            source_ref: params.sourceRef,
+          })
+          .limit(1);
+
+        if (existingError) return { data: null, error: existingError };
+        if (existingTx && existingTx.length > 0) {
+          skipped += 1;
+          continue;
+        }
+
+        const rawPerUse = Number(item.consumption_per_use || 0);
+        const deduction = item.pack_contains && item.pack_contains > 0
+          ? rawPerUse / item.pack_contains
+          : rawPerUse;
+
+        if (!(deduction > 0)) {
+          skipped += 1;
+          continue;
+        }
+
+        const { error: transactionError } = await this.createTransaction({
+          item_id: item.id,
+          type: "out",
+          quantity: deduction,
+          reason: params.reason || `Auto-consumed: ${params.scope}`,
+          order_id: params.orderId,
+          location_id: item.location_id || undefined,
+          ai_input: {
+            source,
+            scope: params.scope,
+            source_ref: params.sourceRef,
+          },
+        });
+
+        if (transactionError) return { data: null, error: transactionError };
+        consumed += 1;
+      }
+
+      return { data: { consumed, skipped }, error: null };
+    } catch (error) {
+      return { data: null, error };
+    }
+  },
+
   // ============================================================================
   // STOCK WARNINGS (for result entry UI)
   // ============================================================================
