@@ -6,8 +6,8 @@
  * Utility printing without broad import churn.
  *
  * Settings resolution (location overrides lab):
- *   barcodePrinterName      = location.barcode_printer_name ?? lab.barcode_printer_name
- *   reportPrinterName       = location.report_printer_name ?? lab.report_printer_name
+ *   barcodePrinterName      = non-empty location.barcode_printer_name || non-empty lab.barcode_printer_name
+ *   reportPrinterName       = non-empty location.report_printer_name || non-empty lab.report_printer_name
  *   autoPrintBarcodeOnOrder = location.auto_print_barcode_on_order ?? lab.auto_print_barcode_on_order
  *   autoPrintReportOnApproval = location.auto_print_report_on_approval ?? lab.auto_print_report_on_approval
  */
@@ -34,6 +34,7 @@ interface QZPrintSettings {
 interface QZTrayContextValue {
   status: QZConnectionStatus;
   settings: QZPrintSettings;
+  refreshSettings: () => Promise<QZPrintSettings>;
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   autoPrintBarcode: (data: BarcodeLabelData) => Promise<void>;
@@ -50,6 +51,7 @@ const defaultSettings: QZPrintSettings = {
 export const QZTrayContext = createContext<QZTrayContextValue>({
   status: 'connected',
   settings: defaultSettings,
+  refreshSettings: async () => defaultSettings,
   connect: async () => {},
   disconnect: async () => {},
   autoPrintBarcode: async () => {},
@@ -57,6 +59,11 @@ export const QZTrayContext = createContext<QZTrayContextValue>({
 });
 
 export const useQZTray = () => useContext(QZTrayContext);
+
+const cleanPrinterName = (value: string | null | undefined): string | null => {
+  const trimmed = value?.trim();
+  return trimmed || null;
+};
 
 export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [status, setStatus] = useState<QZConnectionStatus>('connected');
@@ -67,51 +74,64 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return printService.onConnectionStatusChange(setStatus);
   }, []);
 
+  const refreshSettings = useCallback(async (): Promise<QZPrintSettings> => {
+    try {
+      const [labId, locationId] = await Promise.all([
+        database.getCurrentUserLabId(),
+        database.getCurrentUserPrimaryLocation(),
+      ]);
+
+      if (!labId) {
+        setSettings(defaultSettings);
+        return defaultSettings;
+      }
+
+      const [labResult, locationResult] = await Promise.all([
+        supabase
+          .from('labs')
+          .select('barcode_printer_name, report_printer_name, auto_print_barcode_on_order, auto_print_report_on_approval')
+          .eq('id', labId)
+          .single(),
+        locationId
+          ? supabase
+              .from('locations')
+              .select('barcode_printer_name, report_printer_name, auto_print_barcode_on_order, auto_print_report_on_approval')
+              .eq('id', locationId)
+              .single()
+          : Promise.resolve({ data: null }),
+      ]);
+
+      const lab = labResult.data;
+      const loc = locationResult.data;
+
+      if (!lab) {
+        setSettings(defaultSettings);
+        return defaultSettings;
+      }
+
+      const nextSettings = {
+        barcodePrinterName:
+          cleanPrinterName(loc?.barcode_printer_name) || cleanPrinterName(lab.barcode_printer_name),
+        reportPrinterName:
+          cleanPrinterName(loc?.report_printer_name) || cleanPrinterName(lab.report_printer_name),
+        autoPrintBarcodeOnOrder:
+          loc?.auto_print_barcode_on_order ?? lab.auto_print_barcode_on_order ?? false,
+        autoPrintReportOnApproval:
+          loc?.auto_print_report_on_approval ?? lab.auto_print_report_on_approval ?? false,
+      };
+
+      setSettings(nextSettings);
+      return nextSettings;
+    } catch {
+      // Non-critical; printing remains optional.
+      return settings;
+    }
+  }, [settings]);
+
   useEffect(() => {
     if (settingsLoadedRef.current) return;
     settingsLoadedRef.current = true;
-
-    (async () => {
-      try {
-        const [labId, locationId] = await Promise.all([
-          database.getCurrentUserLabId(),
-          database.getCurrentUserPrimaryLocation(),
-        ]);
-
-        if (!labId) return;
-
-        const [labResult, locationResult] = await Promise.all([
-          supabase
-            .from('labs')
-            .select('barcode_printer_name, report_printer_name, auto_print_barcode_on_order, auto_print_report_on_approval')
-            .eq('id', labId)
-            .single(),
-          locationId
-            ? supabase
-                .from('locations')
-                .select('barcode_printer_name, report_printer_name, auto_print_barcode_on_order, auto_print_report_on_approval')
-                .eq('id', locationId)
-                .single()
-            : Promise.resolve({ data: null }),
-        ]);
-
-        const lab = labResult.data;
-        const loc = locationResult.data;
-
-        if (!lab) return;
-
-        setSettings({
-          barcodePrinterName: loc?.barcode_printer_name ?? lab.barcode_printer_name ?? null,
-          reportPrinterName: loc?.report_printer_name ?? lab.report_printer_name ?? null,
-          autoPrintBarcodeOnOrder:
-            loc?.auto_print_barcode_on_order ?? lab.auto_print_barcode_on_order ?? false,
-          autoPrintReportOnApproval:
-            loc?.auto_print_report_on_approval ?? lab.auto_print_report_on_approval ?? false,
-        });
-      } catch {
-        // Non-critical; printing remains optional.
-      }
-    })();
+    refreshSettings();
   }, []);
 
   const connect = useCallback(async () => {
@@ -166,7 +186,7 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [settings]);
 
   return (
-    <QZTrayContext.Provider value={{ status, settings, connect, disconnect, autoPrintBarcode, autoPrintReport }}>
+    <QZTrayContext.Provider value={{ status, settings, refreshSettings, connect, disconnect, autoPrintBarcode, autoPrintReport }}>
       {children}
     </QZTrayContext.Provider>
   );

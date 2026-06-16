@@ -160,7 +160,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   onUpdateStatus,
 }) => {
   const { user } = useAuth();
-  const { settings: qzSettings, connect: qzConnect } = useQZTray();
+  const { settings: qzSettings, refreshSettings: refreshQzSettings, connect: qzConnect } = useQZTray();
   const [qrCodeUrl, setQrCodeUrl] = useState<string | null>(null);
   const [labId, setLabId] = useState<string | null>(null);
 
@@ -1328,7 +1328,13 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       queueReady: qzTrayService.isConnected(),
     });
 
-    if (!qzSettings.barcodePrinterName) {
+    let barcodePrinterName = qzSettings.barcodePrinterName;
+
+    if (!barcodePrinterName) {
+      barcodePrinterName = (await refreshQzSettings()).barcodePrinterName;
+    }
+
+    if (!barcodePrinterName) {
       console.warn('[PrintBridge][DashboardBarcodeLabel] barcode printer is not configured; opening browser print');
       printBarcodeInBrowser();
       return;
@@ -1339,7 +1345,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         await qzConnect();
       }
 
-      await qzTrayService.printBarcodeLabel(qzSettings.barcodePrinterName, {
+      await qzTrayService.printBarcodeLabel(barcodePrinterName, {
         sampleId,
         labelId: order.sample_id || order.id,
         patientName: order.patient_name || 'Sample',

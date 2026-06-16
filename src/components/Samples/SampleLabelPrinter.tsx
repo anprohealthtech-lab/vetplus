@@ -26,7 +26,7 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { settings, connect } = useQZTray();
+  const { settings, connect, refreshSettings } = useQZTray();
 
   const escapeHtml = (value: string | null | undefined) =>
     String(value || '')
@@ -131,7 +131,13 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       queueReady: qzTrayService.isConnected(),
     });
 
-    if (!settings.barcodePrinterName) {
+    let barcodePrinterName = settings.barcodePrinterName;
+
+    if (!barcodePrinterName) {
+      barcodePrinterName = (await refreshSettings()).barcodePrinterName;
+    }
+
+    if (!barcodePrinterName) {
       console.warn('[PrintBridge][BarcodeLabel] barcode printer is not configured; opening browser print');
       printInBrowser();
       return;
@@ -147,11 +153,11 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       }
 
       console.debug('[PrintBridge][BarcodeLabel] queueing label print job', {
-        printerName: settings.barcodePrinterName,
+        printerName: barcodePrinterName,
         sampleIdForBarcode: sample.barcode || sample.id,
         labelId: sample.id,
       });
-      await qzTrayService.printBarcodeLabel(settings.barcodePrinterName, {
+      await qzTrayService.printBarcodeLabel(barcodePrinterName, {
         sampleId: sample.barcode || sample.id,
         labelId: sample.id,
         patientName: patientName || 'Sample',
@@ -159,7 +165,7 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
         date: new Date(sample.created_at).toLocaleDateString('en-GB'),
       });
       console.debug('[PrintBridge][BarcodeLabel] print job queued', {
-        printerName: settings.barcodePrinterName,
+        printerName: barcodePrinterName,
         sampleId: sample.id,
       });
       return;
