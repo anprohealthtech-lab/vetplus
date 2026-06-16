@@ -1331,10 +1331,10 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     let barcodePrinterName = qzSettings.barcodePrinterName;
 
     if (!barcodePrinterName) {
-      console.debug('[PrintBridge][DashboardBarcodeLabel] no printer in current context; refreshing settings');
+      console.warn('[PrintBridge][DashboardBarcodeLabel] no printer in current context; refreshing settings');
       const refreshedSettings = await refreshQzSettings();
       barcodePrinterName = refreshedSettings.barcodePrinterName;
-      console.debug('[PrintBridge][DashboardBarcodeLabel] refreshed print settings', {
+      console.warn('[PrintBridge][DashboardBarcodeLabel] refreshed print settings', {
         configuredPrinterBeforeRefresh: qzSettings.barcodePrinterName,
         configuredPrinterAfterRefresh: refreshedSettings.barcodePrinterName,
         reportPrinterAfterRefresh: refreshedSettings.reportPrinterName,

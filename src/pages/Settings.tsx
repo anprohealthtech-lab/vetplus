@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { useQZTray } from '../contexts/QZTrayContext';
+import { cachePrinterSettings, useQZTray } from '../contexts/QZTrayContext';
 import { database, supabase, type LabPatientFieldConfig } from '../utils/supabase';
 import { usePermissions } from '../hooks/usePermissions';
 import EditUserModal from '../components/Users/EditUserModal';
@@ -608,6 +608,11 @@ const Settings: React.FC = () => {
         const { data: labData, error: labError } = await database.labs.getById(currentLabId);
         if (!labError && labData) {
           setLabInterfaceEnabled(!!(labData as any).lab_interface_enabled);
+          cachePrinterSettings({
+            barcodePrinterName: (labData as any).barcode_printer_name ?? null,
+            reportPrinterName: (labData as any).report_printer_name ?? null,
+          });
+
           setLabSettings({
             id: labData.id,
             name: labData.name || '',
@@ -988,6 +993,11 @@ const Settings: React.FC = () => {
       } as any);
 
       if (updateError) throw updateError;
+
+      cachePrinterSettings({
+        barcodePrinterName: labSettings.barcode_printer_name || null,
+        reportPrinterName: labSettings.report_printer_name || null,
+      });
 
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);

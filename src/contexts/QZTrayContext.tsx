@@ -65,6 +65,43 @@ const cleanPrinterName = (value: string | null | undefined): string | null => {
   return trimmed || null;
 };
 
+const PRINT_SETTINGS_CACHE_KEY = 'lims_print_bridge_settings';
+
+const getCachedPrinterSettings = (): Pick<QZPrintSettings, 'barcodePrinterName' | 'reportPrinterName'> => {
+  try {
+    const raw = window.localStorage.getItem(PRINT_SETTINGS_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+
+    return {
+      barcodePrinterName: cleanPrinterName(parsed?.barcodePrinterName),
+      reportPrinterName: cleanPrinterName(parsed?.reportPrinterName),
+    };
+  } catch {
+    return {
+      barcodePrinterName: null,
+      reportPrinterName: null,
+    };
+  }
+};
+
+export const cachePrinterSettings = (input: {
+  barcodePrinterName?: string | null;
+  reportPrinterName?: string | null;
+}) => {
+  try {
+    window.localStorage.setItem(
+      PRINT_SETTINGS_CACHE_KEY,
+      JSON.stringify({
+        barcodePrinterName: cleanPrinterName(input.barcodePrinterName),
+        reportPrinterName: cleanPrinterName(input.reportPrinterName),
+        updatedAt: new Date().toISOString(),
+      })
+    );
+  } catch {
+    // Browser storage is optional; DB settings remain the source of truth.
+  }
+};
+
 export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [status, setStatus] = useState<QZConnectionStatus>('connected');
   const [settings, setSettings] = useState<QZPrintSettings>(defaultSettings);
@@ -81,7 +118,7 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         database.getCurrentUserPrimaryLocation(),
       ]);
 
-      console.debug('[PrintBridge][Settings] resolving printer settings', {
+      console.warn('[PrintBridge][Settings] resolving printer settings', {
         labId,
         locationId,
       });
@@ -119,26 +156,36 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         return defaultSettings;
       }
 
+      const cachedPrinterSettings = getCachedPrinterSettings();
+      const resolvedBarcodePrinterName =
+        cleanPrinterName(loc?.barcode_printer_name) ||
+        cleanPrinterName(lab.barcode_printer_name) ||
+        cachedPrinterSettings.barcodePrinterName;
+      const resolvedReportPrinterName =
+        cleanPrinterName(loc?.report_printer_name) ||
+        cleanPrinterName(lab.report_printer_name) ||
+        cachedPrinterSettings.reportPrinterName;
+
       const nextSettings = {
-        barcodePrinterName:
-          cleanPrinterName(loc?.barcode_printer_name) || cleanPrinterName(lab.barcode_printer_name),
-        reportPrinterName:
-          cleanPrinterName(loc?.report_printer_name) || cleanPrinterName(lab.report_printer_name),
+        barcodePrinterName: resolvedBarcodePrinterName,
+        reportPrinterName: resolvedReportPrinterName,
         autoPrintBarcodeOnOrder:
           loc?.auto_print_barcode_on_order ?? lab.auto_print_barcode_on_order ?? false,
         autoPrintReportOnApproval:
           loc?.auto_print_report_on_approval ?? lab.auto_print_report_on_approval ?? false,
       };
 
-      console.debug('[PrintBridge][Settings] resolved printer settings', {
+      console.warn('[PrintBridge][Settings] resolved printer settings', {
         labId,
         locationId,
         rawLabBarcodePrinterName: lab.barcode_printer_name,
         rawLocationBarcodePrinterName: loc?.barcode_printer_name,
         barcodePrinterName: nextSettings.barcodePrinterName,
+        cachedBarcodePrinterName: cachedPrinterSettings.barcodePrinterName,
         rawLabReportPrinterName: lab.report_printer_name,
         rawLocationReportPrinterName: loc?.report_printer_name,
         reportPrinterName: nextSettings.reportPrinterName,
+        cachedReportPrinterName: cachedPrinterSettings.reportPrinterName,
         locationError: locationResult.error?.message,
       });
 
