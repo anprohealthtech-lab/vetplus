@@ -91,23 +91,18 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
             .label { width: 100%; box-sizing: border-box; padding: 4px; }
             .sample-id { font-family: monospace; font-size: 11px; font-weight: 700; margin-bottom: 3px; }
             .barcode { max-width: 46mm; height: auto; margin: 0 auto 3px; display: block; }
-            .row { display: flex; align-items: center; justify-content: center; gap: 5px; }
-            .qr { width: 15mm; height: 15mm; }
-            .meta { text-align: left; font-size: 8px; line-height: 1.25; max-width: 28mm; }
+            .meta { font-size: 8px; line-height: 1.25; margin-top: 3px; }
           </style>
         </head>
         <body>
           <div class="label">
             <div class="sample-id">${escapeHtml(sample.id)}</div>
             ${barcodeDataUrl ? `<img class="barcode" src="${barcodeDataUrl}" alt="Barcode" />` : ''}
-            <div class="row">
-              ${qrCodeDataUrl ? `<img class="qr" src="${qrCodeDataUrl}" alt="QR Code" />` : ''}
-              <div class="meta">
-                <div><strong>Type:</strong> ${escapeHtml(sample.sample_type)}</div>
-                <div><strong>Container:</strong> ${escapeHtml(sample.container_type)}</div>
-                ${patientName ? `<div><strong>Patient:</strong> ${escapeHtml(patientName)}</div>` : ''}
-                <div>${escapeHtml(new Date(sample.created_at).toLocaleDateString('en-GB'))}</div>
-              </div>
+            <div class="meta">
+              <div><strong>Type:</strong> ${escapeHtml(sample.sample_type)}</div>
+              <div><strong>Container:</strong> ${escapeHtml(sample.container_type)}</div>
+              ${patientName ? `<div><strong>Patient:</strong> ${escapeHtml(patientName)}</div>` : ''}
+              <div>${escapeHtml(new Date(sample.created_at).toLocaleDateString('en-GB'))}</div>
             </div>
           </div>
           <script>
