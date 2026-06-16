@@ -81,7 +81,13 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         database.getCurrentUserPrimaryLocation(),
       ]);
 
+      console.debug('[PrintBridge][Settings] resolving printer settings', {
+        labId,
+        locationId,
+      });
+
       if (!labId) {
+        console.warn('[PrintBridge][Settings] no lab id found; printer settings unavailable');
         setSettings(defaultSettings);
         return defaultSettings;
       }
@@ -105,6 +111,10 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const loc = locationResult.data;
 
       if (!lab) {
+        console.warn('[PrintBridge][Settings] lab settings not found', {
+          labId,
+          labError: labResult.error?.message,
+        });
         setSettings(defaultSettings);
         return defaultSettings;
       }
@@ -120,10 +130,23 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           loc?.auto_print_report_on_approval ?? lab.auto_print_report_on_approval ?? false,
       };
 
+      console.debug('[PrintBridge][Settings] resolved printer settings', {
+        labId,
+        locationId,
+        rawLabBarcodePrinterName: lab.barcode_printer_name,
+        rawLocationBarcodePrinterName: loc?.barcode_printer_name,
+        barcodePrinterName: nextSettings.barcodePrinterName,
+        rawLabReportPrinterName: lab.report_printer_name,
+        rawLocationReportPrinterName: loc?.report_printer_name,
+        reportPrinterName: nextSettings.reportPrinterName,
+        locationError: locationResult.error?.message,
+      });
+
       setSettings(nextSettings);
       return nextSettings;
-    } catch {
+    } catch (err) {
       // Non-critical; printing remains optional.
+      console.error('[PrintBridge][Settings] failed to resolve printer settings', err);
       return settings;
     }
   }, [settings]);

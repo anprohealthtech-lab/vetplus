@@ -129,11 +129,22 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
     let barcodePrinterName = settings.barcodePrinterName;
 
     if (!barcodePrinterName) {
-      barcodePrinterName = (await refreshSettings()).barcodePrinterName;
+      console.debug('[PrintBridge][BarcodeLabel] no printer in current context; refreshing settings');
+      const refreshedSettings = await refreshSettings();
+      barcodePrinterName = refreshedSettings.barcodePrinterName;
+      console.debug('[PrintBridge][BarcodeLabel] refreshed print settings', {
+        configuredPrinterBeforeRefresh: settings.barcodePrinterName,
+        configuredPrinterAfterRefresh: refreshedSettings.barcodePrinterName,
+        reportPrinterAfterRefresh: refreshedSettings.reportPrinterName,
+      });
     }
 
     if (!barcodePrinterName) {
-      console.warn('[PrintBridge][BarcodeLabel] barcode printer is not configured; opening browser print');
+      console.warn('[PrintBridge][BarcodeLabel] barcode printer is not configured after refresh; opening browser print', {
+        sampleId: sample.id,
+        barcode: sample.barcode,
+        configuredPrinter: barcodePrinterName,
+      });
       printInBrowser();
       return;
     }
