@@ -3362,7 +3362,7 @@ export const database = {
               packages.forEach((pkg) => {
                 orderTestsData.push({
                   order_id: updatedOrder.id,
-                  test_name: `≡ƒôª ${pkg.name}`, // Prefix with package emoji for visibility
+                  test_name: `📦 ${pkg.name}`, // Prefix package headers for existing dashboard grouping.
                   test_group_id: null,
                   package_id: pkg.id,
                   price: pkg.price ?? 0, // Store PACKAGE price for billing
@@ -6637,6 +6637,7 @@ export const database = {
             ref_range_ai_config,
             collection_charge,
             group_interpretation,
+            analyzer_connection_id,
             test_group_analytes(
               analyte_id,
               sort_order,
@@ -6706,6 +6707,7 @@ export const database = {
             ref_range_ai_config,
             collection_charge,
             group_interpretation,
+            analyzer_connection_id,
             test_group_analytes(
               analyte_id,
               sort_order,
@@ -6771,6 +6773,7 @@ export const database = {
             default_outsourced_lab_id,
             required_patient_inputs,
             ref_range_ai_config,
+            analyzer_connection_id,
             test_group_analytes(
               analyte_id,
               sort_order,
@@ -6851,6 +6854,7 @@ export const database = {
 	            : null,
 	          collection_charge: testGroupData.collection_charge ?? null,
           group_interpretation: testGroupData.group_interpretation || null,
+          analyzer_connection_id: testGroupData.analyzer_connection_id || null,
         };
 
         console.log("Creating test group with data:", sanitizedData);
@@ -6951,6 +6955,7 @@ export const database = {
 	              : null,
 	            collection_charge: updates.collection_charge ?? null,
             group_interpretation: updates.group_interpretation ?? null,
+            analyzer_connection_id: updates.analyzer_connection_id || null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", id)

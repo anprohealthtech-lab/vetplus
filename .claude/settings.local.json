@@ -25,7 +25,8 @@
       "Bash(ls scripts/*.ts)",
       "Bash(node -e \"const p=require\\(''./package.json''\\); console.log\\(JSON.stringify\\(p.scripts, null, 2\\)\\)\")",
       "Bash(npx ts-node:*)",
-      "Bash(node --loader ts-node/esm scripts/audit_and_fix_analytes.ts)"
+      "Bash(node --loader ts-node/esm scripts/audit_and_fix_analytes.ts)",
+      "PowerShell(Write-Host \"System Architecture: $env:PROCESSOR_ARCHITECTURE\"; Write-Host \"Node Version:\"; node --version; Write-Host \"NPM Version:\"; npm --version)"
     ]
   }
 }

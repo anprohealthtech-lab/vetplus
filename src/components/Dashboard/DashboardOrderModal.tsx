@@ -33,6 +33,7 @@ import {
   Lock,
   Tag,
   Camera,
+  Package as PackageIcon,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { database, supabase, formatAge } from "../../utils/supabase";
@@ -51,6 +52,8 @@ import SampleCollectionTracker from "../Samples/SampleCollectionTracker";
 import ReportDesignStudio from "../ReportStudio/ReportDesignStudio";
 import { ThermalPrintButton } from "../Invoices/ThermalPrintButton";
 import { SendReportModal } from "./SendReportModal";
+import { useQZTray } from "../../contexts/QZTrayContext";
+import * as qzTrayService from "../../utils/qzTrayService";
 import {
   processTRFImage,
   trfToOrderFormData,
@@ -97,6 +100,7 @@ export interface DashboardOrder {
   tests: {
     id: string;
     test_name: string;
+    package_id?: string | null;
     outsourced_lab_id?: string | null;
     outsourced_labs?: { name?: string | null } | null;
     is_canceled?: boolean;
@@ -131,6 +135,19 @@ export interface DashboardOrder {
   // account_name is already defined above
 }
 
+const cleanTestDisplayName = (name: string): string =>
+  name
+    .replace(/^\s*(?:📦|≡ƒôª|ðŸ“¦)\s*/u, '')
+    .trim();
+
+const escapePrintHtml = (value: string | null | undefined): string =>
+  String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
 interface DashboardOrderModalProps {
   order: DashboardOrder;
   onClose: () => void;
@@ -143,6 +160,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   onUpdateStatus,
 }) => {
   const { user } = useAuth();
+  const { settings: qzSettings, connect: qzConnect } = useQZTray();
   const [qrCodeUrl, setQrCodeUrl] = useState<string | null>(null);
   const [labId, setLabId] = useState<string | null>(null);
 
@@ -518,6 +536,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         setTests(prev => [...prev, {
           id: headerTest.id,
           test_name: headerTest.test_name,
+          package_id: headerTest.package_id,
           outsourced_lab_id: null
         }]);
         console.log(`Added package ${item.name}`);
@@ -1264,14 +1283,14 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     }
   };
 
-  const handlePrintBarcode = () => {
+  const printBarcodeInBrowser = () => {
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
 
     printWindow.document.write(`
       <html>
         <head>
-          <title>Sample Label - ${order.sample_id}</title>
+          <title>Sample Label - ${escapePrintHtml(order.sample_id)}</title>
           <style>
             body { font-family: sans-serif; text-align: center; padding: 10px; }
             .label { border: 1px dashed #ccc; padding: 10px; display: inline-block; }
@@ -1281,17 +1300,56 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         </head>
         <body>
           <div class="label">
-            <img src="${qrCodeUrl}" width="100" height="100" />
-            <div class="sid">${order.sample_id || 'NO ID'}</div>
-            <div class="meta">${order.patient_name}</div>
-            <div class="meta">${new Date(order.order_date).toLocaleDateString()}</div>
-            <div class="meta">${order.color_name || 'Tube'}</div>
+            ${qrCodeUrl ? `<img src="${qrCodeUrl}" width="100" height="100" />` : ''}
+            <div class="sid">${escapePrintHtml(order.sample_id || 'NO ID')}</div>
+            <div class="meta">${escapePrintHtml(order.patient_name)}</div>
+            <div class="meta">${escapePrintHtml(new Date(order.order_date).toLocaleDateString())}</div>
+            <div class="meta">${escapePrintHtml(order.color_name || 'Tube')}</div>
           </div>
-          <script>window.print();</script>
+          <script>
+            window.onload = function() {
+              window.focus();
+              setTimeout(function() { window.print(); }, 100);
+            };
+          </script>
         </body>
       </html>
     `);
     printWindow.document.close();
+  };
+
+  const handlePrintBarcode = async () => {
+    const sampleId = order.sample_id || order.id;
+
+    console.debug('[PrintBridge][DashboardBarcodeLabel] print button clicked', {
+      orderId: order.id,
+      sampleId,
+      configuredPrinter: qzSettings.barcodePrinterName,
+      queueReady: qzTrayService.isConnected(),
+    });
+
+    if (!qzSettings.barcodePrinterName) {
+      console.warn('[PrintBridge][DashboardBarcodeLabel] barcode printer is not configured; opening browser print');
+      printBarcodeInBrowser();
+      return;
+    }
+
+    try {
+      if (!qzTrayService.isConnected()) {
+        await qzConnect();
+      }
+
+      await qzTrayService.printBarcodeLabel(qzSettings.barcodePrinterName, {
+        sampleId,
+        labelId: order.sample_id || order.id,
+        patientName: order.patient_name || 'Sample',
+        sampleType: order.color_name || 'Tube',
+        date: new Date(order.order_date).toLocaleDateString('en-GB'),
+      });
+    } catch (err) {
+      console.error('[PrintBridge][DashboardBarcodeLabel] queue failed; opening browser print', err);
+      printBarcodeInBrowser();
+    }
   };
 
   const handlePrintTRF = () => {
@@ -1778,11 +1836,14 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                       : 'hover:bg-gray-50'
                     }`}>
                     <div className="flex-1">
-                      <span className={`text-sm font-semibold block mb-0.5 transition-colors ${test.is_canceled
+                      <span className={`text-sm font-semibold flex items-center gap-1.5 mb-0.5 transition-colors ${test.is_canceled
                           ? 'text-gray-500 line-through'
                           : 'text-gray-900 group-hover:text-blue-700'
                         }`}>
-                        {test.test_name}
+                        {test.package_id && (
+                          <PackageIcon className="h-4 w-4 flex-shrink-0 text-purple-600" />
+                        )}
+                        <span>{cleanTestDisplayName(test.test_name)}</span>
                         {test.is_canceled && (
                           <span className="ml-2 text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-medium no-underline inline-block">
                             CANCELED
@@ -2377,12 +2438,13 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
             // Refresh tests state to reflect billed status
             const { data: updatedTests } = await supabase
               .from('order_tests')
-              .select('id, test_name, outsourced_lab_id, is_canceled, is_billed, invoice_id, outsourced_labs(name)')
+              .select('id, test_name, package_id, outsourced_lab_id, is_canceled, is_billed, invoice_id, outsourced_labs(name)')
               .eq('order_id', order.id);
             if (updatedTests) {
               setTests(updatedTests.map((t: any) => ({
                 id: t.id,
                 test_name: t.test_name,
+                package_id: t.package_id,
                 outsourced_lab_id: t.outsourced_lab_id,
                 outsourced_labs: t.outsourced_labs,
                 is_canceled: t.is_canceled,

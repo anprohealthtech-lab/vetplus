@@ -28,6 +28,14 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
   const [error, setError] = useState<string | null>(null);
   const { settings, connect } = useQZTray();
 
+  const escapeHtml = (value: string | null | undefined) =>
+    String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+
   useEffect(() => {
     generateCodes();
   }, [sample]);
@@ -65,6 +73,55 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
     }
   };
 
+  const printInBrowser = () => {
+    const printWindow = window.open('', '_blank', 'width=420,height=520');
+
+    if (!printWindow) {
+      setError('Unable to open browser print window. Please allow pop-ups and try again.');
+      return;
+    }
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Sample Label - ${escapeHtml(sample.id)}</title>
+          <style>
+            @page { size: 50mm 25mm; margin: 3mm; }
+            body { font-family: Arial, sans-serif; margin: 0; text-align: center; color: #111827; }
+            .label { width: 100%; box-sizing: border-box; padding: 4px; }
+            .sample-id { font-family: monospace; font-size: 11px; font-weight: 700; margin-bottom: 3px; }
+            .barcode { max-width: 46mm; height: auto; margin: 0 auto 3px; display: block; }
+            .row { display: flex; align-items: center; justify-content: center; gap: 5px; }
+            .qr { width: 15mm; height: 15mm; }
+            .meta { text-align: left; font-size: 8px; line-height: 1.25; max-width: 28mm; }
+          </style>
+        </head>
+        <body>
+          <div class="label">
+            <div class="sample-id">${escapeHtml(sample.id)}</div>
+            ${barcodeDataUrl ? `<img class="barcode" src="${barcodeDataUrl}" alt="Barcode" />` : ''}
+            <div class="row">
+              ${qrCodeDataUrl ? `<img class="qr" src="${qrCodeDataUrl}" alt="QR Code" />` : ''}
+              <div class="meta">
+                <div><strong>Type:</strong> ${escapeHtml(sample.sample_type)}</div>
+                <div><strong>Container:</strong> ${escapeHtml(sample.container_type)}</div>
+                ${patientName ? `<div><strong>Patient:</strong> ${escapeHtml(patientName)}</div>` : ''}
+                <div>${escapeHtml(new Date(sample.created_at).toLocaleDateString('en-GB'))}</div>
+              </div>
+            </div>
+          </div>
+          <script>
+            window.onload = function() {
+              window.focus();
+              setTimeout(function() { window.print(); }, 100);
+            };
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
   const handlePrint = async () => {
     console.debug('[PrintBridge][BarcodeLabel] print button clicked', {
       sampleId: sample.id,
@@ -75,8 +132,8 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
     });
 
     if (!settings.barcodePrinterName) {
-      console.warn('[PrintBridge][BarcodeLabel] print blocked: barcode printer is not configured');
-      alert('Barcode / Label Printer is not configured in Workflow Settings.');
+      console.warn('[PrintBridge][BarcodeLabel] barcode printer is not configured; opening browser print');
+      printInBrowser();
       return;
     }
 
@@ -108,7 +165,8 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       return;
     } catch (err: any) {
       console.error('Print bridge label queue failed:', err);
-      setError(err?.message || 'Failed to queue label for LIMS Utility');
+      console.warn('[PrintBridge][BarcodeLabel] falling back to browser print');
+      printInBrowser();
     } finally {
       setPrinting(false);
     }
