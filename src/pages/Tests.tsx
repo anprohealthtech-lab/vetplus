@@ -36,6 +36,8 @@ interface Test {
 interface Analyte {
   id: string;
   lab_analyte_id?: string; // lab_analytes primary key (used for per-row deactivation)
+  sampleType?: string | null;
+  sample_type?: string | null;
   testGroupCount?: number;
   name: string;
   unit: string;
@@ -350,7 +352,8 @@ const Tests: React.FC = () => {
 	            formula_variables: formulaVariables,
 	            formula_description: (analyteData as any).formula_description || null,
 	            value_type: normalizedValueType,
-	            expected_normal_values: expectedNormalValues
+	            expected_normal_values: expectedNormalValues,
+            sample_type: config.test_group.sample_type || null
 	          };
 
           const { data: newAnalyte, error: analyteError } = await supabase
@@ -503,6 +506,8 @@ const Tests: React.FC = () => {
           const transformedAnalytes = (dbAnalytesData || []).map(analyte => ({
             id: analyte.id,
             lab_analyte_id: analyte.lab_analyte_id,
+            sampleType: analyte.sampleType || analyte.sample_type || null,
+            sample_type: analyte.sample_type || analyte.sampleType || null,
             testGroupCount: analyte.test_group_count ?? 0,
             name: analyte.name,
             unit: analyte.unit,
@@ -763,6 +768,7 @@ const Tests: React.FC = () => {
         expected_normal_values: formData.expected_normal_values || [],
         // Dropdown value → flag mapping
         expected_value_flag_map: formData.expected_value_flag_map || {},
+        sample_type: formData.sampleType || formData.sample_type || null,
       });
 
       if (error) {
@@ -775,6 +781,8 @@ const Tests: React.FC = () => {
 	        const transformedAnalyte = {
 	          id: newAnalyte.id,
 	          lab_analyte_id: (newAnalyte as any).lab_analyte_id || null,
+	          sampleType: (newAnalyte as any).sample_type || null,
+	          sample_type: (newAnalyte as any).sample_type || null,
 	          name: newAnalyte.name,
           unit: newAnalyte.unit,
           referenceRange: newAnalyte.reference_range,
@@ -1498,6 +1506,8 @@ const Tests: React.FC = () => {
         const transformedAnalytes = (dbAnalytesData || []).map(analyte => ({
           id: analyte.id,
           lab_analyte_id: analyte.lab_analyte_id,
+          sampleType: analyte.sampleType || analyte.sample_type || null,
+          sample_type: analyte.sample_type || analyte.sampleType || null,
           testGroupCount: analyte.test_group_count ?? 0,
           name: analyte.name,
           unit: analyte.unit,

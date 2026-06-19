@@ -303,6 +303,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 
             const LA_SELECT = `
               id, analyte_id,
+              sample_type,
               name, unit, category, reference_range, method,
               low_critical, high_critical,
               interpretation_low, interpretation_normal, interpretation_high,
@@ -316,7 +317,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             is_critical, normal_range_min, normal_range_max,
             ai_processing_type, group_ai_mode, ai_prompt_override,
             ref_range_knowledge, display_name, is_active,
-            analytes!inner(id, name, unit, reference_range, category, is_active, is_global, is_calculated, formula, formula_variables, formula_description)
+            analytes!inner(id, name, unit, reference_range, category, sample_type, is_active, is_global, is_calculated, formula, formula_variables, formula_description)
           `;
 
           // Fetch by lab_analyte_id (exact, no duplicates)
@@ -373,6 +374,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   id: la.analyte_id,
                   lab_analyte_id: la.id,  // preserve lab_analyte PK for interface config lookup
                   category: la.category ?? global?.category ?? '',
+                  sample_type: la.sample_type ?? global?.sample_type ?? null,
+                  sampleType: la.sample_type ?? global?.sample_type ?? null,
                   is_global: global?.is_global ?? false,
                   // All display/entry fields — lab_analytes is source of truth, global is fallback
                   name: la.name || global?.name,
@@ -505,12 +508,16 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 
   // Filter analytes based on search query and showSelectedOnly toggle
   const filteredAnalytes = analytes.filter(analyte => {
+    const selected = formData.selectedAnalytes.includes(analyte.id);
+    const analyteSampleType = (analyte.sample_type ?? analyte.sampleType ?? '').trim();
+    const groupSampleType = (formData.sampleType ?? '').trim();
     const matchesSearch =
       analyte.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       analyte.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
       analyte.unit.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesSelected = !showSelectedOnly || formData.selectedAnalytes.includes(analyte.id);
-    return matchesSearch && matchesSelected;
+    const matchesSelected = !showSelectedOnly || selected;
+    const matchesSampleType = selected || !groupSampleType || !analyteSampleType || analyteSampleType === groupSampleType;
+    return matchesSearch && matchesSelected && matchesSampleType;
   });
 
   useEffect(() => {
@@ -569,6 +576,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
           ? analyteData.formulaVariables
           : [],
         formula_description: analyteData.isCalculated ? (analyteData.formulaDescription || null) : null,
+        sample_type: formData.sampleType || null,
       });
 
       if (error) {
@@ -640,6 +648,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     'EDTA Blood',
     'Serum',
     'Plasma',
+    'Fluoride Plasma',
+    'Citrated Plasma',
+    'Capillary Blood',
     'Urine',
     'Stool',
     'CSF',
@@ -699,7 +710,14 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         ...formData,
         category: formData.category || null,
         analytes: formData.is_section_only ? [] : formData.selectedAnalytes,
-        analyteMetadata: formData.is_section_only ? {} : analyteMetadata,
+        analyteMetadata: formData.is_section_only ? {} : selectedAnalyteDetails.reduce((acc: Record<string, AnalyteMetadata>, analyte: any) => {
+          const existing = analyteMetadata[analyte.id] || { sort_order: 0, section_heading: '', is_visible: true };
+          acc[analyte.id] = {
+            ...existing,
+            lab_analyte_id: existing.lab_analyte_id ?? analyte.lab_analyte_id ?? null,
+          };
+          return acc;
+        }, {}),
         price: parseFloat(formData.price),
         collection_charge: formData.collection_charge ? parseFloat(formData.collection_charge) : null,
         tat_hours: parseFloat(formData.tat_hours) || 3,
@@ -1941,6 +1959,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                       </div>
                       <div className="text-xs text-gray-400">
                         Category: {analyte.category}
+                        {(analyte.sample_type || analyte.sampleType) && (
+                          <span> • Sample: {analyte.sample_type || analyte.sampleType}</span>
+                        )}
                       </div>
                     </div>
                   </label>

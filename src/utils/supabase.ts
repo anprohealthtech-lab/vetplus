@@ -529,6 +529,48 @@ supabase.auth.onAuthStateChange((event) => {
   }
 });
 
+const resolveLabAnalyteMap = async (
+  labId: string | null,
+  analyteIds: string[],
+  sampleType?: string | null,
+  metadata: Record<string, { lab_analyte_id?: string | null }> = {},
+): Promise<Record<string, string>> => {
+  const result: Record<string, string> = {};
+  for (const analyteId of analyteIds) {
+    const metadataLabAnalyteId = metadata[analyteId]?.lab_analyte_id;
+    if (metadataLabAnalyteId) result[analyteId] = metadataLabAnalyteId;
+  }
+
+  const missingIds = analyteIds.filter((analyteId) => !result[analyteId]);
+  if (!labId || missingIds.length === 0) return result;
+
+  const { data, error } = await supabase
+    .from("lab_analytes")
+    .select("id, analyte_id, sample_type, created_at")
+    .eq("lab_id", labId)
+    .in("analyte_id", missingIds)
+    .eq("is_active", true)
+    .order("created_at", { ascending: true });
+
+  if (error || !data) {
+    if (error) console.error("Error resolving lab_analyte_id by sample type:", error);
+    return result;
+  }
+
+  const preferredSampleType = (sampleType || "").trim();
+  for (const analyteId of missingIds) {
+    const candidates = data.filter((row: any) => row.analyte_id === analyteId);
+    const exact = preferredSampleType
+      ? candidates.find((row: any) => (row.sample_type || "").trim() === preferredSampleType)
+      : null;
+    const generic = candidates.find((row: any) => !row.sample_type);
+    const chosen = exact || generic || candidates[0];
+    if (chosen?.id) result[analyteId] = chosen.id;
+  }
+
+  return result;
+};
+
 // Database helper functions for patients
 export const database = {
   // Expose supabase client for direct queries when needed
@@ -5643,6 +5685,7 @@ export const database = {
           id,
           is_active,
           visible,
+          sample_type,
           category,
           low_critical,
           high_critical,
@@ -5721,6 +5764,8 @@ export const database = {
             return {
               ...analyteObj,
               lab_analyte_id: item.id,
+              sample_type: item.sample_type ?? analyteObj.sample_type ?? null,
+              sampleType: item.sample_type ?? analyteObj.sample_type ?? null,
               is_active: item.is_active,
               visible: item.visible,
               // Prioritize lab-specific category if it exists, otherwise use global
@@ -5819,6 +5864,7 @@ export const database = {
       flag_rules?: any;
       code?: string;
       description?: string;
+      sample_type?: string | null;
     }) => {
       // First create the analyte in the analytes table
       const { data, error } = await supabase
@@ -5853,6 +5899,7 @@ export const database = {
           flag_rules: analyteData.flag_rules || null,
           code: analyteData.code || null,
           description: analyteData.description || null,
+          sample_type: analyteData.sample_type || null,
         }])
         .select()
         .single();
@@ -5872,6 +5919,7 @@ export const database = {
             is_active: true,
             visible: true,
             ai_processing_type: data.ai_processing_type || null,
+            sample_type: analyteData.sample_type || null,
           }]);
       }
 
@@ -6873,11 +6921,18 @@ export const database = {
 
         // Step 2: Create test group analyte relationships
         if (testGroupData.analytes && testGroupData.analytes.length > 0) {
+          const labAnalyteMap = await resolveLabAnalyteMap(
+            testGroupData.lab_id || null,
+            testGroupData.analytes,
+            testGroupData.sampleType || null,
+            testGroupData.analyteMetadata || {},
+          );
           const analyteRelations = testGroupData.analytes.map((
             analyteId: string,
           ) => ({
             test_group_id: testGroup.id,
             analyte_id: analyteId,
+            lab_analyte_id: labAnalyteMap[analyteId] || null,
           }));
 
           const { error: relationError } = await supabase
@@ -6970,8 +7025,14 @@ export const database = {
         // Step 2: Update analyte relationships if analytes are provided
         if (updates.analytes && Array.isArray(updates.analytes)) {
           const newAnalyteIds: string[] = updates.analytes;
-          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean }> =
+          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean; lab_analyte_id?: string | null }> =
             updates.analyteMetadata || {};
+          const labAnalyteMap = await resolveLabAnalyteMap(
+            data.lab_id || updates.lab_id || null,
+            newAnalyteIds,
+            updates.sampleType || data.sample_type || null,
+            analyteMetadata,
+          );
 
           // Insert new analytes first (keeps count > 0, preventing the orphan
           // auto-link trigger from firing during the subsequent delete step)
@@ -6979,6 +7040,7 @@ export const database = {
             const analyteRelations = newAnalyteIds.map((analyteId: string) => ({
               test_group_id: id,
               analyte_id: analyteId,
+              lab_analyte_id: labAnalyteMap[analyteId] || null,
             }));
 
             const { error: insertError } = await supabase
@@ -7006,6 +7068,7 @@ export const database = {
                     sort_order: meta.sort_order ?? 0,
                     section_heading: meta.section_heading || null,
                     is_visible: meta.is_visible ?? true,
+                    lab_analyte_id: labAnalyteMap[analyteId] || null,
                   })
                   .eq("test_group_id", id)
                   .eq("analyte_id", analyteId);
