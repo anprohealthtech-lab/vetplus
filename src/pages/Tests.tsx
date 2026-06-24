@@ -168,6 +168,9 @@ const Tests: React.FC = () => {
 
   const [tests, setTests] = useState<Test[]>([]);
   const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
+  const [inactiveTestGroups, setInactiveTestGroups] = useState<TestGroup[]>([]);
+  const [showInactiveTestGroups, setShowInactiveTestGroups] = useState(false);
+  const [loadingInactiveTestGroups, setLoadingInactiveTestGroups] = useState(false);
   const [analytes, setAnalytes] = useState<Analyte[]>([]);
   const [inactiveAnalytes, setInactiveAnalytes] = useState<Analyte[]>([]);
   const [showInactiveAnalytes, setShowInactiveAnalytes] = useState(false);
@@ -485,6 +488,50 @@ const Tests: React.FC = () => {
     setDangerChecked(false);
     setDangerTypeInput('');
   };
+
+  const transformTestGroup = (group: any): TestGroup => ({
+    id: group.id,
+    name: group.name,
+    code: group.code,
+    category: group.category,
+    clinicalPurpose: group.clinical_purpose,
+    methodology: group.methodology,
+    price: group.price,
+    turnaroundTime: group.turnaround_time,
+    tat_hours: group.tat_hours,
+    sampleType: group.sample_type,
+    requiresFasting: group.requires_fasting,
+    isActive: group.is_active,
+    createdDate: group.created_at,
+    default_ai_processing_type: group.default_ai_processing_type,
+    group_level_prompt: group.group_level_prompt,
+    testType: group.test_type || 'Default',
+    gender: group.gender || 'Both',
+    sampleColor: group.sample_color || 'Red',
+    barcodeSuffix: group.barcode_suffix,
+    lmpRequired: group.lmp_required || false,
+    idRequired: group.id_required || false,
+    consentForm: group.consent_form || false,
+    preCollectionGuidelines: group.pre_collection_guidelines,
+    flabsId: group.flabs_id,
+    onlyFemale: group.only_female || false,
+    onlyMale: group.only_male || false,
+    onlyBilling: group.only_billing || false,
+    startFromNextPage: group.start_from_next_page || false,
+    report_priority: group.report_priority ?? null,
+    default_template_style: group.default_template_style || null,
+    print_options: group.print_options ?? null,
+    is_outsourced: group.is_outsourced || false,
+    default_outsourced_lab_id: group.default_outsourced_lab_id,
+    ref_range_ai_config: group.ref_range_ai_config,
+    required_patient_inputs: group.required_patient_inputs || [],
+    group_interpretation: group.group_interpretation || null,
+    global_test_catalog_id: group.global_test_catalog_id || null,
+    analyzer_connection_id: group.analyzer_connection_id || null,
+    is_section_only: group.is_section_only || false,
+    analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : [],
+    analyteDisplay: group.test_group_analytes || []
+  });
 
   const loadData = React.useCallback(async () => {
       try {
@@ -1664,19 +1711,127 @@ const Tests: React.FC = () => {
     } catch (e: any) {
       console.warn("Hard delete failed, trying soft hide (is_active=false):", e);
       try {
-        const { error: hideError } = await database.testGroups.update(group.id, {
-          isActive: false,
-        });
+        const { error: hideError } = await supabase
+          .from('test_groups')
+          .update({ is_active: false, updated_at: new Date().toISOString() })
+          .eq('id', group.id);
         if (hideError) throw hideError;
 
-        setTestGroups(prev =>
-          prev.map(g => (g.id === group.id ? { ...g, isActive: false } : g))
-        );
+        setTestGroups(prev => prev.filter(g => g.id !== group.id));
+        if (showInactiveTestGroups) {
+          setInactiveTestGroups(prev => [{ ...group, isActive: false }, ...prev.filter(g => g.id !== group.id)]);
+        }
         alert('Test group is used in existing orders. It was hidden by setting Is Active = false.');
       } catch (hideErr: any) {
         console.error("Soft hide failed", hideErr);
         alert("Failed to delete/hide test group. It may be used in existing orders.");
       }
+    }
+  };
+
+  const handleDeactivateTestGroup = async (group: TestGroup) => {
+    if (!window.confirm(`Deactivate test group "${group.name}"? It will be hidden from active lists and can be reactivated later.`)) return;
+
+    try {
+      const { error } = await supabase
+        .from('test_groups')
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .eq('id', group.id);
+
+      if (error) throw error;
+
+      setTestGroups(prev => prev.filter(g => g.id !== group.id));
+      if (showInactiveTestGroups) {
+        setInactiveTestGroups(prev => [{ ...group, isActive: false }, ...prev.filter(g => g.id !== group.id)]);
+      }
+    } catch (e: any) {
+      console.error("Deactivate test group failed", e);
+      alert("Failed to deactivate test group.");
+    }
+  };
+
+  const handleReactivateTestGroup = async (group: TestGroup) => {
+    try {
+      const { error } = await supabase
+        .from('test_groups')
+        .update({ is_active: true, updated_at: new Date().toISOString() })
+        .eq('id', group.id);
+
+      if (error) throw error;
+
+      setInactiveTestGroups(prev => prev.filter(g => g.id !== group.id));
+      setTestGroups(prev => [{ ...group, isActive: true }, ...prev.filter(g => g.id !== group.id)]);
+    } catch (e: any) {
+      console.error("Reactivate test group failed", e);
+      alert("Failed to reactivate test group.");
+    }
+  };
+
+  const handleLoadInactiveTestGroups = async () => {
+    if (inactiveTestGroups.length > 0) return;
+    try {
+      setLoadingInactiveTestGroups(true);
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) return;
+
+      const { data, error } = await supabase
+        .from('test_groups')
+        .select(`
+          id,
+          name,
+          code,
+          category,
+          clinical_purpose,
+          methodology,
+          price,
+          turnaround_time,
+          tat_hours,
+          sample_type,
+          requires_fasting,
+          is_active,
+          created_at,
+          default_ai_processing_type,
+          group_level_prompt,
+          test_type,
+          gender,
+          sample_color,
+          barcode_suffix,
+          lmp_required,
+          id_required,
+          consent_form,
+          pre_collection_guidelines,
+          flabs_id,
+          only_female,
+          only_male,
+          only_billing,
+          start_from_next_page,
+          report_priority,
+          default_template_style,
+          print_options,
+          is_outsourced,
+          default_outsourced_lab_id,
+          required_patient_inputs,
+          ref_range_ai_config,
+          group_interpretation,
+          global_test_catalog_id,
+          analyzer_connection_id,
+          is_section_only,
+          test_group_analytes(
+            analyte_id,
+            sort_order,
+            section_heading
+          )
+        `)
+        .eq('lab_id', labId)
+        .eq('is_active', false)
+        .order('name', { ascending: true });
+
+      if (error) throw error;
+      setInactiveTestGroups((data || []).map(transformTestGroup));
+    } catch (e: any) {
+      console.error("Load inactive test groups failed", e);
+    } finally {
+      setLoadingInactiveTestGroups(false);
     }
   };
 
@@ -2054,10 +2209,20 @@ const Tests: React.FC = () => {
         {
           activeTab === 'groups' && (
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-              <div className="px-3 py-2 border-b border-gray-200">
+              <div className="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-gray-900">
                   Test Groups ({filteredTestGroups.length})
                 </h3>
+                <button
+                  onClick={() => {
+                    const next = !showInactiveTestGroups;
+                    setShowInactiveTestGroups(next);
+                    if (next) handleLoadInactiveTestGroups();
+                  }}
+                  className={`text-xs px-2 py-1 rounded border transition-colors ${showInactiveTestGroups ? 'bg-amber-100 border-amber-400 text-amber-700' : 'bg-gray-100 border-gray-300 text-gray-600 hover:bg-gray-200'}`}
+                >
+                  {showInactiveTestGroups ? 'Hide Inactive' : 'Show Inactive'}
+                </button>
               </div>
 
               <div className="overflow-x-auto">
@@ -2133,6 +2298,13 @@ const Tests: React.FC = () => {
                                 <Edit className="h-4 w-4" />
                               </button>
                               <button
+                                onClick={() => handleDeactivateTestGroup(group)}
+                                className="text-amber-500 hover:text-amber-700 p-1 rounded"
+                                title="Deactivate (hide from lists, can reactivate)"
+                              >
+                                <EyeOff className="h-4 w-4" />
+                              </button>
+                              <button
                                 onClick={() => handleDeleteTestGroup(group)}
                                 className="text-red-500 hover:text-red-700 p-1 rounded"
                                 title="Delete Test Group"
@@ -2147,6 +2319,50 @@ const Tests: React.FC = () => {
                   </tbody>
                 </table>
               </div>
+
+              {/* Inactive Test Groups Section */}
+              {showInactiveTestGroups && (
+                <div className="border-t border-amber-200 bg-amber-50">
+                  <div className="px-3 py-2 border-b border-amber-200 flex items-center justify-between">
+                    <h4 className="text-xs font-semibold text-amber-800">
+                      Inactive Test Groups ({inactiveTestGroups.length})
+                      <span className="ml-1 font-normal text-amber-600">- click Reactivate to restore</span>
+                    </h4>
+                    {loadingInactiveTestGroups && <span className="text-xs text-amber-600">Loading...</span>}
+                  </div>
+                  {inactiveTestGroups.length === 0 && !loadingInactiveTestGroups ? (
+                    <div className="px-3 py-4 text-xs text-amber-600 text-center">No inactive test groups found.</div>
+                  ) : (
+                    <table className="w-full text-xs divide-y divide-amber-100">
+                      <tbody>
+                        {inactiveTestGroups.map((group) => (
+                          <tr key={group.id} className="opacity-60 hover:opacity-80">
+                            <td className="px-3 py-2 w-2/5">
+                              <span className="font-medium text-gray-700">{group.name}</span>
+                              <div className="text-gray-400">Code: {group.code || 'N/A'} - {group.turnaroundTime || 'N/A'}</div>
+                            </td>
+                            <td className="px-3 py-2 w-1/5">
+                              <span className={`px-1.5 py-0.5 rounded-full text-xs ${getCategoryColor(group.category)}`}>{group.category}</span>
+                            </td>
+                            <td className="px-3 py-2 w-1/5 text-gray-500">
+                              {group.is_section_only ? 'Section only' : `${group.analytes?.length || 0} analyte${(group.analytes?.length || 0) === 1 ? '' : 's'}`}
+                            </td>
+                            <td className="px-3 py-2 w-1/6 text-gray-500">{group.sampleType || 'N/A'}</td>
+                            <td className="px-3 py-2 text-right">
+                              <button
+                                onClick={() => handleReactivateTestGroup(group)}
+                                className="text-xs px-2 py-1 bg-green-100 text-green-700 border border-green-300 rounded hover:bg-green-200"
+                              >
+                                Reactivate
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
             </div>
           )
         }
