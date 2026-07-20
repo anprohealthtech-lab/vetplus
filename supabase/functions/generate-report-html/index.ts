@@ -714,7 +714,7 @@ function injectSignatureImage(html: string, signatoryImageUrl: string, signatory
   // Build complete signature block with image and text
   const signatureBlockHtml = `
     <div style="margin-top: 10px;">
-      <img src="${signatoryImageUrl}" alt="Signature" style="display:block;max-height:40px;max-width:120px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" />
+      <img src="${signatoryImageUrl}" alt="" style="display:block;max-height:40px;max-width:120px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" onerror="this.style.display='none'" />
       ${signatoryName ? `<p style="margin-top:8px;margin-bottom:4px;font-weight:600;font-size:14px;">${signatoryName}</p>` : ''}
       ${signatoryDesignation ? `<p style="margin-top:0;color:#64748b;font-size:12px;">${signatoryDesignation}</p>` : ''}
     </div>
@@ -1395,41 +1395,190 @@ async function sendHtmlToPdfCo(
 // SECTION: Section Content Injection (PBS/Radiology findings, impressions)
 // ============================================================
 
+// ── Matrix HTML Builder (mirrors SectionEditor.tsx buildMatrixHtml) ──────────
+
+const MATRIX_CELL_PREFIX = "matrix:"
+const MATRIX_COL_LABEL_PREFIX = "col_label:"
+const MATRIX_COL_ORDER_KEY = "matrix_col_order"
+
+function matrixCellKey(row: string, column: string): string {
+  return `${MATRIX_CELL_PREFIX}${row}::${column}`
+}
+
+function matrixColLabelKey(column: string): string {
+  return `${MATRIX_COL_LABEL_PREFIX}${column}`
+}
+
+function escapeHtmlForMatrix(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+function parseMaybeJsonObject(value: unknown): Record<string, any> {
+  if (!value) return {}
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof value === "object" && !Array.isArray(value) ? (value as Record<string, any>) : {}
+}
+
+function getMatrixCellValue(
+  selections: Record<string, unknown> | undefined,
+  row: string,
+  column: string
+): string {
+  const raw = selections?.[matrixCellKey(row, column)]
+  if (Array.isArray(raw)) return String(raw[0] || "")
+  return typeof raw === "string" ? raw : ""
+}
+
+function getColLabel(
+  selections: Record<string, unknown> | undefined,
+  column: string
+): string {
+  const raw = selections?.[matrixColLabelKey(column)]
+  return typeof raw === "string" && raw.trim() ? raw.trim() : column
+}
+
+function getActiveColumns(
+  selections: Record<string, unknown> | undefined,
+  templateColumns: string[]
+): string[] {
+  const raw = selections?.[MATRIX_COL_ORDER_KEY]
+  if (Array.isArray(raw) && raw.length > 0) return raw as string[]
+  return templateColumns
+}
+
+function cellOptionStyle(
+  value: string,
+  cellOptions: string[],
+  reportStyle: "color" | "bold" | "plain" = "color"
+): string {
+  if (!cellOptions.length) return ""
+  if (reportStyle === "plain") return ""
+  if (reportStyle === "bold") return "font-weight:700 !important;"
+
+  const idx = cellOptions.findIndex(
+    (o) => o.trim().toUpperCase() === value.trim().toUpperCase()
+  )
+  if (idx === -1) return ""
+  // Use !important to override .basic-report-template td { background-color: #fff !important; }
+  if (cellOptions.length === 1) return "background:#d1fae5 !important;color:#065f46 !important;font-weight:600 !important;"
+  if (idx === 0) return "background:#d1fae5 !important;color:#065f46 !important;font-weight:600 !important;"
+  if (idx === cellOptions.length - 1) return "background:#fee2e2 !important;color:#991b1b !important;font-weight:600 !important;"
+  return "background:#fff3cd !important;color:#92400e !important;font-weight:600 !important;"
+}
+
+function buildMatrixHtmlFromConfig(
+  sectionConfig: unknown,
+  selections: unknown,
+  customText?: string
+): string {
+  const config = parseMaybeJsonObject(sectionConfig)
+  if (config?.mode !== "matrix" || !config?.matrix) {
+    return ""
+  }
+
+  const matrix = config.matrix
+  const selectionMap = parseMaybeJsonObject(selections) as Record<string, unknown>
+
+  const rows = (matrix?.rows || []).map((row: string) => String(row).trim()).filter(Boolean)
+  const templateCols = (matrix?.columns || []).map((c: string) => String(c).trim()).filter(Boolean)
+  const columns = getActiveColumns(selectionMap, templateCols)
+
+  if (rows.length === 0 || columns.length === 0) {
+    return (customText || "").trim()
+  }
+
+  const cellOptions: string[] = Array.isArray(matrix?.cellOptions) ? matrix.cellOptions : []
+  const reportStyle: "color" | "bold" | "plain" = matrix?.reportStyle || "color"
+
+  const headerHtml = columns
+    .map((column: string) =>
+      `<th style="border:1px solid #9ca3af;padding:8px;text-align:left;background:#f8fafc;">${escapeHtmlForMatrix(getColLabel(selectionMap, column))}</th>`
+    )
+    .join("")
+
+  const bodyHtml = rows
+    .map((row: string) => {
+      const cells = columns
+        .map((column: string) => {
+          const val = getMatrixCellValue(selectionMap, row, column)
+          const colorStyle = val ? cellOptionStyle(val, cellOptions, reportStyle) : ""
+          return `<td style="border:1px solid #9ca3af;padding:8px;min-width:80px;text-align:center;${colorStyle}">${escapeHtmlForMatrix(val)}</td>`
+        })
+        .join("")
+      return `<tr><th style="border:1px solid #9ca3af;padding:8px;text-align:left;background:#f8fafc;">${escapeHtmlForMatrix(row)}</th>${cells}</tr>`
+    })
+    .join("")
+
+  const noteTrimmed = (customText || "").trim()
+  const notesHtml = noteTrimmed
+    ? `<div style="margin-top:12px;white-space:pre-wrap;">${escapeHtmlForMatrix(noteTrimmed).replace(/\n/g, "<br/>")}</div>`
+    : ""
+
+  return `<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr><th style="border:1px solid #9ca3af;padding:8px;background:#f8fafc;"></th>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>${notesHtml}`
+}
+
 /**
  * Fetch section content for a result and return as a map of placeholder_key -> final_content
+ * For matrix sections, rebuilds HTML with color/bold/plain styling from config
  */
 async function fetchSectionContent(
   supabaseClient: any,
   resultIds: string[]
 ): Promise<Record<string, string>> {
   if (!resultIds || resultIds.length === 0) return {}
-  
+
   try {
     const { data, error } = await supabaseClient
       .from('result_section_content')
       .select(`
         final_content,
+        custom_text,
+        cascading_selections,
         lab_template_sections!inner(
-          placeholder_key
+          placeholder_key,
+          section_config
         )
       `)
       .in('result_id', resultIds)
       .not('lab_template_sections.placeholder_key', 'is', null)
-    
+
     if (error || !data) {
       console.warn('Failed to fetch section content:', error?.message)
       return {}
     }
-    
+
     // Build map of placeholder_key -> final_content
     const sectionMap: Record<string, string> = {}
     for (const item of data) {
       const key = item.lab_template_sections?.placeholder_key
-      if (key && item.final_content) {
-        sectionMap[key] = item.final_content
+      if (!key) continue
+
+      // For matrix sections, rebuild HTML with styling from config
+      const sectionCfg = item.lab_template_sections?.section_config
+      const rebuiltMatrixContent = buildMatrixHtmlFromConfig(
+        sectionCfg,
+        item.cascading_selections,
+        item.custom_text || ""
+      )
+
+      const content = rebuiltMatrixContent || item.final_content
+      if (content) {
+        sectionMap[key] = content
       }
     }
-    
+
     return sectionMap
   } catch (err) {
     console.warn('Error fetching section content:', err)
@@ -1466,20 +1615,20 @@ function injectSectionContent(html: string, sectionContent: Record<string, strin
     const simplePlaceholder = `{{${rawKey}}}`
     const originalPlaceholder = originalKey.startsWith('section:') ? `{{${originalKey}}}` : null
     
-    // Preserve basic formatting: convert newlines to proper HTML paragraphs/breaks
-    // Content comes from doctor input (CKEditor), preserve formatting
-    const formattedContent = content
-      .trim()
-      .split(/\n\n+/)  // Split on double newlines (paragraph breaks)
-      .map(para => {
-        const cleanPara = para.trim()
-        if (!cleanPara) return ''
-        // Convert single newlines to <br/> within paragraphs
-        const withBreaks = cleanPara.replace(/\n/g, '<br/>')
-        return `<p>${withBreaks}</p>`
-      })
-      .filter(Boolean)
-      .join('')
+    const trimmedContent = content.trim()
+    const formattedContent = /<[a-z][\s\S]*>/i.test(trimmedContent)
+      ? trimmedContent
+      : trimmedContent
+          .split(/\n\n+/)  // Split on double newlines (paragraph breaks)
+          .map(para => {
+            const cleanPara = para.trim()
+            if (!cleanPara) return ''
+            // Convert single newlines to <br/> within paragraphs
+            const withBreaks = cleanPara.replace(/\n/g, '<br/>')
+            return `<p>${withBreaks}</p>`
+          })
+          .filter(Boolean)
+          .join('')
     
     const wrappedContent = `<div class="section-content">${formattedContent}</div>`
     
@@ -1594,6 +1743,75 @@ function formatClinicalSummary(text: string): string {
   return processedLines.join('\n')
 }
 
+function escapeTrendHtml(value: any): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function formatTrendDateTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return escapeTrendHtml(value)
+  return date.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  })
+}
+
+function buildTrendHistoryTableHtml(chart: any): string {
+  const data = Array.isArray(chart?.data) ? chart.data : []
+  if (data.length === 0) return ''
+
+  const rows = data.slice().reverse().map((point: any) => `
+    <tr>
+      <td style="padding: 3px 6px; border: 1px solid #d1d5db; white-space: nowrap;">${formatTrendDateTime(point.order_date || point.date || point.timestamp || '')}</td>
+      <td style="padding: 3px 6px; border: 1px solid #d1d5db; text-align: right; font-weight: 600;">${escapeTrendHtml(point.value)}</td>
+    </tr>
+  `).join('')
+
+  return `
+    <table style="border-collapse: collapse; width: 100%; margin: 0; font-size: 9px; line-height: 1.25;">
+      <thead>
+        <tr style="background: #f3f4f6;">
+          <th style="padding: 4px 6px; border: 1px solid #d1d5db; text-align: left; font-weight: 700;">Date Time</th>
+          <th style="padding: 4px 6px; border: 1px solid #d1d5db; text-align: right; font-weight: 700;">Result</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `
+}
+
+function buildTrendChartBlockHtml(chart: any): string {
+  const imgSrc = chart?.image_base64 || chart?.image_url
+  if (!imgSrc) return ''
+
+  const analyteName = chart?.analyte_name || 'Test'
+  const tableHtml = buildTrendHistoryTableHtml(chart)
+  const meta = [
+    chart?.unit ? `Unit: ${escapeTrendHtml(chart.unit)}` : '',
+    chart?.reference_range ? `Ref: ${escapeTrendHtml(chart.reference_range)}` : ''
+  ].filter(Boolean).join(' | ')
+
+  return `<div class="trend-chart" style="margin: 10px 0 16px 0; page-break-inside: avoid; break-inside: avoid;">
+    <div style="font-size: 12px; font-weight: 700; color: #111827; text-align: center; margin-bottom: 5px;">${escapeTrendHtml(analyteName)} Previous History</div>
+    <div style="display: table; width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 8px 0;">
+      <div style="display: table-cell; width: 62%; vertical-align: top;">
+        <img src="${imgSrc}" alt="${escapeTrendHtml(analyteName)} trend" style="width: 100%; max-width: 100%; height: auto; border: 1px solid #d1d5db;" />
+      </div>
+      <div style="display: table-cell; width: 38%; vertical-align: top;">${tableHtml}</div>
+    </div>
+    ${meta ? `<div style="font-size: 9px; color: #4b5563; text-align: center; margin-top: 4px;">${meta}</div>` : ''}
+  </div>`
+}
+
 /**
  * Generate HTML for report extras (trend charts, clinical summary, AI summaries, patient summary)
  */
@@ -1615,17 +1833,10 @@ function generateReportExtrasHtml(extras: {
   // Trend charts from report_extras table
   if (extras.trend_charts && extras.trend_charts.length > 0) {
     html += '<div class="report-extras-trends" style="margin-top: 20px; page-break-inside: avoid;">'
-    html += '<h3 style="margin-bottom: 10px;">Historical Trends</h3>'
+    html += '<h3 style="margin-bottom: 10px;">Previous History</h3>'
     
     for (const chart of extras.trend_charts) {
-      if (chart.image_base64) {
-        html += `<div class="trend-chart" style="margin: 10px 0;">`
-        html += `<img src="${chart.image_base64}" alt="${chart.analyte_name || 'Trend'}" style="max-width: 100%; height: auto;" />`
-        if (chart.analyte_name) {
-          html += `<p style="font-size: 11px; text-align: center; margin-top: 5px;">${chart.analyte_name}</p>`
-        }
-        html += `</div>`
-      }
+      html += buildTrendChartBlockHtml(chart)
     }
     
     html += '</div>'
@@ -2398,7 +2609,7 @@ serve(async (req) => {
     }
     
     // Helper to apply ImageKit transformations for signatures
-    // Adds focus:auto and e-removebg for clean signature rendering
+    // Adds non-AI ImageKit transforms for sizing/focus only.
     const applySignatureTransformations = (url: string): string => {
       if (!url) return ''
       // If it's an ImageKit URL, add transformations
@@ -2412,7 +2623,7 @@ serve(async (req) => {
             const pathParts = urlObj.pathname.split('/')
             // Insert transformations after the imagekit path identifier
             const insertIndex = pathParts.findIndex((p: string) => p && !p.includes('.')) + 1
-            pathParts.splice(insertIndex, 0, 'tr:fo-auto,e-removebg,t-true')
+            pathParts.splice(insertIndex, 0, 'tr:fo-auto,t-true')
             urlObj.pathname = pathParts.join('/')
             return urlObj.toString()
           }
@@ -2888,7 +3099,7 @@ serve(async (req) => {
       // Logic to inject signature image directly into the name placeholder
       // This follows "User Request" to look for {{signatoryName}} and inject there.
       if (sigUrl && sigName) {
-           const imgHtml = `<img src="${sigUrl}" alt="Signature" style="display:block; max-height:40px; margin-bottom:2px; margin-top:2px;" />`;
+           const imgHtml = `<img src="${sigUrl}" alt="" style="display:block; max-height:40px; margin-bottom:2px; margin-top:2px;" onerror="this.style.display='none'" />`;
            // Wrap name in span to separate it from block image, though block image forces break.
            sigName = `${imgHtml}<span>${sigName}</span>`; 
       }

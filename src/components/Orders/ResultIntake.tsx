@@ -7,14 +7,14 @@ import { supabase, database } from '../../utils/supabase'
 import { useAuth } from '../../contexts/AuthContext'
 import { calculateFlagsForResults } from '../../utils/flagCalculation'
 import { CheckCircle, AlertTriangle, Sparkles, Calculator, EyeOff } from 'lucide-react'
-import { resolveReferenceRanges } from '../../utils/referenceRangeService'
+import { findResolvedReferenceRange, normalizeResultFlagForSave, resolveReferenceRanges } from '../../utils/referenceRangeService'
 import { evaluate } from 'mathjs'
 import SectionEditor, { type SectionEditorRef } from '../Results/SectionEditor'
 
 // ───────────────────────────────────────────────────────────────────────────────
 // BLOCK 1: Types
 
-type FlagCode = '' | 'H' | 'L' | 'C'
+type FlagCode = '' | 'H' | 'L' | 'C' | 'A' | string
 
 interface Analyte {
   id: string
@@ -106,10 +106,11 @@ const isCompleted = (a: Analyte) => {
   )
 }
 
-const flagOptions: { value: FlagCode; label: string }[] = [
+const DEFAULT_FLAG_OPTIONS: { value: FlagCode; label: string }[] = [
   { value: '', label: 'Normal' },
   { value: 'H', label: 'High' },
   { value: 'L', label: 'Low' },
+  { value: 'A', label: 'Abnormal' },
   { value: 'C', label: 'Critical' },
 ]
 
@@ -127,6 +128,9 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
   const [autoVerifyOnSubmit, setAutoVerifyOnSubmit] = useState(false)
   const [groupResultIds, setGroupResultIds] = useState<Record<string, string>>({})
   const sectionEditorRefs = useRef<Record<string, SectionEditorRef | null>>({})
+
+  // Lab flag options - loaded from lab settings
+  const [flagOptions, setFlagOptions] = useState<{ value: FlagCode; label: string }[]>(DEFAULT_FLAG_OPTIONS)
 
   // Editable entries keyed by analyte_id (only for NOT completed analytes)
   const [entries, setEntries] = useState<Record<string, Entry>>({})
@@ -169,6 +173,20 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
     })
     setGroupResultIds(next)
   }, [order])
+
+  // Load lab flag options
+  useEffect(() => {
+    if (!order.lab_id) return
+    const loadFlagOptions = async () => {
+      try {
+        const { data } = await supabase.from('labs').select('flag_options').eq('id', order.lab_id).single()
+        if (data?.flag_options && Array.isArray(data.flag_options) && data.flag_options.length > 0) {
+          setFlagOptions(data.flag_options as { value: FlagCode; label: string }[])
+        }
+      } catch { /* keep defaults */ }
+    }
+    loadFlagOptions()
+  }, [order.lab_id])
 
   // Fetch analyte_dependencies for all calculated analytes in this order
   useEffect(() => {
@@ -418,6 +436,7 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
       const entry = entries[a.id];
       return {
         id: a.id,
+        lab_analyte_id: a.lab_analyte_id || null,
         name: a.name,
         value: entry?.value || a.existing_result?.value || '', // Use entered or existing
         unit: entry?.unit || a.units || a.unit || ''
@@ -437,12 +456,14 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
       setEntries(prev => {
         const next = { ...prev };
         resolved.forEach(r => {
+          const matchedEntry = Object.values(next).find(entry => findResolvedReferenceRange([r], entry));
+          const entryKey = matchedEntry?.analyte_id || r.id;
           // If we have an entry for this (it's pending), update it
           // Logic: Only update if it's currently editable (in 'entries')
-          if (next[r.id]) {
-            next[r.id] = {
-              ...next[r.id],
-              reference: r.used_reference_range || (r.ref_low && r.ref_high ? `${r.ref_low} - ${r.ref_high}` : next[r.id].reference),
+          if (next[entryKey]) {
+            next[entryKey] = {
+              ...next[entryKey],
+              reference: r.used_reference_range || (r.ref_low && r.ref_high ? `${r.ref_low} - ${r.ref_high}` : next[entryKey].reference),
               flag: (r.flag || '') as FlagCode
             };
           } else if (!isCompleted(groupData.tg.analytes.find(a => a.id === r.id)!)) {
@@ -605,7 +626,7 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
 
         const values = list.map((v, i) => {
           const hidden = !!v.is_hidden_from_report;
-          const resolvedFlag = hidden ? null : ((v.flag || withFlags[i]?.flag || '') || null);
+          const resolvedFlag = hidden ? null : normalizeResultFlagForSave(v.flag || withFlags[i]?.flag, v.value);
           const verifiedAt = mode === 'submit' && (autoVerifyOnSubmit || hidden) ? new Date().toISOString() : null;
           return {
             result_id: savedResult.id,
@@ -627,7 +648,7 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
             verify_note: hidden ? (v.hidden_reason || 'Hidden from report') : (autoVerifyOnSubmit && mode === 'submit' ? 'Auto-verified during corporate bulk result entry.' : null),
             is_hidden_from_report: hidden,
             hidden_reason: hidden ? (v.hidden_reason || 'Hidden from report') : null,
-            ...(v.flag && !hidden && { flag_source: 'manual' }),
+            ...(!hidden && { flag_source: v.flag ? 'manual' : 'auto_numeric' }),
             ...(v.order_test_group_id && { order_test_group_id: v.order_test_group_id }),
             ...(v.order_test_id && { order_test_id: v.order_test_id }),
           };
@@ -682,12 +703,13 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
         }
       }
 
-      // Run AI flag analysis after save — fire-and-forget so it never blocks the UI response
-      import('../../utils/aiFlagAnalysis')
-        .then(({ runAIFlagAnalysis }) =>
-          runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true })
-        )
-        .catch(flagErr => console.warn('AI flag analysis failed (non-blocking):', flagErr))
+      try {
+        setToast('Finalizing flags and reference details...')
+        const { runAIFlagAnalysis } = await import('../../utils/aiFlagAnalysis')
+        await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true, useAIService: true })
+      } catch (flagErr) {
+        console.warn('AI flag analysis failed:', flagErr)
+      }
 
       let successMessage = mode === 'draft' ? 'Draft saved successfully.' : 'Results submitted successfully.'
 

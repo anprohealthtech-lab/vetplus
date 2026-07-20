@@ -5,12 +5,21 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import ReactDOM from "react-dom";
-import { X, Save, CheckCircle, ChevronDown, Loader2, RefreshCw, EyeOff } from "lucide-react";
+import { X, Save, CheckCircle, ChevronDown, Loader2, RefreshCw, EyeOff, Link2 } from "lucide-react";
 import { supabase, database } from "../../utils/supabase";
 import { useAuth } from "../../contexts/AuthContext";
 import { calculateFlag, calculateFlagsForResults } from "../../utils/flagCalculation";
 import { selectPreferredCalculatedDependencies } from "../../utils/calculatedDependencies";
+import { evaluateTextCalculation, normalizeCalculationResultType } from "../../utils/calculationRules";
 import SectionEditor, { SectionEditorRef } from "../Results/SectionEditor";
+import InlineDependencyEditor from "../Results/InlineDependencyEditor";
+import {
+  applyAnalyteInterfaceConversion,
+  getAnalyteInterfaceConfig,
+  isAnalyteInterfaceConversionEnabled,
+  type AnalyteInterfaceConversionConfig,
+} from "../../utils/analyteInterfaceConversion";
+import { normalizeResultFlagForSave } from "../../utils/referenceRangeService";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -33,10 +42,13 @@ interface AnalyteRow {
   is_default?: boolean;
   formula?: string | null;
   formula_variables?: string[] | string | null;
+  calculation_result_type?: string | null;
   verify_note?: string;
   is_rerun?: boolean;
   is_hidden_from_report?: boolean;
   hidden_reason?: string;
+  interface_config?: AnalyteInterfaceConversionConfig | null;
+  interface_conversion_pending?: boolean;
 }
 
 interface TestGroup {
@@ -57,11 +69,13 @@ interface TestGroup {
 	    is_calculated?: boolean;
 	    formula?: string | null;
 	    formula_variables?: string[] | string | null;
+	    calculation_result_type?: string | null;
 	    expected_normal_values?: string[];
 	    expected_value_flag_map?: Record<string, string>;
 	    value_type?: string;
 	    expected_value_codes?: Record<string, string>;
 	    default_value?: string | null;
+      interface_config?: AnalyteInterfaceConversionConfig | null;
 	    existing_result?: {
       value: string;
       unit?: string;
@@ -159,7 +173,9 @@ const toVariableSlug = (name: string): string => {
   deps: { calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; source_analyte_id: string; source_lab_analyte_id?: string | null; variable_name: string }[],
   analyteId: string,
   labAnalyteId?: string | null,
+  calculationResultType?: string | null,
 ): string {
+  const scope: Record<string, number> = {};
   // Normalize math syntax first so 'pow'/'Math' tokens are handled before Phase 2 scanning.
   let resolved = formula.trim()
     .replace(/\bpow\s*\(/g, 'Math.pow(')
@@ -182,8 +198,15 @@ const toVariableSlug = (name: string): string => {
     if (val === undefined) val = dep ? valueLookup.get(dep.source_analyte_id) : undefined;
     if (val === undefined) val = valueLookup.get(key);
     if (val !== undefined) {
+      scope[variable] = val;
+      scope[variable.toUpperCase()] = val;
+      scope[variable.toLowerCase()] = val;
       resolved = resolved.replace(new RegExp(`\\b${variable}\\b`, "g"), String(val));
     }
+  }
+
+  if (normalizeCalculationResultType(calculationResultType) === 'text') {
+    return evaluateTextCalculation(formula, scope).value;
   }
 
   // Phase 2: resolve any remaining alphabetic tokens in the formula.
@@ -198,6 +221,9 @@ const toVariableSlug = (name: string): string => {
     if (val === undefined && dep) val = valueLookup.get(dep.source_analyte_id);
     if (val === undefined) val = valueLookup.get(tokenKey);
     if (val === undefined) return "";
+    scope[token] = val;
+    scope[token.toUpperCase()] = val;
+    scope[token.toLowerCase()] = val;
     resolved = resolved.replace(new RegExp(`\\b${token}\\b`, "g"), String(val));
   }
 
@@ -243,8 +269,14 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
   const [groupRemarks, setGroupRemarks] = useState<Record<string, string>>({});
   const [initialGroupRemarks, setInitialGroupRemarks] = useState<Record<string, string>>({});
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   // result row IDs per test_group_id — needed to render SectionEditor
   const [resultIds, setResultIds] = useState<Map<string, string>>(new Map());
+  // Inline dependency editor state
+  const [editingDependency, setEditingDependency] = useState<{
+    row: AnalyteRow;
+    missingVariables: string[];
+  } | null>(null);
 
   // Flat refs for every value input/select in render order (for keyboard nav)
   const valueRefs = useRef<(HTMLInputElement | HTMLSelectElement | null)[]>([]);
@@ -264,6 +296,12 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
     loadFlagOptions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order.id]);
+
+  useEffect(() => {
+    if (activeGroupId && !testGroups.some((tg) => tg.test_group_id === activeGroupId)) {
+      setActiveGroupId(null);
+    }
+  }, [activeGroupId, testGroups]);
 
   const loadFlagOptions = async () => {
     try {
@@ -285,8 +323,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
               id, name, is_section_only, ref_range_ai_config,
               test_group_analytes(
                 analyte_id, lab_analyte_id, sort_order, display_order,
-                analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes),
-                lab_analytes(id, name, unit, reference_range, lab_specific_reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value)
+                analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, calculation_result_type, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes),
+                lab_analytes(id, name, unit, reference_range, lab_specific_reference_range, is_calculated, formula, formula_variables, calculation_result_type, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value, lab_analyte_interface_config(multiply_by, add_offset, lims_unit, apply_to_quick_result_entry))
               )
             )
           ),
@@ -296,8 +334,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
               id, name, is_section_only, ref_range_ai_config,
               test_group_analytes(
                 analyte_id, lab_analyte_id, sort_order, display_order,
-                analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes),
-                lab_analytes(id, name, unit, reference_range, lab_specific_reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value)
+                analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, calculation_result_type, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes),
+                lab_analytes(id, name, unit, reference_range, lab_specific_reference_range, is_calculated, formula, formula_variables, calculation_result_type, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value, lab_analyte_interface_config(multiply_by, add_offset, lims_unit, apply_to_quick_result_entry))
               )
             )
           ),
@@ -341,11 +379,13 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             is_calculated: la.is_calculated ?? a?.is_calculated,
             formula: la.formula ?? a?.formula,
             formula_variables: la.formula_variables ?? a?.formula_variables,
+            calculation_result_type: la.calculation_result_type ?? a?.calculation_result_type ?? 'numeric',
             expected_normal_values: la.expected_normal_values ?? a?.expected_normal_values,
             expected_value_flag_map: la.expected_value_flag_map ?? a?.expected_value_flag_map,
             value_type: la.value_type ?? a?.value_type,
             expected_value_codes: la.expected_value_codes ?? a?.expected_value_codes,
             default_value: la.default_value ?? null,
+            interface_config: getAnalyteInterfaceConfig(la.lab_analyte_interface_config),
           } : a;
           return { ...merged, units: merged?.unit, existing_result: existing };
         }).filter(Boolean);
@@ -402,7 +442,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 	      if (allLabAnalyteIds.length > 0 && data.lab_id) {
 	        const { data: la } = await supabase
 	          .from("lab_analytes")
-	          .select("id, analyte_id, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value, reference_range, lab_specific_reference_range, is_calculated, formula, formula_variables")
+	          .select("id, analyte_id, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value, reference_range, lab_specific_reference_range, is_calculated, formula, formula_variables, calculation_result_type, lab_analyte_interface_config(multiply_by, add_offset, lims_unit, apply_to_quick_result_entry)")
 	          .eq("lab_id", data.lab_id)
 	          .in("id", allLabAnalyteIds);
 	        if (la) {
@@ -534,10 +574,15 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             value_type: envValueType,
             expected_value_codes: envCodes,
             default_value: envDefaultValue,
+            interface_config: getAnalyteInterfaceConfig(
+              la?.lab_analyte_interface_config || a.interface_config,
+            ),
+            interface_conversion_pending: false,
             // Mark as default-prefilled so the UI can style it differently
             is_default: !hasExisting && !isRerun && !!envDefaultValue,
 	            formula: la?.formula ?? a.formula ?? null,
 	            formula_variables: la?.formula_variables ?? a.formula_variables ?? null,
+	            calculation_result_type: la?.calculation_result_type ?? a.calculation_result_type ?? 'numeric',
 	            verify_note: isRerun ? a.existing_result?.verify_note || "" : "",
 	            is_rerun: isRerun,
 	            is_hidden_from_report: isHiddenExisting,
@@ -595,9 +640,11 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       const flatWithCalc = flat.map(r => {
         if (!r.is_calculated || !r.formula || r.is_existing) return r;
         const vars = parseFormulaVars(r.formula_variables);
-        const calcVal = evalFormula(r.formula, vars, lookup, loadedDeps, r.analyte_id, r.lab_analyte_id);
+        const calcVal = evalFormula(r.formula, vars, lookup, loadedDeps, r.analyte_id, r.lab_analyte_id, r.calculation_result_type);
         if (!calcVal) return r;
-        const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
+        const autoFlag = normalizeCalculationResultType(r.calculation_result_type) === 'text'
+          ? ''
+          : calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
         return { ...r, value: formatIndianNumber(calcVal), flag: autoFlag || r.flag };
       });
       setRows(flatWithCalc);
@@ -631,14 +678,26 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   }, []);
 
   const handleValueBlur = useCallback((idx: number, value: string) => {
-    const rawValue = value.replace(/,/g, '');
-    const displayValue = formatIndianNumber(rawValue);
     setRows(prev => {
       // 1. Update the edited row
       const next = prev.map((r, i) => {
         if (i !== idx) return r;
-        const auto = calculateFlag(rawValue, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
-        return { ...r, value: displayValue, flag: auto || r.flag };
+        const rawValue = value.replace(/,/g, '');
+        const convertedValue = r.interface_conversion_pending
+          ? applyAnalyteInterfaceConversion(rawValue, r.interface_config, "quick")
+          : rawValue;
+        const displayValue = formatIndianNumber(convertedValue);
+        const auto = calculateFlag(convertedValue, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
+        return {
+          ...r,
+          value: displayValue,
+          unit: r.interface_config &&
+            isAnalyteInterfaceConversionEnabled(r.interface_config, "quick")
+            ? r.interface_config.lims_unit || r.unit
+            : r.unit,
+          flag: auto || r.flag,
+          interface_conversion_pending: false,
+        };
       });
 
       // 2. Rebuild value lookup from all non-calculated rows
@@ -689,9 +748,11 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       return next.map(r => {
         if (!r.is_calculated || !r.formula) return r;
         const vars = parseFormulaVars(r.formula_variables);
-        const calcVal = evalFormula(r.formula, vars, lookup, calcDeps, r.analyte_id, r.lab_analyte_id);
+        const calcVal = evalFormula(r.formula, vars, lookup, calcDeps, r.analyte_id, r.lab_analyte_id, r.calculation_result_type);
         if (!calcVal) return r;
-        const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
+        const autoFlag = normalizeCalculationResultType(r.calculation_result_type) === 'text'
+          ? ''
+          : calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
         return { ...r, value: formatIndianNumber(calcVal), flag: autoFlag || r.flag };
       });
     });
@@ -738,9 +799,11 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       return prev.map(r => {
         if (!r.is_calculated || !r.formula) return r;
         const vars = parseFormulaVars(r.formula_variables);
-        const calcVal = evalFormula(r.formula, vars, lookup, calcDeps, r.analyte_id, r.lab_analyte_id);
+        const calcVal = evalFormula(r.formula, vars, lookup, calcDeps, r.analyte_id, r.lab_analyte_id, r.calculation_result_type);
         if (!calcVal) return r;
-        const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
+        const autoFlag = normalizeCalculationResultType(r.calculation_result_type) === 'text'
+          ? ''
+          : calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
         return { ...r, value: formatIndianNumber(calcVal), flag: autoFlag || r.flag };
       });
     });
@@ -836,7 +899,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   // valueRefs is rebuilt on each render via the ref callback below
   const inputableIndexes = rows
     .map((r, i) => ({ r, i }))
-    .filter(({ r }) => !r.is_calculated)
+    .filter(({ r }) => !r.is_calculated && (!activeGroupId || r.test_group_id === activeGroupId))
     .map(({ i }) => i);
 
   const focusNext = (currentRowIdx: number) => {
@@ -956,20 +1019,26 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       const groupsToResolve = testGroups.filter(tg => tg.ref_range_ai_config?.enabled === true);
       if (groupsToResolve.length > 0) {
         setMessage({ text: `Resolving AI reference ranges for ${groupsToResolve.length} group(s)...`, type: "success" });
-        const { resolveReferenceRanges } = await import("../../utils/referenceRangeService");
+        const { findResolvedReferenceRange, resolveReferenceRanges } = await import("../../utils/referenceRangeService");
         for (const tg of groupsToResolve) {
           const payload = tg.analytes.map(a => {
 	            const row = workingRows.find(r =>
 	              r.test_group_id === tg.test_group_id &&
 	              ((a.lab_analyte_id && r.lab_analyte_id === a.lab_analyte_id) || (!a.lab_analyte_id && r.analyte_id === a.id))
 	            );
-            return { id: a.id, name: a.name, value: row?.value || "", unit: row?.unit || a.units || "" };
+            return {
+              id: a.id,
+              lab_analyte_id: a.lab_analyte_id || null,
+              name: a.name,
+              value: row?.value || "",
+              unit: row?.unit || a.units || "",
+            };
           });
           try {
             const resolved = await resolveReferenceRanges(order.id, tg.test_group_id, payload);
             if (resolved) {
               workingRows = workingRows.map(r => {
-                const hit = resolved.find(res => res.id === r.analyte_id || res.name === r.parameter);
+                const hit = findResolvedReferenceRange(resolved, r);
                 if (!hit?.used_reference_range) return r;
                 const newRef = hit.used_reference_range;
                 const autoFlag = calculateFlag(r.value, newRef, order.patient?.gender ?? undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
@@ -1015,7 +1084,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           .filter(a => !!a.is_calculated)
           .map(a => {
             const vars = parseFormulaVars(a.formula_variables);
-	            const calcVal = a.formula ? evalFormula(a.formula, vars, valueLookup, deps, a.id, a.lab_analyte_id) : "";
+	            const calcVal = a.formula ? evalFormula(a.formula, vars, valueLookup, deps, a.id, a.lab_analyte_id, a.calculation_result_type) : "";
 	            const existingRow = workingRows.find(r =>
 	              r.test_group_id === tg.test_group_id &&
 	              ((a.lab_analyte_id && r.lab_analyte_id === a.lab_analyte_id) || (!a.lab_analyte_id && r.analyte_id === a.id))
@@ -1069,8 +1138,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           value: rawVal || null,
           unit: r.unit || "",
           reference_range: r.reference || "",
-	          flag: autoFlag || null,
-	          flag_source: r.flag ? "manual" : (autoFlag ? "auto_numeric" : undefined),
+	          flag: normalizeResultFlagForSave(autoFlag, rawVal),
+	          flag_source: r.flag ? "manual" : "auto_numeric",
 	          is_auto_calculated: r.is_calculated,
           verify_status: (r.is_hidden_from_report || autoVerifyOnSubmit) ? "approved" : "pending",
           verified: r.is_hidden_from_report || autoVerifyOnSubmit,
@@ -1118,10 +1187,13 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         }).catch(e => console.warn("Inventory auto-consume skipped:", e));
       }
 
-      // Non-blocking: AI flag analysis
-      import("../../utils/aiFlagAnalysis")
-        .then(({ runAIFlagAnalysis }) => runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true }))
-        .catch(e => console.warn("AI flag analysis skipped:", e));
+      try {
+        setMessage({ text: "Finalizing flags and reference details...", type: "success" });
+        const { runAIFlagAnalysis } = await import("../../utils/aiFlagAnalysis");
+        await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true, useAIService: true });
+      } catch (e) {
+        console.warn("AI flag analysis skipped:", e);
+      }
 
       // Update result IDs so SectionEditors have the correct resultId
       const newResultIds = new Map(resultIds);
@@ -1164,6 +1236,21 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       return { row: rows[globalIdx] || null, globalIdx };
     }).filter(x => x.row !== null && isEditableRow(x.row)),
   })).filter(g => g.rows.length > 0 || !!g.tg.is_section_only || resultIds.has(g.tg.test_group_id));
+
+  const visibleRowsByGroup = activeGroupId
+    ? rowsByGroup.filter(({ tg }) => tg.test_group_id === activeGroupId)
+    : rowsByGroup;
+
+  const focusFirstGroupInput = (testGroupId: string) => {
+    const firstRowIdx = rows.findIndex((row) => row.test_group_id === testGroupId && !row.is_calculated && isEditableRow(row));
+    if (firstRowIdx === -1) return;
+    window.setTimeout(() => valueRefs.current[firstRowIdx]?.focus(), 0);
+  };
+
+  const selectGroup = (testGroupId: string | null) => {
+    setActiveGroupId(testGroupId);
+    if (testGroupId) focusFirstGroupInput(testGroupId);
+  };
 
   // Re-index valueRefs array size
   valueRefs.current = valueRefs.current.slice(0, rows.length);
@@ -1212,6 +1299,45 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           {resultIds.size > 0 && <span><kbd className="bg-gray-200 px-1.5 py-0.5 rounded text-gray-700 font-mono text-xs">A B C…</kbd> select section options</span>}
         </div>
 
+        {rowsByGroup.length > 1 && (
+          <div className="border-b bg-white px-5 py-2">
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              <button
+                type="button"
+                onClick={() => selectGroup(null)}
+                className={`shrink-0 rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  activeGroupId === null
+                    ? "border-green-600 bg-green-50 text-green-700"
+                    : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                All Groups
+              </button>
+              {rowsByGroup.map(({ tg, rows: groupRows }) => {
+                const groupFilled = groupRows.filter(({ row }) => !row.is_calculated && (row.value.trim() || row.is_hidden_from_report)).length;
+                const groupInputable = groupRows.filter(({ row }) => !row.is_calculated).length;
+                const isActive = activeGroupId === tg.test_group_id;
+                return (
+                  <button
+                    key={tg.test_group_id}
+                    type="button"
+                    onClick={() => selectGroup(tg.test_group_id)}
+                    className={`shrink-0 rounded-md border px-3 py-1.5 text-left text-xs transition-colors ${
+                      isActive
+                        ? "border-green-600 bg-green-600 text-white shadow-sm"
+                        : "border-gray-200 bg-white text-gray-700 hover:border-green-300 hover:bg-green-50"
+                    }`}
+                    title={`Open ${tg.test_group_name}`}
+                  >
+                    <span className="block max-w-48 truncate font-semibold">{tg.test_group_name}</span>
+                    <span className={isActive ? "text-green-100" : "text-gray-500"}>{groupFilled}/{groupInputable} handled</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Body */}
         <div className="flex-1 overflow-y-auto" onKeyDown={e => { if (e.ctrlKey && e.key === "Enter") handleSubmit(); }}>
           {loading ? (
@@ -1226,7 +1352,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
               <p className="text-sm text-gray-400">{existingCount} analyte{existingCount !== 1 ? "s" : ""} submitted previously</p>
             </div>
           ) : (
-            rowsByGroup.map(({ tg, rows: groupRows }) => (
+            visibleRowsByGroup.map(({ tg, rows: groupRows }) => (
               <div key={tg.test_group_id}>
                 {/* Test group header (only shown if >1 group) */}
                 {testGroups.length > 1 && (
@@ -1286,10 +1412,24 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                                   f: {calcDebugInfo.formula}
                                 </div>
                                 {calcDebugInfo.hasDependencies && calcDebugInfo.missing.length > 0 && (
-                                  <div className="text-red-700">Missing: {calcDebugInfo.missing.join(", ")}</div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingDependency({ row, missingVariables: calcDebugInfo.missing })}
+                                    className="text-red-700 hover:text-red-900 hover:underline flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <Link2 className="h-3 w-3" />
+                                    Missing: {calcDebugInfo.missing.join(", ")}
+                                  </button>
                                 )}
                                 {!calcDebugInfo.hasDependencies && calcDebugInfo.missing.length > 0 && (
-                                  <div className="text-amber-700">Fallback vars missing: {calcDebugInfo.missing.join(", ")}</div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingDependency({ row, missingVariables: calcDebugInfo.missing })}
+                                    className="text-amber-700 hover:text-amber-900 hover:underline flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <Link2 className="h-3 w-3" />
+                                    No dependencies saved — open Dependency Manager
+                                  </button>
                                 )}
                               </div>
                             )}
@@ -1402,7 +1542,12 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                                 placeholder={row.reference ? `e.g. ${row.reference.split("-")[0]?.trim()}` : "value..."}
                                 onChange={e => {
                                   const raw = e.target.value.replace(/,/g, '');
-                                  setRows(prev => prev.map((r, i) => i !== globalIdx ? r : { ...r, value: raw, is_default: false }));
+                                  setRows(prev => prev.map((r, i) => i !== globalIdx ? r : {
+                                    ...r,
+                                    value: raw,
+                                    is_default: false,
+                                    interface_conversion_pending: true,
+                                  }));
                                 }}
                                 onBlur={e => handleValueBlur(globalIdx, e.target.value)}
                                 onKeyDown={e => handleKeyDown(e, globalIdx)}
@@ -1539,6 +1684,37 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           </div>
         </div>
       </div>
+
+      {/* Inline Dependency Editor */}
+      {editingDependency && (
+        <InlineDependencyEditor
+          analyte={{
+            id: editingDependency.row.analyte_id,
+            lab_analyte_id: editingDependency.row.lab_analyte_id,
+            name: editingDependency.row.parameter,
+            formula: editingDependency.row.formula || '',
+            formulaVariables: parseFormulaVars(editingDependency.row.formula_variables),
+          }}
+          missingVariables={editingDependency.missingVariables}
+          availableAnalytes={testGroups.flatMap(tg =>
+            tg.analytes
+              .filter(a => !a.is_calculated && a.id !== editingDependency.row.analyte_id)
+              .map(a => ({
+                id: a.id,
+                lab_analyte_id: a.lab_analyte_id,
+                name: a.name,
+                unit: a.units,
+                code: a.code,
+              }))
+          )}
+          onClose={() => setEditingDependency(null)}
+          onSaved={() => {
+            setEditingDependency(null);
+            // Reload dependencies and recalculate
+            loadData();
+          }}
+        />
+      )}
     </div>
   );
 

@@ -1,5 +1,23 @@
 {
   "version": "5",
+  "specifiers": {
+    "jsr:@supabase/functions-js@^0.0.0-automated": "0.0.0-jsr-test.1",
+    "jsr:@supabase/supabase-js@2": "2.105.4"
+  },
+  "jsr": {
+    "@supabase/functions-js@0.0.0-jsr-test.1": {
+      "integrity": "b1b37924af1f0011b4753201e1585a37b030e996c6682492e02575eb27d902b2"
+    },
+    "@supabase/supabase-js@2.105.4": {
+      "integrity": "9917385444fbb10ed75652c01e7f5b3beda999caffcbc3e93f4f40c087a325a7",
+      "dependencies": [
+        "jsr:@supabase/functions-js"
+      ]
+    }
+  },
+  "redirects": {
+    "https://esm.sh/@supabase/supabase-js@2": "https://esm.sh/@supabase/supabase-js@2.103.3"
+  },
   "remote": {
     "https://deno.land/std@0.168.0/async/abortable.ts": "80b2ac399f142cc528f95a037a7d0e653296352d95c681e284533765961de409",
     "https://deno.land/std@0.168.0/async/deadline.ts": "2c2deb53c7c28ca1dda7a3ad81e70508b1ebc25db52559de6b8636c9278fd41f",
@@ -18,7 +36,11 @@
     "https://edge.netlify.com/bootstrap/cookie.ts": "8b0baae708989ca183c6f3b4ab3d029e6abcbc2e43f93edeb0ff447b3bbc3a05",
     "https://edge.netlify.com/bootstrap/edge_function.ts": "b8253e86aa83c67341f5cfedeba5049d77fbf84dcab7eceff7566b7728ae9b39",
     "https://edge.netlify.com/bootstrap/globals/types.ts": "eaa6148ded3121d8dee62dd91c86e7fe76601df0f3ca8d7962243a30f4c8935f",
-    "https://esm.sh/@supabase/supabase-js@2.38.4": "039569070c2e83c292b347c39879a10e76aac6079c166f2e2677453a7799e933"
+    "https://esm.sh/@supabase/supabase-js@2.103.3": "f6efbe62d34ae9d50f3cf7eb51496246ec9378f422c38ff2b637a38157d4fc6b",
+    "https://esm.sh/@supabase/supabase-js@2.38.4": "039569070c2e83c292b347c39879a10e76aac6079c166f2e2677453a7799e933",
+    "https://esm.sh/@supabase/supabase-js@2.39.3": "832d7714491bd1c8a9008a332b35cb099f24b451ad79e755ecf4d71985fd6610",
+    "https://esm.sh/fflate@0.8.2": "e0cdd268850b4eac9ef9f188a3b4c5c9dd3ebd0f66c4006a13911b2a0c0512bb",
+    "https://esm.sh/pdf-lib@1.17.1": "cf7c5527829cb9bbb3aa20d339c530067441c10eb98880360aea9e77c3c87ff8"
   },
   "workspace": {
     "packageJson": {
@@ -64,6 +86,7 @@
         "npm:@vitejs/plugin-react@^4.3.1",
         "npm:autoprefixer@^10.4.18",
         "npm:browser-image-compression@^2.0.2",
+        "npm:cross-env@^10.1.0",
         "npm:date-fns@^3.3.1",
         "npm:dotenv@^17.2.3",
         "npm:eslint-plugin-react-hooks@^5.1.0-rc.0",
@@ -83,6 +106,7 @@
         "npm:postcss@^8.4.35",
         "npm:qrcode.react@^4.2.0",
         "npm:qrcode@^1.5.4",
+        "npm:qz-tray@^2.2.6",
         "npm:react-dom@^18.3.1",
         "npm:react-router-dom@^6.22.0",
         "npm:react@^18.3.1",
@@ -94,10 +118,12 @@
         "npm:survey-react-ui@^1.9.131",
         "npm:tailwindcss@^3.4.1",
         "npm:ts-node@^10.9.2",
+        "npm:tsx@^4.21.0",
         "npm:typescript-eslint@^8.3.0",
         "npm:typescript@^5.5.3",
         "npm:use-debounce@10",
-        "npm:vite@^5.4.2"
+        "npm:vite@^5.4.2",
+        "npm:xlsx@~0.18.5"
       ]
     }
   }

@@ -19,6 +19,74 @@ interface OrderRequest {
   test_outsourcing?: Record<string, string>;
 }
 
+const COLOR_PALETTE: Array<{ hex: string; name: string }> = [
+  { hex: '#EF4444', name: 'Red' },
+  { hex: '#3B82F6', name: 'Blue' },
+  { hex: '#10B981', name: 'Green' },
+  { hex: '#F59E0B', name: 'Orange' },
+  { hex: '#8B5CF6', name: 'Purple' },
+  { hex: '#06B6D4', name: 'Cyan' },
+  { hex: '#EC4899', name: 'Pink' },
+  { hex: '#84CC16', name: 'Lime' },
+  { hex: '#F97316', name: 'Amber' },
+  { hex: '#6366F1', name: 'Indigo' },
+  { hex: '#14B8A6', name: 'Teal' },
+  { hex: '#A855F7', name: 'Violet' },
+];
+
+function getOrderAssignedColor(dailySequenceNumber: number): { color_code: string; color_name: string } {
+  const colorIndex = (dailySequenceNumber - 1) % COLOR_PALETTE.length;
+  const selectedColor = COLOR_PALETTE[colorIndex];
+
+  return {
+    color_code: selectedColor.hex,
+    color_name: selectedColor.name,
+  };
+}
+
+function generateOrderSampleId(date: Date, dailySequence: number, labCode?: string | null): string {
+  const day = date.getDate().toString().padStart(2, '0');
+  const month = date.toLocaleString('en-US', { month: 'short' });
+  const year = date.getFullYear();
+  const sequence = dailySequence.toString().padStart(3, '0');
+  const datePart = `${day}-${month}-${year}-${sequence}`;
+  return labCode ? `${labCode}-${datePart}` : datePart;
+}
+
+function isSampleIdConflictError(error: any): boolean {
+  return error?.code === '23505' &&
+    String(error?.message || error?.details || '').includes('unique_sample_id_per_lab');
+}
+
+function getDailySequenceFromOrder(order: any): number {
+  if (typeof order?.order_number === 'number' && Number.isFinite(order.order_number)) {
+    return order.order_number;
+  }
+
+  const tail = String(order?.sample_id || '').match(/(?:^|[/-])(\d+)\s*$/)?.[1] || '';
+  const parsed = parseInt(tail, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function generateOrderQRCodeData(order: {
+  id: string;
+  patientId: string;
+  sampleId: string;
+  orderDate: string;
+  colorCode: string;
+  colorName: string;
+}): string {
+  return JSON.stringify({
+    orderId: order.id,
+    patientId: order.patientId,
+    sampleId: order.sampleId,
+    orderDate: order.orderDate,
+    colorCode: order.colorCode,
+    colorName: order.colorName,
+    generated: new Date().toISOString(),
+  });
+}
+
 // Edge functions run in UTC. Send window times are configured in IST (UTC+5:30).
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
@@ -198,27 +266,106 @@ Deno.serve(async (req) => {
 
     const finalAmount = subtotal - discountAmount;
 
-    // 1. Create Order
-    const { data: order, error: orderError } = await supabaseClient
-      .from('orders')
-      .insert({
-        patient_id: orderData.patient_id,
-        lab_id: labId,
-        referring_doctor_id: orderData.referring_doctor_id,
-        location_id: orderData.location_id,
-        created_by: user.id,
-        total_amount: subtotal,
-        final_amount: finalAmount,
-        status: 'created',
-      })
-      .select()
-      .single();
+    const orderDate = new Date().toISOString().split('T')[0];
+    const { data: labData } = await supabaseClient
+      .from('labs')
+      .select('code')
+      .eq('id', labId)
+      .maybeSingle();
 
-    if (orderError) {
-      throw new Error(`Order creation failed: ${orderError.message}`);
+    const { data: dailyOrders, error: sequenceError } = await supabaseClient
+      .from('orders')
+      .select('sample_id, order_number')
+      .eq('lab_id', labId)
+      .gte('order_date', orderDate)
+      .lt(
+        'order_date',
+        new Date(new Date(orderDate).getTime() + 24 * 60 * 60 * 1000)
+          .toISOString()
+          .split('T')[0],
+      );
+
+    if (sequenceError) {
+      throw new Error(`Failed to generate sample ID: ${sequenceError.message}`);
+    }
+
+    let dailySequence = Math.max(
+      dailyOrders?.length || 0,
+      ...(dailyOrders || []).map(getDailySequenceFromOrder),
+    ) + 1;
+
+    // 1. Create Order
+    let order: any = null;
+    let sampleId = '';
+    let color_code = '';
+    let color_name = '';
+    let lastOrderError: any = null;
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      sampleId = generateOrderSampleId(new Date(orderDate), dailySequence, labData?.code);
+      const assignedColor = getOrderAssignedColor(dailySequence);
+      color_code = assignedColor.color_code;
+      color_name = assignedColor.color_name;
+
+      const { data: insertedOrder, error: orderError } = await supabaseClient
+        .from('orders')
+        .insert({
+          patient_id: orderData.patient_id,
+          lab_id: labId,
+          referring_doctor_id: orderData.referring_doctor_id,
+          location_id: orderData.location_id,
+          created_by: user.id,
+          total_amount: subtotal,
+          final_amount: finalAmount,
+          order_date: orderDate,
+          sample_id: sampleId,
+          color_code,
+          color_name,
+          status: 'created',
+        })
+        .select()
+        .single();
+
+      if (!orderError) {
+        order = insertedOrder;
+        break;
+      }
+
+      lastOrderError = orderError;
+      if (!isSampleIdConflictError(orderError)) {
+        throw new Error(`Order creation failed: ${orderError.message}`);
+      }
+
+      dailySequence += 1;
+    }
+
+    if (!order) {
+      throw new Error(
+        lastOrderError
+          ? 'Order creation failed: could not assign a unique sample ID. Please try again.'
+          : 'Order creation failed',
+      );
     }
 
     console.log('✅ Order created:', order.id);
+
+    const qrCodeData = generateOrderQRCodeData({
+      id: order.id,
+      patientId: orderData.patient_id,
+      sampleId,
+      orderDate: order.order_date || orderDate,
+      colorCode: color_code,
+      colorName: color_name,
+    });
+
+    const { error: qrUpdateError } = await supabaseClient
+      .from('orders')
+      .update({ qr_code_data: qrCodeData })
+      .eq('id', order.id);
+
+    if (qrUpdateError) {
+      console.warn('Failed to update qr_code_data:', qrUpdateError.message);
+    }
 
     // 2. Create Order Tests
     const orderTests = orderData.test_ids.map((testId) => ({
@@ -278,6 +425,14 @@ Deno.serve(async (req) => {
       .select('test_name')
       .eq('order_id', order.id);
 
+    const { data: referringDoctorForNotification } = orderData.referring_doctor_id
+      ? await supabaseClient
+        .from('doctors')
+        .select('id, name, phone')
+        .eq('id', orderData.referring_doctor_id)
+        .maybeSingle()
+      : { data: null };
+
     // Trigger registration confirmation notification (non-blocking)
     try {
       const { data: notifSettings } = await supabaseClient
@@ -286,7 +441,10 @@ Deno.serve(async (req) => {
         .eq('lab_id', labId)
         .maybeSingle();
 
-      if (notifSettings?.auto_send_registration_confirmation && patient?.phone) {
+      const shouldNotifyPatient = notifSettings?.auto_send_registration_confirmation && patient?.phone;
+      const shouldNotifyDoctor = notifSettings?.auto_send_registration_to_doctor && referringDoctorForNotification?.phone;
+
+      if (shouldNotifyPatient || shouldNotifyDoctor) {
         const withinWindow = isWithinWindow(notifSettings.send_window_start, notifSettings.send_window_end);
         const shouldQueueOutsideWindow = notifSettings.queue_outside_window !== false;
         const scheduledFor = withinWindow ? new Date().toISOString() : nextWindowStartIso(notifSettings.send_window_start);
@@ -298,44 +456,43 @@ Deno.serve(async (req) => {
           .eq('id', labId)
           .single();
 
-        const message = `Hello ${patient.name || 'Patient'}, your order ${order.order_display || order.id.slice(-6)} has been registered for ${testNames}. Thank you.`;
-        let sent = false;
-        let sendError = '';
-
-        if (withinWindow && labForMessage?.whatsapp_user_id) {
+        const sendRegistrationMessage = async (phone: string, message: string) => {
           const NETLIFY_SEND_MESSAGE_URL = 'https://app.limsapp.in/.netlify/functions/whatsapp-send-message';
-          const formattedPhone = formatPhoneWithCountryCode(patient.phone, labForMessage.country_code || '+91');
+          const formattedPhone = formatPhoneWithCountryCode(phone, labForMessage?.country_code || '+91');
 
           const response = await fetch(NETLIFY_SEND_MESSAGE_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              userId: labForMessage.whatsapp_user_id,
+              userId: labForMessage!.whatsapp_user_id,
               phoneNumber: formattedPhone,
               message,
             }),
           });
 
           const resultText = await response.text();
-          sent = response.ok;
-          if (!sent) {
-            sendError = resultText || `HTTP ${response.status}`;
-          }
-        } else if (!withinWindow) {
-          sendError = 'Outside send window';
-        } else {
-          sendError = 'No whatsapp_user_id configured for lab';
-        }
+          return {
+            sent: response.ok,
+            error: response.ok ? '' : resultText || `HTTP ${response.status}`,
+          };
+        };
 
-        if (!sent && (withinWindow || shouldQueueOutsideWindow)) {
+        const enqueueRegistrationMessage = async (
+          recipientType: 'patient' | 'doctor',
+          recipientPhone: string,
+          recipientName: string,
+          recipientId: string,
+          message: string,
+          sendError: string,
+        ) => {
           await supabaseClient
             .from('notification_queue')
             .insert({
               lab_id: labId,
-              recipient_type: 'patient',
-              recipient_phone: patient.phone,
-              recipient_name: patient.name,
-              recipient_id: patient.id,
+              recipient_type: recipientType,
+              recipient_phone: recipientPhone,
+              recipient_name: recipientName,
+              recipient_id: recipientId,
               trigger_type: 'order_registered',
               order_id: order.id,
               message_content: message,
@@ -343,6 +500,53 @@ Deno.serve(async (req) => {
               scheduled_for: scheduledFor,
               last_error: sendError || 'Initial send failed',
             });
+        };
+
+        if (shouldNotifyPatient && patient) {
+          const message = `Hello ${patient.name || 'Patient'}, your order ${order.order_display || order.id.slice(-6)} has been registered for ${testNames}. Thank you.`;
+          let sent = false;
+          let sendError = '';
+
+          if (withinWindow && labForMessage?.whatsapp_user_id) {
+            const result = await sendRegistrationMessage(patient.phone, message);
+            sent = result.sent;
+            sendError = result.error;
+          } else if (!withinWindow) {
+            sendError = 'Outside send window';
+          } else {
+            sendError = 'No whatsapp_user_id configured for lab';
+          }
+
+          if (!sent && (withinWindow || shouldQueueOutsideWindow)) {
+            await enqueueRegistrationMessage('patient', patient.phone, patient.name, patient.id, message, sendError);
+          }
+        }
+
+        if (shouldNotifyDoctor && referringDoctorForNotification) {
+          const message = `Hello Dr. ${referringDoctorForNotification.name || 'Doctor'}, a new order ${order.order_display || order.id.slice(-6)} has been registered for patient ${patient?.name || order.patient_name || 'Patient'}: ${testNames}. Thank you.`;
+          let sent = false;
+          let sendError = '';
+
+          if (withinWindow && labForMessage?.whatsapp_user_id) {
+            const result = await sendRegistrationMessage(referringDoctorForNotification.phone, message);
+            sent = result.sent;
+            sendError = result.error;
+          } else if (!withinWindow) {
+            sendError = 'Outside send window';
+          } else {
+            sendError = 'No whatsapp_user_id configured for lab';
+          }
+
+          if (!sent && (withinWindow || shouldQueueOutsideWindow)) {
+            await enqueueRegistrationMessage(
+              'doctor',
+              referringDoctorForNotification.phone,
+              referringDoctorForNotification.name,
+              referringDoctorForNotification.id,
+              message,
+              sendError,
+            );
+          }
         }
       }
     } catch (notifError) {
@@ -510,9 +714,10 @@ Deno.serve(async (req) => {
     );
   } catch (error) {
     console.error('Error:', error);
+    const message = error instanceof Error ? error.message : String(error);
     return new Response(
       JSON.stringify({
-        error: error.message,
+        error: message,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

@@ -6,6 +6,8 @@
  */
 
 import React, { useState, useEffect, useCallback, useImperativeHandle, forwardRef } from 'react';
+import { CKEditor } from '@ckeditor/ckeditor5-react';
+import ClassicEditor from '@ckeditor/ckeditor5-build-classic';
 import {
   FileText,
   CheckSquare,
@@ -43,6 +45,7 @@ interface MatrixConfig {
   rows: string[];
   columns: string[];
   cellOptions?: string[]; // if set, cells render as dropdowns (e.g. ["S","I","R"])
+  reportStyle?: 'color' | 'bold' | 'plain';
 }
 
 interface SectionConfig {
@@ -56,15 +59,51 @@ interface SectionConfig {
 
 function buildCascadeContent(levels: CascadeLevel[], selections: Record<string, string[]>): string {
   const lines: string[] = [];
-  function traverse(levs: CascadeLevel[]) {
-    for (const level of levs) {
-      const selectedIds = selections[level.id] || [];
+
+  // Helper to get child value for a specific parent option
+  const getChildValueForParent = (subLevels: CascadeLevel[], parentOptId: string): string => {
+    const parts: string[] = [];
+    for (const subLevel of subLevels) {
+      // Check for per-parent keyed selection first (e.g., "lvl_colony_count:opt_ecoli")
+      const perParentKey = `${subLevel.id}:${parentOptId}`;
+      const perParentIds = selections[perParentKey] || [];
+      // Fall back to shared selection if no per-parent key
+      const selectedIds = perParentIds.length > 0 ? perParentIds : (selections[subLevel.id] || []);
       if (selectedIds.length === 0) continue;
-      const selectedOpts = level.options.filter(o => selectedIds.includes(o.id));
+      const selectedOpts = subLevel.options.filter(o => selectedIds.includes(o.id));
       const values = selectedOpts.map(o => o.value).join(', ');
-      if (values) lines.push(level.label ? `${level.label}: ${values}` : values);
-      for (const opt of selectedOpts) {
-        if (opt.sub_levels) traverse(opt.sub_levels);
+      if (values) parts.push(values);
+    }
+    return parts.join('; ');
+  };
+
+  function traverse(levs: CascadeLevel[], parentOptId?: string) {
+    for (const level of levs) {
+      // Check for per-parent keyed selection
+      const perParentKey = parentOptId ? `${level.id}:${parentOptId}` : null;
+      const perParentIds = perParentKey ? (selections[perParentKey] || []) : [];
+      const selectedIds = perParentIds.length > 0 ? perParentIds : (selections[level.id] || []);
+      if (selectedIds.length === 0) continue;
+
+      const selectedOpts = level.options.filter(o => selectedIds.includes(o.id));
+
+      // Check if any selected option has sub_levels - if so, inline child values
+      const hasSubLevels = selectedOpts.some(o => o.sub_levels && o.sub_levels.length > 0);
+
+      if (hasSubLevels) {
+        // Inline child values: "E. coli (Moderate), Klebsiella (Heavy)"
+        const valuesWithChildren = selectedOpts.map(o => {
+          const childVal = o.sub_levels ? getChildValueForParent(o.sub_levels, o.id) : '';
+          return childVal ? `${o.value} (${childVal})` : o.value;
+        }).join(', ');
+        if (valuesWithChildren) lines.push(level.label ? `${level.label}: ${valuesWithChildren}` : valuesWithChildren);
+        // Don't traverse sub_levels separately since we already inlined them
+      } else {
+        const values = selectedOpts.map(o => o.value).join(', ');
+        if (values) lines.push(level.label ? `${level.label}: ${values}` : values);
+        for (const opt of selectedOpts) {
+          if (opt.sub_levels) traverse(opt.sub_levels, opt.id);
+        }
       }
     }
   }
@@ -72,15 +111,32 @@ function buildCascadeContent(levels: CascadeLevel[], selections: Record<string, 
   return lines.join('\n');
 }
 
-function getVisibleLevels(levels: CascadeLevel[], selections: Record<string, string[]>): CascadeLevel[] {
-  const visible: CascadeLevel[] = [];
-  function traverse(levs: CascadeLevel[]) {
+interface VisibleLevelWithContext extends CascadeLevel {
+  _parentOptId?: string; // Track which parent option this sub-level belongs to
+  _parentOptValue?: string; // Human-readable parent value for display
+}
+
+function getVisibleLevels(levels: CascadeLevel[], selections: Record<string, string[]>): VisibleLevelWithContext[] {
+  const visible: VisibleLevelWithContext[] = [];
+  function traverse(levs: CascadeLevel[], parentOptId?: string, parentOptValue?: string) {
     for (const level of levs) {
-      visible.push(level);
-      const selectedIds = selections[level.id] || [];
+      // Add context about which parent option this level belongs to
+      const levelWithContext: VisibleLevelWithContext = {
+        ...level,
+        _parentOptId: parentOptId,
+        _parentOptValue: parentOptValue,
+      };
+      visible.push(levelWithContext);
+
+      // Check both shared and per-parent keyed selections
+      const perParentKey = parentOptId ? `${level.id}:${parentOptId}` : null;
+      const perParentIds = perParentKey ? (selections[perParentKey] || []) : [];
+      const sharedIds = selections[level.id] || [];
+      const selectedIds = [...new Set([...perParentIds, ...sharedIds])];
+
       for (const optId of selectedIds) {
         const opt = level.options.find(o => o.id === optId);
-        if (opt?.sub_levels) traverse(opt.sub_levels);
+        if (opt?.sub_levels) traverse(opt.sub_levels, opt.id, opt.value);
       }
     }
   }
@@ -140,6 +196,73 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+// ── Rich text (CKEditor) support ───────────────────────────────────────────
+// Uses the self-hosted npm build (v40) — no license key required, works offline.
+// Do NOT use the CDN v47 build here: without a paid license it throws
+// license-key-invalid-distribution-channel and silently locks read-only.
+
+const containsHtmlTags = (value: string): boolean => /<[a-z][\s\S]*>/i.test(value);
+
+// Convert legacy plain-text content to HTML paragraphs (same rules pdfService applies)
+function plainTextToHtml(text: string): string {
+  return text
+    .split(/\n\n+/)
+    .map(par => par.trim())
+    .filter(Boolean)
+    .map(par => `<p>${escapeHtml(par).replace(/\n/g, '<br/>')}</p>`)
+    .join('');
+}
+
+// Join content parts; if any part is HTML (rich text), lift the plain parts to HTML
+// so pdfService's HTML detection renders everything consistently.
+function combineContentParts(parts: (string | undefined | null)[]): string {
+  const nonEmpty = parts.map(p => (p || '').trim()).filter(Boolean);
+  if (nonEmpty.length === 0) return '';
+  if (nonEmpty.some(containsHtmlTags)) {
+    return nonEmpty.map(p => (containsHtmlTags(p) ? p : plainTextToHtml(p))).join('');
+  }
+  return nonEmpty.join('\n\n');
+}
+
+const toEditorHtml = (value: string): string =>
+  !value ? '' : containsHtmlTags(value) ? value : plainTextToHtml(value);
+
+interface RichTextAreaProps {
+  value: string;
+  onChange: (html: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+}
+
+/**
+ * Rich text input backed by the self-hosted CKEditor 5 classic build (v40,
+ * license-free). Preserves bold/headings/lists/tables when pasting from Word
+ * (PasteFromOffice is bundled). Emits HTML.
+ */
+const RichTextArea: React.FC<RichTextAreaProps> = ({ value, onChange, disabled, placeholder }) => {
+  return (
+    <div className="rich-text-area text-sm">
+      <CKEditor
+        editor={ClassicEditor}
+        data={toEditorHtml(value)}
+        disabled={disabled}
+        config={{
+          toolbar: ['heading', '|', 'bold', 'italic', '|', 'bulletedList', 'numberedList', 'insertTable', '|', 'undo', 'redo'],
+          table: { contentToolbar: ['tableColumn', 'tableRow', 'mergeTableCells'] },
+          placeholder,
+        }}
+        onReady={(editor: any) => {
+          const el = editor.ui.view.editable.element;
+          if (el) { el.style.minHeight = '110px'; el.style.maxHeight = '360px'; el.style.overflowY = 'auto'; }
+        }}
+        onChange={(_evt: unknown, editor: any) => {
+          onChange(editor.getData());
+        }}
+      />
+    </div>
+  );
+};
+
 const MATRIX_COL_LABEL_PREFIX = 'col_label:';
 const MATRIX_COL_ORDER_KEY = 'matrix_col_order';
 
@@ -169,15 +292,19 @@ function getActiveColumns(selections: Record<string, unknown> | undefined, templ
   return templateColumns;
 }
 
-function cellOptionColor(value: string, cellOptions: string[]): string {
+function cellOptionStyle(value: string, cellOptions: string[], reportStyle: MatrixConfig['reportStyle'] = 'color'): string {
   if (!cellOptions.length) return '';
+  if (reportStyle === 'plain') return '';
+  if (reportStyle === 'bold') return 'font-weight:700 !important;';
+
   const idx = cellOptions.findIndex(o => o.trim().toUpperCase() === value.trim().toUpperCase());
   if (idx === -1) return '';
   // first option = green (sensitive), last option = red (resistant), middle = orange (intermediate)
-  if (cellOptions.length === 1) return 'background:#d1fae5;color:#065f46;font-weight:600;';
-  if (idx === 0) return 'background:#d1fae5;color:#065f46;font-weight:600;';
-  if (idx === cellOptions.length - 1) return 'background:#fee2e2;color:#991b1b;font-weight:600;';
-  return 'background:#fff3cd;color:#92400e;font-weight:600;';
+  // Use !important to override .basic-report-template td { background-color: #fff !important; }
+  if (cellOptions.length === 1) return 'background:#d1fae5 !important;color:#065f46 !important;font-weight:600 !important;';
+  if (idx === 0) return 'background:#d1fae5 !important;color:#065f46 !important;font-weight:600 !important;';
+  if (idx === cellOptions.length - 1) return 'background:#fee2e2 !important;color:#991b1b !important;font-weight:600 !important;';
+  return 'background:#fff3cd !important;color:#92400e !important;font-weight:600 !important;';
 }
 
 function buildMatrixHtml(config: MatrixConfig | undefined, selections: Record<string, unknown> | undefined, customText: string): string {
@@ -188,6 +315,7 @@ function buildMatrixHtml(config: MatrixConfig | undefined, selections: Record<st
     return customText.trim();
   }
   const cellOptions = config?.cellOptions || [];
+  const reportStyle = config?.reportStyle || 'color';
 
   const headerHtml = columns
     .map((column) => `<th style="border:1px solid #9ca3af;padding:8px;text-align:left;background:#f8fafc;">${escapeHtml(getColLabel(selections, column))}</th>`)
@@ -198,7 +326,7 @@ function buildMatrixHtml(config: MatrixConfig | undefined, selections: Record<st
       const cells = columns
         .map((column) => {
           const val = getMatrixCellValue(selections, row, column);
-          const colorStyle = val ? cellOptionColor(val, cellOptions) : '';
+          const colorStyle = val ? cellOptionStyle(val, cellOptions, reportStyle) : '';
           return `<td style="border:1px solid #9ca3af;padding:8px;min-width:80px;text-align:center;${colorStyle}">${escapeHtml(val)}</td>`;
         })
         .join('');
@@ -234,21 +362,35 @@ const CascadeSelector: React.FC<CascadeSelectorProps> = ({ section, selections, 
 
   const visibleLevels = getVisibleLevels(config.cascade_levels, selections);
 
-  const handleSelect = (levelId: string, optionId: string, multiSelect: boolean) => {
-    const current = selections[levelId] || [];
+  const handleSelect = (levelId: string, optionId: string, multiSelect: boolean, parentOptId?: string) => {
+    // Use per-parent keyed selection if this level has a parent
+    const selectionKey = parentOptId ? `${levelId}:${parentOptId}` : levelId;
+    const current = selections[selectionKey] || [];
     const newSelected = multiSelect
       ? current.includes(optionId)
         ? current.filter(id => id !== optionId)
         : [...current, optionId]
       : current.includes(optionId) ? [] : [optionId];
 
-    const draft = { ...selections, [levelId]: newSelected };
+    const draft = { ...selections, [selectionKey]: newSelected };
 
-    // Prune selections for levels that are no longer visible
-    const nowVisible = new Set(getVisibleLevels(config.cascade_levels, draft).map(l => l.id));
+    // Prune selections for levels/keys that are no longer visible
+    const nowVisibleLevels = getVisibleLevels(config.cascade_levels, draft);
+    const validKeys = new Set<string>();
+    for (const level of nowVisibleLevels) {
+      validKeys.add(level.id);
+      if (level._parentOptId) {
+        validKeys.add(`${level.id}:${level._parentOptId}`);
+      }
+    }
+
     const cleaned: Record<string, string[]> = {};
-    for (const [id, sel] of Object.entries(draft)) {
-      if (nowVisible.has(id)) cleaned[id] = sel;
+    for (const [key, sel] of Object.entries(draft)) {
+      // Keep if it's a valid level ID or per-parent key
+      const baseId = key.split(':')[0];
+      if (validKeys.has(key) || validKeys.has(baseId)) {
+        cleaned[key] = sel as string[];
+      }
     }
 
     onChange(cleaned, buildCascadeContent(config.cascade_levels, cleaned));
@@ -257,12 +399,24 @@ const CascadeSelector: React.FC<CascadeSelectorProps> = ({ section, selections, 
   return (
     <div className="space-y-4">
       {visibleLevels.map((level, idx) => {
-        const selectedIds = selections[level.id] || [];
+        // Use per-parent keyed selection if this level has a parent
+        const selectionKey = level._parentOptId ? `${level.id}:${level._parentOptId}` : level.id;
+        const selectedIds = selections[selectionKey] || selections[level.id] || [];
+
         return (
-          <div key={level.id}>
+          <div key={`${level.id}-${level._parentOptId || 'root'}`}>
             {idx > 0 && <div className="border-t border-gray-100 pt-4" />}
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              {level.label || 'Select an option'}
+              {/* Show parent context for sub-levels */}
+              {level._parentOptValue ? (
+                <span>
+                  <span className="text-blue-600 font-semibold">{level._parentOptValue}</span>
+                  <span className="mx-1.5 text-gray-400">→</span>
+                  {level.label || 'Select an option'}
+                </span>
+              ) : (
+                level.label || 'Select an option'
+              )}
               {level.multi_select && (
                 <span className="ml-1 text-xs font-normal text-gray-400">(select multiple)</span>
               )}
@@ -274,7 +428,7 @@ const CascadeSelector: React.FC<CascadeSelectorProps> = ({ section, selections, 
                   <button
                     key={option.id}
                     type="button"
-                    onClick={() => !disabled && handleSelect(level.id, option.id, level.multi_select)}
+                    onClick={() => !disabled && handleSelect(level.id, option.id, level.multi_select, level._parentOptId)}
                     disabled={disabled}
                     className={`w-full text-left px-3 py-2.5 rounded-lg border text-sm transition-all ${
                       isSelected
@@ -563,6 +717,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
   const [error, setError] = useState<string | null>(null);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [uploadingSections, setUploadingSections] = useState<Record<string, boolean>>({});
+  const [importingWordSection, setImportingWordSection] = useState<string | null>(null);
 
   // AI Assistant state
   const [showAIPanel, setShowAIPanel] = useState<string | null>(null);
@@ -709,11 +864,8 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
         .sort((a, b) => a - b)
         .map(i => section?.predefined_options[i])
         .filter(Boolean);
-      
-      const finalContent = [
-        ...selectedTexts,
-        content.custom_text.trim(),
-      ].filter(Boolean).join('\n\n');
+
+      const finalContent = combineContentParts([...selectedTexts, content.custom_text]);
 
       newMap.set(sectionId, {
         ...content,
@@ -760,10 +912,10 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
           .sort((a, b) => a - b)
           .map(i => section?.predefined_options[i])
           .filter(Boolean) as string[];
-        baseContent = selectedTexts.join('\n\n');
+        baseContent = combineContentParts(selectedTexts);
       }
 
-      const finalContent = [baseContent, text.trim()].filter(Boolean).join('\n\n');
+      const finalContent = combineContentParts([baseContent, text]);
 
       newMap.set(sectionId, {
         ...content,
@@ -847,6 +999,32 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
       setError(err?.message || 'Failed to upload section images');
     } finally {
       setUploadingForSection(sectionId, false);
+    }
+  };
+
+  // Import a Word (.docx) file into a section: converts to HTML (bold/headings/lists preserved)
+  const importWordDoc = async (sectionId: string, files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    setImportingWordSection(sectionId);
+    setError(null);
+    try {
+      const mod: any = await import('mammoth/mammoth.browser');
+      const mammoth = mod.default || mod;
+      const arrayBuffer = await file.arrayBuffer();
+      const { value: html } = await mammoth.convertToHtml({ arrayBuffer });
+      if (!html || !html.trim()) {
+        setError('No readable content found in the Word file.');
+        return;
+      }
+      const existing = contents.get(sectionId)?.custom_text || '';
+      const merged = existing.trim() ? combineContentParts([existing, html]) : html;
+      updateCustomText(sectionId, merged);
+    } catch (err: any) {
+      console.error('Word import failed:', err);
+      setError('Failed to import the Word file. Please copy-paste the content instead.');
+    } finally {
+      setImportingWordSection(null);
     }
   };
 
@@ -980,20 +1158,20 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
       if (!content || content.is_finalized) return prev;
 
       const section = sections.find(s => s.id === sectionId);
-      // Append AI content to custom text
+      // Append AI content to custom text (HTML-aware if the editor already holds rich text)
       const newCustomText = content.custom_text
-        ? `${content.custom_text}\n\n${aiResult.generatedContent}`
+        ? combineContentParts([content.custom_text, aiResult.generatedContent])
         : aiResult.generatedContent;
 
       const finalContent = section?.section_config?.mode === 'matrix'
         ? buildMatrixHtml(section.section_config.matrix, content.cascading_selections || {}, newCustomText)
-        : [
+        : combineContentParts([
           ...content.selected_options
             .sort((a, b) => a - b)
             .map(i => section?.predefined_options[i])
             .filter(Boolean),
-          newCustomText.trim(),
-        ].filter(Boolean).join('\n\n');
+          newCustomText,
+        ]);
 
       newMap.set(sectionId, {
         ...content,
@@ -1163,8 +1341,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
                           const newMap = new Map(prev);
                           const existing = newMap.get(section.id);
                           if (!existing || existing.is_finalized) return prev;
-                          const custom = existing.custom_text?.trim() || '';
-                          const combined = [cascadeContent, custom].filter(Boolean).join('\n\n');
+                          const combined = combineContentParts([cascadeContent, existing.custom_text]);
                           newMap.set(section.id, {
                             ...existing,
                             cascading_selections: newSelections,
@@ -1241,23 +1418,54 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
                   {/* Custom Text */}
                   {section.is_editable && (
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        {section.section_config?.mode === 'matrix'
-                          ? 'Add notes below table (optional):'
-                          : section.predefined_options?.length > 0
-                            ? 'Add custom text (optional):'
-                            : 'Enter content:'}
-                      </label>
-                      <textarea
-                        value={content?.custom_text || ''}
-                        onChange={(e) => canEditText && updateCustomText(section.id, e.target.value)}
-                        disabled={!canEditText}
-                        rows={4}
-                        placeholder={section.default_content || 'Enter your findings, observations, or notes...'}
-                        className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                          !canEditText ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'
-                        }`}
-                      />
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-sm font-medium text-gray-700">
+                          {section.section_config?.mode === 'matrix'
+                            ? 'Add notes below table (optional):'
+                            : section.predefined_options?.length > 0
+                              ? 'Add custom text (optional):'
+                              : 'Enter content:'}
+                        </label>
+                        {section.section_config?.mode !== 'matrix' && canEditText && (
+                          <label className="inline-flex items-center px-2.5 py-1 rounded-md border border-gray-300 bg-white text-xs text-gray-700 hover:bg-gray-50 cursor-pointer transition-colors">
+                            {importingWordSection === section.id ? (
+                              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                            ) : (
+                              <FileText className="h-3.5 w-3.5 mr-1.5" />
+                            )}
+                            {importingWordSection === section.id ? 'Importing...' : 'Import Word (.docx)'}
+                            <input
+                              type="file"
+                              accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                              disabled={importingWordSection === section.id}
+                              onChange={(e) => {
+                                importWordDoc(section.id, e.target.files);
+                                e.target.value = '';
+                              }}
+                              className="hidden"
+                            />
+                          </label>
+                        )}
+                      </div>
+                      {section.section_config?.mode === 'matrix' ? (
+                        <textarea
+                          value={content?.custom_text || ''}
+                          onChange={(e) => canEditText && updateCustomText(section.id, e.target.value)}
+                          disabled={!canEditText}
+                          rows={4}
+                          placeholder={section.default_content || 'Enter your findings, observations, or notes...'}
+                          className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                            !canEditText ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'
+                          }`}
+                        />
+                      ) : (
+                        <RichTextArea
+                          value={content?.custom_text || ''}
+                          onChange={(html) => canEditText && updateCustomText(section.id, html)}
+                          disabled={!canEditText}
+                          placeholder={section.default_content || 'Enter your findings, observations, or notes... (paste from Word keeps bold/formatting)'}
+                        />
+                      )}
                     </div>
                   )}
 
@@ -1452,10 +1660,10 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
 	                      </label>
 	                      <div className="bg-gray-50 border border-gray-200 rounded-lg space-y-3 overflow-hidden">
 	                        {content?.final_content !== undefined && (
-	                          section.section_config?.mode === 'matrix' ? (
+	                          section.section_config?.mode === 'matrix' || containsHtmlTags(content.final_content) ? (
 	                            <div className="px-4 py-3">
 	                              <div
-	                                className="text-sm text-gray-800 overflow-x-auto"
+	                                className="text-sm text-gray-800 overflow-x-auto [&_p]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_h1]:text-base [&_h1]:font-bold [&_h2]:text-base [&_h2]:font-bold [&_h3]:text-sm [&_h3]:font-bold [&_table]:border-collapse [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-gray-300 [&_th]:px-2 [&_th]:py-1"
 	                                dangerouslySetInnerHTML={{ __html: content.final_content }}
 	                              />
 	                            </div>

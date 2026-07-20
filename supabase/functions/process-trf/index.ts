@@ -121,15 +121,21 @@ function getHardcodedDefaultPrompt(processingType: string): string {
 
 TASK: Extract structured information from the provided text with high accuracy.
 
+**CRITICAL LANGUAGE RULE**:
+- ALL extracted names (patient names, doctor names) MUST be in ENGLISH only
+- If the document contains names in Hindi, Devanagari, or any regional Indian script (Tamil, Telugu, Kannada, Malayalam, Bengali, Gujarati, etc.), you MUST transliterate them to English/Roman script
+- Example: "राजेश कुमार" → "Rajesh Kumar", "డాక్టర్ శర్మ" → "Dr Sharma"
+- NEVER output names in non-English scripts
+
 EXTRACT THE FOLLOWING:
 
 1. PATIENT INFORMATION:
-   - name: Full patient name
+   - name: Full patient name (MUST BE IN ENGLISH - transliterate if needed)
    - age: Numeric age with unit (years/months/days)
    - gender: Male/Female/Other
    - phone: 10-digit mobile number
    - email: Email address if present
-   - address: Full address if present
+   - address: Full address if present (transliterate to English if in regional script)
 
 2. REQUESTED TESTS (CHECKBOX DETECTION):
    - Extract all test names EXACTLY as written
@@ -140,20 +146,20 @@ EXTRACT THE FOLLOWING:
    - Provide confidence score (0.0 to 1.0) for each test
 
 3. DOCTOR INFORMATION:
-   - name: Doctor's full name (include titles like Dr./Prof.)
-   - specialization: Medical specialty if mentioned
+   - name: Doctor's full name (MUST BE IN ENGLISH - transliterate if needed, include titles like Dr./Prof.)
+   - specialization: Medical specialty if mentioned (in English)
    - registrationNumber: Medical registration number if present
 
 4. ADDITIONAL DETAILS:
-   - clinicalNotes: Any clinical history or symptoms
-   - location: Collection location if specified
+   - clinicalNotes: Any clinical history or symptoms (in English)
+   - location: Collection location if specified (in English)
    - sampleCollectionDate: Date if specified (format: YYYY-MM-DD)
    - urgency: "Normal" / "Urgent" / "STAT"
 
 OUTPUT FORMAT (JSON):
 {
   "patientInfo": {
-    "name": "string",
+    "name": "string (ENGLISH ONLY)",
     "age": number,
     "gender": "Male" | "Female" | "Other",
     "phone": "string (10 digits)",
@@ -169,7 +175,7 @@ OUTPUT FORMAT (JSON):
     }
   ],
   "doctorInfo": {
-    "name": "string",
+    "name": "string (ENGLISH ONLY)",
     "specialization": "string or null",
     "registrationNumber": "string or null",
     "confidence": 0.8
@@ -181,6 +187,7 @@ OUTPUT FORMAT (JSON):
 }
 
 IMPORTANT GUIDELINES:
+- **ALL NAMES MUST BE IN ENGLISH** - transliterate from Hindi/regional languages if needed
 - Use confidence scores based on text clarity
 - Return null for missing fields
 - Preserve original test names exactly
@@ -447,16 +454,16 @@ serve(async (req) => {
 
     // Step 2: Call Google Vision API for OCR
     console.log("\n👁️  Calling Google Vision API for OCR...");
-    const apiKey = Deno.env.get("ALLGOOGLE_KEY");
-    if (!apiKey) {
-      throw new Error("ALLGOOGLE_KEY not configured");
+    const visionApiKey = Deno.env.get("ALLGOOGLE_KEY2") || Deno.env.get("GOOGLE_CLOUD_API_KEY");
+    if (!visionApiKey) {
+      throw new Error("ALLGOOGLE_KEY2 or GOOGLE_CLOUD_API_KEY not configured");
     }
 
     console.log(
       "  - Using Vision API features: TEXT_DETECTION, DOCUMENT_TEXT_DETECTION",
     );
     const visionResponse = await fetch(
-      `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
+      `https://vision.googleapis.com/v1/images:annotate?key=${visionApiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -473,7 +480,9 @@ serve(async (req) => {
     );
 
     if (!visionResponse.ok) {
-      throw new Error(`Vision API failed: ${visionResponse.statusText}`);
+      const errorBody = await visionResponse.text();
+      console.error("Vision API error body:", errorBody);
+      throw new Error(`Vision API failed: ${visionResponse.statusText} - ${errorBody}`);
     }
 
     const visionData = await visionResponse.json();
@@ -519,8 +528,13 @@ IMPORTANT: Use the IMAGE to verify checkbox states. The OCR text shows what test
     );
     console.log("  - Sending image for visual checkbox detection");
 
+    const geminiApiKey = Deno.env.get("ALLGOOGLE_KEY") || Deno.env.get("GEMINI_API_KEY");
+    if (!geminiApiKey) {
+      throw new Error("ALLGOOGLE_KEY or GEMINI_API_KEY not configured");
+    }
+
     const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },

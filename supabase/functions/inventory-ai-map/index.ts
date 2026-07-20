@@ -10,6 +10,8 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4';
 
+const GEMINI_MODEL = 'gemini-2.5-flash';
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -188,7 +190,7 @@ Notes:
 Respond ONLY with the JSON array, no other text.`;
 
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -205,7 +207,7 @@ Respond ONLY with the JSON array, no other text.`;
   if (!response.ok) {
     const errorText = await response.text();
     console.error('Gemini API error:', errorText);
-    throw new Error(`Gemini API error: ${response.status}`);
+    throw new Error(`Gemini API error: ${response.status} (${GEMINI_MODEL})`);
   }
 
   const data = await response.json();
@@ -244,9 +246,9 @@ serve(async (req) => {
     }
 
     // Get API key
-    const geminiApiKey = Deno.env.get('GEMINI_API_KEY');
+    const geminiApiKey = Deno.env.get('ALLGOOGLE_KEY') || Deno.env.get('GEMINI_API_KEY');
     if (!geminiApiKey) {
-      throw new Error('GEMINI_API_KEY not configured');
+      throw new Error('Gemini API key not configured');
     }
 
     // Create Supabase client
@@ -331,24 +333,6 @@ serve(async (req) => {
         errors: [],
       };
 
-      // Update consumption rules on the item
-      const { error: updateError } = await supabase
-        .from('inventory_items')
-        .update({
-          consumption_scope: result.consumption_rule.scope,
-          consumption_per_use: result.consumption_rule.per_use,
-          pack_contains: result.consumption_rule.pack_contains,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', result.item_id);
-
-      if (updateError) {
-        processedItem.errors.push(`Failed to update consumption: ${updateError.message}`);
-      } else {
-        processedItem.consumption_updated = true;
-        processedItem.consumption_rule = result.consumption_rule;
-      }
-
       // Create test mappings
       for (const mapping of result.mappings) {
         if (!mapping.test_group_id) continue;
@@ -390,6 +374,35 @@ serve(async (req) => {
           processedItem.qc_lot = result.qc_lot_link;
           qcLinksCreated++;
         }
+      }
+
+      const sourceItem = items.find((item) => item.id === result.item_id) as any;
+      const shouldAutoConsumeViaTest = sourceItem?.ai_category === 'test_specific' && processedItem.mappings_created > 0;
+      const forcedScope = sourceItem?.ai_category === 'qc_control'
+        ? 'qc_only'
+        : (shouldAutoConsumeViaTest ? 'per_test' : 'manual');
+
+      // Only enable production auto-consumption when the item was actually mapped.
+      const { error: updateError } = await supabase
+        .from('inventory_items')
+        .update({
+          consumption_scope: forcedScope,
+          consumption_per_use: shouldAutoConsumeViaTest
+            ? result.consumption_rule.per_use
+            : null,
+          pack_contains: result.consumption_rule.pack_contains,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', result.item_id);
+
+      if (updateError) {
+        processedItem.errors.push(`Failed to update consumption: ${updateError.message}`);
+      } else {
+        processedItem.consumption_updated = true;
+        processedItem.consumption_rule = {
+          ...result.consumption_rule,
+          scope: forcedScope,
+        };
       }
 
       processedResults.push(processedItem);

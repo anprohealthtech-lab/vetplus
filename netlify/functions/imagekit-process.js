@@ -1,4 +1,4 @@
-const { createClient } = require('@supabase/supabase-js');
+import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_BUCKET = process.env.SUPABASE_BRANDING_BUCKET || 'attachments';
 const IMAGEKIT_ENDPOINT = process.env.IMAGEKIT_URL_ENDPOINT;
@@ -34,9 +34,9 @@ const buildVariantUrls = (baseUrl, assetType, tableName) => {
   const isSignatureAsset = tableName === 'lab_user_signatures';
   const isWideBranding = assetType === 'header' || assetType === 'footer' || assetType === 'watermark';
 
-  if (assetType === 'watermark' || isSignatureAsset) {
+  if (assetType === 'watermark') {
     baseTransforms.push('e-removedotbg');
-  } else {
+  } else if (!isSignatureAsset) {
     baseTransforms.push('e-upscale');
   }
 
@@ -148,7 +148,7 @@ const buildErrorUpdateFields = (config, message) => {
   return { [config.errorColumn]: message };
 };
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return buildErrorResponse(405, 'Method not allowed');
   }
@@ -252,7 +252,7 @@ exports.handler = async (event) => {
 
     await updateStatus('ready', updateFields);
 
-    // Warm up ImageKit variant URLs so on-demand transformations (e.g. e-removedotbg)
+    // Warm up ImageKit variant URLs so on-demand transformations
     // are pre-processed and cached before any PDF generation requests them.
     // Fire-and-forget — we don't await or block on these.
     if (variants && typeof variants === 'object') {

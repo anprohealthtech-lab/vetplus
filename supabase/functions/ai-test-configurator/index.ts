@@ -96,6 +96,12 @@ ${typeof requiresFasting === 'boolean' ? `REQUIRES FASTING OVERRIDE (STRICT): ${
 LAB CONTEXT: ${labContext || `User: ${user.email}, Lab: ${userData?.lab_id || 'Default'}`}
 REQUEST MODE: ${insert ? 'INSERT' : 'PREVIEW'}
 
+QUALITATIVE ANALYTE RULES (STRICT):
+- For every analyte with value_type "qualitative", ALWAYS populate expected_normal_values with all valid dropdown options.
+- For a qualitative analyte, use a reference_range only when the user's TEST TO ANALYZE or DESCRIPTION explicitly provides one.
+- If the user did not provide a qualitative reference range, set reference_range to a single space: " ".
+- Never generate placeholders such as "See lab ref", "See lab reference", or "Refer to lab".
+
 Return ONLY valid JSON with no additional text.`
 
     // Call Anthropic API (switched from Gemini)
@@ -120,7 +126,7 @@ Return ONLY valid JSON with no additional text.`
         },
         body: JSON.stringify({
           model: 'claude-haiku-4-5-20251001',
-          max_tokens: 15000,
+          max_tokens: 20000,
           messages: messages,
           temperature: 0.7
         })
@@ -168,6 +174,8 @@ Return ONLY valid JSON with no additional text.`
         created_at: new Date().toISOString()
       })
 
+    parsedResponse = normalizeGeneratedConfiguration(parsedResponse)
+
     return new Response(
       JSON.stringify({
         success: true,
@@ -182,11 +190,12 @@ Return ONLY valid JSON with no additional text.`
 
   } catch (error) {
     console.error('Error in AI test configurator:', error)
+    const errorMessage = error instanceof Error ? error.message : String(error)
     
     return new Response(
       JSON.stringify({
         success: false,
-        error: error.message
+        error: errorMessage
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -236,8 +245,8 @@ REQUIREMENTS:
     "formula": "string or null (required when is_calculated=true; example: 'LDL/5')",
     "formula_variables": "array of strings (required when is_calculated=true; example: ['LDL'])",
     "formula_description": "string or null",
-    "value_type": "numeric | text | null",
-    "expected_normal_values": "array of strings for qualitative analytes"
+    "value_type": "string (one of: numeric, qualitative, semi_quantitative, descriptive)",
+    "expected_normal_values": "array of strings for qualitative or semi-quantitative analytes; empty array for numeric/descriptive"
   }],
   "test_group_analytes": [{
     "test_group_code": "string (matches test_group.code)",
@@ -287,6 +296,24 @@ REQUIREMENTS:
 9. group_level_prompt must be present and actionable (never null)
 10. If an analyte is derived (e.g., VLDL from LDL/5), mark it as calculated and provide formula/formula_variables.
 11. If user prompt specifies low/optimal/high style ranges, encode that in reference_range text and keep interpretation_low/normal/high clinically meaningful.
+12. Set analyte.value_type carefully:
+   - numeric: measurable numbers like Hemoglobin, Glucose, Bilirubin. expected_normal_values = []
+   - qualitative: categorical results. Examples:
+     * Pregnancy test: ["Positive", "Negative"]
+     * Serology: ["Reactive", "Non-Reactive"]
+     * Blood group: ["A", "B", "AB", "O"]
+     * Rh factor: ["Positive", "Negative"]
+     * Malaria: ["Positive", "Negative", "Pf", "Pv", "Mixed"]
+   - semi_quantitative: graded/ordered results. Examples:
+     * Urinalysis (Ketones, Protein, Glucose, Blood, Bilirubin, Urobilinogen, Leukocytes): ["Nil", "Trace", "1+", "2+", "3+", "4+"]
+     * Urine pH: ["5.0", "5.5", "6.0", "6.5", "7.0", "7.5", "8.0", "8.5"]
+     * Urine Specific Gravity: ["1.000", "1.005", "1.010", "1.015", "1.020", "1.025", "1.030"]
+     * Inflammation: ["None", "Mild", "Moderate", "Severe"]
+     * Widal titer: ["<1:20", "1:20", "1:40", "1:80", "1:160", "1:320"]
+   - descriptive: microscopy comments, morphology, culture remarks. expected_normal_values = []
+13. If value_type is qualitative or semi_quantitative, ALWAYS populate expected_normal_values with the valid choices as shown in examples above. These values are used as Expected Values (Dropdown Options).
+14. For qualitative analytes, use reference_range only when the user explicitly provides it in the test name or description. Otherwise set reference_range to a single space (" "). Never use "See lab ref", "See lab reference", "Refer to lab", or a similar placeholder.
+15. For qualitative, semi_quantitative, or descriptive analytes, unit should usually be an empty string unless a real measurement unit truly applies.
 
 CONTEXT:
 - This is for a clinical laboratory information system
@@ -295,4 +322,35 @@ CONTEXT:
 - Ensure all analytes have proper clinical interpretations
 - For imaging tests (X-Ray, CT, MRI, etc.), use appropriate imaging sample types
 - For procedures (ECG, EEG, etc.), use procedure-specific sample types`
+}
+
+function normalizeGeneratedConfiguration(configuration: any): any {
+  if (!configuration || !Array.isArray(configuration.analytes)) {
+    return configuration
+  }
+
+  configuration.analytes = configuration.analytes.map((analyte: any) => {
+    const valueType = String(analyte?.value_type || '').trim().toLowerCase()
+    if (valueType !== 'qualitative') {
+      return analyte
+    }
+
+    const expectedNormalValues = Array.isArray(analyte.expected_normal_values)
+      ? analyte.expected_normal_values
+          .map((value: unknown) => String(value).trim())
+          .filter(Boolean)
+      : []
+    const referenceRange = String(analyte.reference_range ?? '')
+    const isLabReferencePlaceholder =
+      /^\s*(see|refer to|use)\s+(the\s+)?lab(oratory)?\s+(ref(erence)?|range|reference range)\.?\s*$/i
+        .test(referenceRange)
+
+    return {
+      ...analyte,
+      reference_range: !referenceRange.trim() || isLabReferencePlaceholder ? ' ' : referenceRange,
+      expected_normal_values: expectedNormalValues,
+    }
+  })
+
+  return configuration
 }

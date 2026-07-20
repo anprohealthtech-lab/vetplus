@@ -1,5 +1,5 @@
 // Supabase Edge Function: Full Server-Side PDF Generation with PDF.co
-// Complete pipeline: Context → Templates → HTML → PDF.co → Storage
+// Complete pipeline: Context â†’ Templates â†’ HTML â†’ PDF.co â†’ Storage
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.4";
@@ -9,9 +9,17 @@ import {
   fetchLetterheadBackgroundForOrder,
   fetchHeaderFooterImages,
   imageUrlToBase64,
+  optimizeHeaderFooterImageUrl,
   buildHeaderHtml,
   buildFooterHtml,
 } from "./headerFooterHelper.ts";
+
+function formatIndianNumber(val: string | number): string {
+  const str = String(val).replace(/,/g, "").trim();
+  const num = parseFloat(str);
+  if (!Number.isFinite(num) || Math.abs(num) < 1000) return str || String(val);
+  return new Intl.NumberFormat("en-IN").format(num);
+}
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -19,6 +27,69 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+
+// â”€â”€â”€ Inline Code 128-B barcode generator (no external API) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Eliminates dependency on barcodeapi.org which may return "FAILED" images
+// when called from PDF rendering servers.
+// renderWidth: rendered pixel width (SVG scales via viewBox to fit exactly)
+function generateCode128SVG(data: string, height = 36, renderWidth = 100): string {
+  if (!data) return "";
+  // Code 128 symbol bar patterns (0-106)
+  const PATTERNS = [
+    "11011001100","11001101100","11001100110","10010011000","10010001100",
+    "10001001100","10011001000","10011000100","10001100100","11001001000",
+    "11001000100","11000100100","10110011100","10011011100","10011001110",
+    "10111001100","10011101100","10011100110","11001110010","11001011100",
+    "11001001110","11011100100","11001110100","11101101110","11101001100",
+    "11100101100","11100100110","11101100100","11100110100","11100110010",
+    "11011011000","11011000110","11000110110","10100011000","10001011000",
+    "10001000110","10110001000","10001101000","10001100010","11010001000",
+    "11000101000","11000100010","10110111000","10110001110","10001101110",
+    "10111011000","10111000110","10001110110","11101110110","11010001110",
+    "11000101110","11011101000","11011100010","11011101110","11101011000",
+    "11101000110","11100010110","11101101000","11101100010","11100011010",
+    "11101111010","11001000010","11110001010","10100110000","10100001100",
+    "10010110000","10010000110","10000101100","10000100110","10110010000",
+    "10110000100","10011010000","10011000010","10000110100","10000110010",
+    "11000010010","11001010000","11110111010","11000010100","10001111010",
+    "10100111100","10010111100","10010011110","10111100100","10011110100",
+    "10011110010","11110100100","11110010100","11110010010","11011011110",
+    "11011110110","11110110110","10101111000","10100011110","10001011110",
+    "10111101000","10111100010","11110101000","11110100010","10111011110",
+    "10111101110","11101011110","11110101110","11010000100","11010010000",
+    "11010011100","11000111010",
+  ];
+  const START_B = 104;
+  const STOP    = 106;
+
+  const values: number[] = [START_B];
+  let checksum = START_B;
+  for (let i = 0; i < data.length; i++) {
+    const c = data.charCodeAt(i);
+    if (c < 32 || c > 126) continue; // Code 128-B range
+    const v = c - 32;
+    values.push(v);
+    checksum += (i + 1) * v;
+  }
+  values.push(checksum % 103);
+  values.push(STOP);
+
+  // Build binary pattern string (each module = 1 unit in viewBox coords)
+  let bits = "";
+  for (const v of values) bits += PATTERNS[v];
+  bits += "11"; // termination bar (2 modules)
+
+  const totalModules = bits.length;
+  let rects = "";
+  for (let i = 0; i < bits.length; i++) {
+    if (bits[i] === "1") {
+      rects += `<rect x="${i}" y="0" width="1" height="${height}"/>`;
+    }
+  }
+  // viewBox scales all modules to fit renderWidth exactly â€” no overflow
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalModules} ${height}" width="${renderWidth}" height="${height}" style="display:block;"><g fill="#000000">${rects}</g></svg>`;
+}
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // Custom domain for reports storage (configured via Deno environment variable)
 const CUSTOM_REPORTS_DOMAIN = Deno.env.get("CUSTOM_STORAGE_DOMAIN") || "";
@@ -56,10 +127,20 @@ const DEFAULT_PDF_SETTINGS = {
   printBackground: true,
 };
 
+// Parse margin value - handles both "180px" strings and numeric 180 values
+function parseMarginValue(val: unknown, defaultVal = 20): number {
+  if (typeof val === "number" && !isNaN(val)) return val;
+  if (typeof val === "string") {
+    const parsed = parseInt(val, 10);
+    return isNaN(parsed) ? defaultVal : parsed;
+  }
+  return defaultVal;
+}
+
 // Comprehensive baseline CSS for report styling (server-side)
 const BASELINE_CSS = `
 /* LIMS Report Baseline CSS - Server-Side */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans:wght@400;700&family=Noto+Sans+Devanagari&family=Noto+Sans+Gujarati&family=Noto+Sans+Tamil&family=Noto+Sans+Telugu&family=Noto+Sans+Kannada&family=Noto+Sans+Bengali&family=Noto+Sans+Gurmukhi&family=Noto+Sans+Malayalam&family=Noto+Sans+Oriya&display=swap');
+/* FIX: Removed duplicate @import â€” fonts loaded via <link> tags in buildPdfBodyDocumentV2 */
 
 :root {
   --report-font-family: "Inter", "Noto Sans", "Noto Sans Gujarati", "Noto Sans Devanagari", "Noto Sans Tamil", "Noto Sans Telugu", "Noto Sans Kannada", "Noto Sans Bengali", "Noto Sans Gurmukhi", "Noto Sans Malayalam", "Noto Sans Oriya", Arial, sans-serif;
@@ -111,7 +192,7 @@ const BASELINE_CSS = `
 .limsv2-report h3 { font-size: 1.25rem; }
 .limsv2-report h4 { font-size: 1.1rem; }
 
-/* Normalize headings inside interpretation blocks — CKEditor often saves <p> content as <h4> */
+/* Normalize headings inside interpretation blocks â€” CKEditor often saves <p> content as <h4> */
 .limsv2-report .group-interpretation h1,
 .limsv2-report .group-interpretation h2,
 .limsv2-report .group-interpretation h3,
@@ -217,6 +298,29 @@ figure.table {
   margin: 1em 0;
 }
 
+/* Style CKEditor figure.table tables inside interpretation blocks */
+figure.table table,
+.group-interpretation figure.table table,
+.limsv2-interpretation-block figure.table table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: inherit;
+}
+figure.table table th,
+figure.table table td,
+.group-interpretation figure.table table th,
+.group-interpretation figure.table table td {
+  border: 1px solid #ccc;
+  padding: 5px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+figure.table table thead th,
+.group-interpretation figure.table table thead th {
+  background-color: #f0f0f0;
+  font-weight: bold;
+}
+
 /* =========================================
    TABLE PAGE BREAK HANDLING (PDF.co)
    Allow tables to break across pages naturally,
@@ -265,7 +369,7 @@ figure.table {
     page-break-before: auto !important;
   }
 
-  /* Override h4 page-break rule inside interpretation — these are prose, not section headers */
+  /* Override h4 page-break rule inside interpretation â€” these are prose, not section headers */
   .limsv2-report .group-interpretation h1,
   .limsv2-report .group-interpretation h2,
   .limsv2-report .group-interpretation h3,
@@ -384,13 +488,84 @@ figure.table {
 .section-content h4 { font-size: 14px; }
 .section-content h5 { font-size: 13px; }
 .section-content h6 { font-size: 12px; }
+		    `;
+
+const CKE_IMAGE_ALIGNMENT_CSS = `
+/* Preserve CKEditor image alignment in Chromium/PDF.co.
+   The report baseline makes images display:block, so parent text-align alone
+   does not move signature images unless margins are set explicitly. */
+.limsv2-report .image-style-align-right,
+.limsv2-report figure.image-style-align-right {
+  margin-left: auto !important;
+  margin-right: 0 !important;
+  text-align: right !important;
+}
+
+.limsv2-report .image-style-align-center,
+.limsv2-report figure.image-style-align-center {
+  margin-left: auto !important;
+  margin-right: auto !important;
+  text-align: center !important;
+}
+
+.limsv2-report .image-style-align-left,
+.limsv2-report figure.image-style-align-left {
+  margin-left: 0 !important;
+  margin-right: auto !important;
+  text-align: left !important;
+}
+
+.limsv2-report .image-style-align-right img,
+.limsv2-report figure.image-style-align-right img,
+.limsv2-report p[style*="text-align:right"] img,
+.limsv2-report p[style*="text-align: right"] img,
+.limsv2-report div[style*="text-align:right"] img,
+.limsv2-report div[style*="text-align: right"] img,
+.limsv2-report li[style*="text-align:right"] img,
+.limsv2-report li[style*="text-align: right"] img,
+.limsv2-report td[style*="text-align:right"] img,
+.limsv2-report td[style*="text-align: right"] img {
+  display: block !important;
+  margin-left: auto !important;
+  margin-right: 0 !important;
+}
+
+.limsv2-report .image-style-align-center img,
+.limsv2-report figure.image-style-align-center img,
+.limsv2-report p[style*="text-align:center"] img,
+.limsv2-report p[style*="text-align: center"] img,
+.limsv2-report div[style*="text-align:center"] img,
+.limsv2-report div[style*="text-align: center"] img,
+.limsv2-report li[style*="text-align:center"] img,
+.limsv2-report li[style*="text-align: center"] img,
+.limsv2-report td[style*="text-align:center"] img,
+.limsv2-report td[style*="text-align: center"] img {
+  display: block !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.limsv2-report .image-style-align-left img,
+.limsv2-report figure.image-style-align-left img,
+.limsv2-report p[style*="text-align:left"] img,
+.limsv2-report p[style*="text-align: left"] img,
+.limsv2-report div[style*="text-align:left"] img,
+.limsv2-report div[style*="text-align: left"] img,
+.limsv2-report li[style*="text-align:left"] img,
+.limsv2-report li[style*="text-align: left"] img,
+.limsv2-report td[style*="text-align:left"] img,
+.limsv2-report td[style*="text-align: left"] img {
+  display: block !important;
+  margin-left: 0 !important;
+  margin-right: auto !important;
+}
 `;
 
 // CSS injected only for CKEditor custom templates (not basic/beautiful default templates).
 // These rules are intentionally excluded from BASELINE_CSS to avoid cascade conflicts
 // with generated structured templates that own their own table/flag/signature styling.
 const CKEDITOR_CSS = `
-/* Tables — CKEditor template default table styling */
+/* Tables â€” CKEditor template default table styling */
 .limsv2-report table {
   width: 100%;
   border-collapse: collapse;
@@ -430,7 +605,7 @@ const CKEDITOR_CSS = `
   font-weight: normal;
 }
 
-/* Header title contrast — dark-background sections */
+/* Header title contrast â€” dark-background sections */
 .report-header-title,
 .report-title,
 .header-dark h1,
@@ -476,9 +651,11 @@ const CKEDITOR_CSS = `
 .limsv2-report .signature-section img,
 .limsv2-report [class*="signature"] img,
 .limsv2-report [id*="signature"] img {
-  max-width: 150px;
-  max-height: 50px;
+  max-width: 180px;
+  max-height: 70px;
+  width: auto;
   height: auto;
+  object-fit: contain;
   margin-left: auto;
   display: block;
 }
@@ -537,7 +714,7 @@ const ABNORMAL_TEXT_PATTERNS = [
 ];
 
 // Semi-quantitative normal values
-const SEMI_QUANT_NORMAL = ["nil", "negative", "trace", "±", "+-", "neg"];
+const SEMI_QUANT_NORMAL = ["nil", "negative", "trace", "Â±", "+-", "neg"];
 const SEMI_QUANT_ABNORMAL_ORDER = [
   "1+",
   "+",
@@ -563,14 +740,14 @@ function parseReferenceRange(refRange: string | null | undefined): ParsedRange {
     .replace(/,/g, "") // Remove commas
     .trim();
 
-  // Pattern: "< X" or "≤ X"
-  const lessThanMatch = cleaned.match(/[<≤]\s*([\d.]+)/);
+  // Pattern: "< X" or "â‰¤ X"
+  const lessThanMatch = cleaned.match(/[<â‰¤]\s*([\d.]+)/);
   if (lessThanMatch) {
     return { low: null, high: parseFloat(lessThanMatch[1]), type: "less_than" };
   }
 
-  // Pattern: "> X" or "≥ X"
-  const greaterThanMatch = cleaned.match(/[>≥]\s*([\d.]+)/);
+  // Pattern: "> X" or "â‰¥ X"
+  const greaterThanMatch = cleaned.match(/[>â‰¥]\s*([\d.]+)/);
   if (greaterThanMatch) {
     return {
       low: parseFloat(greaterThanMatch[1]),
@@ -579,8 +756,8 @@ function parseReferenceRange(refRange: string | null | undefined): ParsedRange {
     };
   }
 
-  // Pattern: "X - Y" or "X – Y" or "X to Y"
-  const rangeMatch = cleaned.match(/([\d.]+)\s*[-–—~to]+\s*([\d.]+)/i);
+  // Pattern: "X - Y" or "X â€“ Y" or "X to Y"
+  const rangeMatch = cleaned.match(/([\d.]+)\s*[-â€“â€”~to]+\s*([\d.]+)/i);
   if (rangeMatch) {
     const low = parseFloat(rangeMatch[1]);
     const high = parseFloat(rangeMatch[2]);
@@ -609,7 +786,7 @@ function extractNumericValue(
   if (value === null || value === undefined || value === "") return null;
   if (typeof value === "number") return value;
 
-  const cleaned = String(value).replace(/[,<>≤≥]/g, "").trim();
+  const cleaned = String(value).replace(/[,<>â‰¤â‰¥]/g, "").trim();
   const match = cleaned.match(/^-?([\d.]+)/);
   if (match) {
     const num = parseFloat(match[0]);
@@ -846,7 +1023,7 @@ function generateAnalyteShortKey(name: string): string {
     "Mean Corpuscular Volume": "MCV",
     "Alanine Aminotransferase (ALT/SGPT)": "ALT",
     "ALT (SGPT)": "ALT",
-    // 5-Part CBC differential — canonical names
+    // 5-Part CBC differential â€” canonical names
     "Neutrophils (%)": "NEUT_PCT",
     "Neutrophils (Abs)": "NEUT_ABS",
     "Lymphocytes (%)": "LYMPH_PCT",
@@ -969,7 +1146,7 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
     // 1. Existing Short Key Logic (ANALYTE_HB_VALUE)
     const shortKey = generateAnalyteShortKey(name);
     if (shortKey) {
-      placeholders[`ANALYTE_${shortKey}_VALUE`] = analyte.value || "";
+      placeholders[`ANALYTE_${shortKey}_VALUE`] = formatIndianNumber(analyte.value || "");
       placeholders[`ANALYTE_${shortKey}_UNIT`] = analyte.unit || "";
       placeholders[`ANALYTE_${shortKey}_REFERENCE`] = analyte.reference_range ||
         "";
@@ -989,10 +1166,10 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
     const slug = name.replace(/[^a-zA-Z0-9]+/g, " ").trim().replace(/\s+/g, "");
     if (slug) {
       // Direct values
-      placeholders[`${slug}`] = analyte.value || ""; // {{Hemoglobin}}
+      placeholders[`${slug}`] = formatIndianNumber(analyte.value || ""); // {{Hemoglobin}}
 
       // Suffix variations
-      placeholders[`${slug}_VALUE`] = analyte.value || "";
+      placeholders[`${slug}_VALUE`] = formatIndianNumber(analyte.value || "");
       placeholders[`${slug}_UNIT`] = analyte.unit || "";
       placeholders[`${slug}_REF_RANGE`] = analyte.reference_range || ""; // Matching _REF_RANGE from frontend
       placeholders[`${slug}_REFERENCE`] = analyte.reference_range || ""; // Alias
@@ -1016,7 +1193,7 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
       .replace(/\s+/g, "_"); // Replace spaces with underscores
 
     if (upperSnakeKey && upperSnakeKey !== shortKey) {
-      placeholders[`ANALYTE_${upperSnakeKey}_VALUE`] = analyte.value || "";
+      placeholders[`ANALYTE_${upperSnakeKey}_VALUE`] = formatIndianNumber(analyte.value || "");
       placeholders[`ANALYTE_${upperSnakeKey}_UNIT`] = analyte.unit || "";
       placeholders[`ANALYTE_${upperSnakeKey}_REFERENCE`] =
         analyte.reference_range || "";
@@ -1035,7 +1212,7 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
   const valueKeys = Object.keys(placeholders).filter((k) =>
     k.endsWith("_VALUE")
   );
-  console.log("📋 Generated analyte placeholders:");
+  console.log("ðŸ“‹ Generated analyte placeholders:");
   console.log("   Total keys:", Object.keys(placeholders).length);
   console.log(
     "   VALUE keys:",
@@ -1089,7 +1266,80 @@ function renderTemplate(html: string, context: Record<string, any>): string {
     }
   );
 
-  return result;
+  return stripBrokenPdfImages(result);
+}
+
+function buildGroupRemarkHtml(remark: unknown): string {
+  const value = String(remark || "").trim();
+  if (!value) return "";
+
+  const escaped = value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/\r\n?|\n/g, "<br>");
+
+  return `
+    <div class="lims-group-remark" style="margin-top:10px;padding:7px 10px;border-top:1px solid #d1d5db;font-size:11px;line-height:1.45;page-break-inside:avoid;">
+      <strong>Remarks:</strong> ${escaped}
+    </div>
+  `;
+}
+
+function injectGroupRemark(
+  html: string,
+  remark: unknown,
+  templateContainsPlaceholder = false,
+): string {
+  const remarkHtml = buildGroupRemarkHtml(remark);
+  if (!html || !remarkHtml || templateContainsPlaceholder || html.includes('class="lims-group-remark"')) {
+    return html;
+  }
+
+  const signatureMarkers = [
+    /<div[^>]*class="[^"]*\breport-footer\b[^"]*"[^>]*>/i,
+    /<div[^>]*class="[^"]*\bsignatures\b[^"]*"[^>]*>/i,
+  ];
+  for (const marker of signatureMarkers) {
+    const match = marker.exec(html);
+    if (match?.index !== undefined) {
+      return `${html.slice(0, match.index)}${remarkHtml}${html.slice(match.index)}`;
+    }
+  }
+
+  const bodyClose = html.search(/<\/body>/i);
+  return bodyClose >= 0
+    ? `${html.slice(0, bodyClose)}${remarkHtml}${html.slice(bodyClose)}`
+    : `${html}${remarkHtml}`;
+}
+
+function formatSignatureNameForPdf(value: unknown): string {
+  if (value === undefined || value === null) return "";
+
+  const normalized = String(value)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\s*\/\s*/g, "\n")
+    .trim();
+
+  return normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("<br/>");
+}
+
+function resolveSignatureImageSize(printOptions?: Record<string, unknown> | null) {
+  const clamp = (value: unknown, fallback: number, min: number, max: number) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.max(min, Math.min(max, numeric)) : fallback;
+  };
+
+  return {
+    maxHeight: clamp(printOptions?.signatureMaxHeight, 70, 30, 120),
+    maxWidth: clamp(printOptions?.signatureMaxWidth, 180, 80, 260),
+  };
 }
 
 /**
@@ -1103,20 +1353,20 @@ function injectSignatureImage(
   signatoryDesignation: string = "",
 ): string {
   if (!html || !signatoryImageUrl) {
-    console.log("  ⚠️ Missing required params for signature injection");
+    console.log("  âš ï¸ Missing required params for signature injection");
     return html;
   }
 
   // Already present?
   if (html.includes(`src="${signatoryImageUrl}"`)) {
-    console.log("  ✅ Signature image already present");
+    console.log("  âœ… Signature image already present");
     return html;
   }
 
   // Build complete signature block with image and text
   const signatureBlockHtml = `
     <div style="margin-top: 10px;">
-      <img src="${signatoryImageUrl}" alt="Signature" style="display:block;max-height:40px;max-width:120px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" />
+      <img src="${signatoryImageUrl}" alt="" style="display:block;max-height:70px;max-width:180px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" onerror="this.style.display='none'" />
       ${
     signatoryName
       ? `<p style="margin-top:8px;margin-bottom:4px;font-weight:600;font-size:14px;">${signatoryName}</p>`
@@ -1131,20 +1381,20 @@ function injectSignatureImage(
   `.trim();
 
   console.log(
-    `  🔍 Looking for .signatures or .report-footer block (name: ${signatoryName})`,
+    `  ðŸ” Looking for .signatures or .report-footer block (name: ${signatoryName})`,
   );
 
   // 1. PRIORITY: Inject into .signatures block (most common)
   const signaturesPattern = /(<div[^>]*class="[^"]*signatures[^"]*"[^>]*>)/i;
   if (signaturesPattern.test(html)) {
-    console.log("  ✅ Found .signatures block - injecting signature");
+    console.log("  âœ… Found .signatures block - injecting signature");
     return html.replace(signaturesPattern, `$1${signatureBlockHtml}`);
   }
 
   // 2. Inject into .report-footer block
   const footerPattern = /(<div[^>]*class="[^"]*report-footer[^"]*"[^>]*>)/i;
   if (footerPattern.test(html)) {
-    console.log("  ✅ Found .report-footer block - injecting signature");
+    console.log("  âœ… Found .report-footer block - injecting signature");
     return html.replace(footerPattern, `$1${signatureBlockHtml}`);
   }
 
@@ -1152,14 +1402,14 @@ function injectSignatureImage(
   const signatoryPattern =
     /(<div[^>]*class="[^"]*(?:signatory|signature-block|approver|signer)[^"]*"[^>]*>)/i;
   if (signatoryPattern.test(html)) {
-    console.log("  ✅ Found signatory-related block - injecting signature");
+    console.log("  âœ… Found signatory-related block - injecting signature");
     return html.replace(signatoryPattern, `$1${signatureBlockHtml}`);
   }
 
   // 4. Fallback: inject before closing </section> with report-region--body class
   const sectionPattern = /(<\/section>)/i;
   if (sectionPattern.test(html)) {
-    console.log("  ⚠️ Fallback: injecting before </section>");
+    console.log("  âš ï¸ Fallback: injecting before </section>");
     return html.replace(
       sectionPattern,
       `<div style="margin-top:20px;">${signatureBlockHtml}</div>$1`,
@@ -1168,7 +1418,7 @@ function injectSignatureImage(
 
   // 5. Last resort: inject before closing </body>
   if (html.includes("</body>")) {
-    console.log("  ⚠️ Last resort: injecting before </body>");
+    console.log("  âš ï¸ Last resort: injecting before </body>");
     return html.replace(
       "</body>",
       `<div style="margin:20px;">${signatureBlockHtml}</div></body>`,
@@ -1177,7 +1427,7 @@ function injectSignatureImage(
 
   // 6. Absolute last resort: Append to end of HTML string (for partials/sections)
   console.log(
-    "  ⚠️ Absolute last resort: Appending signature to end of HTML string",
+    "  âš ï¸ Absolute last resort: Appending signature to end of HTML string",
   );
   return html +
     `<div style="margin-top:20px; page-break-inside: avoid;">${signatureBlockHtml}</div>`;
@@ -1190,13 +1440,13 @@ function injectSignatureImage(
  */
 function injectQrCode(html: string, verifyUrl: string): string {
   if (!html || !verifyUrl) {
-    console.log("  ⚠️ Missing required params for QR injection");
+    console.log("  âš ï¸ Missing required params for QR injection");
     return html;
   }
 
-  // Already has QR code?
-  if (html.includes("qr-verify") || html.includes("api.qrserver.com")) {
-    console.log("  ✅ QR code already present in template");
+  // Already has QR code? Check for the actual HTML element, not just the CSS class name string
+  if (html.includes('class="qr-verify"') || html.includes("class='qr-verify'") || html.includes("api.qrserver.com")) {
+    console.log("  âœ… QR code already present in template");
     return html;
   }
 
@@ -1212,13 +1462,19 @@ function injectQrCode(html: string, verifyUrl: string): string {
     </div>
   `.trim();
 
-  console.log(`  🔍 Looking for signature block to add QR code`);
+  console.log(`  ðŸ” Looking for signature block to add QR code`);
+
+  const topSlotPattern = /(<div[^>]*class="[^"]*qr-top-(?:left|right)-slot[^"]*"[^>]*>)/i;
+  if (topSlotPattern.test(html)) {
+    console.log("  âœ… Found top QR slot");
+    return html.replace(topSlotPattern, `$1${qrBlockHtml}`);
+  }
 
   // 1. PRIORITY: Look for .signatures block - wrap content in flex container
   const signaturesPattern =
     /(<div[^>]*class="[^"]*signatures[^"]*"[^>]*>)([\s\S]*?)(<\/div>\s*$|<\/div>\s*<\/|<\/div>\s*<section|<\/div>\s*<div class="(?:attachments|interpretation))/i;
   if (signaturesPattern.test(html)) {
-    console.log("  ✅ Found .signatures block - adding QR with flex layout");
+    console.log("  âœ… Found .signatures block - adding QR with flex layout");
     return html.replace(
       signaturesPattern,
       (match, openTag, content, closeOrNext) => {
@@ -1250,7 +1506,7 @@ function injectQrCode(html: string, verifyUrl: string): string {
   // 2. Look for .report-footer block
   const footerPattern = /(<div[^>]*class="[^"]*report-footer[^"]*"[^>]*>)/i;
   if (footerPattern.test(html)) {
-    console.log("  ✅ Found .report-footer block - prepending QR");
+    console.log("  âœ… Found .report-footer block - prepending QR");
     return html.replace(footerPattern, `$1${qrBlockHtml}`);
   }
 
@@ -1258,7 +1514,7 @@ function injectQrCode(html: string, verifyUrl: string): string {
   const signatoryPattern =
     /(<div[^>]*class="[^"]*(?:signatory|signature-block|approver|signer)[^"]*"[^>]*>)/i;
   if (signatoryPattern.test(html)) {
-    console.log("  ✅ Found signatory block - prepending QR");
+    console.log("  âœ… Found signatory block - prepending QR");
     return html.replace(
       signatoryPattern,
       `<div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:20px;">${qrBlockHtml}$1</div>`,
@@ -1268,7 +1524,7 @@ function injectQrCode(html: string, verifyUrl: string): string {
   // 4. Fallback: inject before </section>
   const sectionPattern = /(<\/section>)/i;
   if (sectionPattern.test(html)) {
-    console.log("  ⚠️ Fallback: adding QR before </section>");
+    console.log("  âš ï¸ Fallback: adding QR before </section>");
     return html.replace(
       sectionPattern,
       `<div style="margin-top:20px;text-align:left;">${qrBlockHtml}</div>$1`,
@@ -1277,7 +1533,7 @@ function injectQrCode(html: string, verifyUrl: string): string {
 
   // 5. Last resort: inject before </body>
   if (html.includes("</body>")) {
-    console.log("  ⚠️ Last resort: adding QR before </body>");
+    console.log("  âš ï¸ Last resort: adding QR before </body>");
     return html.replace(
       "</body>",
       `<div style="margin:20px;text-align:left;">${qrBlockHtml}</div></body>`,
@@ -1285,7 +1541,7 @@ function injectQrCode(html: string, verifyUrl: string): string {
   }
 
   // 6. Absolute last resort: Append to end
-  console.log("  ⚠️ Absolute last resort: Appending QR to end of HTML");
+  console.log("  âš ï¸ Absolute last resort: Appending QR to end of HTML");
   return html +
     `<div style="margin-top:20px;text-align:left;">${qrBlockHtml}</div>`;
 }
@@ -1377,9 +1633,23 @@ function generateDynamicCss(settings: any, printOptions?: any): string {
     }
   }
 
-  // ── Print Options overrides (lab-level + test-group-level) ──────────────────
+  // â”€â”€ Print Options overrides (lab-level + test-group-level) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (hasPrintOptions) {
     css += "\n/* Print Options Overrides */\n";
+    const signatureSize = resolveSignatureImageSize(printOptions);
+    css += `
+.limsv2-report .signature-section img,
+.limsv2-report [class*="signature"] img,
+.limsv2-report [id*="signature"] img,
+.limsv2-report .signatures img,
+.limsv2-report .signature-box img {
+  max-height: ${signatureSize.maxHeight}px !important;
+  max-width: ${signatureSize.maxWidth}px !important;
+  width: auto !important;
+  height: auto !important;
+  object-fit: contain !important;
+}
+`;
 
     // Remove table borders
     if (printOptions.tableBorders === false) {
@@ -1545,8 +1815,8 @@ function buildDeterministicCompactPlan(
     const aManual = a.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
     const bManual = b.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
     if (aManual !== bManual) return aManual - bManual;
-    const aPriority = a.reportPriority ?? Number.MAX_SAFE_INTEGER;
-    const bPriority = b.reportPriority ?? Number.MAX_SAFE_INTEGER;
+    const aPriority = (a.reportPriority != null && a.reportPriority > 0) ? a.reportPriority : Number.MAX_SAFE_INTEGER;
+    const bPriority = (b.reportPriority != null && b.reportPriority > 0) ? b.reportPriority : Number.MAX_SAFE_INTEGER;
     if (aPriority !== bPriority) return aPriority - bPriority;
     if (a.printOrder !== b.printOrder) return a.printOrder - b.printOrder;
     return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
@@ -1781,7 +2051,7 @@ function buildOrderedAnalytesByGroup(
   return ordered;
 }
 
-// ── Configurable Patient Info Section Builder ──
+// â”€â”€ Configurable Patient Info Section Builder â”€â”€
 interface PatientInfoConfig {
   layout: 'table' | 'inline';
   fields: string[];
@@ -1798,6 +2068,9 @@ const PATIENT_INFO_FIELD_MAP: Record<string, { label: string; placeholder: strin
   approvedAt:           { label: 'Approved On',      placeholder: '{{approvedAt}}' },
   phone:                { label: 'Phone',            placeholder: '{{patientPhone}}' },
   sampleCollectedBy:    { label: 'Collected By',     placeholder: '{{sampleCollectedBy}}' },
+  receivedAt:           { label: 'Received Date/Time', placeholder: '{{receivedAt}}' },
+  collectionCenter:     { label: 'Collection Center', placeholder: '{{collectionCenter}}' },
+  b2bAccountName:       { label: 'B2B / Account Name', placeholder: '{{b2bAccountName}}' },
 };
 
 function buildPatientInfoHtml(
@@ -1820,7 +2093,7 @@ function buildPatientInfoHtml(
     .map(key => {
       if (PATIENT_INFO_FIELD_MAP[key]) return PATIENT_INFO_FIELD_MAP[key];
       if (customFieldMap[key]) return customFieldMap[key];
-      // Fallback: derive label from key name (e.g. custom_abha_id → "Abha Id")
+      // Fallback: derive label from key name (e.g. custom_abha_id â†’ "Abha Id")
       if (key.startsWith('custom_')) {
         const rawKey = key.replace(/^custom_/, '');
         const label = rawKey.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -1833,7 +2106,7 @@ function buildPatientInfoHtml(
   if (fields.length === 0) return '';
 
   if (config.layout === 'table') {
-    // Table layout — 2 columns of label/value pairs per row
+    // Table layout â€” 2 columns of label/value pairs per row
     const rows: string[] = [];
     for (let i = 0; i < fields.length; i += 2) {
       const f1 = fields[i];
@@ -1854,7 +2127,7 @@ function buildPatientInfoHtml(
     </div>`;
   }
 
-  // Inline layout — flex row of spans (beautiful style)
+  // Inline layout â€” flex row of spans (beautiful style)
   // First field (usually patientName) gets prominent heading treatment
   const firstField = fields[0];
   const restFields = fields.slice(1);
@@ -1876,13 +2149,13 @@ function buildPatientInfoHtml(
     </div>`;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Shared helper: sort analytes by sort_order and group by section_heading.
 //
 // Returns an array of { heading: string | null, analytes: any[] } blocks.
 // Analytes with no section_heading (or all the same heading) are treated as
 // a single block with heading = null.
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function groupAnalytesBySectionHeading(
   analytes: any[],
 ): { heading: string | null; analytes: any[] }[] {
@@ -1892,7 +2165,7 @@ function groupAnalytesBySectionHeading(
     const ob = b.sort_order ?? 0;
     return oa - ob;
   });
-  console.log("📊 Analyte sort order:", sorted.map(a => `${a.parameter}(sort_order=${a.sort_order ?? 'null'})`).join(', '));
+  console.log("ðŸ“Š Analyte sort order:", sorted.map(a => `${a.parameter}(sort_order=${a.sort_order ?? 'null'})`).join(', '));
 
   // Check if any analyte has a section_heading
   const hasHeadings = sorted.some((a) => a.section_heading);
@@ -1923,6 +2196,38 @@ function groupAnalytesBySectionHeading(
   return blocks;
 }
 
+function getAnalyteIdentityIds(analyte: any): string[] {
+  const ids = [
+    analyte?.analyte_id,
+    analyte?.analyteId,
+    analyte?.id,
+    analyte?.lab_analyte_id,
+    analyte?.labAnalyteId,
+    analyte?.analytes?.id,
+    analyte?.lab_analytes?.id,
+  ];
+
+  return [...new Set(
+    ids
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  )];
+}
+
+function normalizeBasicColumnWidths(raw: unknown, fallback: number[], expectedLength: number): number[] {
+  if (!Array.isArray(raw) || raw.length !== expectedLength) return fallback;
+  const values = raw.map((value) => Number(value));
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (values.some((value) => !Number.isFinite(value) || value <= 0) || Math.abs(total - 100) > 0.5) {
+    return fallback;
+  }
+  return values;
+}
+
+function formatBasicWidth(value: number): string {
+  return `${Number(value.toFixed(2))}%`;
+}
+
 /**
  * Classic default template - plain table with flag text styling.
  * This is the original default template before the 3-band color matrix was added.
@@ -1944,6 +2249,87 @@ function generateClassicDefaultTemplateHtml(
 ): string {
   const normalizedSectionContent =
     sectionContent && typeof sectionContent === "object" ? sectionContent : {};
+
+  const stripLooseMarkdown = (value: string): string =>
+    value
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/^(\*\*+)\s*/gm, "")
+      .replace(/\s*(\*\*+)$/gm, "")
+      .trim();
+
+  const escapeNarrativeHtml = (value: string): string =>
+    value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+  const formatNarrativeHtml = (rawContent: string): string => {
+    const trimmed = rawContent.trim();
+    if (!trimmed) return "";
+    if (/<[a-z][\s\S]*>/i.test(trimmed)) {
+      return trimmed.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    }
+
+    const lines = trimmed
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((line) => stripLooseMarkdown(line))
+      .filter(Boolean);
+
+    const parts: string[] = [];
+    let listItems: string[] = [];
+    const flushList = () => {
+      if (!listItems.length) return;
+      parts.push(`<ul>${listItems.join("")}</ul>`);
+      listItems = [];
+    };
+
+    for (const line of lines) {
+      if (/^[-*â€¢]\s+/.test(line)) {
+        listItems.push(
+          `<li>${escapeNarrativeHtml(line.replace(/^[-*â€¢]\s+/, "").trim())}</li>`,
+        );
+        continue;
+      }
+
+      flushList();
+
+      const colonIdx = line.indexOf(":");
+      if (colonIdx > 0 && colonIdx < 60) {
+        parts.push(`
+          <div class="narrative-kv-row">
+            <div class="narrative-kv-label">${escapeNarrativeHtml(line.slice(0, colonIdx).trim())}</div>
+            <div class="narrative-kv-value">${escapeNarrativeHtml(line.slice(colonIdx + 1).trim())}</div>
+          </div>`);
+        continue;
+      }
+
+      parts.push(`<p>${escapeNarrativeHtml(line)}</p>`);
+    }
+
+    flushList();
+    return parts.join("");
+  };
+
+  const isNarrativeGroup = (analytes: any[]): boolean => {
+    if (!analytes.length) return false;
+    const narrativeRows = analytes.filter((analyte) => {
+      const unit = String(analyte.unit || "").trim().toLowerCase();
+      const ref = String(analyte.reference_range || "").trim();
+      const valueTypeRaw = String(analyte.value_type || "").toLowerCase();
+      // Count any row with no unit and no numeric reference range as narrative,
+      // including section headers and plain-text paragraph rows (empty value).
+      return (
+        valueTypeRaw !== "qualitative" &&
+        (!unit || ["n/a", "na", "-", "none", "not applicable"].includes(unit)) &&
+        !/\d/.test(ref)
+      );
+    }).length;
+
+    return narrativeRows > 0 && narrativeRows / analytes.length >= 0.7;
+  };
 
   // Patient Information Section
   const patientInfoHtml = patientInfoConfig
@@ -1976,9 +2362,28 @@ function generateClassicDefaultTemplateHtml(
     </div>
   `;
 
+  // Determine if this is a section-only report (no analytes, only section content)
+  const hasAnalytes = Array.from(analytesByGroup.values()).some(a => a && a.length > 0);
+  const hasSections = Object.keys(normalizedSectionContent).length > 0;
+
+  const buildSectionLabel = (key: string) => {
+    if (sectionLabels?.[key]) return sectionLabels[key];
+    const { rawKey } = normalizeSectionKey(key);
+    if (!rawKey) return "Report Section";
+    return rawKey
+      .replace(/[_-]+/g, " ")
+      .split(" ")
+      .filter(Boolean)
+      .map((part: string) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+      .join(" ");
+  };
+
   // Test Results Section
   let testResultsHtml = '<div class="test-results">';
-  testResultsHtml += '<h3 style="font-size: 14px; font-weight: 600; color: #1e40af; margin-bottom: 8px; border-bottom: 2px solid #3b82f6; padding-bottom: 4px;">Test Results</h3>';
+
+  if (hasAnalytes) {
+    // Normal analyte-based rendering
+    testResultsHtml += '<h3 style="font-size: 14px; font-weight: 600; color: #1e40af; margin-bottom: 8px; border-bottom: 2px solid #3b82f6; padding-bottom: 4px;">Test Results</h3>';
 
   for (const [groupId, analytes] of analytesByGroup) {
     if (!analytes || analytes.length === 0) continue;
@@ -1989,6 +2394,8 @@ function generateClassicDefaultTemplateHtml(
     testResultsHtml += `
       <div class="test-group-section" style="margin-bottom: 16px;">
         <h4 style="font-size: 16px; font-weight: 600; color: #1e40af; padding: 6px 0; margin: 0;">${groupName}</h4>
+        ${(printOptions as any)?._sampleType ? `<div style="font-size:11px;color:#6b7280;font-style:italic;margin:-4px 0 4px 0;">Specimen: ${(printOptions as any)._sampleType}</div>` : ''}
+        ${(printOptions as any)?._sampleCondition ? `<div style="font-size:11px;color:#6b7280;font-style:italic;margin:-4px 0 4px 0;">Condition: ${(printOptions as any)._sampleCondition}</div>` : ''}
         <table class="report-table" style="width: 100%; border-collapse: collapse; font-size: 12px;">
           <thead>
             <tr style="background: #f1f5f9;">
@@ -2056,13 +2463,30 @@ function generateClassicDefaultTemplateHtml(
         }
 
         if (isDescriptive) {
-          testResultsHtml += `
-              <tr style="background: ${rowBg};">
-                <td colspan="5" style="padding: 10px 12px; border: 1px solid #e5e7eb;">
-                  <strong>${parameterName}:</strong> ${value || refText || ""}
+          if (value && value.trim()) {
+            testResultsHtml += `
+              <tr class="descriptive-row" style="background: ${rowBg};">
+                <td style="padding: 10px 12px; font-size: ${basePx}px; text-align: center; font-weight: 600;">
+                  ${parameterName}
+                </td>
+                <td style="padding: 10px 12px; font-size: ${basePx}px; text-align: right;">
+                  ${value}
+                </td>
+                <td style="padding: 10px 12px; font-size: ${basePx}px;"></td>
+                <td style="padding: 10px 12px; font-size: ${basePx}px; color: #666;">
+                  ${refText || ""}
                 </td>
               </tr>
-          `;
+            `;
+          } else {
+            testResultsHtml += `
+              <tr style="background: ${rowBg};">
+                <td colspan="5" style="padding: 10px 12px; border: 1px solid #e5e7eb;">
+                  <strong>${parameterName}:</strong> ${refText || ""}
+                </td>
+              </tr>
+            `;
+          }
           continue;
         }
 
@@ -2111,47 +2535,127 @@ function generateClassicDefaultTemplateHtml(
     `;
   }
 
+  } else if (hasSections) {
+    // â”€â”€ Section-only rendering (radiology, micro, etc.) â”€â”€
+    // No analyte table â€” render section content directly as the primary report body
+    const groupName = testGroupNames.size > 0
+      ? Array.from(testGroupNames.values())[0]
+      : "Report";
+
+    testResultsHtml += `
+      <div class="test-group-section" style="margin-bottom: 16px;">
+        <h3 style="font-size: 16px; font-weight: 600; color: #1e40af; margin-bottom: 8px; border-bottom: 2px solid #3b82f6; padding-bottom: 4px;">${groupName}</h3>
+    `;
+
+    for (const [key, content] of Object.entries(normalizedSectionContent)) {
+      const rawContent = String(content).trim();
+      if (!rawContent) continue;
+
+      const heading = (sectionLabels && sectionLabels[key])
+        ? sectionLabels[key]
+        : buildSectionLabel(key);
+
+      // Rich HTML (e.g. Glass Prescription table) â€” pass through
+      if (/<table\b/i.test(rawContent)) {
+        testResultsHtml += `
+          <div style="margin-top: 14px; page-break-inside: avoid;">
+            <h4 style="font-size: 13px; font-weight: 600; color: #374151; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.3px;">${heading}</h4>
+            ${rawContent}
+          </div>
+        `;
+        continue;
+      }
+
+      // Parse text â†’ lines
+      const plainText = rawContent
+        .replace(/<div[^>]*>/gi, "").replace(/<\/div>/gi, "\n")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<[^>]+>/g, "")
+        .trim();
+
+      const lines = plainText.split(/\n/).map((l: string) => l.trim()).filter(Boolean);
+      const colonLines = lines.filter((l: string) => l.indexOf(":") > 0);
+      const hasStructuredData = colonLines.length >= lines.length * 0.5 && colonLines.length >= 2;
+
+      if (hasStructuredData) {
+        // Key-value pairs â†’ Parameter | Finding table
+        const rowsHtml = lines.map((line: string, idx: number) => {
+          const colonIdx = line.indexOf(":");
+          if (colonIdx > 0) {
+            const rowLabel = line.substring(0, colonIdx).trim();
+            const rowValue = line.substring(colonIdx + 1).trim();
+            const rowBg = idx % 2 === 0 ? "#ffffff" : "#f8fafc";
+            return `<tr style="background: ${rowBg};">
+              <td style="padding: 8px 12px; border: 1px solid #e5e7eb; font-weight: 500; width: 40%;">${rowLabel}</td>
+              <td style="padding: 8px 12px; border: 1px solid #e5e7eb; width: 60%;">${rowValue}</td>
+            </tr>`;
+          }
+          return `<tr><td colspan="2" style="padding: 8px 12px; border: 1px solid #e5e7eb; font-weight: 600; background: #f1f5f9;">${line}</td></tr>`;
+        }).join("");
+
+        testResultsHtml += `
+          <div style="margin-top: 14px; page-break-inside: avoid;">
+            <h4 style="font-size: 13px; font-weight: 600; color: #374151; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.3px;">${heading}</h4>
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+              <thead>
+                <tr style="background: #f1f5f9;">
+                  <th style="padding: 8px 12px; border: 1px solid #e5e7eb; text-align: left; font-weight: 600; width: 40%;">Parameter</th>
+                  <th style="padding: 8px 12px; border: 1px solid #e5e7eb; text-align: left; font-weight: 600; width: 60%;">Finding</th>
+                </tr>
+              </thead>
+              <tbody>${rowsHtml}</tbody>
+            </table>
+          </div>
+        `;
+      } else {
+        // Free text / bulky text (impression, conclusion, etc.)
+        const formatted = formatSectionContentToHtml(rawContent);
+        testResultsHtml += `
+          <div style="margin-top: 14px; page-break-inside: avoid;">
+            <h4 style="font-size: 13px; font-weight: 600; color: #374151; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.3px;">${heading}</h4>
+            <div style="font-size: 12px; color: #1f2937; line-height: 1.6; padding: 8px 12px; border: 1px solid #e5e7eb; border-radius: 4px; background: #fafafa;">
+              ${formatted}
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    testResultsHtml += `</div>`;
+  }
+
   testResultsHtml += "</div>";
 
   // Signatory Section
-  const sigName = signatoryInfo?.signatoryName || "";
+  const sigName = formatSignatureNameForPdf(signatoryInfo?.signatoryName || "");
   const sigDesignation = signatoryInfo?.signatoryDesignation || "";
   const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
+  const signatureSize = resolveSignatureImageSize(printOptions);
 
   const signatoryHtml = `
     <div class="signatures" style="margin-top: 20px; text-align: right; page-break-inside: avoid;">
-      ${sigImageUrl ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 50px; max-width: 150px; margin-bottom: 5px;" />` : ""}
+      ${sigImageUrl ? `<img src="${sigImageUrl}" alt="" style="max-height: ${signatureSize.maxHeight}px; max-width: ${signatureSize.maxWidth}px; width: auto; height: auto; object-fit: contain; margin-bottom: 5px;" onerror="this.style.display='none'" />` : ""}
       ${sigName ? `<p style="margin: 0; font-weight: 600; font-size: 14px;">${sigName}</p>` : ""}
       ${sigDesignation ? `<p style="margin: 4px 0 0 0; color: #64748b; font-size: 12px;">${sigDesignation}</p>` : ""}
     </div>
   `;
 
-  const buildSectionLabel = (key: string) => {
-    if (sectionLabels?.[key]) return sectionLabels[key];
-    const { rawKey } = normalizeSectionKey(key);
-    if (!rawKey) return "Report Section";
-    return rawKey
-      .replace(/[_-]+/g, " ")
-      .split(" ")
-      .filter(Boolean)
-      .map((part: string) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-      .join(" ");
-  };
-
   let reportSectionsHtml = "";
-  if (includeSections && Object.keys(normalizedSectionContent).length > 0) {
+  // Only render separate "Report Sections" block when there ARE analytes
+  // (sections supplement the analyte table). For section-only groups, sections
+  // were already rendered as primary content above.
+  if (hasAnalytes && includeSections && Object.keys(normalizedSectionContent).length > 0) {
     const sectionItems = Object.entries(normalizedSectionContent)
       .filter(([, content]) => content && String(content).trim().length > 0)
       .map(([key, content]) => {
-        const formatted = formatSectionContentToHtml(String(content));
-        if (!formatted) return "";
+        const rawContent = String(content).trim();
+        if (!rawContent) return "";
         const heading = buildSectionLabel(key);
-        return `
-          <div style="margin-top: 12px;">
-            <h4 style="font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 6px;">${heading}</h4>
-            ${formatted}
-          </div>
-        `;
+        return renderSectionContentForTemplate(
+          rawContent,
+          heading,
+          'font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 6px;',
+        );
       })
       .filter(Boolean)
       .join("");
@@ -2168,27 +2672,102 @@ function generateClassicDefaultTemplateHtml(
 
   return `
     <div class="default-report-template">
-      ${patientInfoHtml}
+      ${printOptions?._suppressPatientHeader ? '' : patientInfoHtml}
       ${testResultsHtml}
       ${reportSectionsHtml}
-      ${signatoryHtml}
+      ${printOptions?._suppressSignature ? '' : signatoryHtml}
     </div>
   `;
 }
 
 /**
- * "Basic" template — old-school plain layout matching traditional printed lab reports.
+ * Helper: render section content as a Parameter | Finding table when content has
+ * colon-separated key:value lines. Falls back to formatSectionContentToHtml for
+ * unstructured content. Rich HTML (e.g. <table>) is passed through as-is.
+ */
+function renderSectionContentForTemplate(
+  rawContent: string,
+  heading: string,
+  headingStyle: string,
+): string {
+  if (!rawContent) return "";
+
+  // Rich HTML (e.g. Glass Prescription table) â€” pass through
+  if (/<table\b/i.test(rawContent)) {
+    return `
+      <div style="margin-top: 12px;">
+        <h4 style="${headingStyle}">${heading}</h4>
+        ${rawContent}
+      </div>
+    `;
+  }
+
+  // Strip HTML wrappers to get plain text lines
+  const plainText = rawContent
+    .replace(/<div[^>]*>/gi, "").replace(/<\/div>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .trim();
+
+  const lines = plainText.split(/\n/).map((l: string) => l.trim()).filter(Boolean);
+  const colonLines = lines.filter((l: string) => l.indexOf(":") > 0);
+  const hasStructuredData = colonLines.length >= lines.length * 0.5 && colonLines.length >= 2;
+
+  if (hasStructuredData) {
+    const rowsHtml = lines.map((line: string, idx: number) => {
+      const colonIdx = line.indexOf(":");
+      if (colonIdx > 0) {
+        const rowLabel = line.substring(0, colonIdx).trim();
+        const rowValue = line.substring(colonIdx + 1).trim();
+        const rowBg = idx % 2 === 0 ? "#ffffff" : "#f8fafc";
+        return `<tr style="background: ${rowBg};">
+          <td style="padding: 8px 12px; border: 1px solid #e5e7eb; font-weight: 500; width: 40%;">${rowLabel}</td>
+          <td style="padding: 8px 12px; border: 1px solid #e5e7eb; width: 60%;">${rowValue}</td>
+        </tr>`;
+      }
+      return `<tr><td colspan="2" style="padding: 8px 12px; border: 1px solid #e5e7eb; font-weight: 600;">${line}</td></tr>`;
+    }).join("");
+
+    return `
+      <div style="margin-top: 12px;">
+        <h4 style="${headingStyle}">${heading}</h4>
+        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+          <thead>
+            <tr style="background: #f1f5f9;">
+              <th style="padding: 10px 12px; border: 1px solid #e5e7eb; text-align: left; font-weight: 600; width: 40%;">Parameter</th>
+              <th style="padding: 10px 12px; border: 1px solid #e5e7eb; text-align: left; font-weight: 600; width: 60%;">Finding</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // Fallback: render as formatted HTML paragraphs
+  const formatted = formatSectionContentToHtml(rawContent);
+  if (!formatted) return "";
+  return `
+    <div style="margin-top: 12px;">
+      <h4 style="${headingStyle}">${heading}</h4>
+      ${formatted}
+    </div>
+  `;
+}
+
+/**
+ * "Basic" template â€” old-school plain layout matching traditional printed lab reports.
  *
  * Design rules:
  *  - "TEST REPORT" title bar with 1.5px border top/bottom
  *  - Patient info as figure.table with <th> labels (15%) + <td> values (35%)
- *  - 4 columns: TEST NAME (55%) | VALUE (15%) | UNITS (15%) | Bio. Ref. Interval (15%)
- *  - Column header row: 1.5px solid border top/bottom only — no cell borders
+ *  - 4 columns: TEST NAME (36%) | VALUE (24%) | UNITS (12%) | Bio. Ref. Interval (28%)
+ *  - Column header row: 1.5px solid border top/bottom only â€” no cell borders
  *  - Group name as center-title (underlined, uppercase) inside main-group-row
  *  - Section headings: sub-section-header class (uppercase, small, bold)
- *  - High flags → red (#dc2626) bold; Low flags → black bold; Qualitative abnormal → black bold
+ *  - High flags â†’ red (#dc2626) bold; Low flags â†’ black bold; Qualitative abnormal â†’ black bold
  *  - Test name bold, method italic small below it, calculated marker *
- *  - Footer: flex layout — "Authenticated Electronic Report" left, signature right
+ *  - Footer: flex layout â€” "Authenticated Electronic Report" left, signature right
  *  - Font size controllable via printOptions.baseFontSize (lab-level setting)
  */
 function generateBasicDefaultTemplateHtml(
@@ -2212,18 +2791,32 @@ function generateBasicDefaultTemplateHtml(
 
   const basePx = typeof printOptions?.baseFontSize === "number"
     ? Math.max(8, Math.min(24, printOptions.baseFontSize as number))
-    : 11;
+    : 14;
   const smallPx = Math.max(7, basePx - 3);
   const titlePx = basePx + 2;
   const sigPx = basePx + 1;
-  const testNameWeight = (printOptions?.testNameBold ?? true) ? "600" : "normal";
-  const calcMarker = (printOptions?.calcMarker as string) ?? "asterisk";
-  const boldAllValues = (printOptions?.boldAllValues as boolean) ?? true;
+  const testNameWeight = (printOptions?.testNameBold ?? false) ? "600" : "normal";
+  const testNameAlignment = (printOptions?.testNameAlignment as string) ?? "left";
+  const calcMarker = (printOptions?.calcMarker as string) ?? "cal";
+  const boldAllValues = (printOptions?.boldAllValues as boolean) ?? false;
   const boldAbnormal = (printOptions?.boldAbnormalValues as boolean) ?? true;
-  const sectionHeaderInline = (printOptions?.sectionHeaderInline as boolean) ?? false;
+  const sectionHeaderInline = (printOptions?.sectionHeaderInline as boolean) ?? true;
+  const resultTableBackground = printOptions?.resultTableBackground === "transparent" ? "transparent" : "#fff";
+  const sectionRowBackground = printOptions?.resultTableBackground === "transparent" ? "transparent" : "#f5f5f5";
   const flagSymbol = (printOptions?.flagSymbol as string) ?? "none";
   const showFlagLegend = (printOptions?.showFlagLegend as boolean) ?? false;
-  const colCount = flagSymbol === "before" ? 5 : 4;
+  const testGroupTitlePosition = (printOptions?.testGroupTitlePosition as string) ?? "above_headers_center";
+  const requestedQrPosition = String(printOptions?.qrPosition || "");
+  const qrPosition = requestedQrPosition === "top_left" || requestedQrPosition === "top_right"
+    ? requestedQrPosition
+    : "bottom_left";
+  const qrHorizontalOffset = Math.max(0, Math.min(80, Number(printOptions?.qrHorizontalOffset ?? 0)));
+  // Section field name width percentage for narrative/section-only reports (default 40%)
+  const sectionFieldNamePct = Math.max(20, Math.min(70, Number(printOptions?.sectionFieldNamePct ?? 40)));
+  const colCount = 4;
+  const basicColumnWidths = (printOptions?.basicColumnWidths || {}) as Record<string, unknown>;
+  const standardColumnWidths = normalizeBasicColumnWidths(basicColumnWidths.standard, [36, 24, 12, 28], 4);
+  const siblingColumnWidths = normalizeBasicColumnWidths(basicColumnWidths.sibling, [30, 14, 8, 16, 16, 16], 6);
   console.log("[generateBasicDefaultTemplateHtml] printOptions received:", JSON.stringify(printOptions));
   console.log("[generateBasicDefaultTemplateHtml] boldAllValues resolved to:", boldAllValues, "(raw value:", printOptions?.boldAllValues, "type:", typeof printOptions?.boldAllValues, ")");
   const resultColors = printOptions?.resultColors as Record<string, unknown> | undefined;
@@ -2240,7 +2833,7 @@ function generateBasicDefaultTemplateHtml(
   font-family: Arial, Helvetica, sans-serif;
   display: flex;
   flex-direction: column;
-  min-height: 780px; /* ≈ A4 body height minus default top/bottom margins (180px + 150px) */
+  min-height: ${printOptions?._isCompact ? '0' : '780px'}; /* â‰ˆ A4 body height minus default top/bottom margins (180px + 150px) */
 }
 
 .basic-report-template table {
@@ -2252,7 +2845,7 @@ function generateBasicDefaultTemplateHtml(
 .basic-report-template th {
   color: #000 !important;
   font-weight: normal;
-  background-color: #fff !important;
+  background-color: ${resultTableBackground} !important;
   vertical-align: top !important;
 }
 
@@ -2262,6 +2855,42 @@ function generateBasicDefaultTemplateHtml(
 
 .basic-report-template th {
   padding: 3px 4px !important;
+}
+
+/* Protect rich HTML section content (e.g. Glass Prescription table) from the resets above.
+   These rules MUST come after the general td/th resets and use higher specificity. */
+.basic-report-template .section-rich-content table {
+  border-collapse: collapse !important;
+}
+.basic-report-template .section-rich-content table td,
+.basic-report-template .section-rich-content table th {
+  border: 1px solid #9ca3af !important;
+  padding: 8px !important;
+  font-weight: inherit !important;
+  background-color: inherit !important;
+  vertical-align: middle !important;
+}
+
+/* Restore borders for clinical interpretation tables.
+   Print options CSS sets .limsv2-report td { border:none !important } which kills these.
+   Higher-specificity scoped rule with !important wins. */
+.basic-report-template .group-interpretation figure.table table,
+.basic-report-template .group-interpretation .tbl-interpretation {
+  border-collapse: collapse !important;
+  width: 100% !important;
+}
+.basic-report-template .group-interpretation figure.table table td,
+.basic-report-template .group-interpretation figure.table table th,
+.basic-report-template .group-interpretation .tbl-interpretation td,
+.basic-report-template .group-interpretation .tbl-interpretation th {
+  border: 1px solid #ccc !important;
+  padding: 5px 8px !important;
+  vertical-align: top !important;
+}
+.basic-report-template .group-interpretation figure.table table thead th,
+.basic-report-template .group-interpretation .tbl-interpretation thead th {
+  background-color: #f0f0f0 !important;
+  font-weight: 700 !important;
 }
 
 .basic-report-template .result-normal,
@@ -2285,22 +2914,97 @@ function generateBasicDefaultTemplateHtml(
   font-weight: normal;
 }
 
+/* Restore flag colors inside interpretation blocks (group-interpretation tables) */
+.basic-report-template .group-interpretation .flag-high,
+.basic-report-template .group-interpretation .value-high { color: #dc2626 !important; font-weight: 700 !important; }
+.basic-report-template .group-interpretation .flag-low,
+.basic-report-template .group-interpretation .value-low { color: #ea580c !important; font-weight: 700 !important; }
+.basic-report-template .group-interpretation .flag-critical,
+.basic-report-template .group-interpretation .flag-critical_h,
+.basic-report-template .group-interpretation .value-critical { color: #dc2626 !important; font-weight: 900 !important; }
+.basic-report-template .group-interpretation .flag-abnormal,
+.basic-report-template .group-interpretation .value-abnormal { color: #dc2626 !important; font-weight: 700 !important; }
+.basic-report-template .group-interpretation .flag-trace,
+.basic-report-template .group-interpretation .value-trace { color: #ea580c !important; font-weight: 700 !important; }
+.basic-report-template .group-interpretation .flag-normal,
+.basic-report-template .group-interpretation .value-normal { color: #1f2937 !important; font-weight: 700 !important; }
+
+.basic-report-template .report-title-bar {
+  display: flex !important;
+  align-items: center !important;
+  border-top: 1.5px solid #000 !important;
+  border-bottom: 1.5px solid #000 !important;
+  padding: 4px 0 !important;
+  margin: 6px 0 10px !important;
+}
+
 .basic-report-template .report-main-title {
   text-align: center !important;
   font-size: ${titlePx + 1}px !important;
-  border-top: 1.5px solid #000 !important;
-  border-bottom: 1.5px solid #000 !important;
-  padding: 5px 0 !important;
-  margin: 6px 0 10px !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
   font-weight: 700 !important;
   color: #000 !important;
   line-height: 1.2 !important;
+  flex: 1 !important;
+}
+
+.basic-report-template .report-title-spacer {
+  width: 110px !important;
+  flex-shrink: 0 !important;
+}
+
+.basic-report-template .qr-top-left-slot {
+  width: 110px !important;
+  flex-shrink: 0 !important;
+  text-align: left !important;
+}
+
+.basic-report-template .qr-top-left-slot .qr-verify img {
+  width: 46px !important;
+  height: 46px !important;
+  display: block !important;
+}
+
+.basic-report-template .qr-top-right-slot {
+  width: 108px !important;
+  flex-shrink: 0 !important;
+  text-align: right !important;
+  margin-right: 8px !important;
+}
+
+.basic-report-template .qr-top-right-slot .qr-verify {
+  display: inline-block !important;
+  text-align: left !important;
+}
+
+.basic-report-template .qr-top-right-slot .qr-verify img {
+  width: 46px !important;
+  height: 46px !important;
+  display: block !important;
+}
+
+.basic-report-template .report-title-barcode {
+  width: 108px !important;
+  flex-shrink: 0 !important;
+  text-align: right !important;
+  margin-right: 8px !important;
+  overflow: hidden !important;
+}
+
+.basic-report-template .report-title-barcode img,
+.basic-report-template .report-title-barcode svg {
+  height: 36px !important;
+  width: 100px !important;
+  display: block !important;
+  margin-left: auto !important;
 }
 
 .basic-report-template .patient-header-table {
   width: 100% !important;
   table-layout: fixed !important;
-  margin-bottom: 8px !important;
+  margin-bottom: 0 !important;
   border: none !important;
 }
 
@@ -2327,6 +3031,12 @@ function generateBasicDefaultTemplateHtml(
   font-size: ${basePx}px !important;
 }
 
+.basic-report-template .patient-test-separator {
+  border-top: 1.5px solid #000 !important;
+  height: 0 !important;
+  margin: 2px 0 6px !important;
+}
+
 .basic-report-template .tbl-results {
   width: 100% !important;
   table-layout: fixed !important;
@@ -2347,27 +3057,58 @@ function generateBasicDefaultTemplateHtml(
   vertical-align: middle !important;
 }
 
-${flagSymbol === "before" ? `
-.basic-report-template .tbl-results thead th:nth-child(1) { width: 44% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(2) { width: 7% !important; text-align: center !important; }
-.basic-report-template .tbl-results thead th:nth-child(3) { width: 14% !important; text-align: right !important; }
-.basic-report-template .tbl-results thead th:nth-child(4) { width: 10% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(5) { width: 25% !important; text-align: left !important; }
-.basic-report-template .tbl-results tbody td:nth-child(1) { width: 44% !important; text-align: left !important; color: #111 !important; }
-.basic-report-template .tbl-results tbody td:nth-child(2) { width: 7% !important; text-align: center !important; font-weight: 700 !important; }
-.basic-report-template .tbl-results tbody td:nth-child(3) { width: 14% !important; text-align: right !important; }
-.basic-report-template .tbl-results tbody td:nth-child(4) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
-.basic-report-template .tbl-results tbody td:nth-child(5) { width: 25% !important; text-align: left !important; color: #666 !important; }
-` : `
-.basic-report-template .tbl-results thead th:nth-child(1) { width: 50% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(2) { width: 15% !important; text-align: right !important; }
-.basic-report-template .tbl-results thead th:nth-child(3) { width: 10% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(4) { width: 25% !important; text-align: left !important; }
-.basic-report-template .tbl-results tbody td:nth-child(1) { width: 50% !important; text-align: left !important; color: #111 !important; }
-.basic-report-template .tbl-results tbody td:nth-child(2) { width: 15% !important; text-align: right !important; }
-.basic-report-template .tbl-results tbody td:nth-child(3) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
-.basic-report-template .tbl-results tbody td:nth-child(4) { width: 25% !important; text-align: left !important; color: #666 !important; }
-`}
+.basic-report-template .tbl-results thead th:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; }
+.basic-report-template .tbl-results thead th:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])} !important; text-align: right !important; }
+.basic-report-template .tbl-results thead th:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; }
+.basic-report-template .tbl-results thead th:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; }
+.basic-report-template .tbl-results tbody td:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; color: #111 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])} !important; text-align: right !important; white-space: nowrap !important; overflow: hidden !important; }
+.basic-report-template .tbl-results tbody td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; color: #444 !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
+.basic-report-template .tbl-results tbody td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; color: #666 !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
+
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(1) { width: ${formatBasicWidth(siblingColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(2) { width: ${formatBasicWidth(siblingColumnWidths[1])} !important; text-align: right !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])} !important; text-align: left !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(4) { width: ${formatBasicWidth(siblingColumnWidths[3])} !important; text-align: left !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(5) { width: ${formatBasicWidth(siblingColumnWidths[4])} !important; text-align: right !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])} !important; text-align: left !important; }
+/* Only apply narrow widths to rows with sibling-section-row class */
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(1) { width: ${formatBasicWidth(siblingColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(2) { width: ${formatBasicWidth(siblingColumnWidths[1])} !important; text-align: right !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])} !important; text-align: left !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(4) { width: ${formatBasicWidth(siblingColumnWidths[3])} !important; text-align: left !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(5) { width: ${formatBasicWidth(siblingColumnWidths[4])} !important; text-align: right !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])} !important; text-align: left !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
+/* Wide widths for non-sibling rows in has-sibling table */
+.basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])} !important; text-align: right !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
+
+.basic-report-template .same-row-sibling {
+  display: inline !important;
+  white-space: nowrap !important;
+  color: #000 !important;
+  font-size: ${basePx}px !important;
+  text-align: right !important;
+}
+
+.basic-report-template .same-row-sibling-unit {
+  color: #444 !important;
+  font-weight: normal !important;
+  margin-left: 4px !important;
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+
+.basic-report-template .same-row-sibling-ref {
+  display: inline !important;
+  color: #666 !important;
+  font-size: ${smallPx + 1}px !important;
+  line-height: 1.15 !important;
+  text-align: right !important;
+}
 
 .basic-report-template .tbl-results td,
 .basic-report-template .tbl-results th {
@@ -2406,6 +3147,16 @@ ${flagSymbol === "before" ? `
   font-size: ${basePx}px !important;
   font-weight: ${boldAllValues ? "600" : "normal"} !important;
   font-variant-numeric: tabular-nums !important;
+  white-space: nowrap !important;
+}
+
+.basic-report-template .tbl-results .qualitative-wide-value {
+  width: ${formatBasicWidth(standardColumnWidths.slice(1).reduce((sum, width) => sum + width, 0))} !important;
+  text-align: left !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
 }
 
 .basic-report-template .val.high,
@@ -2428,7 +3179,7 @@ ${flagSymbol === "before" ? `
 }
 
 .basic-report-template .main-group-row td {
-  padding: 0 !important;
+  padding: 8px 0 5px 0 !important;
   border: none !important;
 }
 
@@ -2441,6 +3192,12 @@ ${flagSymbol === "before" ? `
   text-transform: uppercase !important;
   line-height: 1.2 !important;
   color: #000 !important;
+}
+
+.basic-report-template .center-title.left {
+  text-align: left !important;
+  text-decoration: none !important;
+  margin: 0 0 6px !important;
 }
 
 .basic-report-template .center-subtitle {
@@ -2460,7 +3217,13 @@ ${flagSymbol === "before" ? `
   letter-spacing: ${sectionHeaderInline ? 0 : 0.25}px !important;
   border: none !important;
   color: #000 !important;
-  ${sectionHeaderInline ? `border-bottom: 0.5px solid #ccc !important; background-color: #f5f5f5 !important;` : ""}
+  ${sectionHeaderInline ? `border-bottom: 0.5px solid #ccc !important; background-color: ${sectionRowBackground} !important;` : ""}
+}
+
+.basic-report-template .sub-section-col-header td {
+  border-bottom: 1px solid #999 !important;
+  background-color: ${resultTableBackground} !important;
+  color: #333 !important;
 }
 
 .basic-report-template .descriptive-row td {
@@ -2489,6 +3252,70 @@ ${flagSymbol === "before" ? `
   padding-top: 6px !important;
 }
 
+.basic-report-template .narrative-panel {
+  margin: 0 0 14px !important;
+  border-top: 1.5px solid #000 !important;
+  border-bottom: 1px solid #d1d5db !important;
+  padding: 8px 0 10px !important;
+}
+
+.basic-report-template .narrative-panel .center-title {
+  margin-top: 0 !important;
+}
+
+.basic-report-template .narrative-body {
+  margin-top: 8px !important;
+  font-size: ${basePx}px !important;
+  line-height: 1.55 !important;
+  color: #111 !important;
+}
+
+.basic-report-template .narrative-kv-row {
+  display: grid !important;
+  grid-template-columns: ${sectionFieldNamePct}% 1fr !important;
+  gap: 10px !important;
+  padding: 6px 0 !important;
+  border-bottom: 0.5px dotted #d1d5db !important;
+}
+
+.basic-report-template .narrative-kv-label {
+  font-weight: 700 !important;
+  color: #111 !important;
+}
+
+.basic-report-template .narrative-kv-value {
+  color: #111 !important;
+}
+
+.basic-report-template .narrative-body p {
+  margin: 0 0 8px !important;
+}
+
+.basic-report-template .narrative-body ul {
+  margin: 0 !important;
+  padding-left: 18px !important;
+}
+
+.basic-report-template .narrative-body li {
+  margin-bottom: 4px !important;
+}
+
+.basic-report-template .narrative-section-heading {
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  font-size: ${basePx + 1}px !important;
+  padding: 10px 0 4px !important;
+  border-bottom: 0.5px solid #bbb !important;
+  margin-top: 8px !important;
+  letter-spacing: 0.02em !important;
+  color: #000 !important;
+}
+
+.basic-report-template .narrative-para {
+  margin: 3px 0 6px !important;
+  line-height: 1.55 !important;
+}
+
 .basic-report-template .report-footer {
   margin-top: auto !important;  /* pushes footer to bottom of available page space */
   padding-top: 30px !important; /* minimum breathing room above footer */
@@ -2497,6 +3324,18 @@ ${flagSymbol === "before" ? `
   align-items: flex-end !important;
   page-break-inside: avoid !important;
   border-top: none !important;
+}
+
+.basic-report-template .report-footer .qr-verify {
+  margin-left: ${qrHorizontalOffset}px !important;
+}
+
+.basic-report-template .qr-top-left-slot .qr-verify {
+  margin-left: ${qrHorizontalOffset}px !important;
+}
+
+.basic-report-template .qr-top-right-slot .qr-verify {
+  margin-right: ${qrHorizontalOffset}px !important;
 }
 
 .basic-report-template .auth-text {
@@ -2538,13 +3377,61 @@ ${flagSymbol === "before" ? `
     ? noColorCss.replace(/\.basic-report-template/g, `[data-test-group-id="${groupId}"] .basic-report-template`)
     : noColorCss;
 
-  const patientInfoHtml = patientInfoConfig
-    ? buildPatientInfoHtml(patientInfoConfig, '#5a7f3a', extraFieldConfigs)
-    : `
-    <div class="report-header-top">
+  const reportTitleBarHtml = `
+    <div class="report-title-bar">
+      <div class="${qrPosition === "top_left" ? "qr-top-left-slot" : "report-title-spacer"}"></div>
       <h2 class="report-main-title">TEST REPORT</h2>
+      <div class="${qrPosition === "top_right" ? "qr-top-right-slot" : "report-title-barcode"}">
+        {{barcode_image}}
+      </div>
     </div>
-    <figure class="table" style="margin: 0 0 10px;">
+  `;
+
+  const patientInfoHtml = (() => {
+    // Build the field list from config, or use fallback defaults
+    const configFields = patientInfoConfig
+      ? patientInfoConfig.fields
+          .map(key => {
+            if (PATIENT_INFO_FIELD_MAP[key]) return { ...PATIENT_INFO_FIELD_MAP[key], key };
+            if (key.startsWith('custom_')) {
+              const found = extraFieldConfigs?.find(f => `custom_${f.field_key}` === key);
+              const label = found ? found.label : key.replace(/^custom_/, '').replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+              return { label, placeholder: `{{${key}}}`, key };
+            }
+            return undefined;
+          })
+          .filter(Boolean) as Array<{ label: string; placeholder: string; key: string }>
+      : null;
+
+    if (configFields && configFields.length > 0) {
+      // Combine age + gender into a single "Age / Sex" field when both are present
+      const ageIdx = configFields.findIndex(f => f.key === 'age');
+      const genderIdx = configFields.findIndex(f => f.key === 'gender');
+      if (ageIdx >= 0 && genderIdx >= 0) {
+        configFields[ageIdx] = { label: 'Age / Sex', placeholder: '{{patientAge}} / {{patientGender}}', key: 'ageGender' };
+        configFields.splice(genderIdx > ageIdx ? genderIdx : ageIdx + 1, 1);
+      }
+
+      const rows: string[] = [];
+      for (let i = 0; i < configFields.length; i += 2) {
+        const f1 = configFields[i];
+        const f2 = configFields[i + 1];
+        rows.push(`<tr>
+          <th>${f1.label}</th><td>: ${f1.placeholder}</td>
+          ${f2 ? `<th>${f2.label}</th><td>: ${f2.placeholder}</td>` : `<th></th><td></td>`}
+        </tr>`);
+      }
+      return `
+      <figure class="table" style="margin:0;">
+        <table class="patient-header-table">
+          <tbody>${rows.join('')}</tbody>
+        </table>
+      </figure>`;
+    }
+
+    // Default fallback when no config
+    return `
+    <figure class="table" style="margin:0;">
       <table class="patient-header-table">
         <tbody>
           <tr>
@@ -2557,14 +3444,55 @@ ${flagSymbol === "before" ? `
           </tr>
           <tr>
             <th>Ref. By</th><td>: {{referringDoctorName}}</td>
-            <th>Report Date</th><td>: {{approvedAt}}</td>
+            <th>Report Date</th><td>: {{reportDate}}</td>
           </tr>
         </tbody>
       </table>
-    </figure>
-  `;
+    </figure>`;
+  })();
 
   let testResultsHtml = '<div class="test-results">';
+
+  // â”€â”€ Narrative helpers (scoped to this function) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const _stripMd = (v: string) =>
+    v.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/^(\*\*+)\s*/gm, "").replace(/\s*(\*\*+)$/gm, "").trim();
+  const _escHtml = (v: string) =>
+    v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const _fmtNarrative = (raw: string): string => {
+    const t = raw.trim();
+    if (!t) return "";
+    if (/<[a-z][\s\S]*>/i.test(t)) return t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    const lines = t.replace(/\r\n/g, "\n").split("\n").map((l: string) => _stripMd(l)).filter(Boolean);
+    const parts: string[] = [];
+    let lis: string[] = [];
+    const flush = () => { if (lis.length) { parts.push(`<ul>${lis.join("")}</ul>`); lis = []; } };
+    for (const line of lines) {
+      if (/^[-*â€¢]\s+/.test(line)) { lis.push(`<li>${_escHtml(line.replace(/^[-*â€¢]\s+/, "").trim())}</li>`); continue; }
+      flush();
+      const ci = line.indexOf(":");
+      if (ci > 0 && ci < 60) {
+        parts.push(`<div class="narrative-kv-row"><div class="narrative-kv-label">${_escHtml(line.slice(0, ci).trim())}</div><div class="narrative-kv-value">${_escHtml(line.slice(ci + 1).trim())}</div></div>`);
+        continue;
+      }
+      parts.push(`<p>${_escHtml(line)}</p>`);
+    }
+    flush();
+    return parts.join("");
+  };
+  const _isNarrativeGroup = (analytes: any[]): boolean => {
+    if (!analytes.length) return false;
+    const n = analytes.filter((a: any) => {
+      const unit = String(a.unit || "").trim().toLowerCase();
+      const ref = String(a.reference_range || "").trim();
+      const vt = String(a.value_type || "").toLowerCase();
+      return vt !== "qualitative" &&
+        (!unit || ["n/a", "na", "-", "none", "not applicable"].includes(unit)) &&
+        !/\d/.test(ref);
+    }).length;
+    return n > 0 && n / analytes.length >= 0.7;
+  };
+  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
   for (const [groupId, analytes] of analytesByGroup) {
     if (!analytes || analytes.length === 0) continue;
 
@@ -2572,49 +3500,207 @@ ${flagSymbol === "before" ? `
     const hasCalcInGroup = analytes.some((a: { is_auto_calculated?: boolean; is_calculated?: boolean }) =>
       a.is_auto_calculated || a.is_calculated
     );
+    let hasNumericInGroup = false;
 
-    const specimenText = analytes[0]?.specimen
-      ? `<div class="center-subtitle">Specimen: ${analytes[0].specimen}</div>`
+    const specimenText = (printOptions as any)?._sampleType
+      ? `<div class="center-subtitle">Specimen: ${(printOptions as any)._sampleType}</div>`
+      : (analytes[0]?.specimen
+        ? `<div class="center-subtitle">Specimen: ${analytes[0].specimen}</div>`
+        : "");
+    const conditionText = (printOptions as any)?._sampleCondition
+      ? `<div class="center-subtitle">Condition: ${(printOptions as any)._sampleCondition}</div>`
       : "";
 
-    testResultsHtml += `
-      <figure class="table" style="margin: 0 0 14px;">
-        <table class="tbl-results">
-          <thead>
-            <tr>
-              <th>TEST NAME</th>
-              ${flagSymbol === "before" ? `<th>FLAG</th>` : ""}
-              <th>VALUE</th>
-              <th>UNITS</th>
-              <th>Bio. Ref. Interval</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr class="main-group-row">
-              <td colspan="${colCount}">
-                <div class="center-title">${groupName}</div>
-                ${specimenText}
-              </td>
-            </tr>
-    `;
+	    const groupTitleBelowHeaders = testGroupTitlePosition === "below_headers";
+	    const groupTitleClass = testGroupTitlePosition === "above_headers_left" ? "center-title left" : "center-title";
+	    const analyteById = new Map<string, any>();
+	    const sameRowSiblingIds = new Set<string>();
+	    let sameRowLinkCount = 0;
+	    let sameRowSiblingLabel = "Absolute Count";
+	    for (const analyte of analytes) {
+	      for (const analyteId of getAnalyteIdentityIds(analyte)) {
+	        analyteById.set(analyteId, analyte);
+	      }
+	    }
+	    for (const analyte of analytes) {
+	      const options = analyte.report_display_options || {};
+	      const siblingId = String(options.sameRowSiblingAnalyteId || "").trim();
+	      if (siblingId && analyteById.has(siblingId)) {
+	        sameRowSiblingIds.add(siblingId);
+	        sameRowLinkCount += 1;
+	        if (options.sameRowSiblingLabel) sameRowSiblingLabel = String(options.sameRowSiblingLabel);
+	      }
+	    }
+	    const hasSameRowSibling = sameRowLinkCount > 0;
+	    const effectiveColCount = hasSameRowSibling ? 6 : colCount;
+	    if (sameRowLinkCount > 0) {
+	      console.log(`[basic-template] same-row sibling links applied for ${groupName}: ${sameRowLinkCount}`);
+	    }
+
+	    // Pre-compute which sections have siblings for section-level header labels
+	    const sectionsWithSiblings = new Set<string | null>();
+	    for (const analyte of analytes) {
+	      const siblingId = String(analyte.report_display_options?.sameRowSiblingAnalyteId || "").trim();
+	      if (siblingId && analyteById.has(siblingId)) {
+	        sectionsWithSiblings.add(analyte.section_heading ?? null);
+	      }
+	    }
+
+	    if (_isNarrativeGroup(analytes)) {
+      const rowsHtml = analytes.map((analyte: any) => {
+        const rawParam = String(analyte.parameter || analyte.name || analyte.test_name || "").trim();
+        const rawValue = String(analyte.value ?? analyte.reference_range ?? "").trim();
+
+        // Clean ** bold markers
+        const param = _stripMd(rawParam);
+        const value = _stripMd(rawValue.replace(/^\*\*\s*/, "").replace(/\s*\*\*$/, ""));
+
+        if (!param && !value) return "";
+
+        // Section header: parameter starts with ** and value is empty or just **
+        const isSectionHeader =
+          /^\*\*/.test(rawParam) && (!rawValue || /^\*\*\s*$/.test(rawValue));
+
+        if (isSectionHeader) {
+          return `<div class="narrative-section-heading">${_escHtml(param)}</div>`;
+        }
+
+        // Free-text paragraph: no ** prefix on parameter and no value
+        if (!/^\*\*/.test(rawParam) && !value) {
+          return `<p class="narrative-para">${_escHtml(param)}</p>`;
+        }
+
+        // Key-value pair
+        return `
+          <div class="narrative-kv-row">
+            <div class="narrative-kv-label">${_escHtml(param)}</div>
+            <div class="narrative-kv-value">${_fmtNarrative(value)}</div>
+          </div>`;
+      }).join("");
+
+      const narrativeGroupInterpretation = groupInterpretations?.get(groupId) || analytes[0]?.groupInterpretation;
+      testResultsHtml += `
+        <section class="narrative-panel">
+          <div class="${groupTitleClass}">${groupName}</div>
+          ${specimenText}
+          ${conditionText}
+          <div class="narrative-body">${rowsHtml}</div>
+          ${narrativeGroupInterpretation ? `<div class="limsv2-report group-interpretation" style="margin-top:8px;padding:6px 0;border-top:1px solid #ddd;font-size:inherit;">${narrativeGroupInterpretation}</div>` : ""}
+        </section>
+      `;
+      continue;
+    }
+
+	    const groupColumnHeaderHtml = `
+	      <table class="tbl-results" style="width:100%; table-layout:fixed; border-collapse:collapse; margin-top:4px;">
+	        <colgroup>
+	          <col style="width:${formatBasicWidth(standardColumnWidths[0])}">
+	          <col style="width:${formatBasicWidth(standardColumnWidths[1])}">
+	          <col style="width:${formatBasicWidth(standardColumnWidths[2])}">
+	          <col style="width:${formatBasicWidth(standardColumnWidths[3])}">
+	        </colgroup>
+	        <thead>
+	          <tr>
+	            <th style="border-top:1.5px solid #000; border-bottom:1.5px solid #000; font-weight:700; padding:4px; text-align:left;">TEST NAME</th>
+	            <th style="border-top:1.5px solid #000; border-bottom:1.5px solid #000; font-weight:700; padding:4px; text-align:right;">VALUE</th>
+	            <th style="border-top:1.5px solid #000; border-bottom:1.5px solid #000; font-weight:700; padding:4px; text-align:left;">UNITS</th>
+	            <th style="border-top:1.5px solid #000; border-bottom:1.5px solid #000; font-weight:700; padding:4px; text-align:left;">Bio. Ref. Interval</th>
+	          </tr>
+	        </thead>
+	        ${groupTitleBelowHeaders ? `
+	        <tbody>
+	          <tr class="main-group-row">
+	            <td colspan="4">
+	              <div class="${groupTitleClass}">${groupName}</div>
+	              ${specimenText}
+	              ${conditionText}
+	            </td>
+	          </tr>
+	        </tbody>` : ""}
+	      </table>
+	    `;
+
+	    // Group title and column labels render once per test group.
+	    testResultsHtml += `
+	      <figure class="table" style="margin: 0 0 14px;">
+	        ${!groupTitleBelowHeaders ? `
+	          <div class="${groupTitleClass}">${groupName}</div>
+	          ${specimenText}
+	          ${conditionText}
+	        ` : ""}
+	        ${groupColumnHeaderHtml}
+	    `;
 
     const sectionBlocks = groupAnalytesBySectionHeading(analytes);
-    for (const block of sectionBlocks) {
-      if (block.heading) {
-        testResultsHtml += `
-            <tr class="sub-section-header">
-              <td colspan="${colCount}">${block.heading}</td>
-            </tr>
-        `;
-      }
+    let isFirstSection = true;
 
-      for (const analyte of block.analytes) {
-        const parameterName = analyte.parameter || analyte.name || analyte.test_name || "";
+    for (const block of sectionBlocks) {
+      const sectionHasSiblings = sectionsWithSiblings.has(block.heading);
+      // Determine column structure for THIS section
+	      const sectionColCount = sectionHasSiblings ? 6 : 4;
+	      const sectionWidths = sectionHasSiblings
+	        ? {
+	            name: formatBasicWidth(siblingColumnWidths[0]),
+	            value: formatBasicWidth(siblingColumnWidths[1]),
+	            unit: formatBasicWidth(siblingColumnWidths[2]),
+	            ref: formatBasicWidth(siblingColumnWidths[3]),
+	            sibVal: formatBasicWidth(siblingColumnWidths[4]),
+	            sibRef: formatBasicWidth(siblingColumnWidths[5]),
+	          }
+	        : {
+	            name: formatBasicWidth(standardColumnWidths[0]),
+	            value: formatBasicWidth(standardColumnWidths[1]),
+	            unit: formatBasicWidth(standardColumnWidths[2]),
+	            ref: formatBasicWidth(standardColumnWidths[3]),
+	          };
+
+      // Close previous table if not first section
+      if (!isFirstSection) {
+        testResultsHtml += `</tbody></table>`;
+      }
+      isFirstSection = false;
+
+	      // Open new table with appropriate column widths for this section
+	      testResultsHtml += `
+	        <table class="tbl-results${sectionHasSiblings ? " has-sibling" : ""}" style="width:100%; table-layout:fixed; border-collapse:collapse; margin-top:${block.heading ? "0" : "4"}px;">
+	          <colgroup>
+	            <col style="width:${sectionWidths.name}">
+	            <col style="width:${sectionWidths.value}">
+	            <col style="width:${sectionWidths.unit}">
+	            <col style="width:${sectionWidths.ref}">
+	            ${sectionHasSiblings ? `<col style="width:${sectionWidths.sibVal}"><col style="width:${sectionWidths.sibRef}">` : ""}
+	          </colgroup>
+	          <tbody>
+	      `;
+
+	      // Add section header row if this section has a heading
+	      if (block.heading) {
+	        testResultsHtml += `
+	          <tr class="sub-section-header">
+	            ${sectionHasSiblings
+	              ? `<td colspan="4" style="font-weight:700; padding-top:6px; padding-bottom:3px; text-transform:uppercase; font-size:${smallPx + 1}px; border-bottom:0.5px solid #ccc; background-color:#f5f5f5;">${block.heading}</td><td colspan="2" style="font-weight:700; padding-top:6px; padding-bottom:3px; text-align:center; text-decoration:underline; font-size:${smallPx + 1}px; border-bottom:0.5px solid #ccc; background-color:#f5f5f5;">${sameRowSiblingLabel}</td>`
+	              : `<td colspan="${sectionColCount}" style="font-weight:700; padding-top:6px; padding-bottom:3px; text-transform:uppercase; font-size:${smallPx + 1}px; border-bottom:0.5px solid #ccc; background-color:#f5f5f5;">${block.heading}</td>`}
+	          </tr>
+	        `;
+	      }
+
+	      for (const analyte of block.analytes) {
+		        const currentAnalyteIds = getAnalyteIdentityIds(analyte);
+		        if (
+		          currentAnalyteIds.some((id) => sameRowSiblingIds.has(id)) &&
+		          analyte.report_display_options?.hiddenWhenRenderedAsSibling !== false
+		        ) {
+		          continue;
+		        }
+
+	        const parameterName = analyte.parameter || analyte.name || analyte.test_name || "";
         const isCalculated = analyte.is_auto_calculated || analyte.is_calculated;
         const rawValue = analyte.value ?? "";
-        const value = isCalculated && rawValue !== "" && !isNaN(Number(rawValue))
-          ? String(parseFloat(Number(rawValue).toFixed(2)))
-          : rawValue;
+        const value = formatIndianNumber(
+          isCalculated && rawValue !== "" && !isNaN(Number(rawValue))
+            ? String(parseFloat(Number(rawValue).toFixed(2)))
+            : rawValue
+        );
         const unit = analyte.unit || "";
         const refRange = (analyte.reference_range || "").replace(/\n/g, "<br>");
         const flag = analyte.flag || "";
@@ -2626,15 +3712,21 @@ ${flagSymbol === "before" ? `
             : calcMarker === "cal"
             ? `<span style="font-size:${smallPx - 1}px; color:#888; margin-left:2px; font-style:italic;">*cal</span>`
             : ""
-          : "";
+		          : "";
 
         const unitText = String(unit || "").trim().toLowerCase();
         const refText = String(refRange || "").trim();
         const hasNumericRef = /\d/.test(refText);
+        const valueTypeRaw = String(analyte.value_type || "").toLowerCase();
+        const isQualitativeWithoutMetadata =
+          valueTypeRaw === "qualitative" && !unitText && !refText;
         const isDescriptive =
-          unitText === "n/a" || unitText === "na" || unitText === "-" ||
+          valueTypeRaw !== "qualitative" &&
+          (unitText === "n/a" || unitText === "na" || unitText === "-" ||
           unitText === "none" || unitText === "not applicable" ||
-          (!unitText && refText && !hasNumericRef);
+          (!unitText && refText && !hasNumericRef));
+
+        if (!isDescriptive && valueTypeRaw !== "qualitative") hasNumericInGroup = true;
 
         const isNumericHigh = canonicalFlag === "high" || canonicalFlag === "critical_high";
         const isNumericLow = canonicalFlag === "low" || canonicalFlag === "critical_low";
@@ -2657,25 +3749,81 @@ ${flagSymbol === "before" ? `
           return "";
         })();
 
-        const displayValue = flagSymbol === "after" && flagSymbolText
-          ? `${value + asteriskSuffix} <span style="font-weight:700;">${flagSymbolText}</span>`
+        // Use a flex container to keep flag and value properly aligned in one line
+        // Flag gets fixed width on left, value fills remaining space and aligns right
+        const flagWidth = basePx * 1.5;
+        const displayValue = flagSymbol === "before" && flagSymbolText
+          ? `<span style="display:inline-flex;align-items:baseline;width:100%;"><span style="flex:0 0 ${flagWidth}px;text-align:left;font-weight:700;">${flagSymbolText}</span><span style="flex:1;text-align:right;">${value + asteriskSuffix}</span></span>`
+          : flagSymbol === "after" && flagSymbolText
+          ? `<span style="display:inline-flex;align-items:baseline;width:100%;justify-content:flex-end;"><span style="text-align:right;">${value + asteriskSuffix}</span><span style="flex:0 0 ${flagWidth}px;text-align:right;font-weight:700;margin-left:4px;">${flagSymbolText}</span></span>`
           : value + asteriskSuffix;
 
         if (isDescriptive) {
-          testResultsHtml += `
+          if (value && value.trim()) {
+            testResultsHtml += `
               <tr class="descriptive-row">
-                <td colspan="${colCount}" style="font-size: ${basePx}px;">
-                  <span style="font-weight:600;">${parameterName}</span>: ${value || refText || ""}
+                <td class="test-name-cell" style="font-size:${basePx}px;">
+                  <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">${parameterName}${calcSuffix}</div>
                 </td>
+                <td class="val" style="font-size:${basePx}px; text-align:right;">${value}</td>
+                <td style="font-size:${basePx}px;"></td>
+	                <td style="font-size:${basePx}px; color:#666;">${refText || ""}</td>
+	                ${sectionHasSiblings ? `<td></td><td></td>` : ""}
+	              </tr>
+	            `;
+	          } else {
+	            testResultsHtml += `
+	              <tr class="descriptive-row">
+	                <td colspan="${sectionColCount}" style="font-size: ${basePx}px;">
+	                  <span style="font-weight:600;">${parameterName}</span>: ${refText || ""}
+	                </td>
               </tr>
-          `;
+            `;
+          }
           continue;
         }
 
-        const valClass = canonicalFlag ? `val ${canonicalFlag}` : "val";
+	        const valClass = canonicalFlag ? `val ${canonicalFlag}` : "val";
+	        const visibleFlagRowClass = flagSymbolText
+	          ? `has-visible-flag flag-${canonicalFlag}`
+	          : "";
+		        const siblingId = String(analyte.report_display_options?.sameRowSiblingAnalyteId || "").trim();
+	        const siblingAnalyte = siblingId ? analyteById.get(siblingId) : null;
+	        const siblingValueHtml = siblingAnalyte
+	          ? (() => {
+	              const siblingRawValue = siblingAnalyte.value ?? "";
+	              const siblingValue = formatIndianNumber(
+	                (siblingAnalyte.is_auto_calculated || siblingAnalyte.is_calculated) &&
+	                  siblingRawValue !== "" &&
+	                  !isNaN(Number(siblingRawValue))
+	                  ? String(parseFloat(Number(siblingRawValue).toFixed(2)))
+	                  : siblingRawValue
+	              );
+		              const siblingUnit = siblingAnalyte.unit || "";
+		              if (!siblingValue && !siblingUnit) return "";
+		              const siblingFlag = normalizeReportFlag(siblingAnalyte.flag || "").canonical;
+		              const siblingClass = siblingFlag ? `val ${siblingFlag}` : "val";
+		              return `
+		                <span class="same-row-sibling">
+		                  <span class="${siblingClass}">${siblingValue}</span>
+		                  ${siblingUnit ? `<span class="same-row-sibling-unit">${siblingUnit}</span>` : ""}
+		                </span>
+		              `;
+		            })()
+	          : "";
+	        const siblingRefHtml = siblingAnalyte
+	          ? (() => {
+		              const siblingRefRange = (siblingAnalyte.reference_range || "").replace(/\n/g, "<br>");
+		              if (!siblingRefRange) return "";
+		              return `<span class="same-row-sibling-ref">${siblingRefRange}</span>`;
+		            })()
+	          : "";
 
-        testResultsHtml += `
-              <tr>
+	        // Each section now has its own table with correct column structure
+	        if (sectionHasSiblings) {
+	          // 6-column layout for sibling sections
+	          testResultsHtml += `
+	              <tr class="${visibleFlagRowClass}">
                 <td class="test-name-cell">
                   <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">
                     ${parameterName}${calcSuffix}
@@ -2683,13 +3831,37 @@ ${flagSymbol === "before" ? `
                   ${showMethodology && analyte.method
                     ? `<div class="test-method">${analyte.method}</div>`
                     : ""}
-                </td>
-                ${flagSymbol === "before" ? `<td class="${valClass}" style="font-size:${basePx}px; text-align:center;">${flagSymbolText}</td>` : ""}
-                <td class="${valClass}">${displayValue}</td>
-                <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
-                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
-              </tr>
-        `;
+	                </td>
+	                <td class="${valClass}" style="text-align:right;">${displayValue}</td>
+		                <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
+		                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
+		                <td style="text-align:right; vertical-align:top;">${siblingValueHtml}</td>
+		                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${siblingRefHtml}</td>
+		              </tr>
+		        `;
+	        } else {
+	          // 4-column layout for non-sibling sections
+	          testResultsHtml += `
+	              <tr class="${[
+	                isQualitativeWithoutMetadata ? "qualitative-wide-row" : "",
+	                visibleFlagRowClass,
+	              ].filter(Boolean).join(" ")}">
+                <td class="test-name-cell">
+                  <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">
+                    ${parameterName}${calcSuffix}
+                  </div>
+                  ${showMethodology && analyte.method
+                    ? `<div class="test-method">${analyte.method}</div>`
+                    : ""}
+	                </td>
+	                ${isQualitativeWithoutMetadata
+	                  ? `<td class="${valClass} qualitative-wide-value" colspan="3">${displayValue}</td>`
+	                  : `<td class="${valClass}" style="text-align:right;">${displayValue}</td>
+		                <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
+		                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>`}
+		              </tr>
+		        `;
+	        }
 
         if (showInterpretation) {
           let interp = "";
@@ -2698,11 +3870,11 @@ ${flagSymbol === "before" ? `
           else interp = analyte.interpretation_normal || "";
 
           if (interp) {
-            testResultsHtml += `
-              <tr class="interpretation-row">
-                <td colspan="${colCount}">${interp}</td>
-              </tr>
-            `;
+	            testResultsHtml += `
+	              <tr class="interpretation-row">
+	                <td colspan="${sectionColCount}">${interp}</td>
+	              </tr>
+	            `;
           }
         }
       }
@@ -2717,7 +3889,7 @@ ${flagSymbol === "before" ? `
           if (hasCalcInGroup && calcMarker === "asterisk") parts.push("* Calculated parameter");
           if (printOptions?.flagAsterisk) parts.push("** Abnormal value");
           if (printOptions?.flagAsterisk && printOptions?.flagAsteriskCritical) parts.push("*** Critical value");
-          if (showFlagLegend && flagSymbol !== "none") parts.push("H = High &nbsp; L = Low &nbsp; A = Abnormal &nbsp; H* = Critical High &nbsp; L* = Critical Low");
+          if (showFlagLegend && flagSymbol !== "none" && hasNumericInGroup) parts.push("H = High &nbsp; L = Low &nbsp; A = Abnormal &nbsp; H* = Critical High &nbsp; L* = Critical Low");
           return parts.length ? `<p class="calculated-note">${parts.join(" &nbsp;|&nbsp; ")}</p>` : "";
         })()}
         ${_basicGroupInterp ? `<div class="limsv2-report group-interpretation" style="margin-top:8px;padding:6px 0;border-top:1px solid #ddd;font-size:inherit;">${_basicGroupInterp}</div>` : ''}
@@ -2727,16 +3899,17 @@ ${flagSymbol === "before" ? `
 
   testResultsHtml += "</div>";
 
-  const sigName = signatoryInfo?.signatoryName || "";
+  const sigName = formatSignatureNameForPdf(signatoryInfo?.signatoryName || "");
   const sigDesignation = signatoryInfo?.signatoryDesignation || "";
   const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
+  const signatureSize = resolveSignatureImageSize(printOptions);
 
   const signatoryHtml = `
     <div class="report-footer">
       <div class="auth-text">Authenticated Electronic Report</div>
       <div class="signature-box">
         ${sigImageUrl
-          ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 45px; max-width: 130px; margin-bottom: 4px; display: block; margin-left: auto;" />`
+          ? `<img src="${sigImageUrl}" alt="" style="max-height: ${signatureSize.maxHeight}px; max-width: ${signatureSize.maxWidth}px; width: auto; height: auto; object-fit: contain; margin-bottom: 4px; display: block; margin-left: auto;" onerror="this.style.display='none'" />`
           : ""}
         ${sigName ? `<div style="font-weight:700; font-size:${sigPx}px;">${sigName}</div>` : ""}
         ${sigDesignation ? `<div style="font-size:${basePx - 1}px; margin-top:2px;">${sigDesignation}</div>` : ""}
@@ -2758,37 +3931,50 @@ ${flagSymbol === "before" ? `
 
   let reportSectionsHtml = "";
   if (includeSections && Object.keys(normalizedSectionContent).length > 0) {
-    const sectionItems = Object.entries(normalizedSectionContent)
+    const sectionTables = Object.entries(normalizedSectionContent)
       .filter(([, content]) => content && String(content).trim().length > 0)
       .map(([key, content]) => {
-        const formatted = formatSectionContentToHtml(String(content));
-        if (!formatted) return "";
+        const rawContent = String(content).trim();
+        if (!rawContent) return "";
+        const label = (sectionLabels && sectionLabels[key]) ? sectionLabels[key] : buildSectionLabel(key);
+
+        // If content contains a real <table>, render as standalone rich HTML block
+        // to protect inner table borders from the basic template's border:none resets.
+        // Simple <div>-wrapped text (e.g. from Survey.js) is NOT rich â€” render in columns.
+        const isRichHtml = /<table\b/i.test(rawContent);
+        if (isRichHtml) {
+          return `
+            <div class="section-rich-content" style="margin: 8px 0 14px; page-break-inside: avoid;">
+              <div class="center-title" style="text-align:center;font-weight:700;text-decoration:underline;font-size:${basePx + 1}px;margin:8px 0 6px;text-transform:uppercase;color:#000;">${label}</div>
+              <div style="font-size:${basePx}px;">${rawContent}</div>
+            </div>
+          `;
+        }
+
         return `
-          <div style="margin-top: 10px; font-size: ${basePx}px;">
-            <div style="font-weight:700; margin-bottom:3px;">${buildSectionLabel(key)}</div>
-            ${formatted}
-          </div>
+          <section class="narrative-panel">
+            <div class="center-title">${label}</div>
+            <div class="narrative-body">${_fmtNarrative(rawContent)}</div>
+          </section>
         `;
       })
       .filter(Boolean)
       .join("");
 
-    if (sectionItems) {
-      reportSectionsHtml = `
-        <div class="report-sections">
-          ${sectionItems}
-        </div>
-      `;
+    if (sectionTables) {
+      reportSectionsHtml = sectionTables;
     }
   }
 
   const innerHtml = `
     ${scopedCss}
     <div class="basic-report-template" style="font-family: Arial, Helvetica, sans-serif; font-size: ${basePx}px; color: #000;">
-      ${patientInfoHtml}
+      ${printOptions?._suppressPatientHeader ? '' : reportTitleBarHtml}
+      ${printOptions?._suppressPatientHeader ? '' : patientInfoHtml}
+      ${printOptions?._suppressPatientHeader ? '' : '<div class="patient-test-separator"></div>'}
       ${testResultsHtml}
       ${reportSectionsHtml}
-      ${signatoryHtml}
+      ${printOptions?._suppressSignature ? '' : signatoryHtml}
     </div>
   `;
   // The scoped CSS uses [data-test-group-id="..."] .basic-report-template selectors.
@@ -2833,9 +4019,14 @@ function generateDefaultTemplateHtml(
     );
   }
 
-  // Branch to basic (old-school) template if requested
-  if (templateStyle === 'basic') {
-    return generateBasicDefaultTemplateHtml(
+	  // Branch to basic (old-school) template if requested
+	  if (templateStyle === 'basic') {
+	    console.log("[basic-template] rendering built-in basic template", {
+	      groupId,
+	      groups: analytesByGroup.size,
+	      analytes: [...analytesByGroup.values()].reduce((count, rows) => count + rows.length, 0),
+	    });
+	    return generateBasicDefaultTemplateHtml(
       context, testGroupNames, analytesByGroup, signatoryInfo,
       sectionContent, includeSections, showMethodology, showInterpretation,
       patientInfoConfig, printOptions, extraFieldConfigs,
@@ -2848,7 +4039,7 @@ function generateDefaultTemplateHtml(
   const normalizedSectionContent =
     sectionContent && typeof sectionContent === "object" ? sectionContent : {};
 
-  // ── Theme colors ──
+  // â”€â”€ Theme colors â”€â”€
   const THEME = {
     accent: "#5a7f3a",
     normalBg: "#4a8c4a", normalText: "#ffffff",
@@ -2857,7 +4048,7 @@ function generateDefaultTemplateHtml(
     headerBg: "#e8efe4", headerText: "#374151",
   };
 
-  // ── Helper: classify a numeric value against structured ranges ──
+  // â”€â”€ Helper: classify a numeric value against structured ranges â”€â”€
   function classifyValue(
     numVal: number,
     analyte: any,
@@ -2877,7 +4068,7 @@ function generateDefaultTemplateHtml(
 
     // Fallback: try parsing text reference_range "10 - 20" style
     const refText = String(analyte.reference_range || "").trim();
-    const rangeMatch = refText.match(/([\d.]+)\s*[-–]\s*([\d.]+)/);
+    const rangeMatch = refText.match(/([\d.]+)\s*[-â€“]\s*([\d.]+)/);
     if (rangeMatch) {
       const lo = parseFloat(rangeMatch[1]);
       const hi = parseFloat(rangeMatch[2]);
@@ -2888,8 +4079,8 @@ function generateDefaultTemplateHtml(
       }
     }
 
-    // One-sided upper limit: "< X" or "≤ X" (e.g. Total Cholesterol < 200)
-    const upperMatch = refText.match(/^[<≤]\s*([\d.]+)/);
+    // One-sided upper limit: "< X" or "â‰¤ X" (e.g. Total Cholesterol < 200)
+    const upperMatch = refText.match(/^[<â‰¤]\s*([\d.]+)/);
     if (upperMatch) {
       const hi = parseFloat(upperMatch[1]);
       if (!isNaN(hi)) {
@@ -2898,8 +4089,8 @@ function generateDefaultTemplateHtml(
       }
     }
 
-    // One-sided lower limit: "> X" or "≥ X" (e.g. HDL > 40)
-    const lowerMatch = refText.match(/^[>≥]\s*([\d.]+)/);
+    // One-sided lower limit: "> X" or "â‰¥ X" (e.g. HDL > 40)
+    const lowerMatch = refText.match(/^[>â‰¥]\s*([\d.]+)/);
     if (lowerMatch) {
       const lo = parseFloat(lowerMatch[1]);
       if (!isNaN(lo)) {
@@ -2911,7 +4102,7 @@ function generateDefaultTemplateHtml(
     return null; // no structured range available
   }
 
-  // ── Helper: get color by semantic ──
+  // â”€â”€ Helper: get color by semantic â”€â”€
   function getColor(semantic: "good" | "borderline" | "bad") {
     switch (semantic) {
       case "good": return { bg: THEME.normalBg, text: THEME.normalText };
@@ -2920,7 +4111,7 @@ function generateDefaultTemplateHtml(
     }
   }
 
-  // ── Helper: format reference range text for a column position ──
+  // â”€â”€ Helper: format reference range text for a column position â”€â”€
   function formatRefForColumn(
     analyte: any,
     position: 1 | 2 | 3,
@@ -2934,31 +4125,31 @@ function generateDefaultTemplateHtml(
 
     if (minVal !== null && maxVal !== null && !isNaN(minVal) && !isNaN(maxVal)) {
       if (position === 1) return `< ${minVal}`;
-      if (position === 2) return `${minVal} – ${maxVal}`;
+      if (position === 2) return `${minVal} â€“ ${maxVal}`;
       return `> ${maxVal}`;
     }
 
     // Fallback: parse text reference_range
     const refText = String(analyte.reference_range || "").trim();
-    const rangeMatch = refText.match(/([\d.]+)\s*[-–]\s*([\d.]+)/);
+    const rangeMatch = refText.match(/([\d.]+)\s*[-â€“]\s*([\d.]+)/);
     if (rangeMatch) {
       const lo = rangeMatch[1];
       const hi = rangeMatch[2];
       if (position === 1) return `< ${lo}`;
-      if (position === 2) return `${lo} – ${hi}`;
+      if (position === 2) return `${lo} â€“ ${hi}`;
       return `> ${hi}`;
     }
 
-    // One-sided upper limit: "< X" — LOW col empty, NORMAL = "< X", HIGH = "> X"
-    const upperMatch = refText.match(/^[<≤]\s*([\d.]+)/);
+    // One-sided upper limit: "< X" â€” LOW col empty, NORMAL = "< X", HIGH = "> X"
+    const upperMatch = refText.match(/^[<â‰¤]\s*([\d.]+)/);
     if (upperMatch) {
       if (position === 1) return "";
       if (position === 2) return `< ${upperMatch[1]}`;
       return `> ${upperMatch[1]}`;
     }
 
-    // One-sided lower limit: "> X" — LOW = "< X", NORMAL = "> X", HIGH col empty
-    const lowerMatch = refText.match(/^[>≥]\s*([\d.]+)/);
+    // One-sided lower limit: "> X" â€” LOW = "< X", NORMAL = "> X", HIGH col empty
+    const lowerMatch = refText.match(/^[>â‰¥]\s*([\d.]+)/);
     if (lowerMatch) {
       if (position === 1) return `< ${lowerMatch[1]}`;
       if (position === 2) return `> ${lowerMatch[1]}`;
@@ -2969,24 +4160,24 @@ function generateDefaultTemplateHtml(
     return "";
   }
 
-  // ── Helper: check if analyte has structured numeric range ──
+  // â”€â”€ Helper: check if analyte has structured numeric range â”€â”€
   function hasStructuredRange(analyte: any): boolean {
     if (
       analyte.normal_range_min != null && analyte.normal_range_max != null
     ) return true;
     const refText = String(analyte.reference_range || "").trim();
     // Two-sided: "10 - 20"
-    if (/[\d.]+\s*[-–]\s*[\d.]+/.test(refText)) return true;
+    if (/[\d.]+\s*[-â€“]\s*[\d.]+/.test(refText)) return true;
     // One-sided: "< 200" or "> 40"
-    if (/^[<>≤≥]\s*[\d.]+/.test(refText)) return true;
+    if (/^[<>â‰¤â‰¥]\s*[\d.]+/.test(refText)) return true;
     return false;
   }
 
-  // ── Helper: check if value is numeric ──
+  // â”€â”€ Helper: check if value is numeric â”€â”€
   function isNumericValue(val: any): boolean {
     if (val == null || val === "") return false;
     const str = String(val).trim();
-    return /^[<>≤≥]?\s*[\d.]+$/.test(str);
+    return /^[<>â‰¤â‰¥]?\s*[\d.]+$/.test(str);
   }
 
   function extractNumericVal(val: any): number | null {
@@ -2996,7 +4187,7 @@ function generateDefaultTemplateHtml(
     return m ? parseFloat(m[1]) : null;
   }
 
-  // ── Helper: check if analyte is descriptive (should be shown as full-width row) ──
+  // â”€â”€ Helper: check if analyte is descriptive (should be shown as full-width row) â”€â”€
   function isDescriptiveAnalyte(analyte: any): boolean {
     const unitText = String(analyte.unit || "").trim().toLowerCase();
     const refText = String(analyte.reference_range || "").trim();
@@ -3011,7 +4202,7 @@ function generateDefaultTemplateHtml(
     );
   }
 
-  // ── Helper: get flag display + color for flat table badge ──
+  // â”€â”€ Helper: get flag display + color for flat table badge â”€â”€
   function getFlagBadge(flag: string): { text: string; bg: string } {
     const normalized = normalizeReportFlag(flag);
 
@@ -3033,7 +4224,7 @@ function generateDefaultTemplateHtml(
     return { text: (normalized.label || flag || "").toUpperCase(), bg: "#6b7280" };
   }
 
-  // ── Patient Information Section ──
+  // â”€â”€ Patient Information Section â”€â”€
   const patientInfoHtml = patientInfoConfig
     ? buildPatientInfoHtml(patientInfoConfig, THEME.accent, extraFieldConfigs)
     : `
@@ -3057,7 +4248,7 @@ function generateDefaultTemplateHtml(
     </div>
   `;
 
-  // ── Test Results Section - group by test group ──
+  // â”€â”€ Test Results Section - group by test group â”€â”€
   let testResultsHtml = '<div class="test-results">';
 
   for (const [groupId, analytes] of analytesByGroup) {
@@ -3086,10 +4277,12 @@ function generateDefaultTemplateHtml(
       <div class="test-group-section" style="margin-bottom: 20px; page-break-inside: auto;">
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 2px solid ${THEME.accent};">
           <h3 style="font-size: 18px; font-weight: 600; color: ${THEME.accent}; margin: 0;">${groupName}</h3>
+          ${(printOptions as any)?._sampleType ? `<span style="font-size:11px;color:#6b7280;font-style:italic;">Â· Specimen: ${(printOptions as any)._sampleType}</span>` : ''}
+          ${(printOptions as any)?._sampleCondition ? `<span style="font-size:11px;color:#6b7280;font-style:italic;">Â· Condition: ${(printOptions as any)._sampleCondition}</span>` : ''}
         </div>
     `;
 
-    // ── 3-Band Color Matrix Table (for numeric analytes with structured ranges) ──
+    // â”€â”€ 3-Band Color Matrix Table (for numeric analytes with structured ranges) â”€â”€
     if (colorMatrixAnalytes.length > 0) {
       testResultsHtml += `
         <table style="width: 100%; border-collapse: collapse; font-size: 13px; background: #ffffff; -webkit-print-color-adjust: exact; print-color-adjust: exact; margin-bottom: 12px;">
@@ -3182,11 +4375,11 @@ function generateDefaultTemplateHtml(
       testResultsHtml += `
           </tbody>
         </table>
-        ${colorMatrixAnalytes.some((a: any) => a.is_auto_calculated || a.is_calculated) ? '<p style="font-size:9px;color:#9ca3af;margin:2px 0 8px;font-style:italic;">*calc – Calculated parameter</p>' : ''}
+        ${colorMatrixAnalytes.some((a: any) => a.is_auto_calculated || a.is_calculated) ? '<p style="font-size:9px;color:#9ca3af;margin:2px 0 8px;font-style:italic;">*calc â€“ Calculated parameter</p>' : ''}
       `;
     }
 
-    // ── Flat Table (for numeric analytes without structured ranges, or non-numeric) ──
+    // â”€â”€ Flat Table (for numeric analytes without structured ranges, or non-numeric) â”€â”€
     if (flatTableAnalytes.length > 0) {
       testResultsHtml += `
         <table class="report-table" style="width: 100%; border-collapse: collapse; font-size: 13px; background: #ffffff; margin-bottom: 12px;">
@@ -3266,7 +4459,7 @@ function generateDefaultTemplateHtml(
       `;
     }
 
-    // ── Descriptive Rows ──
+    // â”€â”€ Descriptive Rows â”€â”€
     if (descriptiveAnalytes.length > 0) {
       for (const descBlock of groupAnalytesBySectionHeading(descriptiveAnalytes)) {
         if (descBlock.heading) {
@@ -3288,7 +4481,7 @@ function generateDefaultTemplateHtml(
       }
     }
 
-    // ── Group Interpretation Block ──
+    // â”€â”€ Group Interpretation Block â”€â”€
     const _groupInterp = groupInterpretations?.get(groupId);
     if (_groupInterp) {
       testResultsHtml += `
@@ -3305,17 +4498,18 @@ function generateDefaultTemplateHtml(
 
   testResultsHtml += "</div>";
 
-  // ── Signatory Section ──
-  const sigName = signatoryInfo?.signatoryName || "";
+  // â”€â”€ Signatory Section â”€â”€
+  const sigName = formatSignatureNameForPdf(signatoryInfo?.signatoryName || "");
   const sigDesignation = signatoryInfo?.signatoryDesignation || "";
   const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
+  const signatureSize = resolveSignatureImageSize(printOptions);
 
   const signatoryHtml = `
     <div class="signatures" style="margin-top: 30px; text-align: right; page-break-inside: avoid;">
       <div style="display: inline-block; text-align: center; min-width: 200px;">
         ${
     sigImageUrl
-      ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 50px; max-width: 150px; margin-bottom: 5px;" />`
+      ? `<img src="${sigImageUrl}" alt="" style="max-height: ${signatureSize.maxHeight}px; max-width: ${signatureSize.maxWidth}px; width: auto; height: auto; object-fit: contain; margin-bottom: 5px;" onerror="this.style.display='none'" />`
       : ""
   }
         ${
@@ -3349,15 +4543,14 @@ function generateDefaultTemplateHtml(
     const sectionItems = Object.entries(normalizedSectionContent)
       .filter(([, content]) => content && String(content).trim().length > 0)
       .map(([key, content]) => {
-        const formatted = formatSectionContentToHtml(String(content));
-        if (!formatted) return "";
+        const rawContent = String(content).trim();
+        if (!rawContent) return "";
         const heading = buildSectionLabel(key);
-        return `
-          <div style="margin-top: 12px;">
-            <h4 style="font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 6px;">${heading}</h4>
-            ${formatted}
-          </div>
-        `;
+        return renderSectionContentForTemplate(
+          rawContent,
+          heading,
+          'font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 6px;',
+        );
       })
       .filter(Boolean)
       .join("");
@@ -3372,13 +4565,13 @@ function generateDefaultTemplateHtml(
     }
   }
 
-  // ── Combine all sections ──
+  // â”€â”€ Combine all sections â”€â”€
   return `
     <div class="default-report-template">
-      ${patientInfoHtml}
+      ${printOptions?._suppressPatientHeader ? '' : patientInfoHtml}
       ${testResultsHtml}
       ${reportSectionsHtml}
-      ${signatoryHtml}
+      ${printOptions?._suppressSignature ? '' : signatoryHtml}
     </div>
   `;
 }
@@ -3394,25 +4587,33 @@ function buildPdfBodyDocumentV2(
   pdfSettings?: any,
   verificationUrl?: string | null,
 ): string {
-  console.log("🚀🚀🚀 VERSION 3.3 - PER-GROUP TEMPLATE STYLE 🚀🚀🚀");
-  console.log("🏗️ buildPdfBodyDocumentV2 called with:", {
-    bodyHtmlLength: bodyHtml?.length || 0,
+  const useNativePdfHeaderFooter = !!pdfSettings?.displayHeaderFooter;
+  console.log("ðŸš€ðŸš€ðŸš€ VERSION 3.3 - PER-GROUP TEMPLATE STYLE ðŸš€ðŸš€ðŸš€");
+  console.log("ðŸ—ï¸ buildPdfBodyDocumentV2 called with:", {
+	    bodyHtmlLength: bodyHtml?.length || 0,
     customCssLength: customCss?.length || 0,
-    letterheadUrl: letterheadBackgroundUrl || "NONE",
-    hasLetterhead: !!letterheadBackgroundUrl,
-    hasPdfSettings: !!pdfSettings,
-    verificationUrl: verificationUrl || "NONE",
-  });
+	    letterheadUrl: letterheadBackgroundUrl || "NONE",
+	    hasLetterhead: !!letterheadBackgroundUrl,
+	    hasPdfSettings: !!pdfSettings,
+      useNativePdfHeaderFooter,
+	    verificationUrl: verificationUrl || "NONE",
+	  });
 
   // Calculate spacer heights from settings (default to 130px)
   const topSpacerHeight = pdfSettings?.margins?.top ?? 130;
   const bottomSpacerHeight = pdfSettings?.margins?.bottom ?? 130;
   const leftPadding = pdfSettings?.margins?.left ?? 20;
   const rightPadding = pdfSettings?.margins?.right ?? 20;
+  // For letterhead eCopy, PDF.co uses 0 page margins (full-bleed), so HTML content
+  // needs its own padding. Fall back to 20px if the lab left margins.left/right at 0.
+  const bodySidePaddingLeft = letterheadBackgroundUrl ? Math.max(leftPadding, 20) : leftPadding;
+  const bodySidePaddingRight = letterheadBackgroundUrl ? Math.max(rightPadding, 20) : rightPadding;
+  const useTransparentBasicBackground =
+    pdfSettings?.printOptions?.resultTableBackground === "transparent";
 
   // QR code is now placed in signature area (bottom) - not at top
   // The QR will be injected where signature exists, on the opposite side
-  // 🎨 PDF.co compatibility: Expand CSS custom properties (variables) to literal values
+  // ðŸŽ¨ PDF.co compatibility: Expand CSS custom properties (variables) to literal values
   let normalizedCss = customCss;
   if (customCss) {
     const cssVarMap = new Map<string, string>();
@@ -3434,15 +4635,15 @@ function buildPdfBodyDocumentV2(
         return value || `var(--${varName})`; // fallback to original if not found
       });
 
-      console.log("🎨 CSS Variables expanded for PDF.co:", {
+      console.log("ðŸŽ¨ CSS Variables expanded for PDF.co:", {
         variableCount: cssVarMap.size,
         variables: Array.from(cssVarMap.keys()),
       });
     }
   }
 
-  // 🐛 Debug CSS inclusion
-  console.log("🎨 buildPdfBodyDocument CSS Debug:", {
+  // ðŸ› Debug CSS inclusion
+  console.log("ðŸŽ¨ buildPdfBodyDocument CSS Debug:", {
     hasBaselineCss: !!BASELINE_CSS,
     baselineCssLength: BASELINE_CSS?.length || 0,
     hasCustomCss: !!normalizedCss,
@@ -3452,7 +4653,7 @@ function buildPdfBodyDocumentV2(
   });
 
   // Build letterhead background styles if URL provided
-  console.log("🎨 Building letterhead styles...");
+  console.log("ðŸŽ¨ Building letterhead styles...");
   console.log("  letterheadBackgroundUrl value:", letterheadBackgroundUrl);
   console.log(
     "  letterheadBackgroundUrl type:",
@@ -3520,10 +4721,23 @@ function buildPdfBodyDocumentV2(
       background: #ffffff !important;
     }
 
-    /* Safe content area - spacing handled by HTML TABLE spacers now */
-    .limsv2-report-body--pdf {
-      padding: 0 ${rightPadding}px 0 ${leftPadding}px !important;
+    ${useTransparentBasicBackground ? `
+    /* Basic template can print directly over the uploaded full-page letterhead. */
+    .basic-report-template .tbl-results,
+    .basic-report-template .patient-header-table,
+    .basic-report-template .tbl-results td,
+    .basic-report-template .tbl-results th,
+    .basic-report-template .patient-header-table td,
+    .basic-report-template .patient-header-table th {
+      background: transparent !important;
+      background-color: transparent !important;
     }
+    ` : ""}
+
+    /* Safe content area - spacing handled by HTML TABLE spacers now */
+	    .limsv2-report-body--pdf {
+	      padding: 0 ${bodySidePaddingRight}px 0 ${bodySidePaddingLeft}px !important;
+	    }
 
     /* Prevent table rows from being cut across pages */
     .report-table tr,
@@ -3552,7 +4766,7 @@ function buildPdfBodyDocumentV2(
     <div id="page-bg"></div>
     
     <!-- Layout Table for Multi-Page Spacing -->
-    <table style="width: 100%; border: none; border-collapse: collapse;">
+    <table style="width: 100%; max-width: 210mm; border: none; border-collapse: collapse;">
       
       <!-- HEADER SPACER (Repeats on every page) -->
       <thead style="display: table-header-group;">
@@ -3600,25 +4814,27 @@ function buildPdfBodyDocumentV2(
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<!-- Load Google Fonts for Indian Languages -->
+<!-- Load Google Fonts: Inter (primary) + Noto Sans (Unicode fallback) -->
+<!-- FIX: Removed 9 unused Indian script Noto variants â€” saves ~200-400KB from PDF embed -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;700&family=Noto+Sans+Bengali:wght@400;700&family=Noto+Sans+Devanagari:wght@400;700&family=Noto+Sans+Gujarati:wght@400;700&family=Noto+Sans+Gurmukhi:wght@400;700&family=Noto+Sans+Kannada:wght@400;700&family=Noto+Sans+Malayalam:wght@400;700&family=Noto+Sans+Oriya:wght@400;700&family=Noto+Sans+Tamil:wght@400;700&family=Noto+Sans+Telugu:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans:wght@400;700&display=swap" rel="stylesheet">
 <style id="lims-report-baseline">${BASELINE_CSS}</style>
 ${(!bodyHtml.includes('basic-report-template') && !bodyHtml.includes('report-table')) ? `<style id="lims-report-ckeditor">${CKEDITOR_CSS}</style>` : ''}
-${
-    normalizedCss
-      ? `<style id="lims-report-custom">${normalizedCss}</style>`
-      : ""
-  }
-${
-    letterheadStyles
-      ? `<style id="lims-letterhead">${letterheadStyles}</style>`
+	${
+	    normalizedCss
+	      ? `<style id="lims-report-custom">${normalizedCss}</style>`
+	      : ""
+	  }
+	<style id="lims-cke-image-alignment">${CKE_IMAGE_ALIGNMENT_CSS}</style>
+	${
+	    letterheadStyles
+	      ? `<style id="lims-letterhead">${letterheadStyles}</style>`
       : ""
   }
 <style id="lims-margin-overrides">
 /* Left/right padding driven by lab PDF margin settings */
-.limsv2-report-body--pdf { padding-left: ${leftPadding}px !important; padding-right: ${rightPadding}px !important; }
+.limsv2-report-body--pdf { padding-left: ${bodySidePaddingLeft}px !important; padding-right: ${bodySidePaddingRight}px !important; }
 </style>
 </head>
 <body>
@@ -3626,7 +4842,7 @@ ${wrappedBody}
 </body>
 </html>`;
 
-  console.log("🎯 buildPdfBodyDocumentV2 FINAL CHECK before return:");
+  console.log("ðŸŽ¯ buildPdfBodyDocumentV2 FINAL CHECK before return:");
   console.log("  - letterheadStyles included?:", !!letterheadStyles);
   console.log("  - wrappedBody type:", typeof wrappedBody);
   console.log(
@@ -3825,7 +5041,7 @@ function applyHeaderTextColor(html: string, settings?: any): string {
   // Check if we have a report-header class in the HTML
   if (!styledHtml.includes("report-header")) {
     console.log(
-      "⚠️ No report-header found in HTML, skipping header text color",
+      "âš ï¸ No report-header found in HTML, skipping header text color",
     );
     return styledHtml;
   }
@@ -3936,7 +5152,7 @@ function applyHeaderTextColor(html: string, settings?: any): string {
     i++;
   }
 
-  console.log("🎨 Applied header text color:", color);
+  console.log("ðŸŽ¨ Applied header text color:", color);
   return result;
 }
 
@@ -3976,11 +5192,11 @@ async function convertHtmlImagesToBase64(html: string): Promise<string> {
         const newImgTag = fullImgTag.replace(imageUrl, base64Src);
         convertedHtml = convertedHtml.replace(fullImgTag, newImgTag);
         console.log(
-          `✅ Converted image to base64: ${imageUrl.substring(0, 50)}...`,
+          `âœ… Converted image to base64: ${imageUrl.substring(0, 50)}...`,
         );
       }
     } catch (error) {
-      console.warn(`⚠️ Failed to convert image ${imageUrl}:`, error);
+      console.warn(`âš ï¸ Failed to convert image ${imageUrl}:`, error);
     }
   }
 
@@ -3999,7 +5215,7 @@ async function convertImageUrlToBase64(imageUrl: string): Promise<string> {
       // Remove transformation parameters: /tr:w-800,h-600/ -> /
       cleanUrl = imageUrl.replace(/\/tr:[^/]+\//, "/");
       console.log(
-        `  🔧 Stripped ImageKit transforms: ${imageUrl} -> ${cleanUrl}`,
+        `  ðŸ”§ Stripped ImageKit transforms: ${imageUrl} -> ${cleanUrl}`,
       );
     }
     // 1. Parse request body
@@ -4020,7 +5236,7 @@ async function convertImageUrlToBase64(imageUrl: string): Promise<string> {
     }
 
     console.log(
-      `\n📄 GENERATING PDF for Order: ${orderId} ${
+      `\nðŸ“„ GENERATING PDF for Order: ${orderId} ${
         isManualDesign ? "(MANUAL DESIGN MODE)" : "(AUTO MODE)"
       }`,
     );
@@ -4029,12 +5245,12 @@ async function convertImageUrlToBase64(imageUrl: string): Promise<string> {
     // MANUAL MODE: Bypass Template Logic
     // ========================================
     if (isManualDesign && htmlOverride) {
-      console.log("🎨 Manual Design detected. Bypassing template generation.");
-      console.log("📝 HTML Content Length:", htmlOverride.length);
+      console.log("ðŸŽ¨ Manual Design detected. Bypassing template generation.");
+      console.log("ðŸ“ HTML Content Length:", htmlOverride.length);
 
       // Validate HTML slightly
       if (!htmlOverride.includes("<!DOCTYPE html>")) {
-        console.warn("⚠️ Manual HTML missing DOCTYPE, might cause issues.");
+        console.warn("âš ï¸ Manual HTML missing DOCTYPE, might cause issues.");
       }
 
       // Prepare filename
@@ -4055,7 +5271,7 @@ async function convertImageUrlToBase64(imageUrl: string): Promise<string> {
         },
       );
 
-      console.log("✅ PDF generated successfully via Manual Mode:", pdfUrl);
+      console.log("âœ… PDF generated successfully via Manual Mode:", pdfUrl);
 
       // Upload to Storage
       const { publicUrl } = await uploadPdfToStorage(
@@ -4089,7 +5305,7 @@ async function convertImageUrlToBase64(imageUrl: string): Promise<string> {
 
     // Initialize job tracking
     job = await createJob(supabaseClient, orderId);
-    console.log("✅ Job created:", job.id);
+    console.log("âœ… Job created:", job.id);
 
     const response = await fetch(cleanUrl);
     if (!response.ok) {
@@ -4131,7 +5347,7 @@ async function pollPdfCoJob(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     console.log(
-      `📊 Polling PDF.co job ${jobId} (attempt ${attempt}/${maxAttempts})...`,
+      `ðŸ“Š Polling PDF.co job ${jobId} (attempt ${attempt}/${maxAttempts})...`,
     );
 
     const response = await fetch(`${PDFCO_JOB_STATUS_URL}?jobid=${jobId}`, {
@@ -4145,7 +5361,7 @@ async function pollPdfCoJob(
     const result = await response.json();
 
     if (result.status === "success" && result.url) {
-      console.log("✅ PDF.co job completed:", result.url);
+      console.log("âœ… PDF.co job completed:", result.url);
       return result.url;
     }
 
@@ -4158,6 +5374,72 @@ async function pollPdfCoJob(
   }
 
   throw new Error("PDF.co job polling timed out");
+}
+
+/**
+ * Remove image tags that Chromium/PDF.co would render as a broken image icon.
+ * CKEditor placeholders such as {{approverSignature}} can resolve to src="",
+ * which causes PDF.co to print the image icon plus alt text in the PDF.
+ */
+function stripBrokenPdfImages(html: string): string {
+  if (!html) return html;
+
+  let removedCount = 0;
+  const cleanedHtml = html.replace(/<img\b[^>]*>/gi, (imgTag) => {
+    const srcMatch = imgTag.match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    const rawSrc = (srcMatch?.[1] ?? srcMatch?.[2] ?? srcMatch?.[3] ?? "").trim();
+    const normalizedSrc = rawSrc.replace(/&quot;/g, '"').trim();
+    const shouldRemove =
+      !srcMatch ||
+      !normalizedSrc ||
+      normalizedSrc === "#" ||
+      /^about:blank$/i.test(normalizedSrc) ||
+      /^(undefined|null)$/i.test(normalizedSrc) ||
+      /^\{\{[\s\S]*\}\}$/.test(normalizedSrc);
+
+    if (!shouldRemove) return imgTag;
+
+    removedCount++;
+    return "";
+  });
+
+  if (removedCount > 0) {
+    console.warn(`Removed ${removedCount} broken/empty image tag(s) before PDF.co render`);
+  }
+
+  return cleanedHtml;
+}
+
+function emojiToTwemojiCodepoint(emoji: string): string {
+  const codepoints = Array.from(emoji)
+    .map((char) => char.codePointAt(0))
+    .filter((codepoint): codepoint is number =>
+      typeof codepoint === "number" && codepoint !== 0xfe0e
+    );
+
+  const hasJoiner = codepoints.includes(0x200d);
+  const normalized = hasJoiner
+    ? codepoints
+    : codepoints.filter((codepoint) => codepoint !== 0xfe0f);
+
+  return normalized.map((codepoint) => codepoint.toString(16)).join("-");
+}
+
+function renderEmojiAsColorIcon(emoji: string): string {
+  const codepoint = emojiToTwemojiCodepoint(emoji);
+  if (!codepoint) return emoji;
+
+  return `<img class="report-emoji-icon" src="https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/${codepoint}.svg" alt="${emoji}" style="display:inline-block;width:1.05em;height:1.05em;vertical-align:-0.15em;margin-right:0.18em;border:0;box-shadow:none;background:transparent;" />`;
+}
+
+function colorizeReportEmojiTextNodes(html: string): string {
+  if (!html) return html;
+
+  const emojiRegex = /[\p{Extended_Pictographic}](?:\uFE0F|\uFE0E)?(?:\u200D[\p{Extended_Pictographic}](?:\uFE0F|\uFE0E)?)*\uFE0F?/gu;
+  return html.replace(/(^|>)([^<]*[\p{Extended_Pictographic}][^<]*)(?=<|$)/gu, (_match: string, prefix: string, text: string) => {
+    const colorizedText = text.replace(emojiRegex, (emoji: string) => renderEmojiAsColorIcon(emoji));
+    return `${prefix}${colorizedText}`;
+  });
 }
 
 /**
@@ -4181,36 +5463,80 @@ async function sendHtmlToPdfCo(
     grayscale?: boolean; // Convert to black & white for print versions
   } = {},
 ): Promise<string> {
-  console.log("📤 Sending HTML to PDF.co API...");
+  const sanitizedHtml = stripBrokenPdfImages(html);
+  const sanitizedHeaderHtml = stripBrokenPdfImages(options.headerHtml || "");
+  const sanitizedFooterHtml = stripBrokenPdfImages(options.footerHtml || "");
+  console.log("ðŸ“¤ Sending HTML to PDF.co API...");
   console.log("  Filename:", filename);
-  console.log("  HTML length:", html.length);
-  console.log("  Header length:", options.headerHtml?.length || 0);
-  console.log("  Footer length:", options.footerHtml?.length || 0);
+  console.log("  HTML length:", sanitizedHtml.length);
+  console.log("  Header length:", sanitizedHeaderHtml.length);
+  console.log("  Footer length:", sanitizedFooterHtml.length);
+
+  const parsePxValue = (value: string | number | undefined, fallback: number): number => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const match = value.match(/-?\d+(\.\d+)?/);
+      if (match) return Number(match[0]);
+    }
+    return fallback;
+  };
 
   const payload: Record<string, any> = {
     name: filename,
-    html: html,
+    html: sanitizedHtml,
     async: true, // Use async for large documents
     margins: options.margins || DEFAULT_PDF_SETTINGS.margins,
-    paperSize: options.paperSize || DEFAULT_PDF_SETTINGS.paperSize,
-    displayHeaderFooter: options.displayHeaderFooter ??
+    papersize: options.paperSize || DEFAULT_PDF_SETTINGS.paperSize,
+    displayheaderfooter: options.displayHeaderFooter ??
       DEFAULT_PDF_SETTINGS.displayHeaderFooter,
-    header: options.headerHtml || "",
-    footer: options.footerHtml || "",
-    headerHeight: options.headerHeight || DEFAULT_PDF_SETTINGS.headerHeight,
-    footerHeight: options.footerHeight || DEFAULT_PDF_SETTINGS.footerHeight,
+    header: sanitizedHeaderHtml,
+    footer: sanitizedFooterHtml,
+    headerheight: options.headerHeight || DEFAULT_PDF_SETTINGS.headerHeight,
+    footerheight: options.footerHeight || DEFAULT_PDF_SETTINGS.footerHeight,
     scale: options.scale ?? DEFAULT_PDF_SETTINGS.scale,
-    mediaType: options.mediaType || DEFAULT_PDF_SETTINGS.mediaType,
-    printBackground: options.printBackground ??
+    mediatype: options.mediaType || DEFAULT_PDF_SETTINGS.mediaType,
+    printbackground: options.printBackground ??
       DEFAULT_PDF_SETTINGS.printBackground,
   };
+
+  console.log("  Payload settings:", {
+    margins: payload.margins,
+    papersize: payload.papersize,
+    displayheaderfooter: payload.displayheaderfooter,
+    headerheight: payload.headerheight,
+    footerheight: payload.footerheight,
+    mediatype: payload.mediatype,
+    printbackground: payload.printbackground,
+  });
+
+  if (payload.displayheaderfooter && typeof payload.margins === "string") {
+    const marginParts = payload.margins.trim().split(/\s+/);
+    const topMarginPx = parsePxValue(marginParts[0], 0);
+    const bottomMarginPx = parsePxValue(marginParts[2] ?? marginParts[0], 0);
+    const headerHeightPx = parsePxValue(payload.headerheight, 90);
+    const footerHeightPx = parsePxValue(payload.footerheight, 80);
+
+    if (topMarginPx > headerHeightPx + 40) {
+      console.warn("  âš ï¸ Top margin is much larger than header height:", {
+        topMarginPx,
+        headerHeightPx,
+      });
+    }
+
+    if (bottomMarginPx > footerHeightPx + 40) {
+      console.warn("  âš ï¸ Bottom margin is much larger than footer height:", {
+        bottomMarginPx,
+        footerHeightPx,
+      });
+    }
+  }
 
   // Add grayscale filter for print versions (converts colors to B&W)
   // PDF.co expects profiles as a JSON string with specific format
   if (options.grayscale) {
     // Use CSS filter instead since PDF.co profiles format is complex
     // We'll inject grayscale CSS into the HTML instead
-    console.log("  🖨️ Grayscale mode requested - will apply via CSS filter");
+    console.log("  ðŸ–¨ï¸ Grayscale mode requested - will apply via CSS filter");
   }
 
   const response = await fetch(PDFCO_API_URL, {
@@ -4237,13 +5563,13 @@ async function sendHtmlToPdfCo(
 
   // Handle synchronous response
   if (result.url) {
-    console.log("✅ PDF generated synchronously:", result.url);
+    console.log("âœ… PDF generated synchronously:", result.url);
     return result.url;
   }
 
   // Handle async response (poll for completion)
   if (result.jobId) {
-    console.log("📋 PDF.co async job queued:", result.jobId);
+    console.log("ðŸ“‹ PDF.co async job queued:", result.jobId);
     return pollPdfCoJob(result.jobId, apiKey);
   }
 
@@ -4261,19 +5587,53 @@ async function fetchSectionContent(
   supabaseClient: any,
   resultIds: string[],
   includeImages = true,
-): Promise<{ sectionContent: Record<string, string>; sectionLabels: Record<string, string> }> {
-  if (!resultIds || resultIds.length === 0) return { sectionContent: {}, sectionLabels: {} };
+): Promise<{
+  sectionContent: Record<string, string>;
+  sectionLabels: Record<string, string>;
+  sectionContentByGroup: Map<string, Record<string, string>>;
+  sectionPlaceholderValues: Record<string, string>;
+}> {
+  if (!resultIds || resultIds.length === 0) {
+    return {
+      sectionContent: {},
+      sectionLabels: {},
+      sectionContentByGroup: new Map(),
+      sectionPlaceholderValues: {},
+    };
+  }
 
   try {
+    // Build a map of result_id -> test_group_id so we can assign section content
+    // to the correct group even when lab_template_sections.test_group_id is NULL
+    // (section-only groups where the section template isn't linked to a specific group).
+    const resultToGroupMap = new Map<string, string>();
+    try {
+      const { data: resultGroupRows } = await supabaseClient
+        .from("results")
+        .select("id, test_group_id")
+        .in("id", resultIds);
+      for (const row of (resultGroupRows || [])) {
+        if (row.id && row.test_group_id) {
+          resultToGroupMap.set(row.id, row.test_group_id);
+        }
+      }
+    } catch (_e) {
+      // Non-fatal: fall back to section-level test_group_id only
+    }
+
     const { data, error } = await supabaseClient
       .from("result_section_content")
       .select(`
+        result_id,
         final_content,
+        cascading_selections,
         image_urls,
         lab_template_sections!inner(
           placeholder_key,
           section_name,
-          test_group_id
+          test_group_id,
+          display_order,
+          section_config
         )
       `)
       .in("result_id", resultIds)
@@ -4281,40 +5641,78 @@ async function fetchSectionContent(
 
     if (error || !data) {
       console.warn("Failed to fetch section content:", error?.message);
-      return { sectionContent: {}, sectionLabels: {}, sectionContentByGroup: new Map() };
+      return { sectionContent: {}, sectionLabels: {}, sectionContentByGroup: new Map(), sectionPlaceholderValues: {} };
     }
+
+    // Sort by display_order so sections render in the configured order
+    data.sort((a: any, b: any) => {
+      const orderA = a.lab_template_sections?.display_order ?? 999;
+      const orderB = b.lab_template_sections?.display_order ?? 999;
+      if (orderA !== orderB) return orderA - orderB;
+      // Secondary sort: section_name alphabetically for stable ordering
+      const nameA = a.lab_template_sections?.section_name || "";
+      const nameB = b.lab_template_sections?.section_name || "";
+      return nameA.localeCompare(nameB);
+    });
 
     // Build map of placeholder_key -> final_content and placeholder_key -> section_name
     // Also build per-group map: test_group_id -> { placeholder_key -> content }
+    // FIX: When multiple sections share the same placeholder_key (e.g. two "findings"
+    // sections), use a unique suffix (_2, _3, â€¦) so every section gets its own entry
+    // instead of the later one silently overwriting the earlier one.
     const sectionContent: Record<string, string> = {};
     const sectionLabels: Record<string, string> = {};
+    const sectionPlaceholderValues: Record<string, string> = {};
     const sectionContentByGroup = new Map<string, Record<string, string>>();
+    const keyCounters: Record<string, number> = {}; // tracks how many times a base key has been seen
     for (const item of data) {
-      const key = item.lab_template_sections?.placeholder_key;
-      if (key) {
+      const baseKey = item.lab_template_sections?.placeholder_key;
+      if (baseKey) {
         const label = item.lab_template_sections?.section_name;
-        if (label) sectionLabels[key] = label;
-        const content = item.final_content ? String(item.final_content) : "";
+        const rebuiltCascadeContent = buildCascadeContentFromConfig(
+          item.lab_template_sections?.section_config,
+          item.cascading_selections,
+        );
+        const content = rebuiltCascadeContent || (item.final_content ? String(item.final_content) : "");
         const imageUrls = parseSectionImageUrls(item.image_urls);
         const imagesHtml = includeImages ? buildSectionImagesHtml(imageUrls) : "";
         const combined = [content.trim(), imagesHtml].filter(Boolean).join("\n\n");
         if (combined) {
-          sectionContent[key] = combined;
-          const groupId = item.lab_template_sections?.test_group_id;
+          // Determine a unique key: first occurrence keeps the base key, subsequent get _2, _3, â€¦
+          keyCounters[baseKey] = (keyCounters[baseKey] || 0) + 1;
+          const uniqueKey = keyCounters[baseKey] === 1 ? baseKey : `${baseKey}_${keyCounters[baseKey]}`;
+
+          if (label) sectionLabels[uniqueKey] = label;
+          sectionContent[uniqueKey] = combined;
+          Object.assign(sectionPlaceholderValues, buildSectionPlaceholderAliases({ [uniqueKey]: combined }));
+          Object.assign(
+            sectionPlaceholderValues,
+            buildCascadePlaceholderAliases(
+              uniqueKey,
+              item.lab_template_sections?.section_config,
+              item.cascading_selections,
+            ),
+          );
+          // Use the section's own test_group_id first; fall back to the result's
+          // test_group_id for section-only groups where the section template is
+          // not explicitly linked to a test group (test_group_id IS NULL).
+          const groupId = item.lab_template_sections?.test_group_id
+            ?? resultToGroupMap.get(item.result_id);
           if (groupId) {
             if (!sectionContentByGroup.has(groupId)) {
               sectionContentByGroup.set(groupId, {});
             }
-            sectionContentByGroup.get(groupId)![key] = combined;
+            sectionContentByGroup.get(groupId)![uniqueKey] = combined;
           }
         }
       }
     }
+    console.log(`ðŸ“ fetchSectionContent: ${data.length} row(s) â†’ ${Object.keys(sectionContent).length} unique section(s): [${Object.keys(sectionContent).join(", ")}]`);
 
-    return { sectionContent, sectionLabels, sectionContentByGroup };
+    return { sectionContent, sectionLabels, sectionContentByGroup, sectionPlaceholderValues };
   } catch (err) {
     console.warn("Error fetching section content:", err);
-    return { sectionContent: {}, sectionLabels: {}, sectionContentByGroup: new Map() };
+    return { sectionContent: {}, sectionLabels: {}, sectionContentByGroup: new Map(), sectionPlaceholderValues: {} };
   }
 }
 
@@ -4361,12 +5759,12 @@ function formatSectionContentToHtml(content: string): string {
 
       const lines = para.split(/\n/).map((line) => line.trim());
       const isBulletList = lines.length > 1 && lines.every((line) =>
-        /^[-•]\s+/.test(line)
+        /^[-â€¢]\s+/.test(line)
       );
 
       if (isBulletList) {
         const items = lines
-          .map((line) => line.replace(/^[-•]\s+/, ""))
+          .map((line) => line.replace(/^[-â€¢]\s+/, ""))
           .map((line) => renderMarkdownBold(line))
           .map((line) => `<li>${line}</li>`)
           .join("");
@@ -4445,6 +5843,145 @@ function normalizeSectionKey(
   return { rawKey: trimmed, originalKey: trimmed };
 }
 
+function buildSectionPlaceholderAliases(
+  sectionContent: Record<string, string>,
+): Record<string, string> {
+  const aliases: Record<string, string> = {};
+
+  for (const [key, content] of Object.entries(sectionContent || {})) {
+    if (!key || !content) continue;
+
+    aliases[key] = content;
+
+    const { rawKey } = normalizeSectionKey(key);
+    if (rawKey && rawKey !== key) {
+      aliases[rawKey] = content;
+    }
+    if (rawKey) {
+      aliases[`section:${rawKey}`] = content;
+    }
+  }
+
+  return aliases;
+}
+
+function buildCascadeContentFromConfig(
+  sectionConfig: unknown,
+  selections: unknown,
+): string {
+  const config = parseMaybeJsonObject(sectionConfig);
+  if (config?.mode !== "cascading" || !Array.isArray(config?.cascade_levels)) {
+    return "";
+  }
+
+  const selectionMap = parseMaybeJsonObject(selections);
+  const lines: string[] = [];
+
+  const traverse = (cascadeLevels: any[]) => {
+    for (const level of cascadeLevels || []) {
+      const selectedIds = Array.isArray(selectionMap[level?.id])
+        ? selectionMap[level.id]
+        : [];
+      if (selectedIds.length === 0) continue;
+
+      const options = Array.isArray(level?.options) ? level.options : [];
+      const selectedOptions = options.filter((option: any) =>
+        selectedIds.includes(option?.id)
+      );
+      const values = selectedIds
+        .map((selectedId: any) => {
+          const matchedOption = options.find((option: any) => option?.id === selectedId);
+          return String(matchedOption?.value ?? selectedId ?? "").trim();
+        })
+        .filter(Boolean)
+        .join(", ");
+
+      if (values) {
+        const label = String(level?.label || "").trim();
+        lines.push(label ? `${label}: ${values}` : values);
+      }
+
+      for (const option of selectedOptions) {
+        if (Array.isArray(option?.sub_levels)) {
+          traverse(option.sub_levels);
+        }
+      }
+    }
+  };
+
+  traverse(config.cascade_levels);
+  return lines.join("\n");
+}
+
+function slugPlaceholderKey(value: string): string {
+  return String(value || "")
+    .replace(/{{|}}/g, "")
+    .replace(/^section:/i, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function parseMaybeJsonObject(value: unknown): Record<string, any> {
+  if (!value) return {};
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, any>
+    : {};
+}
+
+function buildCascadePlaceholderAliases(
+  sectionKey: string,
+  sectionConfig: unknown,
+  selections: unknown,
+): Record<string, string> {
+  const aliases: Record<string, string> = {};
+  const sectionSlug = slugPlaceholderKey(sectionKey);
+  const config = parseMaybeJsonObject(sectionConfig);
+  const selectionMap = parseMaybeJsonObject(selections);
+  const levels = Array.isArray(config?.cascade_levels) ? config.cascade_levels : [];
+
+  const traverse = (cascadeLevels: any[]) => {
+    for (const level of cascadeLevels || []) {
+      const selectedIds = Array.isArray(selectionMap[level?.id])
+        ? selectionMap[level.id]
+        : [];
+      const selectedOptions = Array.isArray(level?.options)
+        ? level.options.filter((option: any) => selectedIds.includes(option?.id))
+        : [];
+      const value = selectedOptions
+        .map((option: any) => String(option?.value || "").trim())
+        .filter(Boolean)
+        .join(", ");
+      const levelSlug = slugPlaceholderKey(level?.label || level?.id || "");
+
+      if (value && sectionSlug && levelSlug) {
+        aliases[`${sectionSlug}_${levelSlug}`] = value;
+        if (!aliases[levelSlug]) aliases[levelSlug] = value;
+      }
+
+      for (const option of selectedOptions) {
+        if (Array.isArray(option?.sub_levels)) {
+          traverse(option.sub_levels);
+        }
+      }
+    }
+  };
+
+  traverse(levels);
+  return aliases;
+}
+
 function injectSectionContent(
   html: string,
   sectionContent: Record<string, string>,
@@ -4493,7 +6030,7 @@ function injectSectionContent(
       found = true;
       injectedCount++;
       console.log(
-        `📝 Injected section "${rawKey}" via {{section:${rawKey}}} placeholder`,
+        `ðŸ“ Injected section "${rawKey}" via {{section:${rawKey}}} placeholder`,
       );
     } // Check simple format (e.g., {{impression}})
     else if (
@@ -4508,7 +6045,7 @@ function injectSectionContent(
       found = true;
       injectedCount++;
       console.log(
-        `📝 Injected section "${rawKey}" via {{${rawKey}}} placeholder`,
+        `ðŸ“ Injected section "${rawKey}" via {{${rawKey}}} placeholder`,
       );
     } // Check original placeholder (if key already includes section: prefix)
     else if (
@@ -4524,7 +6061,7 @@ function injectSectionContent(
       found = true;
       injectedCount++;
       console.log(
-        `📝 Injected section "${rawKey}" via {{${originalKey}}} placeholder`,
+        `ðŸ“ Injected section "${rawKey}" via {{${originalKey}}} placeholder`,
       );
     }
 
@@ -4535,7 +6072,7 @@ function injectSectionContent(
   }
 
   console.log(
-    `📝 Injected ${injectedCount} section(s) via placeholders, ${
+    `ðŸ“ Injected ${injectedCount} section(s) via placeholders, ${
       Object.keys(uninjectedSections).length
     } need fallback:`,
     Object.keys(sectionContent),
@@ -4572,7 +6109,7 @@ function generateFallbackSectionsHtml(
     .join("");
 
   console.log(
-    `📝 Generated fallback HTML for ${
+    `ðŸ“ Generated fallback HTML for ${
       Object.keys(uninjectedSections).length
     } section(s):`,
     Object.keys(uninjectedSections),
@@ -4643,7 +6180,7 @@ function formatClinicalSummary(text: string): string {
     '<div style="font-weight: bold; color: #1e40af; margin-top: 15px; margin-bottom: 8px; font-size: 14px;">$1</div>',
   );
 
-  // Convert bullet points • to proper HTML lists
+  // Convert bullet points â€¢ to proper HTML lists
   const lines = html.split("\n");
   let inList = false;
   const processedLines: string[] = [];
@@ -4651,7 +6188,7 @@ function formatClinicalSummary(text: string): string {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
 
-    if (line.startsWith("•")) {
+    if (line.startsWith("â€¢")) {
       if (!inList) {
         processedLines.push(
           '<ul style="margin: 8px 0; padding-left: 20px; list-style-type: disc;">',
@@ -4687,6 +6224,75 @@ function formatClinicalSummary(text: string): string {
   return processedLines.join("\n");
 }
 
+function escapeTrendHtml(value: any): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatTrendDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return escapeTrendHtml(value);
+  return date.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function buildTrendHistoryTableHtml(chart: any): string {
+  const data = Array.isArray(chart?.data) ? chart.data : [];
+  if (data.length === 0) return "";
+
+  const rows = data.slice().reverse().map((point: any) => `
+    <tr>
+      <td style="padding: 3px 6px; border: 1px solid #d1d5db; white-space: nowrap;">${formatTrendDateTime(point.order_date || point.date || point.timestamp || "")}</td>
+      <td style="padding: 3px 6px; border: 1px solid #d1d5db; text-align: right; font-weight: 600;">${escapeTrendHtml(point.value)}</td>
+    </tr>
+  `).join("");
+
+  return `
+    <table style="border-collapse: collapse; width: 100%; margin: 0; font-size: 9px; line-height: 1.25;">
+      <thead>
+        <tr style="background: #f3f4f6;">
+          <th style="padding: 4px 6px; border: 1px solid #d1d5db; text-align: left; font-weight: 700;">Date Time</th>
+          <th style="padding: 4px 6px; border: 1px solid #d1d5db; text-align: right; font-weight: 700;">Result</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function buildTrendChartBlockHtml(chart: any): string {
+  const imgSrc = chart?.image_base64 || chart?.image_url;
+  if (!imgSrc) return "";
+
+  const analyteName = chart?.analyte_name || "Test";
+  const tableHtml = buildTrendHistoryTableHtml(chart);
+  const meta = [
+    chart?.unit ? `Unit: ${escapeTrendHtml(chart.unit)}` : "",
+    chart?.reference_range ? `Ref: ${escapeTrendHtml(chart.reference_range)}` : "",
+  ].filter(Boolean).join(" | ");
+
+  return `<div class="trend-chart" style="margin: 10px 0 16px 0; page-break-inside: avoid; break-inside: avoid;">
+    <div style="font-size: 12px; font-weight: 700; color: #111827; text-align: center; margin-bottom: 5px;">${escapeTrendHtml(analyteName)} Previous History</div>
+    <div style="display: table; width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 8px 0;">
+      <div style="display: table-cell; width: 62%; vertical-align: top;">
+        <img src="${imgSrc}" alt="${escapeTrendHtml(analyteName)} trend" style="width: 100%; max-width: 100%; height: auto; border: 1px solid #d1d5db;" />
+      </div>
+      <div style="display: table-cell; width: 38%; vertical-align: top;">${tableHtml}</div>
+    </div>
+    ${meta ? `<div style="font-size: 9px; color: #4b5563; text-align: center; margin-top: 4px;">${meta}</div>` : ""}
+  </div>`;
+}
+
 /**
  * Generate HTML for report extras (trend charts, clinical summary, AI summaries, patient summary)
  */
@@ -4710,20 +6316,10 @@ function generateReportExtrasHtml(extras: {
   if (extras.trend_charts && extras.trend_charts.length > 0) {
     html +=
       '<div class="report-extras-trends" style="margin-top: 20px; page-break-inside: avoid;">';
-    html += '<h3 style="margin-bottom: 10px;">Historical Trends</h3>';
+    html += '<h3 style="margin-bottom: 10px;">Previous History</h3>';
 
     for (const chart of extras.trend_charts) {
-      if (chart.image_base64) {
-        html += `<div class="trend-chart" style="margin: 10px 0;">`;
-        html += `<img src="${chart.image_base64}" alt="${
-          chart.analyte_name || "Trend"
-        }" style="max-width: 100%; height: auto;" />`;
-        if (chart.analyte_name) {
-          html +=
-            `<p style="font-size: 11px; text-align: center; margin-top: 5px;">${chart.analyte_name}</p>`;
-        }
-        html += `</div>`;
-      }
+      html += buildTrendChartBlockHtml(chart);
     }
 
     html += "</div>";
@@ -4838,7 +6434,7 @@ function generateReportExtrasHtml(extras: {
         // New detailed format with explanations
         html += '<div style="margin-bottom: 15px;">';
         html +=
-          `<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">✓ Normal Findings (${patientSummary.normal_findings_detailed.length} tests)</h3>`;
+          `<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">âœ“ Normal Findings (${patientSummary.normal_findings_detailed.length} tests)</h3>`;
         for (const finding of patientSummary.normal_findings_detailed) {
           html +=
             '<div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 10px; margin-bottom: 8px;">';
@@ -4849,7 +6445,7 @@ function generateReportExtrasHtml(extras: {
               finding.test_name || "Test"
             }</span>`;
           html +=
-            `<span style="background: #dcfce7; color: #166534; padding: 2px 8px; border-radius: 10px; font-size: 11px;">✓ Normal</span>`;
+            `<span style="background: #dcfce7; color: #166534; padding: 2px 8px; border-radius: 10px; font-size: 11px;">âœ“ Normal</span>`;
           html += "</div>";
           if (finding.value) {
             html +=
@@ -4873,7 +6469,7 @@ function generateReportExtrasHtml(extras: {
         // Legacy simple format (array of strings)
         html += '<div style="margin-bottom: 15px;">';
         html +=
-          '<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">✓ Normal Findings</h3>';
+          '<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">âœ“ Normal Findings</h3>';
         html +=
           '<ul style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; color: #1f2937;">';
         for (const finding of patientSummary.normal_findings) {
@@ -4884,7 +6480,7 @@ function generateReportExtrasHtml(extras: {
         // Summary text format
         html += '<div style="margin-bottom: 15px;">';
         html +=
-          '<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">✓ Normal Findings</h3>';
+          '<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">âœ“ Normal Findings</h3>';
         html +=
           `<p style="margin: 0; font-size: 13px; line-height: 1.5; color: #1f2937;">${patientSummary.normal_findings_summary}</p>`;
         html += "</div>";
@@ -4897,7 +6493,7 @@ function generateReportExtrasHtml(extras: {
       ) {
         html += '<div style="margin-bottom: 15px;">';
         html +=
-          '<h3 style="margin: 0 0 8px 0; color: #dc2626; font-size: 14px; font-weight: bold;">⚠ Areas Needing Attention</h3>';
+          '<h3 style="margin: 0 0 8px 0; color: #dc2626; font-size: 14px; font-weight: bold;">âš  Areas Needing Attention</h3>';
         for (const finding of patientSummary.abnormal_findings) {
           // Handle both string and object formats for abnormal findings
           if (typeof finding === "string") {
@@ -4926,11 +6522,11 @@ function generateReportExtrasHtml(extras: {
               ? "#dbeafe"
               : "#fef3c7";
             const statusLabel = status === "critical"
-              ? "⚠️ Critical"
+              ? "âš ï¸ Critical"
               : status === "high"
-              ? "↑ High"
+              ? "â†‘ High"
               : status === "low"
-              ? "↓ Low"
+              ? "â†“ Low"
               : "Abnormal";
 
             html += `<div style="background: ${statusBg}; border: 1px solid ${
@@ -4965,12 +6561,12 @@ function generateReportExtrasHtml(extras: {
             }
             if (finding.trend) {
               const trendEmoji = finding.trend === "improving"
-                ? "📈"
+                ? "ðŸ“ˆ"
                 : finding.trend === "worsening"
-                ? "📉"
+                ? "ðŸ“‰"
                 : finding.trend === "stable"
-                ? "➡️"
-                : "🆕";
+                ? "âž¡ï¸"
+                : "ðŸ†•";
               const trendColor = finding.trend === "improving"
                 ? "#16a34a"
                 : finding.trend === "worsening"
@@ -4994,7 +6590,7 @@ function generateReportExtrasHtml(extras: {
         html +=
           '<div style="margin-bottom: 15px; background: #fef2f2; padding: 12px; border-radius: 6px; border-left: 4px solid #dc2626;">';
         html +=
-          `<h3 style="margin: 0 0 8px 0; color: #dc2626; font-size: 14px; font-weight: bold;">📋 ${
+          `<h3 style="margin: 0 0 8px 0; color: #dc2626; font-size: 14px; font-weight: bold;">ðŸ“‹ ${
             patientSummary.needs_consultation
               ? "Doctor Consultation Recommended"
               : "Recommendation"
@@ -5008,7 +6604,7 @@ function generateReportExtrasHtml(extras: {
       if (patientSummary.health_tips && patientSummary.health_tips.length > 0) {
         html += '<div style="margin-bottom: 10px;">';
         html +=
-          '<h3 style="margin: 0 0 8px 0; color: #0891b2; font-size: 14px; font-weight: bold;">💡 Health Tips</h3>';
+          '<h3 style="margin: 0 0 8px 0; color: #0891b2; font-size: 14px; font-weight: bold;">ðŸ’¡ Health Tips</h3>';
         html +=
           '<ul style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; color: #1f2937;">';
         for (const tip of patientSummary.health_tips) {
@@ -5022,7 +6618,7 @@ function generateReportExtrasHtml(extras: {
         html +=
           '<div style="margin-bottom: 10px; background: linear-gradient(135deg, #fdf2f8 0%, #fce7f3 100%); padding: 12px; border-radius: 6px; border: 1px solid #fbcfe8;">';
         html +=
-          `<p style="margin: 0; font-size: 13px; line-height: 1.5; color: #be185d; font-style: italic; text-align: center;">💖 ${patientSummary.summary_message}</p>`;
+          `<p style="margin: 0; font-size: 13px; line-height: 1.5; color: #be185d; font-style: italic; text-align: center;">ðŸ’– ${patientSummary.summary_message}</p>`;
         html += "</div>";
       }
 
@@ -5063,10 +6659,10 @@ function applyLetterheadImageTransform(url: string): string {
 
     // If transformations already exist, replace them for letterhead-quality
     if (url.includes("/tr:")) {
-      return url.replace(/\/tr:[^/]+/, "/tr:w-2480,h-3508,c-force,q-95,f-png");
+      return url.replace(/\/tr:[^/]+/, "/tr:w-1240,h-1754,c-force,q-75,f-jpg"); // FIX: was w-2480,h-3508,q-95,f-png (~85% smaller)
     }
     if (url.includes("?tr=")) {
-      return url.replace(/\?tr=[^&]+/, "?tr=w-2480,h-3508,c-force,q-95,f-png");
+      return url.replace(/\?tr=[^&]+/, "?tr=w-1240,h-1754,c-force,q-75,f-jpg"); // FIX: was w-2480,h-3508,q-95,f-png
     }
 
     // Insert transformation path segment
@@ -5074,14 +6670,40 @@ function applyLetterheadImageTransform(url: string): string {
     const insertIndex = pathParts.findIndex((p: string) =>
       p && !p.includes(".")
     ) + 1;
-    pathParts.splice(insertIndex, 0, "tr:w-2480,h-3508,c-force,q-95,f-png");
+    pathParts.splice(insertIndex, 0, "tr:w-1240,h-1754,c-force,q-75,f-jpg"); // FIX: was w-2480,h-3508,q-95,f-png
     urlObj.pathname = pathParts.join("/");
 
-    console.log("📸 Applied letterhead ImageKit transform: 2480x3508 q95 png");
+    console.log("ðŸ“¸ Applied letterhead ImageKit transform: 1240x1754 q75 jpg (reduced from 2480x3508 q95 png)");
     return urlObj.toString();
   } catch (e) {
-    console.log("⚠️ Could not apply letterhead transform:", e);
+    console.log("âš ï¸ Could not apply letterhead transform:", e);
     return url;
+  }
+}
+
+async function fetchCkeTemplateLetterheadUrl(
+  supabaseClient: any,
+  labId: string,
+): Promise<string | null> {
+  try {
+    const { data: asset, error } = await supabaseClient
+      .from("lab_branding_assets")
+      .select("imagekit_url, file_url")
+      .eq("lab_id", labId)
+      .eq("asset_type", "letterhead")
+      .eq("is_active", true)
+      .eq("is_default", true)
+      .maybeSingle();
+
+    if (error) {
+      console.warn("CKE letterhead lookup failed:", error.message);
+      return null;
+    }
+
+    return asset?.imagekit_url || asset?.file_url || null;
+  } catch (error) {
+    console.warn("CKE letterhead lookup failed:", error);
+    return null;
   }
 }
 
@@ -5121,10 +6743,10 @@ function applyAttachmentImageTransformations(
     pathParts.splice(insertIndex, 0, `tr:w-${maxWidth},fo-auto,q-90`);
     urlObj.pathname = pathParts.join("/");
 
-    console.log(`📸 Applied ImageKit transform: w-${maxWidth} to attachment`);
+    console.log(`ðŸ“¸ Applied ImageKit transform: w-${maxWidth} to attachment`);
     return urlObj.toString();
   } catch (e) {
-    console.log("⚠️ Could not apply transformations to attachment URL:", e);
+    console.log("âš ï¸ Could not apply transformations to attachment URL:", e);
     return url;
   }
 }
@@ -5196,7 +6818,7 @@ async function uploadPdfToStorage(
   variant: PdfVariant = "final",
   maxRetries: number = 3,
 ): Promise<{ path: string; publicUrl: string }> {
-  console.log("📥 Downloading PDF from PDF.co...");
+  console.log("ðŸ“¥ Downloading PDF from PDF.co...");
 
   // Download PDF with retry logic
   let pdfBuffer: ArrayBuffer | null = null;
@@ -5204,7 +6826,7 @@ async function uploadPdfToStorage(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`  📥 Download attempt ${attempt}/${maxRetries}...`);
+      console.log(`  ðŸ“¥ Download attempt ${attempt}/${maxRetries}...`);
 
       // Add timeout to prevent hanging connections
       const controller = new AbortController();
@@ -5225,22 +6847,20 @@ async function uploadPdfToStorage(
       }
 
       pdfBuffer = await pdfResponse.arrayBuffer();
-      console.log(`  ✅ Download successful: ${pdfBuffer.byteLength} bytes`);
+      console.log(`  âœ… Download successful: ${pdfBuffer.byteLength} bytes`);
       break; // Success, exit retry loop
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       console.warn(
-        `  ⚠️ Download attempt ${attempt} failed:`,
+        `  âš ï¸ Download attempt ${attempt} failed:`,
         lastError.message,
       );
 
       if (attempt < maxRetries) {
         // Wait before retry with longer delays for PDF.co to finalize
         // PDF.co sometimes needs time to make files available
-        const waitTime = variant === "print"
-          ? Math.min(3000 * attempt, 10000) // Print: 3s, 6s, 9s, 12s (up to 10s max)
-          : Math.min(1000 * Math.pow(2, attempt - 1), 5000); // Normal: exponential backoff
-        console.log(`  ⏳ Waiting ${waitTime}ms before retry...`);
+        const waitTime = Math.min(2000 * attempt, 10000); // 2s, 4s, 6s, 8s, 10s (all variants)
+        console.log(`  â³ Waiting ${waitTime}ms before retry...`);
         await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
     }
@@ -5249,7 +6869,7 @@ async function uploadPdfToStorage(
   if (!pdfBuffer) {
     if (pdfUrl) {
       console.warn(
-        `⚠️ FINAL FALLBACK: Failed to download PDF after ${maxRetries} attempts but PDF.co URL exists. Using temporary URL.`,
+        `âš ï¸ FINAL FALLBACK: Failed to download PDF after ${maxRetries} attempts but PDF.co URL exists. Using temporary URL.`,
       );
       return {
         path: "",
@@ -5270,7 +6890,7 @@ async function uploadPdfToStorage(
   const storageFileName = `${orderId}_${timestamp}${suffix}.pdf`;
 
   console.log(
-    "📤 Uploading PDF to Supabase Storage (reports bucket):",
+    "ðŸ“¤ Uploading PDF to Supabase Storage (reports bucket):",
     storageFileName,
   );
 
@@ -5290,8 +6910,8 @@ async function uploadPdfToStorage(
   // Get public URL (using custom domain if configured)
   const publicUrl = getPublicStorageUrl("reports", storageFileName);
 
-  console.log("✅ PDF uploaded to storage:", publicUrl);
-  console.log("📡 Using custom domain:", !!CUSTOM_REPORTS_DOMAIN);
+  console.log("âœ… PDF uploaded to storage:", publicUrl);
+  console.log("ðŸ“¡ Using custom domain:", !!CUSTOM_REPORTS_DOMAIN);
 
   return {
     path: storageFileName,
@@ -5306,11 +6926,11 @@ async function uploadPdfToStorage(
 serve(async (req) => {
   // Top-level try-catch to ensure CORS headers are ALWAYS returned
   try {
-    console.log("📥 Incoming request:", req.method, req.url);
+    console.log("ðŸ“¥ Incoming request:", req.method, req.url);
 
     if (req.method === "OPTIONS") {
-      console.log("📋 Handling OPTIONS preflight request");
-      console.log("📋 CORS headers:", corsHeaders);
+      console.log("ðŸ“‹ Handling OPTIONS preflight request");
+      console.log("ðŸ“‹ CORS headers:", corsHeaders);
       return new Response(null, {
         status: 200,
         headers: corsHeaders,
@@ -5347,15 +6967,42 @@ serve(async (req) => {
           .maybeSingle()
         : { data: null };
       const orderReportSettings = (orderSettingsRow as any)?.report_settings || {};
+      // Priority: request body â†’ per-order setting â†’ "standard"
+      // Lab-level default (compactPrint.defaultMode) is applied further down after
+      // pdfSettings is loaded (line ~6996), for webhook/auto-generation paths.
       const requestedPrintLayoutMode = requestBody.printLayoutMode ?? orderReportSettings?.printLayoutMode;
       const printLayoutMode = normalizePrintLayoutMode(requestedPrintLayoutMode);
 
+      const savedPlannerEnabled =
+        orderReportSettings?.compactPageAssignmentsManualOverride === true ||
+        orderReportSettings?.compactPageAssignmentsAutoGenerated === true ||
+        orderReportSettings?.groupOrderManualOverride === true;
+
+      // Compact planner overrides from request body first, then saved order planner.
+      const compactGroupOrderOverride: string[] | null = Array.isArray(requestBody.compactGroupOrder)
+        ? (requestBody.compactGroupOrder as unknown[]).map(String).filter(Boolean)
+        : savedPlannerEnabled && Array.isArray(orderReportSettings?.groupOrder)
+          ? (orderReportSettings.groupOrder as unknown[]).map(String).filter(Boolean)
+        : null;
+      const compactPageAssignmentsOverride: Record<string, number> | null =
+        requestBody.compactPageAssignments && typeof requestBody.compactPageAssignments === "object" && !Array.isArray(requestBody.compactPageAssignments)
+          ? (requestBody.compactPageAssignments as Record<string, number>)
+          : savedPlannerEnabled && orderReportSettings?.compactPageAssignments && typeof orderReportSettings.compactPageAssignments === "object" && !Array.isArray(orderReportSettings.compactPageAssignments)
+            ? (orderReportSettings.compactPageAssignments as Record<string, number>)
+          : null;
+      const compactMaxClubbedAnalytesOverride: number | null =
+        typeof requestBody.compactMaxClubbedAnalytes === "number" && requestBody.compactMaxClubbedAnalytes > 0
+          ? requestBody.compactMaxClubbedAnalytes
+          : typeof orderReportSettings?.compactMaxClubbedAnalytes === "number" && orderReportSettings.compactMaxClubbedAnalytes > 0
+            ? orderReportSettings.compactMaxClubbedAnalytes
+          : null;
+
       console.log(
-        "═══════════════════════════════════════════════════════════",
+        "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•",
       );
-      console.log("📄 PDF AUTO-GENERATION (SERVER-SIDE)");
+      console.log("ðŸ“„ PDF AUTO-GENERATION (SERVER-SIDE)");
       console.log(
-        "═══════════════════════════════════════════════════════════",
+        "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•",
       );
       console.log("Order ID:", orderId);
       console.log("Is Draft:", !!isDraft);
@@ -5365,7 +7012,7 @@ serve(async (req) => {
       console.log("Triggered By User ID:", triggeredByUserId || "N/A");
       console.log(
         "PDF.co API Key:",
-        PDFCO_API_KEY ? "✅ Present" : "❌ MISSING",
+        PDFCO_API_KEY ? "âœ… Present" : "âŒ MISSING",
       );
 
       if (!orderId) {
@@ -5386,7 +7033,7 @@ serve(async (req) => {
       // ========================================
       if (isManualDesign && htmlOverride) {
         console.log(
-          "🎨 Manual Design detected. Bypassing template generation.",
+          "ðŸŽ¨ Manual Design detected. Bypassing template generation.",
         );
 
         const filename = `Report_${orderId}_${new Date().getTime()}.pdf`;
@@ -5404,7 +7051,7 @@ serve(async (req) => {
           },
         );
 
-        console.log("✅ PDF generated successfully via Manual Mode:", pdfUrl);
+        console.log("âœ… PDF generated successfully via Manual Mode:", pdfUrl);
 
         // Upload to Storage
         const { publicUrl } = await uploadPdfToStorage(
@@ -5430,8 +7077,10 @@ serve(async (req) => {
       // ========================================
       // PRE-CHECK: Order Readiness (Panel Status)
       // ========================================
-      if (!isDraft) {
-        console.log("\n🔍 Pre-check: Verifying order readiness...");
+      // Compact print is always a deliberate manual action from the UI and writes to
+      // print_pdf_url (not pdf_url), so it must never be blocked by panel readiness.
+      if (!isDraft && printLayoutMode !== "compact") {
+        console.log("\nðŸ” Pre-check: Verifying order readiness...");
         const { data: readinessData, error: readinessError } =
           await supabaseClient
             .from("v_result_panel_status")
@@ -5440,20 +7089,20 @@ serve(async (req) => {
 
         if (readinessError) {
           console.warn(
-            "⚠️ Could not verify panel status (view might be missing), proceeding with caution:",
+            "âš ï¸ Could not verify panel status (view might be missing), proceeding with caution:",
             readinessError.message,
           );
         } else if (readinessData) {
           const isReady = readinessData.length > 0 &&
             readinessData.every((r: any) => r.panel_ready);
           console.log(
-            `  → Panel status: ${isReady ? "✅ READY" : "⏳ NOT READY"}`,
+            `  â†’ Panel status: ${isReady ? "âœ… READY" : "â³ NOT READY"}`,
             readinessData,
           );
 
           if (!isReady) {
             console.log(
-              "⛔ Order is not ready for final report. Skipping auto-generation.",
+              "â›” Order is not ready for final report. Skipping auto-generation.",
             );
 
             // If there's an existing queue item, update it to failed/skipped so it doesn't get stuck
@@ -5496,7 +7145,7 @@ serve(async (req) => {
       // ========================================
       // Step 1: Get or Create Job from Queue
       // ========================================
-      console.log("\n📋 Step 1: Fetching/creating job in queue...");
+      console.log("\nðŸ“‹ Step 1: Fetching/creating job in queue...");
 
       // First, try to get existing job
       let { data: job, error: jobError } = await supabaseClient
@@ -5508,7 +7157,7 @@ serve(async (req) => {
       // If no job exists, create one (for manual/direct Edge function calls)
       if (!job) {
         console.log(
-          "ℹ️ No queue entry found, fetching lab_id and creating entry...",
+          "â„¹ï¸ No queue entry found, fetching lab_id and creating entry...",
         );
 
         // Get lab_id from the order
@@ -5520,7 +7169,7 @@ serve(async (req) => {
 
         if (orderError || !orderData?.lab_id) {
           console.error(
-            "❌ Failed to fetch lab_id for order:",
+            "âŒ Failed to fetch lab_id for order:",
             orderError?.message,
           );
           return new Response(
@@ -5553,7 +7202,7 @@ serve(async (req) => {
 
         if (upsertError) {
           console.error(
-            "❌ Failed to upsert queue entry:",
+            "âŒ Failed to upsert queue entry:",
             upsertError?.message,
           );
           return new Response(
@@ -5570,17 +7219,17 @@ serve(async (req) => {
 
         job = upsertData;
         console.log(
-          "✅ Created/updated queue entry:",
+          "âœ… Created/updated queue entry:",
           job.id,
           "for lab:",
           orderData.lab_id,
         );
       }
 
-      // If job exists but is completed, reset it to pending for regeneration
+      // If job exists but is completed, check if we can return cached or must regenerate
       if (job.status === "completed") {
         console.log(
-          "♻️ Job already completed, checking if PDF still exists...",
+          "â™»ï¸ Job already completed, checking if PDF still exists...",
         );
 
         // Check if the PDF still exists in reports table
@@ -5592,9 +7241,11 @@ serve(async (req) => {
             .eq("report_type", "final")
             .maybeSingle();
 
-        if (existingReport && existingReport.pdf_url) {
+        // Return cached only for standard (non-compact) requests when a final PDF exists.
+        // Compact print always regenerates so the new page assignments are applied.
+        if (existingReport && existingReport.pdf_url && printLayoutMode !== "compact") {
           console.log(
-            "✅ Final PDF already exists in reports table, returning existing URL",
+            "âœ… Final PDF already exists in reports table, returning existing URL",
           );
           return new Response(
             JSON.stringify({
@@ -5612,8 +7263,12 @@ serve(async (req) => {
           );
         }
 
-        // PDF doesn't exist, reset queue to regenerate
-        console.log("⚠️ PDF missing from reports table, regenerating...");
+        // PDF missing or compact print â†’ reset queue to regenerate
+        console.log(
+          printLayoutMode === "compact"
+            ? "ðŸ”„ Compact print requested â€” regenerating with updated page plan..."
+            : "âš ï¸ PDF missing from reports table, regenerating...",
+        );
         const { data: resetJob, error: resetError } = await supabaseClient
           .from("pdf_generation_queue")
           .update({
@@ -5628,16 +7283,42 @@ serve(async (req) => {
           .single();
 
         if (resetError) {
-          console.error("❌ Failed to reset job status:", resetError?.message);
+          console.error("âŒ Failed to reset job status:", resetError?.message);
         } else {
           job = resetJob;
-          console.log("✅ Job reset to pending");
+          console.log("âœ… Job reset to pending");
+        }
+      }
+
+      // Reset failed/skipped/error jobs to pending so the atomic claim below succeeds.
+      // These statuses occur when a previous attempt was blocked (e.g. panel readiness)
+      // or errored out; the caller is explicitly retrying so we should let it through.
+      if (job.status === "failed" || job.status === "skipped" || job.status === "error") {
+        console.log(`â™»ï¸ Job is in '${job.status}' state â€” resetting to pending for retry`);
+        const { data: resetJob, error: resetError } = await supabaseClient
+          .from("pdf_generation_queue")
+          .update({
+            status: "pending",
+            error_message: null,
+            retry_count: 0,
+            progress_stage: null,
+            progress_percent: 0,
+          })
+          .eq("id", job.id)
+          .select()
+          .single();
+
+        if (resetError) {
+          console.error("âŒ Failed to reset failed job:", resetError?.message);
+        } else {
+          job = resetJob;
+          console.log("âœ… Failed/skipped job reset to pending");
         }
       }
 
       // Prevent duplicate processing - if already processing, return early
       if (job.status === "processing") {
-        console.log("⏳ Job already processing, skipping duplicate request");
+        console.log("â³ Job already processing, skipping duplicate request");
         return new Response(
           JSON.stringify({
             message: "Already processing",
@@ -5651,7 +7332,7 @@ serve(async (req) => {
         );
       }
 
-      console.log("✅ Job found:", {
+      console.log("âœ… Job found:", {
         id: job.id,
         status: job.status,
         labId: job.lab_id,
@@ -5660,7 +7341,7 @@ serve(async (req) => {
       // ========================================
       // Step 2: Mark as Processing (Atomic Update)
       // ========================================
-      console.log("\n📝 Step 2: Marking job as processing...");
+      console.log("\nðŸ“ Step 2: Marking job as processing...");
 
       // Use atomic update with status check to prevent race conditions
       const { data: updatedJob, error: updateError } = await supabaseClient
@@ -5678,7 +7359,7 @@ serve(async (req) => {
 
       // If update didn't find a pending job, another process got it first
       if (updateError || !updatedJob) {
-        console.log("⏳ Job was claimed by another process, skipping");
+        console.log("â³ Job was claimed by another process, skipping");
         return new Response(
           JSON.stringify({
             message: "Job claimed by another process",
@@ -5694,14 +7375,14 @@ serve(async (req) => {
       // ========================================
       // Step 3: Get Template Context (RPC)
       // ========================================
-      console.log("\n📊 Step 3: Fetching template context via RPC...");
+      console.log("\nðŸ“Š Step 3: Fetching template context via RPC...");
       const { data: context, error: contextError } = await supabaseClient.rpc(
         "get_report_template_context",
         { p_order_id: orderId },
       );
 
       if (contextError || !context) {
-        console.error("❌ Context fetch failed:", contextError?.message);
+        console.error("âŒ Context fetch failed:", contextError?.message);
         await failJob(
           supabaseClient,
           job.id,
@@ -5719,12 +7400,129 @@ serve(async (req) => {
         );
       }
 
+      // Keep report rendering resilient when an RPC definition omits patient
+      // custom fields or cannot resolve a collector stored as plain text.
+      const [patientContextResult, orderContextResult] = await Promise.all([
+        supabaseClient
+          .from("patients")
+          .select("custom_fields")
+          .eq("id", context.patientId)
+          .maybeSingle(),
+        supabaseClient
+          .from("orders")
+          .select(
+            "sample_collected_by, account_id, location_id, collected_at_location_id",
+          )
+          .eq("id", orderId)
+          .maybeSingle(),
+      ]);
+
+      if (patientContextResult.error) {
+        console.warn(
+          "Failed to enrich report with patient custom fields:",
+          patientContextResult.error.message,
+        );
+      } else {
+        context.patient = {
+          ...(context.patient || {}),
+          custom_fields: patientContextResult.data?.custom_fields || {},
+        };
+      }
+
+      const { data: resultRemarkRows, error: resultRemarkError } = await supabaseClient
+        .from("results")
+        .select("id, test_group_id, notes")
+        .eq("order_id", orderId);
+      if (resultRemarkError) {
+        console.warn("Failed to load test-group report remarks:", resultRemarkError.message);
+      }
+      const groupRemarks = new Map<string, string>();
+      for (const row of resultRemarkRows || []) {
+        const remark = String(row.notes || "").trim();
+        if (row.test_group_id && remark) {
+          groupRemarks.set(row.test_group_id, remark);
+        }
+      }
+      context.groupRemarks = Object.fromEntries(groupRemarks);
+
+      const rawSampleCollectedBy =
+        orderContextResult.data?.sample_collected_by || "";
+      if (orderContextResult.error) {
+        console.warn(
+          "Failed to enrich report with raw collector value:",
+          orderContextResult.error.message,
+        );
+      } else if (!context.order?.sampleCollectedBy && rawSampleCollectedBy) {
+        context.order = {
+          ...(context.order || {}),
+          sampleCollectedBy: rawSampleCollectedBy,
+        };
+        context.placeholderValues = {
+          ...(context.placeholderValues || {}),
+          sampleCollectedBy: rawSampleCollectedBy,
+        };
+      }
+
+      if (!orderContextResult.error && orderContextResult.data) {
+        const accountId = orderContextResult.data.account_id;
+        const collectionLocationId =
+          orderContextResult.data.collected_at_location_id ||
+          orderContextResult.data.location_id;
+        const [accountResult, collectionLocationResult] = await Promise.all([
+          accountId
+            ? supabaseClient
+              .from("accounts")
+              .select("name")
+              .eq("id", accountId)
+              .maybeSingle()
+            : Promise.resolve({ data: null, error: null }),
+          collectionLocationId
+            ? supabaseClient
+              .from("locations")
+              .select("name")
+              .eq("id", collectionLocationId)
+              .maybeSingle()
+            : Promise.resolve({ data: null, error: null }),
+        ]);
+
+        if (accountResult.error) {
+          console.warn(
+            "Failed to enrich report with B2B account name:",
+            accountResult.error.message,
+          );
+        }
+        if (collectionLocationResult.error) {
+          console.warn(
+            "Failed to enrich report with collection location name:",
+            collectionLocationResult.error.message,
+          );
+        }
+
+        const b2bAccountName = accountResult.data?.name || "";
+        const collectionCenter =
+          collectionLocationResult.data?.name ||
+          context.order?.collectionCenter ||
+          context.order?.locationName ||
+          "";
+
+        context.order = {
+          ...(context.order || {}),
+          collectionCenter,
+          b2bAccountName,
+        };
+        context.placeholderValues = {
+          ...(context.placeholderValues || {}),
+          collectionCenter,
+          b2bAccountName,
+        };
+      }
+
       // RPC returns nested structure: context.patient.name, context.order.sampleId, etc.
       console.log(
-        "✅ Context fetched (full structure):",
+        "âœ… Context fetched (full structure):",
         JSON.stringify(context, null, 2).substring(0, 2000),
       );
-      console.log("✅ Context summary:", {
+      console.log("âœ… Context summary:", {
         patientName: context.patient?.name ||
           context.placeholderValues?.patientName,
         patientId: context.patientId,
@@ -5743,21 +7541,86 @@ serve(async (req) => {
         ),
       });
 
-      // Validate that we have actual test results
+      // Validate that we have actual test results.
+      // For section-only groups, saved report-section content is a valid result
+      // even when there are zero analyte rows in context.analytes.
       if (!context.analytes || context.analytes.length === 0) {
-        console.error("❌ No analytes found in context");
-        await failJob(
-          supabaseClient,
-          job.id,
-          "No test results found for this order",
-        );
-        return new Response(
-          JSON.stringify({ error: "No test results found for this order" }),
-          {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          },
-        );
+        console.warn("âš ï¸ No analytes found in context, checking for section-only report content...");
+
+        let hasSectionOnlyContent = false;
+        try {
+          const { data: resultRows, error: resultError } = await supabaseClient
+            .from("results")
+            .select("id")
+            .eq("order_id", orderId);
+
+          if (resultError) {
+            console.warn("âš ï¸ Failed to fetch result ids for section-only validation:", resultError.message);
+          } else {
+	            const resultIds = (resultRows || []).map((row: any) => row.id).filter(Boolean);
+	            if (resultIds.length > 0) {
+	              const {
+	                sectionContent: scWithImages,
+	                sectionLabels,
+	                sectionContentByGroup: scByGroupWithImages,
+	                sectionPlaceholderValues: scPlaceholderValuesWithImages,
+	              } = await fetchSectionContent(supabaseClient, resultIds, true);
+              const {
+                sectionContent: scNoImages,
+                sectionContentByGroup: scByGroupNoImages,
+              } = await fetchSectionContent(supabaseClient, resultIds, false);
+
+              hasSectionOnlyContent =
+                Object.keys(scWithImages).length > 0 ||
+                Object.keys(scNoImages).length > 0 ||
+                scByGroupWithImages.size > 0 ||
+                scByGroupNoImages.size > 0;
+
+              if (hasSectionOnlyContent) {
+                context.sectionContent = Object.keys(scWithImages).length > 0
+                  ? scWithImages
+                  : (context.sectionContent || {});
+                context.sectionContentNoImages = Object.keys(scNoImages).length > 0
+                  ? scNoImages
+                  : (context.sectionContentNoImages || context.sectionContent || {});
+                context.sectionLabels = sectionLabels;
+	                context.sectionContentByGroup = scByGroupWithImages.size > 0
+	                  ? scByGroupWithImages
+	                  : (context.sectionContentByGroup || new Map());
+	                const sectionOnlyGroupIds = Array.from(context.sectionContentByGroup.keys());
+	                if (sectionOnlyGroupIds.length > 0) {
+	                  context.testGroupIds = Array.from(new Set([
+	                    ...(context.testGroupIds || []),
+	                    ...sectionOnlyGroupIds,
+	                  ]));
+	                }
+	                context.placeholderValues = {
+	                  ...(context.placeholderValues || {}),
+	                  ...buildSectionPlaceholderAliases(context.sectionContent || {}),
+	                  ...scPlaceholderValuesWithImages,
+	                };
+              }
+            }
+          }
+        } catch (sectionValidationError) {
+          console.warn("âš ï¸ Section-only validation failed:", sectionValidationError);
+        }
+
+        if (!hasSectionOnlyContent) {
+          console.error("âŒ No analytes or section-only content found in context");
+          await failJob(
+            supabaseClient,
+            job.id,
+            "No test results found for this order",
+          );
+          return new Response(
+            JSON.stringify({ error: "No test results found for this order" }),
+            {
+              status: 500,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            },
+          );
+        }
       }
 
       // Check if analytes have values
@@ -5765,13 +7628,13 @@ serve(async (req) => {
         a.value != null && a.value !== ""
       );
       if (analytesWithValues.length === 0) {
-        console.warn("⚠️ WARNING: All analytes have empty values!");
+        console.warn("âš ï¸ WARNING: All analytes have empty values!");
       }
 
       // ========================================
       // Step 3a: Filter out canceled tests
       // ========================================
-      console.log("\n🚫 Step 3a: Filtering canceled tests...");
+      console.log("\nðŸš« Step 3a: Filtering canceled tests...");
 
       // Get canceled test_group_ids from order_tests
       const { data: canceledTests } = await supabaseClient
@@ -5786,7 +7649,7 @@ serve(async (req) => {
 
       if (canceledTestGroupIds.size > 0) {
         console.log(
-          `📋 Found ${canceledTestGroupIds.size} canceled test group(s):`,
+          `ðŸ“‹ Found ${canceledTestGroupIds.size} canceled test group(s):`,
           Array.from(canceledTestGroupIds),
         );
 
@@ -5808,34 +7671,83 @@ serve(async (req) => {
         }
 
         console.log(
-          `✅ Filtered analytes: ${originalCount} → ${context.analytes.length} (removed ${
+          `âœ… Filtered analytes: ${originalCount} â†’ ${context.analytes.length} (removed ${
             originalCount - context.analytes.length
           } from canceled tests)`,
         );
       } else {
-        console.log("✅ No canceled tests found - including all analytes");
+        console.log("âœ… No canceled tests found - including all analytes");
       }
 
-      // Deduplicate analytes by (test_group_id, analyte_id) — guards against
+      // Deduplicate analytes by (test_group_id, analyte_id) â€” guards against
       // duplicate result_values rows from multiple results records for same test group
-      {
-        const seen = new Set<string>();
-        const deduped: any[] = [];
-        for (const a of (context.analytes || [])) {
-          const key = `${a.test_group_id ?? ""}|${a.analyte_id ?? ""}`;
+	      {
+	        const seen = new Set<string>();
+	        const deduped: any[] = [];
+	        for (const a of (context.analytes || [])) {
+	          const identity = getAnalyteIdentityIds(a)[0] || a.parameter || a.name || "";
+	          const key = `${a.test_group_id ?? a.testGroupId ?? ""}|${identity}`;
           if (!seen.has(key)) {
             seen.add(key);
             deduped.push(a);
           }
         }
         if (deduped.length < (context.analytes?.length ?? 0)) {
-          console.log(`⚠️ Removed ${(context.analytes?.length ?? 0) - deduped.length} duplicate analyte(s) from context`);
-          context.analytes = deduped;
-        }
-      }
+          console.log(`âš ï¸ Removed ${(context.analytes?.length ?? 0) - deduped.length} duplicate analyte(s) from context`);
+	          context.analytes = deduped;
+	        }
+	      }
 
-      // ========================================
-      // Step 3a.1: Enrich section content with image URLs (ecopy only)
+	      // Enrich analytes with per-test-group display options, such as
+	      // same-row sibling display for Differential % + Absolute Count.
+	      try {
+	        const groupIdsForDisplayOptions = [
+	          ...new Set((context.analytes || []).map((a: any) => a.test_group_id || a.testGroupId).filter(Boolean)),
+	        ];
+	        if (groupIdsForDisplayOptions.length > 0) {
+	          const { data: tgaDisplayRows, error: tgaDisplayError } = await supabaseClient
+	            .from("test_group_analytes")
+	            .select("test_group_id, analyte_id, lab_analyte_id, report_display_options")
+	            .in("test_group_id", groupIdsForDisplayOptions);
+
+	          if (tgaDisplayError) {
+	            console.warn("âš ï¸ Failed to load analyte report display options:", tgaDisplayError.message);
+	          } else {
+		            const optionsByKey = new Map<string, any>();
+		            let configuredSameRowCount = 0;
+		            for (const row of tgaDisplayRows || []) {
+		              const options = row.report_display_options || {};
+		              if (options?.sameRowSiblingAnalyteId) configuredSameRowCount += 1;
+		              for (const id of getAnalyteIdentityIds(row)) {
+		                optionsByKey.set(`${row.test_group_id}|${id}`, options);
+		              }
+		            }
+		            let enrichedSameRowCount = 0;
+		            context.analytes = (context.analytes || []).map((a: any) => {
+		              const groupId = a.test_group_id || a.testGroupId || "";
+		              const matchedOptions = getAnalyteIdentityIds(a)
+		                .map((id) => optionsByKey.get(`${groupId}|${id}`))
+		                .find(Boolean);
+		              if (matchedOptions?.sameRowSiblingAnalyteId) enrichedSameRowCount += 1;
+		              return {
+		                ...a,
+		                report_display_options: matchedOptions || a.report_display_options || {},
+		              };
+		            });
+		            console.log("[basic-template] report display options loaded:", {
+		              groups: groupIdsForDisplayOptions.length,
+		              rows: tgaDisplayRows?.length || 0,
+		              configuredSameRowCount,
+		              enrichedSameRowCount,
+		            });
+	          }
+	        }
+	      } catch (displayOptionsError) {
+	        console.warn("âš ï¸ Unexpected error enriching report display options:", displayOptionsError);
+	      }
+
+	      // ========================================
+	      // Step 3a.1: Enrich section content with image URLs (ecopy only)
       // ========================================
       try {
         const { data: resultRows, error: resultError } = await supabaseClient
@@ -5845,7 +7757,7 @@ serve(async (req) => {
 
         if (resultError) {
           console.warn(
-            "⚠️ Failed to fetch result ids for section images:",
+            "âš ï¸ Failed to fetch result ids for section images:",
             resultError.message,
           );
         } else {
@@ -5853,12 +7765,12 @@ serve(async (req) => {
             .map((row: any) => row.id)
             .filter(Boolean);
 
-          if (resultIds.length > 0) {
-            const { sectionContent: scWithImages, sectionLabels, sectionContentByGroup: scByGroupWithImages } = await fetchSectionContent(
+	          if (resultIds.length > 0) {
+            const { sectionContent: scWithImages, sectionLabels, sectionContentByGroup: scByGroupWithImages, sectionPlaceholderValues: scPlaceholderValuesWithImages } = await fetchSectionContent(
               supabaseClient,
               resultIds,
               true,
-            );
+	            );
             const { sectionContent: scNoImages, sectionContentByGroup: scByGroupNoImages } = await fetchSectionContent(
               supabaseClient,
               resultIds,
@@ -5872,18 +7784,26 @@ serve(async (req) => {
               ? scNoImages
               : (context.sectionContent || {});
 
-            context.sectionContent = withImages;
-            context.sectionContentNoImages = noImages;
-            context.sectionLabels = sectionLabels;
-            context.sectionContentByGroup = scByGroupWithImages.size > 0 ? scByGroupWithImages : (context.sectionContentByGroup || new Map());
-            context.placeholderValues = {
-              ...(context.placeholderValues || {}),
-              ...withImages,
-            };
+	            context.sectionContent = withImages;
+	            context.sectionContentNoImages = noImages;
+	            context.sectionLabels = sectionLabels;
+	            context.sectionContentByGroup = scByGroupWithImages.size > 0 ? scByGroupWithImages : (context.sectionContentByGroup || new Map());
+	            const sectionGroupIds = Array.from(context.sectionContentByGroup.keys());
+	            if (sectionGroupIds.length > 0) {
+	              context.testGroupIds = Array.from(new Set([
+	                ...(context.testGroupIds || []),
+	                ...sectionGroupIds,
+	              ]));
+	            }
+	            context.placeholderValues = {
+	              ...(context.placeholderValues || {}),
+	              ...buildSectionPlaceholderAliases(withImages),
+	              ...scPlaceholderValuesWithImages,
+	            };
           }
         }
       } catch (err) {
-        console.warn("⚠️ Section image enrichment failed:", err);
+        console.warn("âš ï¸ Section image enrichment failed:", err);
       }
 
       await updateProgress(
@@ -5897,7 +7817,7 @@ serve(async (req) => {
       // Step 3b: Enhance Analytes with Flag Determination
       // ========================================
       console.log(
-        "\n🏷️ Step 3b: Enhancing analytes with flag determination...",
+        "\nðŸ·ï¸ Step 3b: Enhancing analytes with flag determination...",
       );
       const patientGender = context.patient?.gender ||
         context.placeholderValues?.gender;
@@ -5932,7 +7852,7 @@ serve(async (req) => {
           a.flag && a.flag.trim()
         ).length;
         console.log(
-          `✅ Flag determination complete: ${flaggedCount}/${context.analytes.length} analytes have flags`,
+          `âœ… Flag determination complete: ${flaggedCount}/${context.analytes.length} analytes have flags`,
         );
       }
 
@@ -5946,7 +7866,7 @@ serve(async (req) => {
       // ========================================
       // Step 4: Get Lab Template & Settings
       // ========================================
-      console.log("\n🎨 Step 4: Fetching lab templates & settings...");
+      console.log("\nðŸŽ¨ Step 4: Fetching lab templates & settings...");
 
       // Get all templates for this lab
       const { data: allTemplates, error: templateError } = await supabaseClient
@@ -5959,7 +7879,7 @@ serve(async (req) => {
       );
 
       console.log(
-        "📋 Available templates:",
+        "ðŸ“‹ Available templates:",
         templatesWithHtml.map((t: any) => ({
           name: t.template_name,
           testGroupId: t.test_group_id || "none",
@@ -5978,7 +7898,7 @@ serve(async (req) => {
       // ========================================
       // Step 5: Get Lab Settings (Header/Footer/PDF Settings/Watermark)
       // ========================================
-      console.log("\n⚙️ Step 5: Fetching lab settings...");
+      console.log("\nâš™ï¸ Step 5: Fetching lab settings...");
       const { data: labSettings, error: labSettingsError } = await supabaseClient
         .from("labs")
         .select(`
@@ -6002,7 +7922,7 @@ serve(async (req) => {
         .single();
 
       if (labSettingsError) {
-        console.error("  ❌ Lab settings query error:", labSettingsError.message);
+        console.error("  âŒ Lab settings query error:", labSettingsError.message);
       }
 
       // Fetch custom patient field configs for this lab (for dynamic PDF fields)
@@ -6013,7 +7933,7 @@ serve(async (req) => {
         .order('sort_order');
 
       const pdfLetterheadMode = labSettings?.pdf_letterhead_mode || 'background';
-      console.log("  📋 PDF Letterhead Mode:", pdfLetterheadMode);
+      console.log("  ðŸ“‹ PDF Letterhead Mode:", pdfLetterheadMode);
 
       // Variables for both modes
       let letterheadUrl: string | null = null;
@@ -6022,68 +7942,86 @@ serve(async (req) => {
       if (pdfLetterheadMode === 'header_footer') {
         // MODE: Separate Header/Footer Images
         // Fetch header and footer separately, convert to base64 for PDF.co native header/footer
-        console.log("  🖼️ Fetching SEPARATE header/footer images (header_footer mode)...");
+        console.log("  ðŸ–¼ï¸ Fetching SEPARATE header/footer images (header_footer mode)...");
         const { headerUrl, footerUrl } = await fetchHeaderFooterImages(
           supabaseClient,
           orderId,
           job.lab_id,
         );
 
-        console.log("  📍 Header URL:", headerUrl ? "FOUND" : "NOT FOUND");
-        console.log("  📍 Footer URL:", footerUrl ? "FOUND" : "NOT FOUND");
+        console.log("  ðŸ“ Header URL:", headerUrl ? "FOUND" : "NOT FOUND");
+        console.log("  ðŸ“ Footer URL:", footerUrl ? "FOUND" : "NOT FOUND");
 
-        // Convert to base64 for reliable rendering (with fallback to direct URL)
-        let headerSrc = headerUrl || '';
-        let footerSrc = footerUrl || '';
-
-        if (headerUrl) {
-          const headerBase64 = await imageUrlToBase64(headerUrl);
-          if (headerBase64) {
-            headerSrc = headerBase64;
-            console.log("  ✅ Header converted to base64");
-          } else {
-            console.log("  ⚠️ Header base64 failed, using direct URL");
-            // Apply ImageKit transform for quality if it's ImageKit URL
-            if (headerUrl.includes('ik.imagekit.io') && !headerUrl.includes('/tr:')) {
-              headerSrc = headerUrl.replace(/(ik\.imagekit\.io\/[^/]+)/, '$1/tr:w-2480,q-90');
-            }
-          }
-        }
-
-        if (footerUrl) {
-          const footerBase64 = await imageUrlToBase64(footerUrl);
-          if (footerBase64) {
-            footerSrc = footerBase64;
-            console.log("  ✅ Footer converted to base64");
-          } else {
-            console.log("  ⚠️ Footer base64 failed, using direct URL");
-            if (footerUrl.includes('ik.imagekit.io') && !footerUrl.includes('/tr:')) {
-              footerSrc = footerUrl.replace(/(ik\.imagekit\.io\/[^/]+)/, '$1/tr:w-2480,q-90');
-            }
-          }
-        }
-
-        // Build header/footer HTML for PDF.co
+        // Prefer optimized ImageKit URLs for native PDF.co header/footer rendering.
+        // Large base64 data URIs can fail when branding images are wide/full-bleed banners.
         const pdfLayoutSettings = labSettings?.pdf_layout_settings || {};
         const headerHeight = pdfLayoutSettings?.headerHeight || 90;
         const footerHeight = pdfLayoutSettings?.footerHeight || 80;
 
-        headerFooterHtml = {
-          headerHtml: headerSrc ? buildHeaderHtml(headerSrc, headerHeight) : '',
-          footerHtml: footerSrc ? buildFooterHtml(footerSrc, footerHeight) : '',
+        const optimizedHeaderUrl = headerUrl
+          ? optimizeHeaderFooterImageUrl(headerUrl, 'header', headerHeight)
+          : '';
+        const optimizedFooterUrl = footerUrl
+          ? optimizeHeaderFooterImageUrl(footerUrl, 'footer', footerHeight)
+          : '';
+
+        let headerSrc = optimizedHeaderUrl;
+        let footerSrc = optimizedFooterUrl;
+
+        console.log("  ðŸ–¼ï¸ Header source strategy:", headerUrl?.includes('ik.imagekit.io')
+          ? "optimized-imagekit-url"
+          : "original-url-or-base64");
+        console.log("  ðŸ–¼ï¸ Footer source strategy:", footerUrl?.includes('ik.imagekit.io')
+          ? "optimized-imagekit-url"
+          : "original-url-or-base64");
+
+        if (headerUrl) {
+          const headerBase64 = await imageUrlToBase64(optimizedHeaderUrl || headerUrl);
+          if (headerBase64) {
+            headerSrc = headerBase64;
+            console.log(headerUrl.includes('ik.imagekit.io')
+              ? "  âœ… Header optimized via ImageKit and converted to base64"
+              : "  âœ… Header converted to base64");
+          } else {
+            console.log("  âš ï¸ Header base64 failed, using URL fallback");
+          }
+        }
+
+        if (footerUrl) {
+          const footerBase64 = await imageUrlToBase64(optimizedFooterUrl || footerUrl);
+          if (footerBase64) {
+            footerSrc = footerBase64;
+            console.log(footerUrl.includes('ik.imagekit.io')
+              ? "  âœ… Footer optimized via ImageKit and converted to base64"
+              : "  âœ… Footer converted to base64");
+          } else {
+            console.log("  âš ï¸ Footer base64 failed, using URL fallback");
+          }
+        }
+
+        // Build header/footer HTML for PDF.co
+        const sideMargins = {
+          left: Number(pdfLayoutSettings?.margins?.left ?? 20),
+          right: Number(pdfLayoutSettings?.margins?.right ?? 20),
         };
 
-        console.log("  ✅ Header/Footer mode configured:",
+        headerFooterHtml = {
+          headerHtml: headerSrc ? buildHeaderHtml(headerSrc, headerHeight, sideMargins) : '',
+          footerHtml: footerSrc ? buildFooterHtml(footerSrc, footerHeight, sideMargins) : '',
+        };
+
+        console.log("  âœ… Header/Footer mode configured:",
           "header:", headerFooterHtml.headerHtml.length, "chars,",
           "footer:", headerFooterHtml.footerHtml.length, "chars");
+        console.log("  â†”ï¸ Header/Footer bleed margins:", sideMargins);
 
-        // letterheadUrl stays null — no background image in this mode
+        // letterheadUrl stays null â€” no background image in this mode
       } else {
         // MODE: Full-page Background (default/current behavior)
         // FETCH LETTERHEAD BACKGROUND IMAGE (Full-page background approach)
         // Priority: B2B Account > Location > Lab
-        console.log("  🖼️ Fetching letterhead background image (background mode)...");
-        console.log("  📍 Order ID:", orderId, "| Lab ID:", job.lab_id);
+        console.log("  ðŸ–¼ï¸ Fetching letterhead background image (background mode)...");
+        console.log("  ðŸ“ Order ID:", orderId, "| Lab ID:", job.lab_id);
         const letterheadBackgroundUrl = await fetchLetterheadBackgroundForOrder(
           supabaseClient,
           orderId,
@@ -6096,20 +8034,29 @@ serve(async (req) => {
           : null;
 
         console.log(
-          "  🎨 Letterhead Background URL:",
+          "  ðŸŽ¨ Letterhead Background URL:",
           letterheadUrl || "NOT FOUND",
         );
         if (letterheadUrl) {
           console.log(
-            "  ✅ Using letterhead background:",
+            "  âœ… Using letterhead background:",
             letterheadUrl,
           );
         } else {
-          console.log("  ⚠️ No letterhead background found, using plain layout");
+          console.log("  âš ï¸ No letterhead background found, using plain layout");
         }
       }
 
       const pdfSettings = labSettings?.pdf_layout_settings || {};
+      const ckeTemplateLetterheadUrl = templatesWithHtml.length > 0
+        ? applyLetterheadImageTransform(
+          await fetchCkeTemplateLetterheadUrl(supabaseClient, job.lab_id) || "",
+        ) || null
+        : null;
+
+      if (ckeTemplateLetterheadUrl) {
+        console.log("  CKE template letterhead background found");
+      }
 
       // result_colors lives inside pdf_layout_settings.resultColors (not a separate column)
 
@@ -6126,7 +8073,7 @@ serve(async (req) => {
       // ========================================
       // Step 5b: Get Signatory Info (Approver fallback to Lab Default)
       // ========================================
-      console.log("\n✍️ Step 5b: Fetching signatory information...");
+      console.log("\nâœï¸ Step 5b: Fetching signatory information...");
 
       interface SignatoryInfo {
         signatoryName: string;
@@ -6135,7 +8082,7 @@ serve(async (req) => {
       }
 
       // Helper to apply ImageKit transformations for signatures
-      // Adds focus:auto and e-removebg for clean signature rendering
+      // Adds non-AI ImageKit transforms for sizing/focus only.
       const applySignatureTransformations = (url: string): string => {
         if (!url) return "";
         // If it's an ImageKit URL, add transformations
@@ -6151,14 +8098,14 @@ serve(async (req) => {
               const insertIndex = pathParts.findIndex((p: string) =>
                 p && !p.includes(".")
               ) + 1;
-              pathParts.splice(insertIndex, 0, "tr:fo-auto,e-removebg,t-true");
+              pathParts.splice(insertIndex, 0, "tr:fo-auto,t-true");
               urlObj.pathname = pathParts.join("/");
               return urlObj.toString();
             }
           } catch (e) {
             // If URL parsing fails, return as-is
             console.log(
-              "    → Could not apply transformations to signature URL",
+              "    â†’ Could not apply transformations to signature URL",
             );
           }
         }
@@ -6246,12 +8193,12 @@ serve(async (req) => {
             verifierName = (orderApprover.users as any)?.name;
             verifierRole = (orderApprover.users as any)?.role;
             verifierDepartment = (orderApprover.users as any)?.department;
-            console.log("  → Verifier found via orders.approved_by");
+            console.log("  â†’ Verifier found via orders.approved_by");
           }
         }
 
         console.log(
-          "  → Final Verifier ID:",
+          "  â†’ Final Verifier ID:",
           verifierUserId ? `${verifierName} (${verifierUserId})` : "None",
         );
 
@@ -6281,7 +8228,7 @@ serve(async (req) => {
               if (variants?.optimized) {
                 sigUrl = variants.optimized;
                 console.log(
-                  "  ✅ Using optimized variant (bg removed):",
+                  "  âœ… Using optimized variant (bg removed):",
                   sigUrl,
                 );
               }
@@ -6292,13 +8239,13 @@ serve(async (req) => {
               sigUrl = applySignatureTransformations(
                 userSignature.imagekit_url,
               );
-              console.log("  ✅ Using imagekit_url with transforms");
+              console.log("  âœ… Using imagekit_url with transforms");
             }
 
             // Final fallback to file_url
             if (!sigUrl && userSignature.file_url) {
               sigUrl = userSignature.file_url;
-              console.log("  ✅ Using file_url fallback");
+              console.log("  âœ… Using file_url fallback");
             }
 
             if (sigUrl) {
@@ -6311,13 +8258,13 @@ serve(async (req) => {
                 signatoryImageUrl: sigUrl,
               };
               console.log(
-                "  ✅ Using verifier signature:",
+                "  âœ… Using verifier signature:",
                 signatoryInfo.signatoryName,
               );
             } else {
               // Verifier exists but has no signature - use their name but get lab default signature
               console.log(
-                "  → Verifier has no signature, using name with lab default signature",
+                "  â†’ Verifier has no signature, using name with lab default signature",
               );
               signatoryInfo.signatoryName = verifierName ||
                 "Authorized Signatory";
@@ -6327,7 +8274,7 @@ serve(async (req) => {
           } else {
             // Verifier exists but has no signature entry
             console.log(
-              "  → No signature entry for verifier, using name with lab default signature",
+              "  â†’ No signature entry for verifier, using name with lab default signature",
             );
             signatoryInfo.signatoryName = verifierName ||
               "Authorized Signatory";
@@ -6338,7 +8285,7 @@ serve(async (req) => {
 
         // If no verifier signature or no verifier, fall back to lab default
         if (!signatoryInfo.signatoryImageUrl) {
-          console.log("  → Falling back to lab default signature...");
+          console.log("  â†’ Falling back to lab default signature...");
 
           // Get lab default signature from branding assets (asset_type = 'signature')
           const { data: labSignature } = await supabaseClient
@@ -6361,23 +8308,18 @@ serve(async (req) => {
               signatoryInfo.signatoryImageUrl = labSignature.file_url;
             }
 
-            // If we didn't have a verifier name, try to get from lab signature metadata
-            if (signatoryInfo.signatoryName === "Authorized Signatory") {
-              const metadata = labSignature.asset_metadata as
-                | Record<string, any>
-                | null;
-              if (metadata?.signatory_name) {
-                signatoryInfo.signatoryName = metadata.signatory_name;
-              }
-              if (
-                metadata?.signatory_designation &&
-                !signatoryInfo.signatoryDesignation
-              ) {
-                signatoryInfo.signatoryDesignation =
-                  metadata.signatory_designation;
-              }
+            const metadata = labSignature.asset_metadata as
+              | Record<string, any>
+              | null;
+            if (metadata?.signatory_name) {
+              signatoryInfo.signatoryName = metadata.signatory_name;
+              signatoryInfo.signatoryDesignation =
+                metadata.signatory_designation || "";
+            } else if (signatoryInfo.signatoryName !== "Authorized Signatory") {
+              signatoryInfo.signatoryName = "Authorized Signatory";
+              signatoryInfo.signatoryDesignation = "";
             }
-            console.log("  ✅ Using lab default signature");
+            console.log("  âœ… Using lab default signature");
           } else {
             // Try to find ANY user's default signature in this lab as last resort
             const { data: anyUserSig } = await supabaseClient
@@ -6401,7 +8343,7 @@ serve(async (req) => {
                   : anyUserSig.variants;
                 if (variants?.optimized) {
                   sigUrl = variants.optimized;
-                  console.log("  ✅ Using optimized variant (bg removed)");
+                  console.log("  âœ… Using optimized variant (bg removed)");
                 }
               }
 
@@ -6416,16 +8358,14 @@ serve(async (req) => {
               if (sigUrl) {
                 signatoryInfo.signatoryImageUrl = sigUrl;
               }
-              if (
-                signatoryInfo.signatoryName === "Authorized Signatory" &&
-                anyUserSig.signature_name
-              ) {
+              if (anyUserSig.signature_name) {
                 signatoryInfo.signatoryName = anyUserSig.signature_name;
+                signatoryInfo.signatoryDesignation = "";
               }
-              console.log("  ✅ Using fallback user default signature");
+              console.log("  âœ… Using fallback user default signature");
             } else {
               console.log(
-                "  ⚠️ No default signature found - trying any active signature as final resort",
+                "  âš ï¸ No default signature found - trying any active signature as final resort",
               );
               // FINAL RESORT: Get ANY active signature for this lab
               const { data: desperateSig } = await supabaseClient
@@ -6449,7 +8389,7 @@ serve(async (req) => {
                   if (variants?.optimized) {
                     sigUrl = variants.optimized;
                     console.log(
-                      "  ✅ Using optimized variant (bg removed) - FINAL RESORT",
+                      "  âœ… Using optimized variant (bg removed) - FINAL RESORT",
                     );
                   }
                 }
@@ -6467,26 +8407,24 @@ serve(async (req) => {
                 if (sigUrl) {
                   signatoryInfo.signatoryImageUrl = sigUrl;
                 }
-                if (
-                  signatoryInfo.signatoryName === "Authorized Signatory" &&
-                  desperateSig.signature_name
-                ) {
+                if (desperateSig.signature_name) {
                   signatoryInfo.signatoryName = desperateSig.signature_name;
+                  signatoryInfo.signatoryDesignation = "";
                 }
                 console.log(
-                  "  ✅ Using ANY active signature found (FINAL RESORT)",
+                  "  âœ… Using ANY active signature found (FINAL RESORT)",
                 );
               } else {
-                console.log("  ❌ Absolutely no signature found for this lab");
+                console.log("  âŒ Absolutely no signature found for this lab");
               }
             }
           }
         }
       } catch (sigError) {
-        console.error("  ❌ Error fetching signatory info:", sigError);
+        console.error("  âŒ Error fetching signatory info:", sigError);
       }
 
-      console.log("  → Final signatory:", {
+      console.log("  â†’ Final signatory:", {
         name: signatoryInfo.signatoryName,
         designation: signatoryInfo.signatoryDesignation,
         hasImage: !!signatoryInfo.signatoryImageUrl,
@@ -6503,7 +8441,7 @@ serve(async (req) => {
       // Step 6: Get Report Extras (Multiple Sources)
       // ========================================
       console.log(
-        "\n📈 Step 6: Fetching report extras from multiple sources...",
+        "\nðŸ“ˆ Step 6: Fetching report extras from multiple sources...",
       );
 
       // 6a. Get from report_extras table
@@ -6528,7 +8466,7 @@ serve(async (req) => {
         .select("test_code, name, associated_test, boundaries, svg_data")
         .eq("order_id", orderId)
         .order("created_at", { ascending: true });
-      console.log(`📊 Analyzer graphs fetched: ${analyzerGraphRows?.length ?? 0} rows`, analyzerGraphError ? `Error: ${analyzerGraphError.message}` : "OK");
+      console.log(`ðŸ“Š Analyzer graphs fetched: ${analyzerGraphRows?.length ?? 0} rows`, analyzerGraphError ? `Error: ${analyzerGraphError.message}` : "OK");
 
       // 6c. Get from reports table (ai_doctor_summary, include_trend_graphs)
       const { data: reportRecord } = await supabaseClient
@@ -6548,10 +8486,36 @@ serve(async (req) => {
         .eq("order_id", orderId)
         .not("report_extras", "is", null);
 
+      // Convert trend_graph_data.analytes[] into trend_charts format (new format uses image_url per analyte)
+      let trendChartsFromOrder: any[] = [];
+      if (orderExtras?.trend_graph_data) {
+        const td = typeof orderExtras.trend_graph_data === "string"
+          ? JSON.parse(orderExtras.trend_graph_data)
+          : orderExtras.trend_graph_data;
+        if (td.include_in_report && td.analytes?.length > 0) {
+          trendChartsFromOrder = td.analytes.map((a: any) => ({
+            analyte_name: a.analyte_name,
+            image_url: a.image_url || null,
+            image_base64: null,
+            data: (a.dataPoints || []).map((dp: any) => ({
+              order_date: dp.date || dp.timestamp || "",
+              value: dp.value,
+              unit: a.unit,
+              reference_range: `${a.reference_range?.min}-${a.reference_range?.max}`,
+              flag: dp.flag || null,
+            })),
+            reference_range: `${a.reference_range?.min}-${a.reference_range?.max}`,
+            unit: a.unit,
+            generated_at: a.image_generated_at || new Date().toISOString(),
+          }));
+          console.log(`ðŸ“Š Converted ${trendChartsFromOrder.length} trend analytes from trend_graph_data (${trendChartsFromOrder.filter(c => c.image_url).length} with image_url)`);
+        }
+      }
+
       // Merge all report extras into one object
       const reportExtras = {
-        // From report_extras table
-        trend_charts: reportExtrasTable?.trend_charts || [],
+        // From report_extras table + order-level trend analytes merged
+        trend_charts: [...(reportExtrasTable?.trend_charts || []), ...trendChartsFromOrder],
         clinical_summary: reportExtrasTable?.clinical_summary || "",
         // From orders table
         trend_graph_data: orderExtras?.trend_graph_data,
@@ -6589,7 +8553,7 @@ serve(async (req) => {
             try {
               context[field] = JSON.parse(context[field]);
             } catch (e) {
-              console.warn(`⚠️ Failed to parse ${field} JSON:`, e);
+              console.warn(`âš ï¸ Failed to parse ${field} JSON:`, e);
             }
           }
         }
@@ -6601,7 +8565,7 @@ serve(async (req) => {
         context.ai_patient_summary &&
         context.ai_patient_summary.abnormal_findings
       ) {
-        console.log("  → Normalizing AI patient summary findings...");
+        console.log("  â†’ Normalizing AI patient summary findings...");
         context.ai_patient_summary.abnormal_findings = context
           .ai_patient_summary.abnormal_findings.map((f: any) => {
             // Determine the best name for this finding (handle all possible field names)
@@ -6632,7 +8596,7 @@ serve(async (req) => {
           });
       }
 
-      console.log("✅ Report extras merged into context:", {
+      console.log("âœ… Report extras merged into context:", {
         hasTrendCharts: !!(context.trend_charts?.length),
         hasTrendGraphData: !!context.trend_graph_data,
         hasClinicalSummary: !!context.clinical_summary,
@@ -6653,7 +8617,7 @@ serve(async (req) => {
       // ========================================
       // Step 7: Get Attachments
       // ========================================
-      console.log("\n📎 Step 7: Fetching attachments...");
+      console.log("\nðŸ“Ž Step 7: Fetching attachments...");
       const { data: attachments } = await supabaseClient
         .from("attachments")
         .select("*")
@@ -6661,12 +8625,12 @@ serve(async (req) => {
         .eq("related_id", orderId)
         .eq("tag", "include_in_report");
 
-      console.log("✅ Attachments found:", attachments?.length || 0);
+      console.log("âœ… Attachments found:", attachments?.length || 0);
 
       // ========================================
       // Step 7c: Get Branding Pages (Front/Back)
       // ========================================
-      console.log("\n🎨 Step 7c: Fetching front/back pages...");
+      console.log("\nðŸŽ¨ Step 7c: Fetching front/back pages...");
       const { frontPage, lastPage } = await fetchFrontBackPages(
         supabaseClient,
         job.lab_id,
@@ -6674,10 +8638,10 @@ serve(async (req) => {
 
       // Note: Using letterhead background instead of separate header/footer
       if (letterheadUrl) {
-        console.log("✅ Using letterhead background");
+        console.log("âœ… Using letterhead background");
       }
-      if (frontPage) console.log("✅ Using custom front page");
-      if (lastPage) console.log("✅ Using custom last page");
+      if (frontPage) console.log("âœ… Using custom front page");
+      if (lastPage) console.log("âœ… Using custom last page");
 
       await updateProgress(
         supabaseClient,
@@ -6689,7 +8653,7 @@ serve(async (req) => {
       // ========================================
       // Step 8: Render HTML Template (Multi-Test Support)
       // ========================================
-      console.log("\n🔧 Step 8: Rendering HTML template...");
+      console.log("\nðŸ”§ Step 8: Rendering HTML template...");
 
       // Initialize bodyHtml with front page if available
       // We add a specific class to handle page breaks
@@ -6715,7 +8679,7 @@ serve(async (req) => {
         analytesByGroup.size,
       );
 
-      console.log("📊 Test group analysis:", {
+      console.log("ðŸ“Š Test group analysis:", {
         contextTestGroupIds,
         analytesByGroupKeys: Array.from(analytesByGroup.keys()),
         effectiveGroupCount,
@@ -6723,9 +8687,12 @@ serve(async (req) => {
 
       // Fetch test group names + per-group PDF style overrides
       const testGroupNames = new Map<string, string>();
-      const testGroupStyles = new Map<string, string>(); // groupId → 'beautiful'|'classic'
-      const testGroupPrintOptions = new Map<string, Record<string, unknown>>(); // groupId → print_options JSONB
-      const testGroupInterpretations = new Map<string, string>(); // groupId → group_interpretation HTML
+      const testGroupStyles = new Map<string, string>(); // groupId â†’ 'beautiful'|'classic'
+      const testGroupPrintOptions = new Map<string, Record<string, unknown>>(); // groupId â†’ print_options JSONB
+      const testGroupInterpretations = new Map<string, string>(); // groupId â†’ group_interpretation HTML
+      const testGroupCodes = new Map<string, string>(); // groupId â†’ test_groups.code
+      const testGroupSampleTypes = new Map<string, string>(); // groupId â†’ sample_type
+      const testGroupSampleConditions = new Map<string, string>();
       const testGroupIdsToFetch = [
         ...new Set(
           [...contextTestGroupIds, ...analytesByGroup.keys()].filter((id) =>
@@ -6750,11 +8717,26 @@ serve(async (req) => {
           }
         }
 
+        const { data: orderTestGroupConditionRows } = await supabaseClient
+          .from("order_test_groups")
+          .select("test_group_id, sample_condition")
+          .eq("order_id", orderId)
+          .in("test_group_id", testGroupIdsToFetch);
+
+        if (orderTestGroupConditionRows) {
+          for (const row of orderTestGroupConditionRows) {
+            const condition = String(row.sample_condition || "").trim();
+            if (row.test_group_id && condition && !testGroupSampleConditions.has(row.test_group_id)) {
+              testGroupSampleConditions.set(row.test_group_id, condition);
+            }
+          }
+        }
+
         // For any groups not found in order_tests, try the test_groups table
         // Also fetch default_template_style and print_options for all groups
         const { data: testGroupsData } = await supabaseClient
           .from("test_groups")
-          .select("id, name, default_template_style, print_options, group_interpretation")
+          .select("id, name, code, default_template_style, print_options, group_interpretation, sample_type")
           .in("id", testGroupIdsToFetch);
 
         if (testGroupsData) {
@@ -6772,12 +8754,18 @@ serve(async (req) => {
               if (tg.group_interpretation) {
                 testGroupInterpretations.set(tg.id, tg.group_interpretation);
               }
+              if (tg.code) {
+                testGroupCodes.set(tg.id, tg.code);
+              }
+              if (tg.sample_type) {
+                testGroupSampleTypes.set(tg.id, tg.sample_type);
+              }
             }
           }
         }
 
         console.log(
-          "📋 Test group names fetched:",
+          "ðŸ“‹ Test group names fetched:",
           Object.fromEntries(testGroupNames),
         );
       }
@@ -6786,7 +8774,7 @@ serve(async (req) => {
       let compactPrintPlan: CompactPrintPlan | null = null;
       let orderedGroupIdsForPrint = [...contextTestGroupIds];
       let orderedAnalytesByGroupForPrint = analytesByGroup;
-      // Map of groupId → printOrder, used by the render loop to suppress page breaks between equal-priority groups
+      // Map of groupId â†’ printOrder, used by the render loop to suppress page breaks between equal-priority groups
       const printOrderByGroupId = new Map<string, number>();
 
       if (testGroupIdsToFetch.length > 0) {
@@ -6794,8 +8782,10 @@ serve(async (req) => {
         const manualGroupOrder = Array.isArray(orderReportSettings?.groupOrder)
           ? orderReportSettings.groupOrder.map((value: unknown) => String(value || "")).filter(Boolean)
           : [];
-        const manualOrderEnabled = orderReportSettings?.groupOrderOverrideEnabled === true && manualGroupOrder.length > 0;
-        const manualOrderIndexMap = new Map(manualGroupOrder.map((id: string, index: number) => [id, index]));
+        const manualOrderEnabled = orderReportSettings?.groupOrderManualOverride === true && manualGroupOrder.length > 0;
+        const manualOrderIndexMap = new Map<string, number>(
+          manualGroupOrder.map((id: string, index: number) => [id, index]),
+        );
 
         const { data: orderTestGroupRows } = await supabaseClient
           .from("order_test_groups")
@@ -6884,8 +8874,8 @@ serve(async (req) => {
           const aManual = a.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
           const bManual = b.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
           if (aManual !== bManual) return aManual - bManual;
-          const aPriority = a.reportPriority ?? Number.MAX_SAFE_INTEGER;
-          const bPriority = b.reportPriority ?? Number.MAX_SAFE_INTEGER;
+          const aPriority = (a.reportPriority != null && a.reportPriority > 0) ? a.reportPriority : Number.MAX_SAFE_INTEGER;
+          const bPriority = (b.reportPriority != null && b.reportPriority > 0) ? b.reportPriority : Number.MAX_SAFE_INTEGER;
           if (aPriority !== bPriority) return aPriority - bPriority;
           if (a.printOrder !== b.printOrder) return a.printOrder - b.printOrder;
           return a.groupName.localeCompare(b.groupName);
@@ -6933,11 +8923,85 @@ serve(async (req) => {
         orderedGroupIdsForPrint = compactPrintPlan?.orderedGroupIds?.length
           ? compactPrintPlan.orderedGroupIds
           : descriptors.map((item) => item.groupId);
+
+        // Apply manual overrides from the Order Settings UI compact page planner (Bug 1 fix)
+        if (printLayoutMode === "compact" && (compactGroupOrderOverride?.length || compactPageAssignmentsOverride)) {
+          const knownGroupIds = new Set(descriptors.map((d) => d.groupId));
+          const baseOrder = compactGroupOrderOverride?.filter((id) => knownGroupIds.has(id)) ?? orderedGroupIdsForPrint;
+          // Append any groups not listed in the override (safety net)
+          const overrideGroupIds = [
+            ...baseOrder,
+            ...orderedGroupIdsForPrint.filter((id) => !baseOrder.includes(id)),
+          ];
+
+          if (compactPageAssignmentsOverride) {
+            // Build a cluster plan from the manual page-number assignments
+            const pageMap = new Map<number, string[]>();
+            for (const groupId of overrideGroupIds) {
+              const page = Math.max(1, Math.round(Number(compactPageAssignmentsOverride[groupId] ?? 1)));
+              if (!pageMap.has(page)) pageMap.set(page, []);
+              pageMap.get(page)!.push(groupId);
+            }
+            const sortedPages = [...pageMap.keys()].sort((a, b) => a - b);
+            compactPrintPlan = {
+              layoutMode: "compact",
+              source: "manual",
+              orderedGroupIds: overrideGroupIds,
+              clusters: sortedPages.map((page, index) => ({
+                id: `cluster_${index + 1}`,
+                groupIds: pageMap.get(page)!,
+                reason: `Page ${page} â€“ manual assignment from Order Settings compact planner.`,
+              })),
+              notes: ["Compact plan applied from Order Settings UI manual page assignments."],
+            };
+            // Update printOrderByGroupId so the render loop can detect same-page groups
+            // and suppress min-height. Without this, all groups have printOrder=0 (DB default)
+            // and the clubbed-group check always fails â†’ min-height:780px pushes clubbed groups off-page.
+            for (const groupId of overrideGroupIds) {
+              const page = Math.max(1, Math.round(Number(compactPageAssignmentsOverride[groupId] ?? 1)));
+              printOrderByGroupId.set(groupId, page);
+            }
+          } else {
+            // Only order changed, keep existing cluster structure but re-map to new order
+            compactPrintPlan = {
+              ...(compactPrintPlan || { clusters: [] }),
+              layoutMode: "compact",
+              source: "manual",
+              orderedGroupIds: overrideGroupIds,
+              notes: [...(compactPrintPlan?.notes || []), "Group order overridden from Order Settings UI."],
+            };
+          }
+          orderedGroupIdsForPrint = overrideGroupIds;
+          console.log("âœ… Applied Order Settings compact override:", {
+            groupOrder: orderedGroupIdsForPrint,
+            clusters: compactPrintPlan?.clusters?.length ?? 0,
+            source: "manual",
+          });
+        }
+
+        // Sync printOrderByGroupId from cluster plan so the render loop can
+        // detect same-page (clubbed) groups and suppress min-height on them.
+        // This covers AI planner, deterministic planner, and manual override paths.
+        if (compactPrintPlan?.clusters?.length) {
+          for (let ci = 0; ci < compactPrintPlan.clusters.length; ci++) {
+            for (const gid of compactPrintPlan.clusters[ci].groupIds) {
+              printOrderByGroupId.set(gid, ci + 1);
+            }
+          }
+        }
+
         reorderContextByGroupIds(context, orderedGroupIdsForPrint);
         contextTestGroupIds = context.testGroupIds || orderedGroupIdsForPrint;
         orderedAnalytesByGroupForPrint = buildOrderedAnalytesByGroup(analytesByGroup, orderedGroupIdsForPrint);
 
-        console.log("ðŸ“ Compact print planning:", {
+        console.log("Ã°Å¸â€œÂ Group report priorities:", descriptors.map((d) => ({
+          groupId: d.groupId,
+          groupName: d.groupName,
+          reportPriority: d.reportPriority,
+          printOrder: d.printOrder,
+          manualOrderIndex: d.manualOrderIndex ?? null,
+        })));
+        console.log("Ã°Å¸â€œÂ Compact print planning:", {
           requestedMode: printLayoutMode,
           resolvedMode: compactPrintPlan?.layoutMode || "standard",
           source: compactPrintPlan?.source || "deterministic",
@@ -6990,7 +9054,7 @@ serve(async (req) => {
         return { html, css };
       };
 
-      console.log("📌 Template split summary:", {
+      console.log("ðŸ“Œ Template split summary:", {
         layoutTemplates: layoutTemplatesWithHtml.length,
         interpretationTemplates: interpretationTemplatesWithHtml.length,
       });
@@ -7001,7 +9065,7 @@ serve(async (req) => {
 
         // If this test group has a forced style override, skip custom template entirely
         if (testGroupStyles.has(testGroupId)) {
-          console.log(`🎨 Test group ${testGroupId} has style override '${testGroupStyles.get(testGroupId)}' — skipping custom template`);
+          console.log(`ðŸŽ¨ Test group ${testGroupId} has style override '${testGroupStyles.get(testGroupId)}' â€” skipping custom template`);
           return null;
         }
 
@@ -7020,7 +9084,7 @@ serve(async (req) => {
         // Generate verification URL for QR code
         const verifyUrl = `https://app.limsapp.in/verify?id=${
           encodeURIComponent(
-            baseContext.order?.sampleId || baseContext.sampleId || orderId ||
+            orderId || baseContext.order?.sampleId || baseContext.sampleId ||
               "",
           )
         }`;
@@ -7028,14 +9092,18 @@ serve(async (req) => {
         // Create flat aliases for nested properties (for template compatibility)
 
         const sig = baseContext.signatory || {};
-        let sigName = sig.name || "";
-        const sigUrl = sig.signature_url || sig.url;
+        const rawSigName = formatSignatureNameForPdf(
+          sig.name || sig.signatoryName || signatoryInfo.signatoryName || "",
+        );
+        const sigDesignation = sig.designation || sig.signatoryDesignation || signatoryInfo.signatoryDesignation || "";
+        let sigName = rawSigName;
+        const sigUrl = sig.signature_url || sig.url || sig.signatoryImageUrl || signatoryInfo.signatoryImageUrl || "";
 
         // Logic to inject signature image directly into the name placeholder
         // This follows "User Request" to look for {{signatoryName}} and inject there.
         if (sigUrl && sigName) {
           const imgHtml =
-            `<img src="${sigUrl}" alt="Signature" style="display:block; max-height:40px; margin-bottom:2px; margin-top:2px;" />`;
+            `<img src="${sigUrl}" alt="" style="display:block; max-height:70px; max-width:180px; width:auto; height:auto; object-fit:contain; margin-bottom:2px; margin-top:2px;" onerror="this.style.display='none'" />`;
           // Wrap name in span to separate it from block image, though block image forces break.
           sigName = `${imgHtml}<span>${sigName}</span>`;
         }
@@ -7051,12 +9119,22 @@ serve(async (req) => {
 
           // Order aliases
           sampleId: baseContext.order?.sampleId || "",
+          sampleBarcode: baseContext.order?.sampleBarcode || baseContext.sampleBarcode || "",
           orderId: baseContext.orderId || "",
-          orderDate: baseContext.order?.orderDate ||
-            baseContext.meta?.orderDate || "",
+          orderDate: (() => {
+            const raw = baseContext.order?.orderDate || baseContext.meta?.orderDate || "";
+            const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+            return m ? `${m[3]}-${m[2]}-${m[1]}` : raw; // ISO â†’ DD-MM-YYYY to match approvedAt format
+          })(),
           collectionDate: baseContext.order?.sampleCollectedAtFormatted ||
             baseContext.order?.sampleCollectedAt || "",
+          receivedAt: baseContext.order?.sampleReceivedAtFormatted ||
+            baseContext.order?.sampleReceivedAt || "",
+          collectionCenter: baseContext.order?.collectionCenter ||
+            baseContext.order?.locationName || "",
           sampleCollectedBy: baseContext.order?.sampleCollectedBy || "",
+          b2bAccountName: baseContext.order?.b2bAccountName ||
+            baseContext.placeholderValues?.b2bAccountName || "",
           referringDoctorName: baseContext.order?.referringDoctorName || "",
           approvedAt: baseContext.order?.approvedAtFormatted ||
             baseContext.order?.approved_at || baseContext.meta?.approvedAt ||
@@ -7065,22 +9143,38 @@ serve(async (req) => {
           // Friendly aliases used by CKE templates
           registrationDate: baseContext.order?.orderDate ||
             baseContext.meta?.orderDate || "",
-          reportDate: baseContext.order?.approvedAtFormatted ||
+          reportDate: baseContext.meta?.reportDate ||
+            baseContext.order?.approvedAtFormatted ||
             baseContext.order?.approved_at || baseContext.meta?.approvedAt ||
             "",
+          groupRemark: buildGroupRemarkHtml(baseContext.groupRemark),
 
           // Signatory aliases
           signatoryName: sigName,
-          signatoryDesignation: sig.designation || "",
+          signatoryDesignation: sigDesignation,
+          approverName: rawSigName,
+          approvedByName: rawSigName,
+          approverRole: sigDesignation,
+          approverSignature: sigUrl || "",
+          approvedBySignature: sigUrl || "",
 
           // QR verification URL
           verifyUrl: verifyUrl,
           qr_code: `<img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(verifyUrl)}" alt="Verify Report" style="width:80px;height:80px;" />`,
 
+          // Barcode image for report header â€” inline SVG (no external API dependency)
+          barcode_image: (() => {
+            const barcodeVal = baseContext.order?.sampleBarcode || baseContext.sampleBarcode || baseContext.order?.sampleId || baseContext.sampleId || orderId || "";
+            if (!barcodeVal) return "";
+            return generateCode128SVG(barcodeVal, 36, 100);
+          })(),
+
           // Custom patient fields (from patients.custom_fields JSONB)
           ...Object.entries(baseContext.patient?.custom_fields || {}).reduce(
             (acc: Record<string, string>, [k, v]) => {
-              acc[`custom_${k}`] = String(v ?? '');
+              const value = String(v ?? '');
+              acc[`custom_${k}`] = value;
+              acc[`custom_${k.toLowerCase()}`] = value;
               return acc;
             },
             {},
@@ -7090,7 +9184,7 @@ serve(async (req) => {
         return {
           ...baseContext,
           ...reportExtras,
-          ...baseContext.placeholderValues, // ✅ CRITICAL: Spread RPC-provided placeholders to root
+          ...baseContext.placeholderValues, // âœ… CRITICAL: Spread RPC-provided placeholders to root
           ...analytePlaceholders, // Add locally generated placeholders (fallbacks)
           ...flatAliases, // Add flat aliases
           verifyUrl: verifyUrl, // QR code URL
@@ -7150,12 +9244,29 @@ serve(async (req) => {
       `;
       };
 
+      // Histograms injected inline per-group in multi-group path; populated below
+      let histogramsByGroupId = new Map<string, any[]>();
+
       if (effectiveGroupCount <= 1) {
         // Single Group Logic
         template = selectTemplate(context);
-        fullContext = prepareFullContext(context);
         const singleGroupId = context.testGroupIds?.[0];
+        const singleGroupRemark = singleGroupId ? groupRemarks.get(singleGroupId) || "" : "";
+        context.groupRemark = singleGroupRemark;
+        fullContext = prepareFullContext(context);
         const singlePrintOptions = mergePrintOptions(pdfSettings, singleGroupId ? testGroupPrintOptions.get(singleGroupId) : undefined);
+        if (singlePrintOptions && (singlePrintOptions as any).showSampleType && singleGroupId) {
+          const _st = testGroupSampleTypes.get(singleGroupId);
+          if (_st) (singlePrintOptions as any)._sampleType = _st;
+        }
+        if (singlePrintOptions && (singlePrintOptions as any).showSampleCondition && singleGroupId) {
+          const _sc = testGroupSampleConditions.get(singleGroupId);
+          if (_sc) {
+            (singlePrintOptions as any)._sampleCondition = _sc;
+            fullContext.sampleCondition = _sc;
+            fullContext.sampleConditionLabel = `Condition: ${_sc}`;
+          }
+        }
         mergedPrintOptions = singlePrintOptions; // lift to outer scope for print version
         const dynamicCss = generateDynamicCss(pdfSettings, singlePrintOptions ?? undefined);
         const singleInterpretationTemplates = getInterpretationTemplatesForGroup(
@@ -7168,7 +9279,7 @@ serve(async (req) => {
           // No custom template found - use default template
           const resolvedStyle = (singleGroupId && testGroupStyles.get(singleGroupId)) || labSettings?.default_template_style || 'beautiful';
           console.log(
-            `⚠️ No custom template found for lab, using default template (style: ${resolvedStyle})`,
+            `âš ï¸ No custom template found for lab, using default template (style: ${resolvedStyle})`,
           );
           renderedHtml = generateDefaultTemplateHtml(
             context,
@@ -7188,24 +9299,30 @@ serve(async (req) => {
             (fullContext as any)?.sectionLabels,
           );
           renderedHtml = renderTemplate(renderedHtml, fullContext); // Process placeholders
+          renderedHtml = injectGroupRemark(renderedHtml, singleGroupRemark);
 
           // Inject QR code for verification (next to signature area)
           const defaultVerifyUrl = fullContext.verifyUrl ||
             `https://app.limsapp.in/verify?id=${
-              encodeURIComponent(context.sampleId || orderId || "")
+              encodeURIComponent(orderId || context.sampleId || "")
             }`;
           renderedHtml = injectQrCode(renderedHtml, defaultVerifyUrl);
 
           console.log(
-            "✅ Generated default template HTML, length:",
+            "âœ… Generated default template HTML, length:",
             renderedHtml.length,
           );
         } else {
-          console.log("✅ Using single template:", template.template_name);
+          console.log("âœ… Using single template:", template.template_name);
           renderedHtml = renderTemplate(template.gjs_html, fullContext);
+          renderedHtml = injectGroupRemark(
+            renderedHtml,
+            singleGroupRemark,
+            /\{\{\s*groupRemark\s*\}\}/.test(template.gjs_html),
+          );
 
-          // Inject signature image if template doesn't have one
-          if (signatoryInfo.signatoryImageUrl) {
+          // Inject signature image if template doesn't have one (unless showSignature is false)
+          if (signatoryInfo.signatoryImageUrl && (singlePrintOptions as any)?.showSignature !== false) {
             renderedHtml = injectSignatureImage(
               renderedHtml,
               signatoryInfo.signatoryImageUrl,
@@ -7217,7 +9334,7 @@ serve(async (req) => {
           // Inject QR code for verification (next to signature area)
           const singleVerifyUrl = fullContext.verifyUrl ||
             `https://app.limsapp.in/verify?id=${
-              encodeURIComponent(context.sampleId || orderId || "")
+              encodeURIComponent(orderId || context.sampleId || "")
             }`;
           renderedHtml = injectQrCode(renderedHtml, singleVerifyUrl);
         }
@@ -7231,19 +9348,19 @@ serve(async (req) => {
             renderedHtml += renderedInterpretation.html;
             interpretationCss = renderedInterpretation.css;
             console.log(
-              "✅ Appended interpretation-only templates (single group):",
+              "âœ… Appended interpretation-only templates (single group):",
               singleInterpretationTemplates.map((t: any) => t.template_name),
             );
           }
         }
 
         console.log(
-          "🔧 About to call buildPdfBodyDocumentV2 with letterhead:",
-          letterheadUrl || "NONE",
+          "ðŸ”§ About to call buildPdfBodyDocumentV2 with letterhead:",
+          (template?.gjs_html && ckeTemplateLetterheadUrl ? ckeTemplateLetterheadUrl : letterheadUrl) || "NONE",
         );
 
         const verifyUrl = `https://app.limsapp.in/verify?id=${
-          encodeURIComponent(context.sampleId || orderId || "")
+          encodeURIComponent(orderId || context.sampleId || "")
         }`;
         const templateCss = [
           template?.gjs_css || "",
@@ -7253,16 +9370,16 @@ serve(async (req) => {
         bodyHtml = buildPdfBodyDocumentV2(
           renderedHtml,
           templateCss,
-          letterheadUrl,
+          template?.gjs_html && ckeTemplateLetterheadUrl ? ckeTemplateLetterheadUrl : letterheadUrl,
           pdfSettings,
           verifyUrl,
         );
         console.log(
-          "✅ buildPdfBodyDocumentV2 returned, HTML length:",
+          "âœ… buildPdfBodyDocumentV2 returned, HTML length:",
           bodyHtml.length,
         );
         console.log(
-          "🔍 Checking if letterhead is in returned HTML:",
+          "ðŸ” Checking if letterhead is in returned HTML:",
           bodyHtml.includes("page-bg") ? "YES (page-bg div found)" : "NO",
         );
         // CRITICAL: Do NOT save bodyHtml to rawHtmlForPrint if we are using V2/letterhead logic.
@@ -7270,9 +9387,10 @@ serve(async (req) => {
         // rawHtmlForPrint = bodyHtml
       } else {
         // Multi Group Logic
-        console.log("🔀 Multi-test group rendering...");
+        console.log("ðŸ”€ Multi-test group rendering...");
         const renderedSections: string[] = [];
         let firstGroupTemplate = null;
+        let usedCkeTemplateInMulti = false;
         const multiInterpretationCssChunks: string[] = [];
 
         // Lift lab-level print options for print version (no single group to merge with)
@@ -7283,16 +9401,60 @@ serve(async (req) => {
 
         // Use contextTestGroupIds as the authoritative list of groups to render
         // This ensures we render all test groups even if analytes don't have test_group_id
+        const sectionContentByGroupForRender: Map<string, Record<string, string>> =
+          context.sectionContentByGroup || new Map();
         const groupsToRender = contextTestGroupIds.length > 0
-          ? contextTestGroupIds
-          : [...analytesByGroup.keys()];
-        console.log(`🔀 Groups to render: ${JSON.stringify(groupsToRender)}`);
+          ? Array.from(new Set([
+            ...contextTestGroupIds,
+            ...sectionContentByGroupForRender.keys(),
+          ]))
+          : Array.from(new Set([
+            ...analytesByGroup.keys(),
+            ...sectionContentByGroupForRender.keys(),
+          ]));
+        console.log(`ðŸ”€ Groups to render: ${JSON.stringify(groupsToRender)}`);
+
+        // Build histogramsByGroupId: assign each analyzer histogram to its test group section.
+        // Matching priority: (1) associated_test === test_groups.code, (2) group name contains
+        // hematology keywords (CBC/haematology), (3) last group as fallback.
+        {
+          const svgRowsAll = (analyzerGraphRows || []).filter((r: any) => r.svg_data);
+          if (svgRowsAll.length > 0) {
+            const codeToGroupId = new Map<string, string>();
+            for (const [gid, code] of testGroupCodes.entries()) {
+              if (code) codeToGroupId.set(code.toUpperCase(), gid);
+            }
+            const hemaKeywords = ['cbc', 'haematol', 'hematol', 'blood count', 'complete blood', 'fbc', 'full blood'];
+            let hemaGroupId: string | null = null;
+            for (const gid of groupsToRender) {
+              const name = (testGroupNames.get(gid) || '').toLowerCase();
+              const code = (testGroupCodes.get(gid) || '').toLowerCase();
+              if (hemaKeywords.some(k => name.includes(k) || code.includes(k))) {
+                hemaGroupId = gid;
+                break;
+              }
+            }
+            const fallbackGroupId = groupsToRender[groupsToRender.length - 1] ?? null;
+            for (const row of svgRowsAll) {
+              const assoc = (row.associated_test || '').toUpperCase();
+              let targetId = codeToGroupId.get(assoc) ?? hemaGroupId ?? fallbackGroupId;
+              if (targetId) {
+                if (!histogramsByGroupId.has(targetId)) histogramsByGroupId.set(targetId, []);
+                histogramsByGroupId.get(targetId)!.push(row);
+              }
+            }
+            console.log(`ðŸ“Š histogramsByGroupId built: ${[...histogramsByGroupId.entries()].map(([k,v])=>`${k}:${v.length}`).join(', ')}`);
+          }
+        }
 
         // Track previous group's printOrder to suppress page breaks between equal-priority groups
         let prevRenderedPrintOrder: number | null = null;
         for (const testGroupId of groupsToRender) {
           // Get analytes for this group (may be empty if grouping failed)
           let groupAnalytes = analytesByGroup.get(testGroupId) || [];
+          const groupSectionContent = sectionContentByGroupForRender.has(testGroupId)
+            ? sectionContentByGroupForRender.get(testGroupId)
+            : undefined;
 
           // If no analytes found for this group, try to find them from ungrouped
           if (groupAnalytes.length === 0 && analytesByGroup.has("ungrouped")) {
@@ -7305,13 +9467,18 @@ serve(async (req) => {
           }
 
           console.log(
-            `🔧 Rendering test group: ${testGroupId} with ${groupAnalytes.length} analyte(s)`,
+            `ðŸ”§ Rendering test group: ${testGroupId} with ${groupAnalytes.length} analyte(s)`,
           );
 
           // Skip if no analytes for this group
-          if (groupAnalytes.length === 0) {
+          const hasGroupedSections = !!groupSectionContent &&
+            Object.keys(groupSectionContent).some((key) =>
+              String(groupSectionContent[key] || "").trim().length > 0
+            );
+
+          if (groupAnalytes.length === 0 && !hasGroupedSections) {
             console.log(
-              `⚠️ No analytes found for test group: ${testGroupId}, skipping`,
+              `âš ï¸ No analytes found for test group: ${testGroupId}, skipping`,
             );
             continue;
           }
@@ -7320,6 +9487,7 @@ serve(async (req) => {
             ...context,
             analytes: groupAnalytes,
             testGroupIds: [testGroupId],
+            groupRemark: groupRemarks.get(testGroupId) || "",
           };
 
           // Find specific template for this group
@@ -7328,7 +9496,7 @@ serve(async (req) => {
           let useGenericTemplate = false;
 
           if (testGroupStyles.has(testGroupId)) {
-            console.log(`🎨 Test group ${testGroupId} has style override '${testGroupStyles.get(testGroupId)}' — skipping custom template`);
+            console.log(`ðŸŽ¨ Test group ${testGroupId} has style override '${testGroupStyles.get(testGroupId)}' â€” skipping custom template`);
             useGenericTemplate = true;
           } else {
             groupTemplate = templatesWithHtml.find((t: { test_group_id?: string; is_interpretation_only?: boolean; [key: string]: unknown }) =>
@@ -7341,31 +9509,49 @@ serve(async (req) => {
 
           if (!groupTemplate && !useGenericTemplate) {
             console.log(
-              `⚠️ No specific template for ${testGroupId}, will use generic table template`,
+              `âš ï¸ No specific template for ${testGroupId}, will use generic table template`,
             );
             // Don't use selectTemplate fallback - it would use another test group's template
             // Instead, flag to use generic template for this group's analytes
             useGenericTemplate = true;
           } else if (groupTemplate) {
             console.log(
-              `✅ Found specific template for ${testGroupId}: ${groupTemplate.template_name}`,
+              `âœ… Found specific template for ${testGroupId}: ${groupTemplate.template_name}`,
             );
           }
 
           const groupFullContext = prepareFullContext(groupContext);
+          const groupSampleCondition = testGroupSampleConditions.get(testGroupId);
+          if (groupSampleCondition) {
+            groupFullContext.sampleCondition = groupSampleCondition;
+            groupFullContext.sampleConditionLabel = `Condition: ${groupSampleCondition}`;
+          }
           let renderedHtml = "";
           let bodyContent = "";
 
+          // Pre-compute same-page flags (used in both template paths for QR/signature suppression)
+          const _earlyGroupPrintOrder = printOrderByGroupId.get(testGroupId) ?? 999;
+          const _earlyGroupsArr = groupsToRender as string[];
+          const _earlyGroupIdx = _earlyGroupsArr.indexOf(testGroupId);
+          const _earlyNextGId = _earlyGroupIdx >= 0 ? _earlyGroupsArr[_earlyGroupIdx + 1] : undefined;
+          const _earlyNextGPrintOrder = _earlyNextGId ? (printOrderByGroupId.get(_earlyNextGId) ?? 999) : null;
+          const _earlyIsSamePageAsNext = _earlyNextGPrintOrder !== null &&
+            _earlyNextGPrintOrder !== 0 &&
+            _earlyNextGPrintOrder !== 999 &&
+            _earlyNextGPrintOrder === _earlyGroupPrintOrder;
+
           if (groupTemplate?.gjs_html && !useGenericTemplate) {
             if (!firstGroupTemplate) firstGroupTemplate = groupTemplate;
+            usedCkeTemplateInMulti = true;
 
             renderedHtml = renderTemplate(
               groupTemplate.gjs_html,
               groupFullContext,
             );
 
-            // Inject signature image if template doesn't have one
-            if (signatoryInfo.signatoryImageUrl) {
+            // Inject signature image if template doesn't have one (unless showSignature is false)
+            const _groupShowSig = testGroupPrintOptions.get(testGroupId)?.showSignature;
+            if (signatoryInfo.signatoryImageUrl && _groupShowSig !== false) {
               renderedHtml = injectSignatureImage(
                 renderedHtml,
                 signatoryInfo.signatoryImageUrl,
@@ -7375,11 +9561,14 @@ serve(async (req) => {
             }
 
             // Inject QR code for verification (next to signature area)
-            const groupVerifyUrl = groupFullContext.verifyUrl ||
-              `https://app.limsapp.in/verify?id=${
-                encodeURIComponent(context.sampleId || orderId || "")
-              }`;
-            renderedHtml = injectQrCode(renderedHtml, groupVerifyUrl);
+            // Skip when another group follows on the same compact page
+            if (!_earlyIsSamePageAsNext) {
+              const groupVerifyUrl = groupFullContext.verifyUrl ||
+                `https://app.limsapp.in/verify?id=${
+                  encodeURIComponent(orderId || context.sampleId || "")
+                }`;
+              renderedHtml = injectQrCode(renderedHtml, groupVerifyUrl);
+            }
 
             // Extract body content
             const bodyMatch = renderedHtml.match(
@@ -7391,27 +9580,57 @@ serve(async (req) => {
             const testName = testGroupNames.get(testGroupId) ||
               groupAnalytes[0]?.test_name || "Test Results";
             console.log(
-              `🔧 Generating generic table template for test group: ${testGroupId} (${testName}) with ${groupAnalytes.length} analyte(s)`,
+              `ðŸ”§ Generating generic table template for test group: ${testGroupId} (${testName}) with ${groupAnalytes.length} analyte(s)`,
             );
             const singleGroupMap = new Map<string, any[]>();
             singleGroupMap.set(testGroupId, groupAnalytes);
             // Use sections scoped to this test group; fall back to all sections only if no group mapping exists
-            const sectionContentByGroup: Map<string, Record<string, string>> = context.sectionContentByGroup || new Map();
-            const groupSectionContent = sectionContentByGroup.has(testGroupId)
-              ? sectionContentByGroup.get(testGroupId)
-              : (sectionContentByGroup.size === 0 && renderedSections.length === 0 ? groupFullContext?.sectionContent : undefined);
+            const groupSectionContentForRender = groupSectionContent
+              ? groupSectionContent
+              : (sectionContentByGroupForRender.size === 0 && renderedSections.length === 0 ? groupFullContext?.sectionContent : undefined);
+            // Suppress min-height when this group shares a non-zero printOrder with its
+            // neighbour (same-priority pair flows on one page â€” min-height would push the
+            // second group off the page even though the page-break is suppressed).
+            const _groupPrintOrder = printOrderByGroupId.get(testGroupId) ?? 999;
+            const _isSamePageAsPrev = renderedSections.length > 0 &&
+              prevRenderedPrintOrder !== null &&
+              _groupPrintOrder !== 999 &&
+              _groupPrintOrder !== 0 &&
+              _groupPrintOrder === prevRenderedPrintOrder;
+            const _groupsArr = groupsToRender as string[];
+            const _groupIdx = _groupsArr.indexOf(testGroupId);
+            const _nextGId = _groupIdx >= 0 ? _groupsArr[_groupIdx + 1] : undefined;
+            const _nextGPrintOrder = _nextGId ? (printOrderByGroupId.get(_nextGId) ?? 999) : null;
+            const _isSamePageAsNext = _nextGPrintOrder !== null &&
+              _nextGPrintOrder !== 0 &&
+              _nextGPrintOrder !== 999 &&
+              _nextGPrintOrder === _groupPrintOrder;
+            const _suppressMinHeight = _isSamePageAsPrev || _isSamePageAsNext;
+            const _mergedGroupOpts = mergePrintOptions(pdfSettings, testGroupPrintOptions.get(testGroupId)) ?? {};
+            if ((_mergedGroupOpts as any).showSampleType) {
+              const _gst = testGroupSampleTypes.get(testGroupId);
+              if (_gst) (_mergedGroupOpts as any)._sampleType = _gst;
+            }
+            if ((_mergedGroupOpts as any).showSampleCondition) {
+              const _gsc = testGroupSampleConditions.get(testGroupId);
+              if (_gsc) (_mergedGroupOpts as any)._sampleCondition = _gsc;
+            }
+            const _groupPrintOptions = _suppressMinHeight
+              ? { ..._mergedGroupOpts, _isCompact: true, _suppressPatientHeader: _isSamePageAsPrev, _suppressSignature: _isSamePageAsNext }
+              : (Object.keys(_mergedGroupOpts).length > 0 ? _mergedGroupOpts : undefined);
+
             renderedHtml = generateDefaultTemplateHtml(
               groupContext,
               testGroupNames,
               singleGroupMap,
               signatoryInfo,
-              groupSectionContent,
-              groupSectionContent != null && Object.keys(groupSectionContent).length > 0,
+              groupSectionContentForRender,
+              groupSectionContentForRender != null && Object.keys(groupSectionContentForRender).length > 0,
               testGroupStyles.get(testGroupId) || labSettings?.default_template_style || 'beautiful',
               labSettings?.show_methodology ?? true,
               labSettings?.show_interpretation ?? false,
               labSettings?.report_patient_info_config,
-              mergePrintOptions(pdfSettings, testGroupPrintOptions.get(testGroupId)) ?? undefined,
+              _groupPrintOptions,
               customPatientFieldConfigs ?? [],
               testGroupId,
               testGroupInterpretations,
@@ -7420,11 +9639,14 @@ serve(async (req) => {
             renderedHtml = renderTemplate(renderedHtml, groupFullContext);
 
             // Inject QR code for verification (next to signature area)
-            const groupDefaultVerifyUrl = groupFullContext.verifyUrl ||
-              `https://app.limsapp.in/verify?id=${
-                encodeURIComponent(context.sampleId || orderId || "")
-              }`;
-            renderedHtml = injectQrCode(renderedHtml, groupDefaultVerifyUrl);
+            // Skip when signature is suppressed (group is not the last on its compact page)
+            if (!(_groupPrintOptions as any)?._suppressSignature) {
+              const groupDefaultVerifyUrl = groupFullContext.verifyUrl ||
+                `https://app.limsapp.in/verify?id=${
+                  encodeURIComponent(orderId || context.sampleId || "")
+                }`;
+              renderedHtml = injectQrCode(renderedHtml, groupDefaultVerifyUrl);
+            }
 
             bodyContent = renderedHtml;
           }
@@ -7443,18 +9665,18 @@ serve(async (req) => {
               multiInterpretationCssChunks.push(renderedInterpretation.css);
             }
             console.log(
-              `✅ Appended interpretation-only templates for ${testGroupId}:`,
+              `âœ… Appended interpretation-only templates for ${testGroupId}:`,
               groupInterpretationTemplates.map((t: any) => t.template_name),
             );
           }
 
-          // Add separator — skip page break when this group shares printOrder with the previous group
+          // Add separator â€” skip page break when this group shares printOrder with the previous group
           const testName = testGroupNames.get(testGroupId) ||
             groupAnalytes[0]?.test_name || groupTemplate?.template_name ||
             `Test Group ${renderedSections.length + 1}`;
           const currentPrintOrder = printOrderByGroupId.get(testGroupId) ?? 999;
           // samePageGroup=true only when groups share an EXPLICITLY configured non-zero
-          // print_order. printOrder=0 is the default (unset) value — treat each group
+          // print_order. printOrder=0 is the default (unset) value â€” treat each group
           // independently so they always get their own page.
           const samePageGroup = renderedSections.length > 0 &&
             prevRenderedPrintOrder !== null &&
@@ -7462,6 +9684,26 @@ serve(async (req) => {
             currentPrintOrder !== 0 &&
             currentPrintOrder === prevRenderedPrintOrder;
           prevRenderedPrintOrder = currentPrintOrder;
+          // Inject analyzer histograms matched to this group inline, right after its results table
+          const groupHistograms = histogramsByGroupId.get(testGroupId) || [];
+          if (groupHistograms.length > 0) {
+            let histHtml = '<div style="margin-top:16px;page-break-inside:avoid;">';
+            histHtml += '<p style="margin:0 0 6px 0;font-size:11px;font-weight:700;color:#1e40af;border-bottom:1px solid #93c5fd;padding-bottom:3px;letter-spacing:0.05em;">ANALYZER HISTOGRAMS</p>';
+            histHtml += '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;">';
+            for (const row of groupHistograms) {
+              const svg = row.svg_data.replace(/<svg\b/i, '<svg style="max-width:160px;height:auto;display:block;"');
+              histHtml += `<div style="flex:0 0 auto;text-align:center;">${svg}</div>`;
+            }
+            histHtml += '</div></div>';
+            bodyContent += histHtml;
+          }
+
+          bodyContent = injectGroupRemark(
+            bodyContent,
+            groupRemarks.get(testGroupId) || "",
+            !!groupTemplate?.gjs_html && /\{\{\s*groupRemark\s*\}\}/.test(groupTemplate.gjs_html),
+          );
+
           const sectionHtml = `
           <div class="test-group-section" data-test-group-id="${testGroupId}" ${
             renderedSections.length > 0 && !samePageGroup
@@ -7472,13 +9714,13 @@ serve(async (req) => {
           </div>
         `;
           renderedSections.push(sectionHtml);
-          console.log(`✅ Rendered section for ${testGroupId} (printOrder=${currentPrintOrder}, samePageGroup=${samePageGroup})`);
+          console.log(`âœ… Rendered section for ${testGroupId} (printOrder=${currentPrintOrder}, samePageGroup=${samePageGroup})`);
         }
 
         if (renderedSections.length === 0) {
           // No sections rendered from templates - use complete default template
           console.log(
-            "⚠️ No custom templates rendered, using complete default template",
+            "âš ï¸ No custom templates rendered, using complete default template",
           );
           fullContext = prepareFullContext(context);
           const defaultHtml = generateDefaultTemplateHtml(
@@ -7503,7 +9745,7 @@ serve(async (req) => {
           // Inject QR code for verification
           const fallbackVerifyUrl = fullContext.verifyUrl ||
             `https://app.limsapp.in/verify?id=${
-              encodeURIComponent(context.sampleId || orderId || "")
+              encodeURIComponent(orderId || context.sampleId || "")
             }`;
           renderedDefaultHtml = injectQrCode(
             renderedDefaultHtml,
@@ -7523,34 +9765,37 @@ serve(async (req) => {
           multiInterpretationCssChunks.join("\n"),
         ].filter(Boolean).join("\n");
         console.log(
-          "✅ Merged multiple templates" + (template
+          "âœ… Merged multiple templates" + (template
             ? ` using base: ${template.template_name}`
             : " using default template"),
         );
         const labPrintOptions = mergePrintOptions(pdfSettings, undefined);
         mergedPrintOptions = labPrintOptions; // lift to outer scope for print version
         const dynamicCss = generateDynamicCss(pdfSettings, labPrintOptions ?? undefined);
+        const multiLetterheadUrl = usedCkeTemplateInMulti && ckeTemplateLetterheadUrl
+          ? ckeTemplateLetterheadUrl
+          : letterheadUrl;
         console.log(
-          "🔧 About to call buildPdfBodyDocumentV2 (multi-template) with letterhead:",
-          letterheadUrl || "NONE",
+          "ðŸ”§ About to call buildPdfBodyDocumentV2 (multi-template) with letterhead:",
+          multiLetterheadUrl || "NONE",
         );
 
         const verifyUrl = `https://app.limsapp.in/verify?id=${
-          encodeURIComponent(context.sampleId || orderId || "")
+          encodeURIComponent(orderId || context.sampleId || "")
         }`;
         bodyHtml = buildPdfBodyDocumentV2(
           renderedSections.join("\n"),
           templateCss + "\n" + dynamicCss,
-          letterheadUrl,
+          multiLetterheadUrl,
           pdfSettings,
           verifyUrl,
         );
         console.log(
-          "✅ buildPdfBodyDocumentV2 returned, HTML length:",
+          "âœ… buildPdfBodyDocumentV2 returned, HTML length:",
           bodyHtml.length,
         );
         console.log(
-          "🔍 Checking if letterhead is in returned HTML:",
+          "ðŸ” Checking if letterhead is in returned HTML:",
           bodyHtml.includes("page-bg") ? "YES (page-bg div found)" : "NO",
         );
         rawHtmlForPrint = bodyHtml; // Save for print version
@@ -7575,7 +9820,7 @@ serve(async (req) => {
       if (watermarkSettings.enabled && watermarkSettings.imageUrl) {
         const watermarkHtml = generateWatermarkHtml(watermarkSettings);
         bodyHtml = bodyHtml.replace("<main", `${watermarkHtml}<main`);
-        console.log("✅ Watermark injected");
+        console.log("âœ… Watermark injected");
       }
 
       // Inject report extras (trends, clinical summary, AI summaries)
@@ -7583,7 +9828,7 @@ serve(async (req) => {
       const extrasHtml = generateReportExtrasHtml(reportExtras);
       if (extrasHtml) {
         bodyHtml = bodyHtml.replace("</main>", `${extrasHtml}</main>`);
-        console.log("✅ Report extras injected inside main content");
+        console.log("âœ… Report extras injected inside main content");
       }
 
       // Inject attachments
@@ -7591,7 +9836,7 @@ serve(async (req) => {
         const attachmentsHtml = generateAttachmentsHtml(attachments);
         if (attachmentsHtml) {
           bodyHtml = bodyHtml.replace("</main>", `${attachmentsHtml}</main>`);
-          console.log("✅ Attachments injected:", attachments.length);
+          console.log("âœ… Attachments injected:", attachments.length);
         }
       }
 
@@ -7601,10 +9846,10 @@ serve(async (req) => {
           "</body>",
           `<div class="report-last-page" style="page-break-before: always; width: 100vw; height: 100vh; margin: 0; padding: 0;">${lastPage}</div></body>`,
         );
-        console.log("✅ Last page injected");
+        console.log("âœ… Last page injected");
       }
 
-      console.log("✅ HTML rendered:", { length: bodyHtml.length });
+      console.log("âœ… HTML rendered:", { length: bodyHtml.length });
 
       await updateProgress(
         supabaseClient,
@@ -7617,17 +9862,20 @@ serve(async (req) => {
       // Step 9: SKIP Base64 Conversion (PDF.co can fetch images directly)
       // ========================================
       console.log(
-        "\n🖼️ Step 9: Skipping base64 conversion (PDF.co will fetch images directly from URLs)...",
+        "\nðŸ–¼ï¸ Step 9: Skipping base64 conversion (PDF.co will fetch images directly from URLs)...",
       );
 
-      // No conversion needed - PDF.co can fetch from ImageKit URLs directly
-      const processedBody = bodyHtml;
+      // No conversion needed - PDF.co can fetch from ImageKit URLs directly.
+      // Convert report text emojis to color SVG images for e-copy PDFs; Chromium/PDF.co
+      // can otherwise fall back to monochrome emoji glyphs.
+      const processedBody = colorizeReportEmojiTextNodes(bodyHtml);
+      const processedBodyHasLetterhead = processedBody.includes("page-bg");
       // Not using separate header/footer - using letterhead background instead
       const processedHeader = "";
       const processedFooter = "";
 
       console.log(
-        "✅ Using direct image URLs (faster, no base64 conversion needed)",
+        "âœ… Using direct image URLs (faster, no base64 conversion needed)",
       );
 
       await updateProgress(
@@ -7641,7 +9889,7 @@ serve(async (req) => {
       // Step 10: Generate PDFs via PDF.co API (PARALLEL)
       // ========================================
       console.log(
-        "\n📤 Step 10: Calling PDF.co API (parallel eCopy + Print)...",
+        "\nðŸ“¤ Step 10: Calling PDF.co API (parallel eCopy + Print)...",
       );
       const pdfStartTime = Date.now();
 
@@ -7650,16 +9898,16 @@ serve(async (req) => {
       // so the background image is not pushed down. Content spacing is handled by CSS padding.
       let margins = DEFAULT_PDF_SETTINGS.margins;
 
-      if (letterheadUrl) {
+      if (processedBodyHasLetterhead) {
         // Letterhead Mode: 0px all margins (background full bleed), side padding handled by CSS
         margins = `0px 0px 0px 0px`;
         console.log(
-          "📄 Letterhead detected: Forcing 0px all margins for API, using CSS padding for content.",
+          "ðŸ“„ Letterhead detected: Forcing 0px all margins for API, using CSS padding for content.",
         );
       } else if (pdfSettings?.margins) {
-        // Standard Mode: Use saved margins
+        // Standard Mode: Use saved margins (handle both "180px" strings and numeric values)
         margins =
-          `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`;
+          `${parseMarginValue(pdfSettings.margins.top, 180)}px ${parseMarginValue(pdfSettings.margins.right, 20)}px ${parseMarginValue(pdfSettings.margins.bottom, 150)}px ${parseMarginValue(pdfSettings.margins.left, 20)}px`;
       }
 
       const filename = `Report_${
@@ -7675,7 +9923,7 @@ serve(async (req) => {
 
       // Create verification URL for QR code (used in both e-copy and print)
       const printVerifyUrl = `https://app.limsapp.in/verify?id=${
-        encodeURIComponent(context.sampleId || orderId || "")
+        encodeURIComponent(orderId || context.sampleId || "")
       }`;
 
       if (generatePrintVersion) {
@@ -7691,7 +9939,6 @@ serve(async (req) => {
             ?.sectionContentNoImages || (fullContext as any)?.sectionContent || {};
           const compactPrintContext = {
             ...fullContext,
-            ...context,
             ...printSectionContent,
             testGroupIds: orderedGroupIdsForPrint,
             sectionContent: printSectionContent,
@@ -7706,51 +9953,89 @@ serve(async (req) => {
           };
           const compactPrintOptions = {
             ...(mergedPrintOptions || {}),
-            baseFontSize: Math.min(
-              Number((mergedPrintOptions as any)?.baseFontSize || 11),
-              11,
-            ),
+            baseFontSize: Number((mergedPrintOptions as any)?.baseFontSize || 14),
             alternateRows: false,
+            _isCompact: true,
           };
           effectivePrintOptionsForCss = compactPrintOptions;
 
-          let compactRenderedHtml = generateDefaultTemplateHtml(
-            compactPrintContext,
-            testGroupNames,
-            orderedAnalytesByGroupForPrint,
-            signatoryInfo,
-            printSectionContent,
-            true,
-            compactPrintConfig.compactTemplateStyle,
-            labSettings?.show_methodology ?? true,
-            false,
-            labSettings?.report_patient_info_config,
-            compactPrintOptions,
-            customPatientFieldConfigs ?? [],
-            undefined,
-            testGroupInterpretations,
-            (fullContext as any)?.sectionLabels,
-          );
-          compactRenderedHtml = renderTemplate(
-            compactRenderedHtml,
-            compactPrintContext,
-          );
-          compactRenderedHtml = injectQrCode(
-            compactRenderedHtml,
-            printVerifyUrl,
-          );
-          compactRenderedHtml = addFlagClassesToHtml(compactRenderedHtml);
+          const emptySignatory = { signatoryName: "", signatoryDesignation: "", signatoryImageUrl: "" };
 
-          printHtml = buildPdfBodyDocumentV2(
-            compactRenderedHtml,
-            "",
-            null,
-            pdfSettings,
-            printVerifyUrl,
-          );
-          console.log(
-            "✅ Built compact print HTML from validated compact plan",
-          );
+          // Per-group rendering â€” mirrors the eCopy path exactly:
+          // page-break-before between groups on different pages, no break for same-page groups,
+          // patient header / title bar suppressed for subsequent groups on the same page,
+          // signature / QR suppressed for non-last groups on the same page.
+          {
+            const printGroupIds = orderedGroupIdsForPrint.filter(
+              (id) => (orderedAnalytesByGroupForPrint.get(id)?.length ?? 0) > 0
+            );
+            const lastGroupId = printGroupIds.at(-1);
+            const printSectionParts: string[] = [];
+            let printPrevPageNum: number | null = null;
+
+            for (const groupId of printGroupIds) {
+              const groupAnalytes = orderedAnalytesByGroupForPrint.get(groupId) ?? [];
+              const groupPageNum = printOrderByGroupId.get(groupId) ?? 999;
+
+              const isSamePageAsPrev = printPrevPageNum !== null &&
+                groupPageNum !== 0 && groupPageNum !== 999 &&
+                groupPageNum === printPrevPageNum;
+
+              const groupIdx = printGroupIds.indexOf(groupId);
+              const nextGroupId = groupIdx >= 0 ? printGroupIds[groupIdx + 1] : undefined;
+              const nextPageNum = nextGroupId ? (printOrderByGroupId.get(nextGroupId) ?? 999) : null;
+              const isSamePageAsNext = nextPageNum !== null &&
+                nextPageNum !== 0 && nextPageNum !== 999 &&
+                nextPageNum === groupPageNum;
+
+              const isLastGroup = groupId === lastGroupId;
+              // Last group on its page = no following group shares the same page number
+              const isLastOnPage = !isSamePageAsNext;
+
+              const groupPrintOptions = {
+                ...compactPrintOptions,
+                _suppressPatientHeader: isSamePageAsPrev,
+                _suppressSignature: !isLastOnPage,
+              };
+
+              const groupAnalyteMap = new Map([[groupId, groupAnalytes]]);
+              const groupCtx = { ...compactPrintContext, testGroupIds: [groupId] };
+
+              let groupHtml = generateDefaultTemplateHtml(
+                groupCtx,
+                testGroupNames,
+                groupAnalyteMap,
+                signatoryInfo,                          // every page's last group shows signature
+                isLastGroup ? printSectionContent : {}, // sections only on absolute last page
+                isLastGroup,
+                compactPrintConfig.compactTemplateStyle,
+                labSettings?.show_methodology ?? true,
+                false,
+                labSettings?.report_patient_info_config,
+                groupPrintOptions,
+                customPatientFieldConfigs ?? [],
+                undefined,
+                testGroupInterpretations,
+                (fullContext as any)?.sectionLabels,
+              );
+              groupHtml = renderTemplate(groupHtml, compactPrintContext);
+              groupHtml = injectGroupRemark(groupHtml, groupRemarks.get(groupId) || "");
+              if (isLastOnPage) {
+                groupHtml = injectQrCode(groupHtml, printVerifyUrl);
+              }
+
+              const pageBreakStyle = !isSamePageAsPrev && printSectionParts.length > 0
+                ? 'style="page-break-before: always; break-before: page;"'
+                : '';
+              printSectionParts.push(`<div ${pageBreakStyle}>${groupHtml}</div>`);
+              printPrevPageNum = groupPageNum;
+            }
+
+            let compactRenderedHtml = printSectionParts.join('');
+            compactRenderedHtml = addFlagClassesToHtml(compactRenderedHtml);
+            printHtml = buildPdfBodyDocumentV2(compactRenderedHtml, "", null, pdfSettings, printVerifyUrl);
+            console.log(`âœ… Built compact print HTML per-group (${printSectionParts.length} groups, plan-aware page breaks)`);
+          }
         } else if (rawHtmlForPrint) {
           // rawHtmlForPrint contains the full E-Copy HTML with letterhead styles and spacers
           // For print version, we need to extract just the CONTENT and rebuild with null letterhead
@@ -7764,7 +10049,7 @@ serve(async (req) => {
           if (mainContentMatch) {
             const extractedContent = mainContentMatch[1];
             console.log(
-              "✅ Extracted main content from rawHtmlForPrint, length:",
+              "âœ… Extracted main content from rawHtmlForPrint, length:",
               extractedContent.length,
             );
 
@@ -7778,12 +10063,12 @@ serve(async (req) => {
               printVerifyUrl,
             );
             console.log(
-              "✅ Rebuilt print HTML without letterhead, with QR code",
+              "âœ… Rebuilt print HTML without letterhead, with QR code",
             );
           } else {
             // Fallback: Try to strip letterhead elements manually
             console.log(
-              "⚠️ Could not extract main content, falling back to stripping approach",
+              "âš ï¸ Could not extract main content, falling back to stripping approach",
             );
             printHtml = rawHtmlForPrint;
 
@@ -7833,9 +10118,15 @@ serve(async (req) => {
               template.gjs_html,
               printTemplateContext,
             );
+            const printGroupId = context.testGroupIds?.[0];
+            printRenderedHtml = injectGroupRemark(
+              printRenderedHtml,
+              printGroupId ? groupRemarks.get(printGroupId) || "" : "",
+              /\{\{\s*groupRemark\s*\}\}/.test(template.gjs_html),
+            );
 
-            // Inject signature image if template doesn't have one (Critical for print version)
-            if (signatoryInfo.signatoryImageUrl) {
+            // Inject signature image if template doesn't have one (Critical for print version, unless showSignature is false)
+            if (signatoryInfo.signatoryImageUrl && (mergedPrintOptions as any)?.showSignature !== false) {
               printRenderedHtml = injectSignatureImage(
                 printRenderedHtml,
                 signatoryInfo.signatoryImageUrl,
@@ -7846,7 +10137,7 @@ serve(async (req) => {
 
             // Inject QR code for verification (next to signature area)
             const printVerifyUrlForQr = `https://app.limsapp.in/verify?id=${
-              encodeURIComponent(context.sampleId || orderId || "")
+              encodeURIComponent(orderId || context.sampleId || "")
             }`;
             printRenderedHtml = injectQrCode(
               printRenderedHtml,
@@ -7858,7 +10149,7 @@ serve(async (req) => {
             }
           } else {
             // No custom template - use default template
-            console.log("⚠️ Using default template for print version");
+            console.log("âš ï¸ Using default template for print version");
             const printSingleGroupId = context.testGroupIds?.[0];
             const printResolvedStyle = (printSingleGroupId && testGroupStyles.get(printSingleGroupId)) || labSettings?.default_template_style || 'beautiful';
             printRenderedHtml = generateDefaultTemplateHtml(
@@ -7882,10 +10173,14 @@ serve(async (req) => {
               printRenderedHtml,
               printTemplateContext,
             );
+            printRenderedHtml = injectGroupRemark(
+              printRenderedHtml,
+              printSingleGroupId ? groupRemarks.get(printSingleGroupId) || "" : "",
+            );
 
             // Inject QR code for verification (next to signature area)
             const printDefaultVerifyUrl = `https://app.limsapp.in/verify?id=${
-              encodeURIComponent(context.sampleId || orderId || "")
+              encodeURIComponent(orderId || context.sampleId || "")
             }`;
             printRenderedHtml = injectQrCode(
               printRenderedHtml,
@@ -7911,7 +10206,7 @@ serve(async (req) => {
             printVerifyUrl,
           );
           console.log(
-            "✅ Built print HTML without gjs_css, with QR code (clean print mode)",
+            "âœ… Built print HTML without gjs_css, with QR code (clean print mode)",
           );
 
           // Skip section content injection for print fallback path.
@@ -7949,10 +10244,22 @@ serve(async (req) => {
         }
 
         // Inject report extras - INSIDE </main> not </body> for proper layout
+        // Exclude histograms already injected inline into their test group section (multi-group path)
+        const inlineInjectedHistoCodes = new Set(
+          [...histogramsByGroupId.values()].flat().map((r: any) => r.test_code)
+        );
+        const reportExtrasForPrint = inlineInjectedHistoCodes.size > 0
+          ? {
+              ...reportExtras,
+              analyzer_histogram_svgs: (reportExtras.analyzer_histogram_svgs || [])
+                .filter((r: any) => !inlineInjectedHistoCodes.has(r.test_code)),
+            }
+          : reportExtras;
+
         let printExtrasHtml = "";
         if (useCompactPrint) {
           // Compact print: include analyzer graphs only, scaled down to fit on page
-          const svgRows = (reportExtras.analyzer_histogram_svgs || []).filter((r: any) => r.svg_data);
+          const svgRows = (reportExtrasForPrint.analyzer_histogram_svgs || []).filter((r: any) => r.svg_data);
           if (svgRows.length > 0) {
             printExtrasHtml = '<div style="margin-top:10px;page-break-inside:avoid;">';
             printExtrasHtml += '<p style="margin:0 0 5px 0;font-size:10px;font-weight:700;color:#1e40af;border-bottom:1px solid #93c5fd;padding-bottom:2px;letter-spacing:0.05em;">ANALYZER HISTOGRAMS</p>';
@@ -7965,7 +10272,7 @@ serve(async (req) => {
             printExtrasHtml += '</div></div>';
           }
         } else {
-          printExtrasHtml = generateReportExtrasHtml(reportExtras);
+          printExtrasHtml = generateReportExtrasHtml(reportExtrasForPrint);
         }
         if (printExtrasHtml) {
           printHtml = printHtml.replace("</main>", `${printExtrasHtml}</main>`);
@@ -7975,7 +10282,7 @@ serve(async (req) => {
 
         // SKIP: Convert images to base64 (PDF.co can fetch directly)
         // printHtml = await convertHtmlImagesToBase64(printHtml)
-        console.log("✅ Print HTML ready (using direct image URLs)");
+        console.log("âœ… Print HTML ready (using direct image URLs)");
 
         // Inject print-optimized CSS (grayscale, simplified colors)
         // REFINED: Don't nuke ALL backgrounds (protects table headers)
@@ -8041,6 +10348,48 @@ serve(async (req) => {
              border: none !important;
           }
 
+          /* Darken report result tables for physical paper prints */
+          .tbl-results,
+          .tbl-results *,
+          .basic-report-template .tbl-results,
+          .basic-report-template .tbl-results * {
+            color: #000000 !important;
+            opacity: 1 !important;
+            -webkit-text-fill-color: #000000 !important;
+          }
+
+          .tbl-results td,
+          .tbl-results th,
+          .basic-report-template .tbl-results td,
+          .basic-report-template .tbl-results th {
+            font-weight: 600 !important;
+            text-shadow: 0 0 0 #000000 !important;
+          }
+
+          .tbl-results thead th,
+          .basic-report-template .tbl-results thead th,
+          .main-group-row td,
+          .sub-section-header td,
+          .center-title {
+            font-weight: 800 !important;
+            color: #000000 !important;
+          }
+
+          .test-name,
+          .val,
+          .same-row-sibling,
+          .same-row-sibling-unit,
+          .same-row-sibling-ref,
+          .basic-report-template .test-name,
+          .basic-report-template .val,
+          .basic-report-template .same-row-sibling,
+          .basic-report-template .same-row-sibling-unit,
+          .basic-report-template .same-row-sibling-ref {
+            color: #000000 !important;
+            font-weight: 700 !important;
+            opacity: 1 !important;
+          }
+
           /* Hide non-print elements */
           .watermark, .draft-watermark { display: none !important; }
 
@@ -8054,12 +10403,31 @@ serve(async (req) => {
           .value-critical_l, .flag-critical_l {
             color: #000000 !important;
             font-weight: 900 !important;
-            text-decoration: none !important;
+          }
+
+          tr.has-visible-flag > td.val,
+          tr.has-visible-flag > td .val,
+          .basic-report-template tr.has-visible-flag > td.val,
+          .basic-report-template tr.has-visible-flag > td .val {
+            color: #000000 !important;
+            font-weight: 900 !important;
+            text-decoration-line: underline !important;
+            text-decoration-thickness: 1.2px !important;
+            text-underline-offset: 2px !important;
           }
         </style>
       `;
         printHtml = printHtml.replace("</head>", `${printCss}</head>`);
-        console.log("✅ Print CSS injected (grayscale + clean styling)");
+        console.log("âœ… Print CSS injected (grayscale + clean styling)");
+
+        // Inject Last Page for print version (same as eCopy - after all content, before </body>)
+        if (lastPage) {
+          printHtml = printHtml.replace(
+            "</body>",
+            `<div class="report-last-page" style="page-break-before: always; width: 100vw; height: 100vh; margin: 0; padding: 0;">${lastPage}</div></body>`,
+          );
+          console.log("âœ… Last page injected into print version");
+        }
 
         printHtmlPrepared = printHtml;
       }
@@ -8067,62 +10435,73 @@ serve(async (req) => {
       // ========================================
       // PARALLEL PDF Generation - eCopy + Print simultaneously
       // ========================================
-      console.log("📤 Preparing to send HTML to PDF.co...");
-      console.log("  � PDF Mode:", pdfLetterheadMode);
-      console.log("  📄 Processed body length:", processedBody.length);
+      console.log("ðŸ“¤ Preparing to send HTML to PDF.co...");
+      console.log("  ï¿½ PDF Mode:", pdfLetterheadMode);
+      console.log("  ðŸ“„ Processed body length:", processedBody.length);
       if (pdfLetterheadMode === 'header_footer') {
-        console.log("  🖼️ Header HTML length:", headerFooterHtml.headerHtml.length);
-        console.log("  🖼️ Footer HTML length:", headerFooterHtml.footerHtml.length);
+        console.log("  ðŸ–¼ï¸ Header HTML length:", headerFooterHtml.headerHtml.length);
+        console.log("  ðŸ–¼ï¸ Footer HTML length:", headerFooterHtml.footerHtml.length);
       } else {
         console.log(
-          "  🔍 Checking for letterhead in HTML:",
-          processedBody.includes("page-bg") ? "✅ FOUND (page-bg)" : "❌ NOT FOUND",
+          "  ðŸ” Checking for letterhead in HTML:",
+          processedBody.includes("page-bg") ? "âœ… FOUND (page-bg)" : "âŒ NOT FOUND",
         );
         console.log(
-          "  🔍 Checking for letterhead URL in HTML:",
+          "  ðŸ” Checking for letterhead URL in HTML:",
           processedBody.includes("background-image")
-            ? "✅ FOUND"
-            : "❌ NOT FOUND",
+            ? "âœ… FOUND"
+            : "âŒ NOT FOUND",
         );
       }
 
       // Build PDF.co options based on mode
       const isHeaderFooterMode = pdfLetterheadMode === 'header_footer';
+      const hasNativeHeaderFooterAssets = isHeaderFooterMode &&
+        !processedBodyHasLetterhead &&
+        !!headerFooterHtml.headerHtml &&
+        !!headerFooterHtml.footerHtml;
+
+      if (isHeaderFooterMode) {
+        console.log(
+          "  ðŸ§¾ Native PDF.co header/footer payload:",
+          hasNativeHeaderFooterAssets ? "ENABLED" : "DISABLED (missing header or footer image)",
+        );
+      }
 
       const eCopyPromise = sendHtmlToPdfCo(
         processedBody,
         filename,
         PDFCO_API_KEY,
         {
-          headerHtml: isHeaderFooterMode ? headerFooterHtml.headerHtml : processedHeader,
-          footerHtml: isHeaderFooterMode ? headerFooterHtml.footerHtml : processedFooter,
-          margins: isHeaderFooterMode
+          headerHtml: hasNativeHeaderFooterAssets ? headerFooterHtml.headerHtml : processedHeader,
+          footerHtml: hasNativeHeaderFooterAssets ? headerFooterHtml.footerHtml : processedFooter,
+          margins: hasNativeHeaderFooterAssets
             ? (pdfSettings?.margins
-              ? `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`
+              ? `${parseMarginValue(pdfSettings.margins.top, 180)}px ${parseMarginValue(pdfSettings.margins.right, 20)}px ${parseMarginValue(pdfSettings.margins.bottom, 150)}px ${parseMarginValue(pdfSettings.margins.left, 20)}px`
               : DEFAULT_PDF_SETTINGS.margins)
             : margins,
-          headerHeight: isHeaderFooterMode
+          headerHeight: hasNativeHeaderFooterAssets
             ? (pdfSettings?.headerHeight
-              ? `${pdfSettings.headerHeight}px`
+              ? `${parseMarginValue(pdfSettings.headerHeight, 90)}px`
               : DEFAULT_PDF_SETTINGS.headerHeight)
-            : (letterheadUrl
+            : (processedBodyHasLetterhead
               ? "0px"
               : (pdfSettings?.headerHeight
-                ? `${pdfSettings.headerHeight}px`
+                ? `${parseMarginValue(pdfSettings.headerHeight, 90)}px`
                 : DEFAULT_PDF_SETTINGS.headerHeight)),
-          footerHeight: isHeaderFooterMode
+          footerHeight: hasNativeHeaderFooterAssets
             ? (pdfSettings?.footerHeight
-              ? `${pdfSettings.footerHeight}px`
+              ? `${parseMarginValue(pdfSettings.footerHeight, 80)}px`
               : DEFAULT_PDF_SETTINGS.footerHeight)
-            : (letterheadUrl
+            : (processedBodyHasLetterhead
               ? "0px"
               : (pdfSettings?.footerHeight
-                ? `${pdfSettings.footerHeight}px`
+                ? `${parseMarginValue(pdfSettings.footerHeight, 80)}px`
                 : DEFAULT_PDF_SETTINGS.footerHeight)),
           scale: pdfSettings?.scale ?? DEFAULT_PDF_SETTINGS.scale,
-          displayHeaderFooter: isHeaderFooterMode
+          displayHeaderFooter: hasNativeHeaderFooterAssets
             ? true
-            : (letterheadUrl
+            : (processedBodyHasLetterhead
               ? false
               : (pdfSettings?.displayHeaderFooter ??
                 DEFAULT_PDF_SETTINGS.displayHeaderFooter)),
@@ -8138,27 +10517,19 @@ serve(async (req) => {
           `Print_${filename}`,
           PDFCO_API_KEY!,
           {
-            // When Header & Footer mode is on, compact print also respects the configured header/footer
-            headerHtml: isHeaderFooterMode ? headerFooterHtml.headerHtml : "",
-            footerHtml: isHeaderFooterMode ? headerFooterHtml.footerHtml : "",
-            // Header/footer mode: use configured margins directly.
-            // Letterhead mode: enforce minimum 20px so physical letterhead paper has space at top.
-            margins: isHeaderFooterMode
-              ? (pdfSettings?.margins
-                ? `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`
-                : DEFAULT_PDF_SETTINGS.margins)
-              : `${Math.max(pdfSettings?.margins?.top ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.right ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.bottom ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.left ?? 20, 20)}px`,
-            headerHeight: isHeaderFooterMode
-              ? (pdfSettings?.headerHeight ? `${pdfSettings.headerHeight}px` : DEFAULT_PDF_SETTINGS.headerHeight)
-              : "0px",
-            footerHeight: isHeaderFooterMode
-              ? (pdfSettings?.footerHeight ? `${pdfSettings.footerHeight}px` : DEFAULT_PDF_SETTINGS.footerHeight)
-              : "0px",
+            // Print PDF should always be body-only.
+            // Native PDF.co header/footer is reserved for eCopy only.
+            headerHtml: "",
+            footerHtml: "",
+            // Use lab's saved margins for print (with 20px minimum)
+            margins: `${Math.max(parseMarginValue(pdfSettings?.margins?.top, 20), 20)}px ${Math.max(parseMarginValue(pdfSettings?.margins?.right, 20), 20)}px ${Math.max(parseMarginValue(pdfSettings?.margins?.bottom, 20), 20)}px ${Math.max(parseMarginValue(pdfSettings?.margins?.left, 20), 20)}px`,
+            headerHeight: "0px",
+            footerHeight: "0px",
             scale: pdfSettings?.scale ?? DEFAULT_PDF_SETTINGS.scale,
-            displayHeaderFooter: isHeaderFooterMode,
+            displayHeaderFooter: false,
             paperSize: DEFAULT_PDF_SETTINGS.paperSize,
             mediaType: "print",
-            printBackground: isHeaderFooterMode,
+            printBackground: true,
           },
         )
         : Promise.resolve(null);
@@ -8170,10 +10541,10 @@ serve(async (req) => {
       ]);
 
       console.log(
-        `✅ PDFs generated in ${Date.now() - pdfStartTime}ms (parallel)`,
+        `âœ… PDFs generated in ${Date.now() - pdfStartTime}ms (parallel)`,
       );
-      console.log("  eCopy URL:", pdfCoUrl ? "✓" : "✗");
-      console.log("  Print URL:", printPdfCoUrl ? "✓" : "skipped");
+      console.log("  eCopy URL:", pdfCoUrl ? "âœ“" : "âœ—");
+      console.log("  Print URL:", printPdfCoUrl ? "âœ“" : "skipped");
 
       await updateProgress(
         supabaseClient,
@@ -8186,7 +10557,7 @@ serve(async (req) => {
       // Step 11: Upload PDFs to Storage (PARALLEL)
       // ========================================
       console.log(
-        "\n📦 Step 11: Uploading PDFs to Supabase Storage (parallel)...",
+        "\nðŸ“¦ Step 11: Uploading PDFs to Supabase Storage (parallel)...",
       );
       const uploadStartTime = Date.now();
 
@@ -8201,6 +10572,7 @@ serve(async (req) => {
         context.patientId || "unknown",
         filename,
         "final",
+        5,
       );
 
       const printUploadPromise = printPdfCoUrl
@@ -8214,7 +10586,7 @@ serve(async (req) => {
           "print",
           5,
         ).catch((err) => {
-          console.warn("⚠️ Print upload failed (non-fatal):", err.message);
+          console.warn("âš ï¸ Print upload failed (non-fatal):", err.message);
           return null;
         })
         : Promise.resolve(null);
@@ -8224,11 +10596,50 @@ serve(async (req) => {
         printUploadPromise,
       ]);
 
-      const storageUrl = eCopyResult.publicUrl;
+      let storageUrl = eCopyResult.publicUrl;
       let printStorageUrl: string | null = printResult?.publicUrl || null;
 
+      // If eCopy used temp fallback (path is empty), attempt one final delayed retry
+      // before giving up and keeping the temp URL as last resort
+      if (eCopyResult.path === "" && pdfCoUrl) {
+        console.warn(
+          "âš ï¸ eCopy fell back to temp URL â€” waiting 15s then attempting one final retry...",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 15000));
+        try {
+          const retryResult = await uploadPdfToStorage(
+            supabaseClient,
+            pdfCoUrl,
+            orderId,
+            job.lab_id,
+            context.patientId || "unknown",
+            filename,
+            "final",
+            3,
+          );
+          if (retryResult.path !== "") {
+            storageUrl = retryResult.publicUrl;
+            console.log(
+              "âœ… Final delayed retry succeeded â€” eCopy saved to storage:",
+              storageUrl,
+            );
+          } else {
+            console.warn(
+              "âš ï¸ Final delayed retry also returned temp URL â€” keeping temp URL as last resort:",
+              storageUrl,
+            );
+          }
+        } catch (retryErr) {
+          console.warn(
+            "âš ï¸ Final delayed retry threw â€” keeping temp URL as last resort:",
+            retryErr instanceof Error ? retryErr.message : String(retryErr),
+          );
+          // storageUrl already holds the temp URL â€” leave it unchanged
+        }
+      }
+
       console.log(
-        `✅ PDFs uploaded in ${Date.now() - uploadStartTime}ms (parallel)`,
+        `âœ… PDFs uploaded in ${Date.now() - uploadStartTime}ms (parallel)`,
       );
       console.log("  eCopy:", storageUrl);
       console.log("  Print:", printStorageUrl || "none");
@@ -8243,7 +10654,7 @@ serve(async (req) => {
       // ========================================
       // Step 12: Update Database Records
       // ========================================
-      console.log("\n💾 Step 12: Updating database records...");
+      console.log("\nðŸ’¾ Step 12: Updating database records...");
 
       const now = new Date().toISOString();
 
@@ -8267,7 +10678,7 @@ serve(async (req) => {
         "";
 
       if (!patientId) {
-        console.error("❌ Missing patient_id - cannot create report record");
+        console.error("âŒ Missing patient_id - cannot create report record");
         console.error("Context patient sources:", {
           contextPatientId: context.patientId,
           patientObjectId: context.patient?.id,
@@ -8275,11 +10686,11 @@ serve(async (req) => {
         });
         // Don't throw - continue without creating report record, PDF is still generated
         console.warn(
-          "⚠️ Skipping report record creation due to missing patient_id",
+          "âš ï¸ Skipping report record creation due to missing patient_id",
         );
       }
 
-      console.log("📋 Report record data:", {
+      console.log("ðŸ“‹ Report record data:", {
         orderId,
         patientId,
         doctorName,
@@ -8301,9 +10712,12 @@ serve(async (req) => {
             .maybeSingle();
 
         // Fields to update (for existing record)
+        // Compact mode: save eCopy to compact_ecopy_url â€” never overwrite pdf_url (standard eCopy).
+        // Standard mode: save eCopy to pdf_url as usual.
         const updateFields = {
-          pdf_url: storageUrl,
-          pdf_generated_at: now,
+          ...(printLayoutMode !== "compact"
+            ? { pdf_url: storageUrl, pdf_generated_at: now }
+            : { compact_ecopy_url: storageUrl, compact_ecopy_generated_at: now }),
           status: "completed",
           report_status: "completed",
           report_type: isDraft ? "draft" : "final",
@@ -8337,9 +10751,9 @@ serve(async (req) => {
             .eq("id", reportIdForNotif);
 
           if (updateError) {
-            console.error("⚠️ Report update error:", updateError);
+            console.error("âš ï¸ Report update error:", updateError);
           } else {
-            console.log("✅ Updated existing report record with all fields");
+            console.log("âœ… Updated existing report record with all fields");
           }
         } else {
           const { data: newReport, error: insertError } = await supabaseClient
@@ -8349,12 +10763,12 @@ serve(async (req) => {
             .single();
 
           if (insertError) {
-            console.error("⚠️ Report insert error:", insertError);
+            console.error("âš ï¸ Report insert error:", insertError);
             console.error("Insert data:", insertFields);
           } else {
             reportIdForNotif = newReport.id;
             console.log(
-              "✅ Created new report record with all fields, ID:",
+              "âœ… Created new report record with all fields, ID:",
               reportIdForNotif,
             );
           }
@@ -8373,7 +10787,7 @@ serve(async (req) => {
         .eq("id", job.id);
 
       if (completeError) {
-        console.error("⚠️ Failed to mark job as completed:", completeError);
+        console.error("âš ï¸ Failed to mark job as completed:", completeError);
         // Try again with simpler update
         const { error: retryError } = await supabaseClient
           .from("pdf_generation_queue")
@@ -8381,18 +10795,18 @@ serve(async (req) => {
           .eq("id", job.id);
 
         if (retryError) {
-          console.error("❌ Retry also failed:", retryError);
+          console.error("âŒ Retry also failed:", retryError);
         } else {
-          console.log("✅ Job marked complete on retry");
+          console.log("âœ… Job marked complete on retry");
         }
       } else {
-        console.log("✅ Job marked as COMPLETED in queue");
+        console.log("âœ… Job marked as COMPLETED in queue");
       }
 
       // ====== AUTO-TRIGGER WHATSAPP NOTIFICATIONS ======
       // Trigger if we have a valid report ID
       if (patientId && reportIdForNotif) {
-        console.log("📲 Checking WhatsApp auto-send settings...");
+        console.log("ðŸ“² Checking WhatsApp auto-send settings...");
         try {
           // Fetch lab notification settings
           const { data: notifSettings } = await supabaseClient
@@ -8405,7 +10819,7 @@ serve(async (req) => {
             notifSettings?.auto_send_report_to_patient ||
             notifSettings?.auto_send_report_to_doctor
           ) {
-            console.log("📲 Auto-send enabled, fetching recipient details...");
+            console.log("ðŸ“² Auto-send enabled, fetching recipient details...");
 
             const parseMinutes = (
               timeStr: string | null | undefined,
@@ -8420,13 +10834,13 @@ serve(async (req) => {
             const utcNow = Date.now();
             const istDate = new Date(utcNow + IST_OFFSET_MS);
             const currentMinutes = istDate.getUTCHours() * 60 + istDate.getUTCMinutes();
-            console.log(`⏰ Time check: UTC=${new Date(utcNow).toISOString()}, IST=${istDate.toISOString()}, currentMinutes=${currentMinutes}`);
+            console.log(`â° Time check: UTC=${new Date(utcNow).toISOString()}, IST=${istDate.toISOString()}, currentMinutes=${currentMinutes}`);
             const startMinutes = parseMinutes(notifSettings.send_window_start, "09:00:00");
             const endMinutes = parseMinutes(notifSettings.send_window_end, "21:00:00");
             const withinWindow = startMinutes <= endMinutes
               ? (currentMinutes >= startMinutes && currentMinutes <= endMinutes)
               : (currentMinutes >= startMinutes || currentMinutes <= endMinutes);
-            console.log(`⏰ Window: ${startMinutes}-${endMinutes}, current=${currentMinutes}, within=${withinWindow}`);
+            console.log(`â° Window: ${startMinutes}-${endMinutes}, current=${currentMinutes}, within=${withinWindow}`);
 
             const requiredStatus =
               String(notifSettings.send_report_on_status || "Completed").toLowerCase();
@@ -8439,7 +10853,7 @@ serve(async (req) => {
               String(reportForStatus?.report_status || reportForStatus?.status || "")
                 .toLowerCase();
             const statusMatches = currentStatus === requiredStatus;
-            console.log(`📋 Status check: required=${requiredStatus}, current=${currentStatus}, matches=${statusMatches}`);
+            console.log(`ðŸ“‹ Status check: required=${requiredStatus}, current=${currentStatus}, matches=${statusMatches}`);
 
             // Calculate next window start in IST, convert to UTC for scheduled_for
             const [startHour, startMinute] =
@@ -8452,7 +10866,7 @@ serve(async (req) => {
             const nextWindowStart = new Date(nextIst.getTime() - IST_OFFSET_MS);
 
             const canAttemptImmediate = withinWindow && statusMatches;
-            console.log(`🚦 canAttemptImmediate=${canAttemptImmediate} (window=${withinWindow}, status=${statusMatches})`);
+            console.log(`ðŸš¦ canAttemptImmediate=${canAttemptImmediate} (window=${withinWindow}, status=${statusMatches})`);
             const shouldQueueOutsideWindow = notifSettings.queue_outside_window !== false;
             const deferredScheduledFor = withinWindow
               ? new Date().toISOString()
@@ -8511,11 +10925,11 @@ serve(async (req) => {
                   whatsappUserId = triggeringUser.whatsapp_user_id;
                   whatsappUserName = triggeringUser.name;
                   console.log(
-                    `✅ [Priority 1] Using triggering user's WhatsApp: ${whatsappUserName}`,
+                    `âœ… [Priority 1] Using triggering user's WhatsApp: ${whatsappUserName}`,
                   );
                 } else {
                   console.log(
-                    `⚠️ Triggering user (${
+                    `âš ï¸ Triggering user (${
                       triggeringUser?.name || triggeredByUserId
                     }) has no whatsapp_user_id - checking location...`,
                   );
@@ -8525,7 +10939,7 @@ serve(async (req) => {
               // Priority 2: Location-based routing (find user assigned to order's location)
               if (!whatsappUserId && order.location_id) {
                 console.log(
-                  `🔍 Checking for location-based WhatsApp user for location: ${order.location_id}`,
+                  `ðŸ” Checking for location-based WhatsApp user for location: ${order.location_id}`,
                 );
 
                 // Find users assigned to this location with WhatsApp connected
@@ -8549,11 +10963,11 @@ serve(async (req) => {
                   whatsappUserId = locationUser.whatsapp_user_id;
                   whatsappUserName = locationUser.name;
                   console.log(
-                    `✅ [Priority 2] Using location-based WhatsApp: ${whatsappUserName} (${locationUser.role}) at location ${order.location_id}`,
+                    `âœ… [Priority 2] Using location-based WhatsApp: ${whatsappUserName} (${locationUser.role}) at location ${order.location_id}`,
                   );
                 } else {
                   console.log(
-                    `⚠️ No users with WhatsApp found for location: ${order.location_id}`,
+                    `âš ï¸ No users with WhatsApp found for location: ${order.location_id}`,
                   );
                 }
               }
@@ -8563,13 +10977,13 @@ serve(async (req) => {
                 whatsappUserId = lab.whatsapp_user_id;
                 whatsappUserName = lab.name;
                 console.log(
-                  `✅ [Priority 3] Using lab-level WhatsApp fallback: ${lab.name}`,
+                  `âœ… [Priority 3] Using lab-level WhatsApp fallback: ${lab.name}`,
                 );
               }
 
               if (!whatsappUserId) {
                 console.warn(
-                  "⚠️ No whatsapp_user_id configured - notifications will be queued only",
+                  "âš ï¸ No whatsapp_user_id configured - notifications will be queued only",
                 );
               }
 
@@ -8586,7 +11000,7 @@ serve(async (req) => {
               ): Promise<boolean> => {
                 if (!whatsappUserId) {
                   console.log(
-                    "⏭️ Skipping immediate send - no whatsapp_user_id configured",
+                    "â­ï¸ Skipping immediate send - no whatsapp_user_id configured",
                   );
                   return false;
                 }
@@ -8594,7 +11008,7 @@ serve(async (req) => {
                 try {
                   // Use lab's country code (already fetched)
                   const countryCode = lab?.country_code || "+91"; // Default to India
-                  console.log("🌍 Using country code:", countryCode);
+                  console.log("ðŸŒ Using country code:", countryCode);
 
                   let cleanPhone = phone.replace(/\D/g, "");
 
@@ -8625,7 +11039,7 @@ serve(async (req) => {
                   }
 
                   console.log(
-                    `📤 Sending WhatsApp to ${formattedPhone} via Netlify function`,
+                    `ðŸ“¤ Sending WhatsApp to ${formattedPhone} via Netlify function`,
                   );
 
                   // Extract filename from URL
@@ -8644,7 +11058,7 @@ serve(async (req) => {
                   };
 
                   console.log(
-                    "📋 Request payload:",
+                    "ðŸ“‹ Request payload:",
                     JSON.stringify(requestBody, null, 2),
                   );
 
@@ -8658,7 +11072,7 @@ serve(async (req) => {
 
                   if (!response.ok) {
                     console.error(
-                      `❌ Netlify function error: ${response.status} ${response.statusText}`,
+                      `âŒ Netlify function error: ${response.status} ${response.statusText}`,
                     );
                     console.error(`   Response: ${responseText}`);
                     return false;
@@ -8666,15 +11080,15 @@ serve(async (req) => {
 
                   try {
                     const result = JSON.parse(responseText);
-                    console.log(`✅ WhatsApp sent successfully:`, result);
+                    console.log(`âœ… WhatsApp sent successfully:`, result);
                   } catch {
                     console.log(
-                      `✅ WhatsApp sent successfully (raw response): ${responseText}`,
+                      `âœ… WhatsApp sent successfully (raw response): ${responseText}`,
                     );
                   }
                   return true;
                 } catch (error) {
-                  console.error(`❌ WhatsApp send exception:`, error);
+                  console.error(`âŒ WhatsApp send exception:`, error);
                   return false;
                 }
               };
@@ -8688,7 +11102,7 @@ serve(async (req) => {
                   .eq("order_id", orderId)
                   .maybeSingle();
                 if (dueStatus?.has_due) {
-                  console.log("⛔ Auto-send blocked — order has outstanding balance:", orderId);
+                  console.log("â›” Auto-send blocked â€” order has outstanding balance:", orderId);
                   blockedByDue = true;
                 }
               }
@@ -8729,16 +11143,16 @@ serve(async (req) => {
                       .replace(/\[LabEmail\]/gi, ""); // Not fetched in this context
 
                     console.log(
-                      "✅ Using WhatsApp template for patient message",
+                      "âœ… Using WhatsApp template for patient message",
                     );
                   } else {
                     console.log(
-                      "ℹ️ No WhatsApp template found, using default message",
+                      "â„¹ï¸ No WhatsApp template found, using default message",
                     );
                   }
                 } catch (templateError) {
                   console.error(
-                    "⚠️ Error fetching WhatsApp template:",
+                    "âš ï¸ Error fetching WhatsApp template:",
                     templateError,
                   );
                 }
@@ -8770,7 +11184,7 @@ serve(async (req) => {
                     })
                     .eq("id", reportIdForNotif);
                   console.log(
-                    "✅ WhatsApp sent to patient:",
+                    "âœ… WhatsApp sent to patient:",
                     order.patients.phone,
                   );
                 } else {
@@ -8797,10 +11211,10 @@ serve(async (req) => {
                           ? `Waiting for report status ${notifSettings.send_report_on_status || "Completed"}`
                           : (withinWindow ? "Initial send failed" : "Outside send window"),
                       });
-                    console.log("📥 Patient notification queued for retry");
+                    console.log("ðŸ“¥ Patient notification queued for retry");
                   } else {
                     console.log(
-                      "⏭️ Skipping patient notification: outside send window and queue disabled",
+                      "â­ï¸ Skipping patient notification: outside send window and queue disabled",
                     );
                   }
                 }
@@ -8823,9 +11237,9 @@ serve(async (req) => {
 
                 if (includeClinicalSummary && clinicalSummary) {
                   doctorMessage +=
-                    `\n\n📋 Clinical Summary:\n${clinicalSummary}`;
+                    `\n\nðŸ“‹ Clinical Summary:\n${clinicalSummary}`;
                   console.log(
-                    "📋 Including AI clinical summary in doctor message",
+                    "ðŸ“‹ Including AI clinical summary in doctor message",
                   );
                 }
 
@@ -8852,7 +11266,7 @@ serve(async (req) => {
                     })
                     .eq("id", reportIdForNotif);
                   console.log(
-                    "✅ WhatsApp sent to doctor:",
+                    "âœ… WhatsApp sent to doctor:",
                     order.doctors.phone,
                   );
                 } else {
@@ -8879,42 +11293,43 @@ serve(async (req) => {
                           ? `Waiting for report status ${notifSettings.send_report_on_status || "Completed"}`
                           : (withinWindow ? "Initial send failed" : "Outside send window"),
                       });
-                    console.log("📥 Doctor notification queued for retry");
+                    console.log("ðŸ“¥ Doctor notification queued for retry");
                   } else {
                     console.log(
-                      "⏭️ Skipping doctor notification: outside send window and queue disabled",
+                      "â­ï¸ Skipping doctor notification: outside send window and queue disabled",
                     );
                   }
                 }
               }
             }
           } else {
-            console.log("📲 Auto-send not enabled for this lab");
+            console.log("ðŸ“² Auto-send not enabled for this lab");
           }
         } catch (waError) {
-          console.error("⚠️ WhatsApp notification error (non-fatal):", waError);
+          console.error("âš ï¸ WhatsApp notification error (non-fatal):", waError);
           // Don't fail the PDF generation if notifications fail
         }
       }
       // ====== END WHATSAPP NOTIFICATIONS ======
 
       console.log(
-        "═══════════════════════════════════════════════════════════",
+        "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•",
       );
-      console.log("✅ PDF GENERATION COMPLETE");
+      console.log("âœ… PDF GENERATION COMPLETE");
       console.log("eCopy URL:", storageUrl);
       console.log("Print URL:", printStorageUrl || "Not generated");
       console.log("Job ID:", job.id);
       console.log(
-        "═══════════════════════════════════════════════════════════",
+        "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•",
       );
 
       return new Response(
         JSON.stringify({
           success: true,
           status: "completed",
-          pdfUrl: storageUrl,
+          pdfUrl: printLayoutMode !== "compact" ? storageUrl : null,
           printPdfUrl: printStorageUrl,
+          compactEcopyUrl: printLayoutMode === "compact" ? storageUrl : null,
           storagePath: eCopyResult.path,
           jobId: job.id,
           orderId,
@@ -8927,11 +11342,11 @@ serve(async (req) => {
       );
     } catch (error) {
       console.error(
-        "═══════════════════════════════════════════════════════════",
+        "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•",
       );
-      console.error("❌ PDF GENERATION ERROR:", error);
+      console.error("âŒ PDF GENERATION ERROR:", error);
       console.error(
-        "═══════════════════════════════════════════════════════════",
+        "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•",
       );
 
       return new Response(
@@ -8948,7 +11363,7 @@ serve(async (req) => {
     }
   } catch (topError) {
     // Top-level error handler - ensures CORS headers are ALWAYS returned
-    console.error("❌ TOP-LEVEL ERROR (before main logic):", topError);
+    console.error("âŒ TOP-LEVEL ERROR (before main logic):", topError);
     return new Response(
       JSON.stringify({
         error: "Request processing failed",
@@ -9020,7 +11435,7 @@ function groupAnalytesByTestGroup(
   // try to match them or distribute evenly
   if (ungroupedAnalytes.length > 0 && contextTestGroupIds.length > 0) {
     console.log(
-      `⚠️ ${ungroupedAnalytes.length} analytes without test_group_id, attempting to match with ${contextTestGroupIds.length} context groups`,
+      `âš ï¸ ${ungroupedAnalytes.length} analytes without test_group_id, attempting to match with ${contextTestGroupIds.length} context groups`,
     );
 
     // Ensure all context test group IDs have entries

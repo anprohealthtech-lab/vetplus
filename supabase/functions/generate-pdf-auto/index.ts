@@ -714,7 +714,7 @@ function injectSignatureImage(html: string, signatoryImageUrl: string, signatory
   // Build complete signature block with image and text
   const signatureBlockHtml = `
     <div style="margin-top: 10px;">
-      <img src="${signatoryImageUrl}" alt="Signature" style="display:block;max-height:40px;max-width:120px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" />
+      <img src="${signatoryImageUrl}" alt="" style="display:block;max-height:40px;max-width:120px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" onerror="this.style.display='none'" />
       ${signatoryName ? `<p style="margin-top:8px;margin-bottom:4px;font-weight:600;font-size:14px;">${signatoryName}</p>` : ''}
       ${signatoryDesignation ? `<p style="margin-top:0;color:#64748b;font-size:12px;">${signatoryDesignation}</p>` : ''}
     </div>
@@ -1422,11 +1422,15 @@ async function fetchSectionContent(
     }
     
     // Build map of placeholder_key -> final_content
+    // FIX: When multiple sections share the same placeholder_key, use unique suffixed keys
     const sectionMap: Record<string, string> = {}
+    const keyCounters: Record<string, number> = {}
     for (const item of data) {
-      const key = item.lab_template_sections?.placeholder_key
-      if (key && item.final_content) {
-        sectionMap[key] = item.final_content
+      const baseKey = item.lab_template_sections?.placeholder_key
+      if (baseKey && item.final_content) {
+        keyCounters[baseKey] = (keyCounters[baseKey] || 0) + 1
+        const uniqueKey = keyCounters[baseKey] === 1 ? baseKey : `${baseKey}_${keyCounters[baseKey]}`
+        sectionMap[uniqueKey] = item.final_content
       }
     }
     
@@ -1571,6 +1575,75 @@ function formatClinicalSummary(text: string): string {
   return processedLines.join('\n')
 }
 
+function escapeTrendHtml(value: any): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function formatTrendDateTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return escapeTrendHtml(value)
+  return date.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  })
+}
+
+function buildTrendHistoryTableHtml(chart: any): string {
+  const data = Array.isArray(chart?.data) ? chart.data : []
+  if (data.length === 0) return ''
+
+  const rows = data.slice().reverse().map((point: any) => `
+    <tr>
+      <td style="padding: 3px 6px; border: 1px solid #d1d5db; white-space: nowrap;">${formatTrendDateTime(point.order_date || point.date || point.timestamp || '')}</td>
+      <td style="padding: 3px 6px; border: 1px solid #d1d5db; text-align: right; font-weight: 600;">${escapeTrendHtml(point.value)}</td>
+    </tr>
+  `).join('')
+
+  return `
+    <table style="border-collapse: collapse; width: 100%; margin: 0; font-size: 9px; line-height: 1.25;">
+      <thead>
+        <tr style="background: #f3f4f6;">
+          <th style="padding: 4px 6px; border: 1px solid #d1d5db; text-align: left; font-weight: 700;">Date Time</th>
+          <th style="padding: 4px 6px; border: 1px solid #d1d5db; text-align: right; font-weight: 700;">Result</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `
+}
+
+function buildTrendChartBlockHtml(chart: any): string {
+  const imgSrc = chart?.image_base64 || chart?.image_url
+  if (!imgSrc) return ''
+
+  const analyteName = chart?.analyte_name || 'Test'
+  const tableHtml = buildTrendHistoryTableHtml(chart)
+  const meta = [
+    chart?.unit ? `Unit: ${escapeTrendHtml(chart.unit)}` : '',
+    chart?.reference_range ? `Ref: ${escapeTrendHtml(chart.reference_range)}` : ''
+  ].filter(Boolean).join(' | ')
+
+  return `<div class="trend-chart" style="margin: 10px 0 16px 0; page-break-inside: avoid; break-inside: avoid;">
+    <div style="font-size: 12px; font-weight: 700; color: #111827; text-align: center; margin-bottom: 5px;">${escapeTrendHtml(analyteName)} Previous History</div>
+    <div style="display: table; width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 8px 0;">
+      <div style="display: table-cell; width: 62%; vertical-align: top;">
+        <img src="${imgSrc}" alt="${escapeTrendHtml(analyteName)} trend" style="width: 100%; max-width: 100%; height: auto; border: 1px solid #d1d5db;" />
+      </div>
+      <div style="display: table-cell; width: 38%; vertical-align: top;">${tableHtml}</div>
+    </div>
+    ${meta ? `<div style="font-size: 9px; color: #4b5563; text-align: center; margin-top: 4px;">${meta}</div>` : ''}
+  </div>`
+}
+
 /**
  * Generate HTML for report extras (trend charts, clinical summary, AI summaries, patient summary)
  */
@@ -1592,17 +1665,10 @@ function generateReportExtrasHtml(extras: {
   // Trend charts from report_extras table
   if (extras.trend_charts && extras.trend_charts.length > 0) {
     html += '<div class="report-extras-trends" style="margin-top: 20px; page-break-inside: avoid;">'
-    html += '<h3 style="margin-bottom: 10px;">Historical Trends</h3>'
+    html += '<h3 style="margin-bottom: 10px;">Previous History</h3>'
     
     for (const chart of extras.trend_charts) {
-      if (chart.image_base64) {
-        html += `<div class="trend-chart" style="margin: 10px 0;">`
-        html += `<img src="${chart.image_base64}" alt="${chart.analyte_name || 'Trend'}" style="max-width: 100%; height: auto;" />`
-        if (chart.analyte_name) {
-          html += `<p style="font-size: 11px; text-align: center; margin-top: 5px;">${chart.analyte_name}</p>`
-        }
-        html += `</div>`
-      }
+      html += buildTrendChartBlockHtml(chart)
     }
     
     html += '</div>'
@@ -2341,7 +2407,7 @@ serve(async (req) => {
     }
     
     // Helper to apply ImageKit transformations for signatures
-    // Adds focus:auto and e-removebg for clean signature rendering
+    // Adds non-AI ImageKit transforms for sizing/focus only.
     const applySignatureTransformations = (url: string): string => {
       if (!url) return ''
       // If it's an ImageKit URL, add transformations
@@ -2355,7 +2421,7 @@ serve(async (req) => {
             const pathParts = urlObj.pathname.split('/')
             // Insert transformations after the imagekit path identifier
             const insertIndex = pathParts.findIndex((p: string) => p && !p.includes('.')) + 1
-            pathParts.splice(insertIndex, 0, 'tr:fo-auto,e-removebg,t-true')
+            pathParts.splice(insertIndex, 0, 'tr:fo-auto,t-true')
             urlObj.pathname = pathParts.join('/')
             return urlObj.toString()
           }
@@ -2966,7 +3032,7 @@ serve(async (req) => {
       // Logic to inject signature image directly into the name placeholder
       // This follows "User Request" to look for {{signatoryName}} and inject there.
       if (sigUrl && sigName) {
-           const imgHtml = `<img src="${sigUrl}" alt="Signature" style="display:block; max-height:40px; margin-bottom:2px; margin-top:2px;" />`;
+           const imgHtml = `<img src="${sigUrl}" alt="" style="display:block; max-height:40px; margin-bottom:2px; margin-top:2px;" onerror="this.style.display='none'" />`;
            // Wrap name in span to separate it from block image, though block image forces break.
            sigName = `${imgHtml}<span>${sigName}</span>`; 
       }

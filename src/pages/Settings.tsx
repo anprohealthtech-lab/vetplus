@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { cachePrinterSettings, useQZTray } from '../contexts/QZTrayContext';
-import { database, supabase, type LabPatientFieldConfig } from '../utils/supabase';
+import { useQZTray } from '../contexts/QZTrayContext';
+import { database, generateFilePath, supabase, type LabPatientFieldConfig, uploadFile } from '../utils/supabase';
 import { usePermissions } from '../hooks/usePermissions';
 import EditUserModal from '../components/Users/EditUserModal';
 import { NotificationSettings } from '../components/Settings/NotificationSettings';
@@ -17,6 +17,11 @@ import PatientFormSettings from '../components/Settings/PatientFormSettings';
 import LabBillingItemSettings from '../components/Settings/LabBillingItemSettings';
 import PriceMasterSettings from '../components/Settings/PriceMasterSettings';
 import PaymentGatewaySettings from '../components/Settings/PaymentGatewaySettings';
+import SampleTypeColorsConfig from '../components/Settings/SampleTypeColorsConfig';
+import AccessionSettings, { type AccessionCollectionConfig } from '../components/Settings/AccessionSettings';
+import BarcodeLabelLayoutConfig from '../components/Settings/BarcodeLabelLayoutConfig';
+import { normalizeLabelLayout, type LabelLayout } from '../utils/labelLayout';
+import { useSampleTypeColors } from '../contexts/SampleTypeColorsContext';
 import {
   Users,
   Shield,
@@ -49,7 +54,10 @@ import {
   Smartphone,
   Tag,
   Printer,
-  CreditCard
+  CreditCard,
+  Droplet,
+  ClipboardCheck,
+  Image as ImageIcon
 } from 'lucide-react';
 import { LANGUAGE_DISPLAY_NAMES, type SupportedLanguage } from '../hooks/useAIResultIntelligence';
 import { COUNTRY_CODE_OPTIONS } from '../utils/phoneFormatter';
@@ -151,6 +159,7 @@ interface LabSettings {
 	    alternateRows?: boolean;
 	    baseFontSize?: number;
 	    showSampleType?: boolean;
+	    showSampleCondition?: boolean;
 	    testNameBold?: boolean;
 	    testNameAlignment?: 'left' | 'center' | 'right';
 	    boldAllValues?: boolean;
@@ -161,18 +170,100 @@ interface LabSettings {
 	    showFlagLegend?: boolean;
 	    testGroupTitlePosition?: 'below_headers' | 'above_headers_center' | 'above_headers_left';
 	    qrHorizontalOffset?: number;
+	    qrPosition?: 'bottom_left' | 'top_left' | 'top_right' | 'header_right';
+	    headerQrTop?: number;
+	    headerQrRight?: number;
 	    signatureMaxHeight?: number;
 	    signatureMaxWidth?: number;
 	    sectionFieldNamePct?: number;
+	    resultTableBackground?: 'white' | 'transparent';
 	  } | null;
   _pdf_layout_settings_raw?: Record<string, unknown> | null;
   barcode_printer_name?: string | null;
   report_printer_name?: string | null;
+  barcode_browser_print_enabled?: boolean;
+  barcode_label_layout?: LabelLayout | null;
   auto_collect_on_registration?: boolean;
   auto_open_collection_modal?: boolean;
   auto_print_barcode_on_order?: boolean;
   auto_print_report_on_approval?: boolean;
+  sample_type_colors?: Record<string, string>;
+  accession_collection_config?: AccessionCollectionConfig | null;
+  portal_settings?: PortalSettings | null;
 }
+
+interface PortalUpdateSlide {
+  title: string;
+  message: string;
+  image_url?: string;
+}
+
+interface PortalAnnouncement {
+  title: string;
+  message: string;
+}
+
+interface PortalSettings {
+  welcome_note: string;
+  updates_enabled: boolean;
+  updates_title: string;
+  update_slides: PortalUpdateSlide[];
+  announcements_enabled: boolean;
+  announcements_title: string;
+  announcement_slides: PortalAnnouncement[];
+  slider_aspect: 'square' | 'landscape' | 'banner';
+  hide_lims_branding: boolean;
+  sidebar_branding_mode: 'anpro' | 'lab' | 'hidden';
+}
+
+const normalizePortalSettings = (raw: Partial<PortalSettings> | null | undefined, keepBlankSlides = false): PortalSettings => {
+  const announcementSlides = Array.isArray(raw?.announcement_slides) ? raw.announcement_slides : [];
+  const normalizedAnnouncements = announcementSlides.map((slide) => ({
+    title: keepBlankSlides ? String(slide?.title || '') : String(slide?.title || '').trim(),
+    message: keepBlankSlides ? String(slide?.message || '') : String(slide?.message || '').trim(),
+  }));
+  const updateSlides = Array.isArray(raw?.update_slides) ? raw.update_slides : [];
+  const normalizedSlides = updateSlides.map((slide) => ({
+    title: keepBlankSlides ? String(slide?.title || '') : String(slide?.title || '').trim(),
+    message: keepBlankSlides ? String(slide?.message || '') : String(slide?.message || '').trim(),
+    image_url: keepBlankSlides ? String(slide?.image_url || '') : String(slide?.image_url || '').trim(),
+  }));
+  const slidesWithMinimum = keepBlankSlides
+    ? [
+        ...normalizedSlides,
+        ...Array.from({ length: Math.max(0, 5 - normalizedSlides.length) }, () => ({
+          title: '',
+          message: '',
+          image_url: '',
+        })),
+      ]
+    : normalizedSlides;
+
+  return {
+    welcome_note: keepBlankSlides ? String(raw?.welcome_note || '') : String(raw?.welcome_note || '').trim(),
+    updates_enabled: raw?.updates_enabled !== false,
+    updates_title: keepBlankSlides
+      ? String(raw?.updates_title ?? 'Partner Portal Updates')
+      : String(raw?.updates_title || 'Partner Portal Updates').trim() || 'Partner Portal Updates',
+    update_slides: keepBlankSlides
+      ? slidesWithMinimum
+      : slidesWithMinimum.filter((slide) => slide.title || slide.message || slide.image_url),
+    announcements_enabled: raw?.announcements_enabled !== false,
+    announcements_title: keepBlankSlides
+      ? String(raw?.announcements_title ?? 'Announcements')
+      : String(raw?.announcements_title || 'Announcements').trim() || 'Announcements',
+    announcement_slides: keepBlankSlides
+      ? normalizedAnnouncements
+      : normalizedAnnouncements.filter((slide) => slide.title || slide.message),
+    slider_aspect: ['square', 'landscape', 'banner'].includes(String((raw as any)?.slider_aspect))
+      ? (raw as any).slider_aspect
+      : 'square',
+    hide_lims_branding: raw?.hide_lims_branding === true,
+    sidebar_branding_mode: ['anpro', 'lab', 'hidden'].includes(String((raw as any)?.sidebar_branding_mode))
+      ? (raw as any).sidebar_branding_mode
+      : 'anpro',
+  };
+};
 
 // Define UserForm component outside of Settings
 const UserFormComponent: React.FC<{
@@ -539,8 +630,9 @@ const UserFormComponent: React.FC<{
 const Settings: React.FC = () => {
   const { user: authUser } = useAuth();
   const { loading: permissionsLoading, hasPermission } = usePermissions();
-  const { status: qzStatus, connect: qzConnect, disconnect: qzDisconnect } = useQZTray();
-  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters' | 'patient_form' | 'payment_gateway'>('team');
+  const { status: qzStatus, connect: qzConnect, disconnect: qzDisconnect, refreshSettings: refreshPrintSettings } = useQZTray();
+  const { refresh: refreshSampleTypeColors } = useSampleTypeColors();
+  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'accession' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters' | 'patient_form' | 'payment_gateway'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -551,6 +643,7 @@ const Settings: React.FC = () => {
   const [labId, setLabId] = useState<string | null>(null);
   const [labInterfaceEnabled, setLabInterfaceEnabled] = useState(false);
   const [savingLab, setSavingLab] = useState(false);
+  const [uploadingPortalSlide, setUploadingPortalSlide] = useState<Record<number, boolean>>({});
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   // Real database state
@@ -576,6 +669,35 @@ const Settings: React.FC = () => {
     apiCalls: 0,
     apiLimit: 100000,
   });
+
+  // Flag usage tracking for validation when deleting
+  const [flagUsageCounts, setFlagUsageCounts] = useState<Record<string, number>>({});
+  const [checkingFlagUsage, setCheckingFlagUsage] = useState(false);
+
+  // Check flag usage when lab settings are loaded
+  const checkFlagUsage = async (currentLabId: string) => {
+    setCheckingFlagUsage(true);
+    try {
+      const { data, error } = await supabase
+        .from('result_values')
+        .select('flag')
+        .eq('lab_id', currentLabId)
+        .not('flag', 'is', null)
+        .not('flag', 'eq', '');
+
+      if (!error && data) {
+        const counts: Record<string, number> = {};
+        data.forEach((row: { flag: string }) => {
+          const flag = row.flag?.trim();
+          if (flag) {
+            counts[flag] = (counts[flag] || 0) + 1;
+          }
+        });
+        setFlagUsageCounts(counts);
+      }
+    } catch { /* non-critical */ }
+    setCheckingFlagUsage(false);
+  };
 
   // Load data from database
   useEffect(() => {
@@ -608,11 +730,6 @@ const Settings: React.FC = () => {
         const { data: labData, error: labError } = await database.labs.getById(currentLabId);
         if (!labError && labData) {
           setLabInterfaceEnabled(!!(labData as any).lab_interface_enabled);
-          cachePrinterSettings({
-            barcodePrinterName: (labData as any).barcode_printer_name ?? null,
-            reportPrinterName: (labData as any).report_printer_name ?? null,
-          });
-
           setLabSettings({
             id: labData.id,
             name: labData.name || '',
@@ -658,16 +775,24 @@ const Settings: React.FC = () => {
             _pdf_layout_settings_raw: (labData as any).pdf_layout_settings ?? null,
             barcode_printer_name: (labData as any).barcode_printer_name ?? null,
             report_printer_name: (labData as any).report_printer_name ?? null,
+            barcode_browser_print_enabled: (labData as any).barcode_browser_print_enabled ?? false,
+            barcode_label_layout: normalizeLabelLayout((labData as any).barcode_label_layout),
             auto_collect_on_registration: (labData as any).auto_collect_on_registration ?? false,
             auto_open_collection_modal: (labData as any).auto_open_collection_modal ?? false,
             auto_print_barcode_on_order: (labData as any).auto_print_barcode_on_order ?? false,
             auto_print_report_on_approval: (labData as any).auto_print_report_on_approval ?? false,
+            sample_type_colors: (labData as any).sample_type_colors ?? {},
+            accession_collection_config: (labData as any).accession_collection_config ?? { sample_type_flows: {} },
+            portal_settings: normalizePortalSettings((labData as any).portal_settings, true),
           });
         }
 
         // Load custom patient field configs
         const { data: fieldConfigs } = await database.labPatientFieldConfigs.getAll();
         if (fieldConfigs) setCustomPatientFields(fieldConfigs);
+
+        // Load flag usage counts for validation
+        checkFlagUsage(currentLabId);
 
         // Load ALL users for WhatsApp sender dropdown (use user.id as whatsapp_user_id)
         const { data: allLabUsers, error: allUsersError } = await supabase
@@ -832,6 +957,7 @@ const Settings: React.FC = () => {
     { id: 'permissions', name: 'Permissions', icon: Shield },
     { id: 'usage', name: 'Usage & Analytics', icon: BarChart3 },
     { id: 'lab', name: 'Lab Settings', icon: Building },
+    { id: 'accession', name: 'Accession', icon: ClipboardCheck },
     { id: 'notifications', name: 'Notifications', icon: Bell },
     { id: 'invoices', name: 'Invoice Templates', icon: FileText },
     ...(labInterfaceEnabled ? [{ id: 'analyzer', name: 'Analyzer Interface', icon: Activity }] : []),
@@ -852,6 +978,8 @@ const Settings: React.FC = () => {
     const matchesRole = selectedRole === 'All' || user.role === selectedRole;
     return matchesSearch && matchesRole;
   });
+
+  const portalSettings = normalizePortalSettings(labSettings?.portal_settings, true);
 
   // Delete user (soft delete)
   const handleDeleteUser = async (userId: string) => {
@@ -939,6 +1067,84 @@ const Settings: React.FC = () => {
   };
   // ────────────────────────────────────────────────────────────────
 
+  const updatePortalSettings = (patch: Partial<PortalSettings>) => {
+    setLabSettings(prev => prev ? {
+      ...prev,
+      portal_settings: normalizePortalSettings({
+        ...normalizePortalSettings(prev.portal_settings, true),
+        ...patch,
+      }, true),
+    } : prev);
+  };
+
+  const updatePortalSlide = (index: number, patch: Partial<PortalUpdateSlide>) => {
+    const current = normalizePortalSettings(labSettings?.portal_settings, true);
+    updatePortalSettings({
+      update_slides: current.update_slides.map((slide, slideIndex) =>
+        slideIndex === index ? { ...slide, ...patch } : slide
+      ),
+    });
+  };
+
+  const addPortalSlide = () => {
+    const current = normalizePortalSettings(labSettings?.portal_settings, true);
+    updatePortalSettings({
+      update_slides: [...current.update_slides, { title: '', message: '', image_url: '' }],
+    });
+  };
+
+  const removePortalSlide = (index: number) => {
+    const current = normalizePortalSettings(labSettings?.portal_settings, true);
+    updatePortalSettings({
+      update_slides: current.update_slides.filter((_, slideIndex) => slideIndex !== index),
+    });
+  };
+
+  const updateAnnouncementSlide = (index: number, patch: Partial<PortalAnnouncement>) => {
+    const current = normalizePortalSettings(labSettings?.portal_settings, true);
+    updatePortalSettings({
+      announcement_slides: current.announcement_slides.map((slide, slideIndex) =>
+        slideIndex === index ? { ...slide, ...patch } : slide
+      ),
+    });
+  };
+
+  const addAnnouncementSlide = () => {
+    const current = normalizePortalSettings(labSettings?.portal_settings, true);
+    updatePortalSettings({
+      announcement_slides: [...current.announcement_slides, { title: '', message: '' }],
+    });
+  };
+
+  const removeAnnouncementSlide = (index: number) => {
+    const current = normalizePortalSettings(labSettings?.portal_settings, true);
+    updatePortalSettings({
+      announcement_slides: current.announcement_slides.filter((_, slideIndex) => slideIndex !== index),
+    });
+  };
+
+  const handlePortalSlideImageUpload = async (index: number, file?: File | null) => {
+    if (!file || !labId) return;
+
+    if (!file.type.startsWith('image/')) {
+      setError('Please upload an image file for the promotional slider.');
+      return;
+    }
+
+    try {
+      setError(null);
+      setUploadingPortalSlide(prev => ({ ...prev, [index]: true }));
+      const filePath = generateFilePath(file.name, undefined, labId, 'portal-promotions');
+      const result = await uploadFile(file, filePath, { upsert: true });
+      updatePortalSlide(index, { image_url: result.publicUrl });
+    } catch (err) {
+      console.error('Failed to upload portal slide image:', err);
+      setError(err instanceof Error ? err.message : 'Failed to upload promotional image.');
+    } finally {
+      setUploadingPortalSlide(prev => ({ ...prev, [index]: false }));
+    }
+  };
+
   // Save lab settings
   const handleSaveLabSettings = async () => {
     if (!labSettings || !labId) return;
@@ -981,10 +1187,15 @@ const Settings: React.FC = () => {
         report_patient_info_config: labSettings.report_patient_info_config ?? null,
         barcode_printer_name: labSettings.barcode_printer_name || null,
         report_printer_name: labSettings.report_printer_name || null,
+        barcode_browser_print_enabled: labSettings.barcode_browser_print_enabled ?? false,
+        barcode_label_layout: normalizeLabelLayout(labSettings.barcode_label_layout),
         auto_collect_on_registration: labSettings.auto_collect_on_registration ?? false,
         auto_open_collection_modal: labSettings.auto_open_collection_modal ?? false,
         auto_print_barcode_on_order: labSettings.auto_print_barcode_on_order ?? false,
         auto_print_report_on_approval: labSettings.auto_print_report_on_approval ?? false,
+        sample_type_colors: labSettings.sample_type_colors || {},
+        accession_collection_config: labSettings.accession_collection_config || { sample_type_flows: {} },
+        portal_settings: normalizePortalSettings(labSettings.portal_settings),
         pdf_layout_settings: {
           ...(labSettings._pdf_layout_settings_raw || {}),
           printOptions: labSettings.print_options ?? undefined,
@@ -994,10 +1205,12 @@ const Settings: React.FC = () => {
 
       if (updateError) throw updateError;
 
-      cachePrinterSettings({
-        barcodePrinterName: labSettings.barcode_printer_name || null,
-        reportPrinterName: labSettings.report_printer_name || null,
-      });
+      // Refresh sample type colors context so UI updates immediately
+      await refreshSampleTypeColors();
+
+      // Re-resolve printer settings so the new label layout applies immediately
+      // to every print path without a page reload.
+      await refreshPrintSettings();
 
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
@@ -1103,8 +1316,8 @@ const Settings: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col h-screen w-full bg-gray-50">
-      {/* Header and Tabs - Fixed at top */}
+    <div className="flex w-full flex-col bg-gray-50">
+      {/* Header and Tabs */}
       <div className="flex-none p-4 sm:p-6 pb-0 space-y-4 sm:space-y-6">
         <div className="flex items-center justify-between">
           <div>
@@ -1122,7 +1335,7 @@ const Settings: React.FC = () => {
             <select
               value={activeTab}
               onChange={(e) => setActiveTab(e.target.value as any)}
-              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium text-gray-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium text-gray-800 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
             >
               {tabs.map((tab) => (
                 <option key={tab.id} value={tab.id}>
@@ -1137,7 +1350,7 @@ const Settings: React.FC = () => {
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
                 className={`flex items-center px-4 py-3 rounded-md text-sm font-medium transition-all whitespace-nowrap ${activeTab === tab.id
-                  ? 'bg-blue-600 text-white shadow-sm'
+                  ? 'bg-primary-600 text-white shadow-sm'
                   : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
                   }`}
               >
@@ -1153,7 +1366,7 @@ const Settings: React.FC = () => {
                 onClick={() => setActiveTab(tab.id as any)}
                 className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
                   activeTab === tab.id
-                    ? 'bg-blue-100 text-blue-700'
+                    ? 'bg-primary-100 text-primary-700'
                     : 'bg-gray-100 text-gray-600'
                 }`}
               >
@@ -1164,8 +1377,8 @@ const Settings: React.FC = () => {
         </div>
       </div>
 
-      {/* Content Area - Scrollable */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 pt-4">
+      {/* Content Area - scrolls with the main application page */}
+      <div className="flex-1 p-4 sm:p-6 pt-4">
 
         {/* Team Management Tab */}
         {activeTab === 'team' && (
@@ -2135,6 +2348,19 @@ const Settings: React.FC = () => {
                             <p className="text-xs text-gray-400">Display the specimen/sample type (e.g. Blood, Urine) next to each test group title on all template styles.</p>
                           </div>
                         </label>
+                        {/* Show Sample Condition */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={!!labSettings.print_options?.showSampleCondition}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), showSampleCondition: e.target.checked } } : prev)}
+                            className="h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Show Sample Condition on Report</span>
+                            <p className="text-xs text-gray-400">Display selected condition such as Morning, Fasting, or Random under each test group title.</p>
+                          </div>
+                        </label>
                         {/* Header Background */}
                         <div className="flex items-center gap-2">
                           <input
@@ -2223,6 +2449,7 @@ const Settings: React.FC = () => {
                           { key: 'sampleCollectedBy', label: 'Collected By' },
                           { key: 'receivedAt', label: 'Received Date/Time' },
                           { key: 'collectionCenter', label: 'Collection Center' },
+                          { key: 'b2bAccountName', label: 'B2B / Account Name' },
                           ...customPatientFields.map(f => ({ key: `custom_${f.field_key}`, label: f.label })),
                         ].map(field => {
                           const currentFields = labSettings.report_patient_info_config?.fields || ['patientName','patientId','age','gender','collectionDate','sampleId','referringDoctorName','approvedAt'];
@@ -2619,19 +2846,39 @@ const Settings: React.FC = () => {
                             placeholder="Code (e.g. H)"
                             className="w-28 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                           />
+                          {/* Show usage count if this flag is used */}
+                          {opt.value && flagUsageCounts[opt.value] > 0 && (
+                            <span className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded" title="Results using this flag">
+                              {flagUsageCounts[opt.value]} results
+                            </span>
+                          )}
                           <button
                             type="button"
                             onClick={() => {
+                              const usageCount = opt.value ? (flagUsageCounts[opt.value] || 0) : 0;
+                              if (usageCount > 0) {
+                                const confirmed = window.confirm(
+                                  `Warning: This flag "${opt.label}" (${opt.value}) is used in ${usageCount} result${usageCount > 1 ? 's' : ''}.\n\n` +
+                                  `Removing it will:\n` +
+                                  `• Hide this option from dropdowns for new results\n` +
+                                  `• NOT affect existing results (they keep their flag)\n\n` +
+                                  `Are you sure you want to remove this flag option?`
+                                );
+                                if (!confirmed) return;
+                              }
                               const updated = (labSettings.flag_options || []).filter((_, i) => i !== idx);
                               setLabSettings(prev => prev ? { ...prev, flag_options: updated } : prev);
                             }}
-                            className="p-2 text-red-500 hover:bg-red-50 rounded"
-                            title="Remove"
+                            className={`p-2 rounded ${opt.value && flagUsageCounts[opt.value] > 0 ? 'text-amber-500 hover:bg-amber-50' : 'text-red-500 hover:bg-red-50'}`}
+                            title={opt.value && flagUsageCounts[opt.value] > 0 ? `Used in ${flagUsageCounts[opt.value]} results - click to remove with warning` : 'Remove'}
                           >
                             <XCircle className="h-4 w-4" />
                           </button>
                         </div>
                       ))}
+                      {checkingFlagUsage && (
+                        <p className="text-xs text-gray-400 italic">Checking flag usage...</p>
+                      )}
                       <button
                         type="button"
                         onClick={() => {
@@ -2811,6 +3058,309 @@ const Settings: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* Partner Portal Settings */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-2 flex items-center">
+                      <MessageSquare className="h-5 w-5 mr-2 text-blue-600" />
+                      Partner Portal Settings
+                    </h3>
+                    <p className="text-xs text-gray-500 mb-5">
+                      Common welcome note, updates slider, and branding option for all partner accounts.
+                    </p>
+
+                    <div className="space-y-5">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Welcome Note</label>
+                        <textarea
+                          value={portalSettings.welcome_note}
+                          onChange={(e) => updatePortalSettings({ welcome_note: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          rows={3}
+                          placeholder="Welcome to your partner portal. Track orders, download reports, and book new tests here."
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <label className="flex items-start cursor-pointer gap-3 rounded-lg border border-gray-200 p-3">
+                          <input
+                            type="checkbox"
+                            checked={portalSettings.announcements_enabled}
+                            onChange={(e) => updatePortalSettings({ announcements_enabled: e.target.checked })}
+                            className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">Show text announcements</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Displays text notices (holidays, closures, news) on the partner portal.</p>
+                          </div>
+                        </label>
+
+                        <label className="flex items-start cursor-pointer gap-3 rounded-lg border border-gray-200 p-3">
+                          <input
+                            type="checkbox"
+                            checked={portalSettings.updates_enabled}
+                            onChange={(e) => updatePortalSettings({ updates_enabled: e.target.checked })}
+                            className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">Show promotional image slider</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Displays the image carousel promoting tests and packages.</p>
+                          </div>
+                        </label>
+
+                        <label className="flex items-start cursor-pointer gap-3 rounded-lg border border-gray-200 p-3">
+                          <input
+                            type="checkbox"
+                            checked={portalSettings.hide_lims_branding}
+                            onChange={(e) => updatePortalSettings({ hide_lims_branding: e.target.checked })}
+                            className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">Hide LIMS branding in partner portal</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Removes the footer branding for all partner accounts.</p>
+                          </div>
+                        </label>
+                      </div>
+
+                      <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50/40 p-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">Text Announcements</label>
+                            <p className="mt-0.5 text-xs text-gray-500">Short text notices — e.g. "Lab closed for Diwali on 29 Oct" or today's news.</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={addAnnouncementSlide}
+                            className="px-3 py-1.5 text-xs font-medium bg-amber-50 text-amber-700 rounded border border-amber-300 hover:bg-amber-100"
+                          >
+                            Add Announcement
+                          </button>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">Section Name</label>
+                          <input
+                            type="text"
+                            value={portalSettings.announcements_title}
+                            onChange={(e) => updatePortalSettings({ announcements_title: e.target.value })}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="Announcements"
+                          />
+                        </div>
+
+                        {portalSettings.announcement_slides.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-gray-300 bg-white p-4 text-sm text-gray-500">
+                            No announcements added yet.
+                          </div>
+                        ) : (
+                          portalSettings.announcement_slides.map((slide, index) => (
+                            <div key={index} className="rounded-lg border border-gray-200 bg-white p-3 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-gray-600">Announcement {index + 1}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => removeAnnouncementSlide(index)}
+                                  className="text-xs text-red-600 hover:text-red-700"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                              <input
+                                type="text"
+                                value={slide.title}
+                                onChange={(e) => updateAnnouncementSlide(index, { title: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Announcement title"
+                              />
+                              <textarea
+                                value={slide.message}
+                                onChange={(e) => updateAnnouncementSlide(index, { message: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                rows={2}
+                                placeholder="Announcement message"
+                              />
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Image Slider Section Name</label>
+                        <input
+                          type="text"
+                          value={portalSettings.updates_title}
+                          onChange={(e) => updatePortalSettings({ updates_title: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Partner Portal Updates"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Image Slider Size</label>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                          {[
+                            { value: 'square', title: 'Square (1:1)', description: 'Instagram-style square posts. Best for test/package creatives.' },
+                            { value: 'landscape', title: 'Landscape (16:9)', description: 'Standard widescreen images and posters.' },
+                            { value: 'banner', title: 'Wide Banner (3:1)', description: 'Slim full-width strip, like a website banner.' },
+                          ].map((option) => (
+                            <label
+                              key={option.value}
+                              className={`cursor-pointer rounded-lg border p-3 transition-colors ${
+                                portalSettings.slider_aspect === option.value
+                                  ? 'border-blue-500 bg-blue-50'
+                                  : 'border-gray-200 bg-white hover:bg-gray-50'
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name="slider_aspect"
+                                value={option.value}
+                                checked={portalSettings.slider_aspect === option.value}
+                                onChange={(e) => updatePortalSettings({ slider_aspect: e.target.value as PortalSettings['slider_aspect'] })}
+                                className="sr-only"
+                              />
+                              <div className="text-sm font-semibold text-gray-900">{option.title}</div>
+                              <div className="mt-1 text-xs leading-5 text-gray-500">{option.description}</div>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">Promotional Image Slider</label>
+                            <p className="mt-0.5 text-xs text-gray-500">Upload pictures promoting tests and packages. For best results match the slider size selected above.</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={addPortalSlide}
+                            className="px-3 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 rounded border border-blue-200 hover:bg-blue-100"
+                          >
+                            Add Slide
+                          </button>
+                        </div>
+
+                        {portalSettings.update_slides.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-gray-300 p-4 text-sm text-gray-500">
+                            No updates added yet.
+                          </div>
+                        ) : (
+                          portalSettings.update_slides.map((slide, index) => (
+                            <div key={index} className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-gray-600">Slide {index + 1}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => removePortalSlide(index)}
+                                  className="text-xs text-red-600 hover:text-red-700"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                              {slide.image_url ? (
+                                <img
+                                  src={slide.image_url}
+                                  alt={slide.title || `Promotional slide ${index + 1}`}
+                                  className={`mx-auto rounded-md border border-gray-200 bg-white object-cover ${
+                                    portalSettings.slider_aspect === 'banner'
+                                      ? 'aspect-[3/1] w-full'
+                                      : portalSettings.slider_aspect === 'landscape'
+                                        ? 'aspect-video w-64'
+                                        : 'aspect-square w-40'
+                                  }`}
+                                />
+                              ) : (
+                                <div
+                                  className={`mx-auto flex items-center justify-center rounded-md border border-dashed border-gray-300 bg-white p-2 text-center text-xs text-gray-400 ${
+                                    portalSettings.slider_aspect === 'banner'
+                                      ? 'aspect-[3/1] w-full'
+                                      : portalSettings.slider_aspect === 'landscape'
+                                        ? 'aspect-video w-64'
+                                        : 'aspect-square w-40'
+                                  }`}
+                                >
+                                  No promotional image uploaded
+                                </div>
+                              )}
+                              <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2">
+                                <input
+                                  type="url"
+                                  value={slide.image_url || ''}
+                                  onChange={(e) => updatePortalSlide(index, { image_url: e.target.value })}
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  placeholder="Image URL"
+                                />
+                                <label className="inline-flex cursor-pointer items-center justify-center rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-100">
+                                  {uploadingPortalSlide[index] ? 'Uploading...' : 'Upload Image'}
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="sr-only"
+                                    disabled={uploadingPortalSlide[index]}
+                                    onChange={(e) => handlePortalSlideImageUpload(index, e.target.files?.[0])}
+                                  />
+                                </label>
+                              </div>
+                              <input
+                                type="text"
+                                value={slide.title}
+                                onChange={(e) => updatePortalSlide(index, { title: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Update title"
+                              />
+                              <textarea
+                                value={slide.message}
+                                onChange={(e) => updatePortalSlide(index, { message: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                rows={2}
+                                placeholder="Short update message"
+                              />
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* App Sidebar Branding */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-2 flex items-center">
+                      <ImageIcon className="h-5 w-5 mr-2 text-blue-600" />
+                      App Sidebar Branding
+                    </h3>
+                    <p className="text-xs text-gray-500 mb-5">
+                      Choose what appears at the top of the main LIMS sidebar.
+                    </p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {[
+                        { value: 'anpro', title: 'Show AnPro LIMS', description: 'Use the default product logo and name.' },
+                        { value: 'lab', title: 'Use Lab Branding', description: 'Use the default lab logo and lab name.' },
+                        { value: 'hidden', title: 'Hide Branding', description: 'Show only the sidebar controls.' },
+                      ].map((option) => (
+                        <label
+                          key={option.value}
+                          className={`cursor-pointer rounded-lg border p-4 transition-colors ${
+                            portalSettings.sidebar_branding_mode === option.value
+                              ? 'border-blue-500 bg-blue-50'
+                              : 'border-gray-200 bg-white hover:bg-gray-50'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="sidebar_branding_mode"
+                            value={option.value}
+                            checked={portalSettings.sidebar_branding_mode === option.value}
+                            onChange={(e) => updatePortalSettings({ sidebar_branding_mode: e.target.value as PortalSettings['sidebar_branding_mode'] })}
+                            className="sr-only"
+                          />
+                          <div className="text-sm font-semibold text-gray-900">{option.title}</div>
+                          <div className="mt-1 text-xs leading-5 text-gray-500">{option.description}</div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
                   {/* Workflow Settings */}
                   <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
                     <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
@@ -2834,6 +3384,18 @@ const Settings: React.FC = () => {
                             onChange={(e) => setLabSettings(prev => prev ? { ...prev, barcode_printer_name: e.target.value || null } : prev)}
                             className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
                           />
+                          <label className="flex items-start cursor-pointer gap-3 mt-3">
+                            <input
+                              type="checkbox"
+                              checked={labSettings.barcode_browser_print_enabled ?? false}
+                              onChange={(e) => setLabSettings(prev => prev ? { ...prev, barcode_browser_print_enabled: e.target.checked } : prev)}
+                              className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                            />
+                            <div>
+                              <span className="text-sm font-medium text-gray-800">Use browser print dialog for barcode labels</span>
+                              <p className="text-xs text-gray-400 mt-0.5">Opens label printing in the browser instead of sending barcode labels to the LIMS Utility queue.</p>
+                            </div>
+                          </label>
                         </div>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-1">Report Printer</label>
@@ -2846,6 +3408,18 @@ const Settings: React.FC = () => {
                           />
                         </div>
                       </div>
+                    </div>
+
+                    {/* Barcode Label Layout */}
+                    <div className="border-t border-gray-100 pt-5 mb-6">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-1">Barcode Label Layout</h4>
+                      <p className="text-xs text-gray-500 mb-4">
+                        Match these to your physical label stock. The same geometry drives both the browser print dialog and the thermal (ZPL) printers, so labels come out at exact size without staff adjusting scale or orientation.
+                      </p>
+                      <BarcodeLabelLayoutConfig
+                        value={labSettings.barcode_label_layout}
+                        onChange={(layout) => setLabSettings(prev => prev ? { ...prev, barcode_label_layout: layout } : prev)}
+                      />
                     </div>
 
                     {/* Auto-collect on registration */}
@@ -2881,6 +3455,22 @@ const Settings: React.FC = () => {
                           </div>
                         </label>
                       </div>
+                    </div>
+
+                    {/* Sample Type Colors */}
+                    <div className="border-t border-gray-100 pt-5">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-1 flex items-center gap-2">
+                        <Droplet className="h-4 w-4 text-blue-500" />
+                        Sample Type / Tube Colors
+                      </h4>
+                      <p className="text-xs text-gray-500 mb-3">
+                        Customize tube cap colors displayed for each sample type across the lab.
+                        Overrides default industry-standard colors when set.
+                      </p>
+                      <SampleTypeColorsConfig
+                        value={labSettings.sample_type_colors || {}}
+                        onChange={(colors) => setLabSettings(prev => prev ? { ...prev, sample_type_colors: colors } : prev)}
+                      />
                     </div>
 
                     {/* LIMS Utility Auto-Print */}
@@ -3001,6 +3591,17 @@ const Settings: React.FC = () => {
             <div className="pt-8 border-t border-gray-200">
               <NotificationSettings />
             </div>
+          </div>
+        )}
+
+        {/* Accession Tab */}
+        {activeTab === 'accession' && labId && (
+          <div className="p-6">
+            <AccessionSettings
+              labId={labId}
+              value={labSettings?.accession_collection_config}
+              onSaved={(config) => setLabSettings((prev) => prev ? { ...prev, accession_collection_config: config } : prev)}
+            />
           </div>
         )}
 

@@ -16,6 +16,12 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const json = (data: unknown, status = 200) =>
+  new Response(JSON.stringify(data), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -23,14 +29,12 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { email, password, account_id, account_name, lab_id } = await req.json();
+    const { email, password, account_id, account_name, name, lab_id } = await req.json();
+    const displayName = account_name || name || 'B2B Account';
 
     // Validate required fields
     if (!email || !password || !account_id || !lab_id) {
-      return new Response(
-        JSON.stringify({ error: 'Missing required fields: email, password, account_id, lab_id' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return json({ error: 'Missing required fields: email, password, account_id, lab_id' }, 400);
     }
 
     // Initialize Supabase admin client
@@ -50,7 +54,7 @@ Deno.serve(async (req) => {
       user_metadata: {
         role: 'b2b_account',
         account_id,
-        account_name: account_name || 'B2B Account',
+        account_name: displayName,
         lab_id,
         created_at: new Date().toISOString(),
       },
@@ -64,14 +68,25 @@ Deno.serve(async (req) => {
       console.error('[CREATE-B2B-USER] Auth error:', authError);
       
       // Check if user already exists
-      if (authError.message?.includes('already')) {
-        return new Response(
-          JSON.stringify({ error: 'User with this email already exists' }),
-          { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+      const authMessage = authError.message || '';
+      const authCode = (authError as any)?.code;
+      if (
+        authCode === 'email_exists' ||
+        authError.status === 409 ||
+        authMessage.toLowerCase().includes('already') ||
+        authMessage.toLowerCase().includes('registered')
+      ) {
+        return json({
+          error: 'A user with this email is already registered. Use a different portal email, or reset/update the existing login.',
+          code: 'email_exists',
+          email,
+        }, 409);
       }
       
-      throw new Error(`Failed to create auth user: ${authError.message}`);
+      return json({
+        error: `Failed to create auth user: ${authMessage || 'Unknown auth error'}`,
+        code: authCode || 'auth_create_failed',
+      }, authError.status || 500);
     }
 
     const userId = authData.user?.id;
@@ -90,7 +105,7 @@ Deno.serve(async (req) => {
         .insert({
           id: userId,
           email,
-          name: account_name || email,
+          name: displayName || email,
           role: 'B2B Account', // Custom role for B2B
           status: 'Active',
           lab_id,
@@ -106,26 +121,40 @@ Deno.serve(async (req) => {
       // Continue - not critical
     }
 
+    // Record the portal password so lab admins can look it up later
+    // (portal_credentials is admin-read-only via RLS, written only with service role)
+    try {
+      const { error: credError } = await supabaseAdmin
+        .from('portal_credentials')
+        .upsert({
+          lab_id,
+          credential_type: 'b2b_portal',
+          auth_user_id: userId,
+          account_id,
+          email,
+          password_text: password,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'lab_id,credential_type,email' });
+      if (credError) console.warn('[CREATE-B2B-USER] Could not store portal credential:', credError.message);
+    } catch (credErr) {
+      console.warn('[CREATE-B2B-USER] Credential store failed:', credErr);
+    }
+
     console.log('[CREATE-B2B-USER] SUCCESS: B2B user created');
 
-    return new Response(
-      JSON.stringify({
+    return json({
         success: true,
         user_id: userId,
         email,
         account_id,
         message: 'B2B portal access created successfully',
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+      });
 
   } catch (error) {
     console.error('[CREATE-B2B-USER] ERROR:', error);
-    return new Response(
-      JSON.stringify({ 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return json({
+      error: error instanceof Error ? error.message : 'Unknown error',
+      code: 'unexpected_error',
+    }, 500);
   }
 });

@@ -55,6 +55,8 @@ import {
   getSectionVerificationPermissionForDepartment,
   getVerificationPermissionForDepartment,
 } from "../utils/resultPermissions";
+import { evaluateTextCalculation, normalizeCalculationResultType } from "../utils/calculationRules";
+import { calculateFlag } from "../utils/flagCalculation";
 
 /* =========================================
    Types
@@ -1542,7 +1544,7 @@ const ResultVerificationConsole: React.FC = () => {
       const [{ data: labFormulas }, { data: rawDeps }, { data: srcAnalytesData }, { data: srcLabAnalytesData }] = await Promise.all([
         // Prefer lab_analytes formula over global analytes formula
         supabase.from('lab_analytes')
-          .select('analyte_id, is_calculated, formula, formula_variables')
+          .select('analyte_id, is_calculated, formula, formula_variables, calculation_result_type')
           .eq('lab_id', labId!)
           .in('analyte_id', calcIds),
         supabase.from('analyte_dependencies')
@@ -1571,11 +1573,16 @@ const ResultVerificationConsole: React.FC = () => {
       const labFormulaMap = new Map((labFormulas || []).map((r: any) => [r.analyte_id, r]));
       const globalFormulasNeeded = calcIds.filter(id => !labFormulaMap.has(id));
       if (globalFormulasNeeded.length > 0) {
-        const { data: globalFormulas } = await supabase.from('analytes').select('id, formula, formula_variables').in('id', globalFormulasNeeded);
+        const { data: globalFormulas } = await supabase.from('analytes').select('id, formula, formula_variables, calculation_result_type').in('id', globalFormulasNeeded);
         (globalFormulas || []).forEach((r: any) => labFormulaMap.set(r.id, { analyte_id: r.id, ...r }));
       }
       // Remap to match shape expected downstream ({ id, formula, formula_variables })
-      const formulas = Array.from(labFormulaMap.values()).map((r: any) => ({ id: r.analyte_id ?? r.id, formula: r.formula, formula_variables: r.formula_variables }));
+      const formulas = Array.from(labFormulaMap.values()).map((r: any) => ({
+        id: r.analyte_id ?? r.id,
+        formula: r.formula,
+        formula_variables: r.formula_variables,
+        calculation_result_type: r.calculation_result_type ?? 'numeric',
+      }));
       // Deduplicate deps: prefer lab-specific over global
       const depSeen = new Set<string>();
       const deps: { calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; source_analyte_id: string; source_lab_analyte_id?: string | null; variable_name: string }[] = [];
@@ -1635,7 +1642,7 @@ const ResultVerificationConsole: React.FC = () => {
         catch { return []; }
       };
 
-      const updates: Array<{ id: string; value: string; inputs: Record<string, number> }> = [];
+      const updates: Array<{ id: string; value: string; inputs: Record<string, number>; flag: string | null; flagSource: string }> = [];
       const debugHintsForResult: Record<string, string[]> = {};
       const recalcLogPrefix = `[Panel Recalculate][${row.result_id}]`;
 
@@ -1651,6 +1658,7 @@ const ResultVerificationConsole: React.FC = () => {
         analyte_id: f.id,
         formula: f.formula,
         formula_variables: f.formula_variables,
+        calculation_result_type: f.calculation_result_type,
       })));
       console.info(`${recalcLogPrefix} Dependencies loaded`, deps);
 
@@ -1784,6 +1792,28 @@ const ResultVerificationConsole: React.FC = () => {
             continue;
           }
 
+          if (normalizeCalculationResultType((fi as any).calculation_result_type) === 'text') {
+            const textResult = evaluateTextCalculation(fi.formula, scope);
+            if (!textResult.success) {
+              debugHintsForResult[calcRow.id] = [textResult.error || "text calculation"];
+              console.warn(`${recalcLogPrefix} Not calculated: text rule evaluation failed`, {
+                ...calcLogBase,
+                formula: fi.formula,
+                scope,
+                error_message: textResult.error,
+              });
+              continue;
+            }
+            updates.push({ id: calcRow.id, value: textResult.value, inputs: { ...scope }, flag: null, flagSource: 'auto_text' });
+            console.info(`${recalcLogPrefix} Text calculation matched`, {
+              ...calcLogBase,
+              value: textResult.value,
+              formula: fi.formula,
+              scope,
+            });
+            continue;
+          }
+
           let resolved = (fi.formula as string).trim();
           for (const [k, v] of Object.entries(scope)) {
             const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1814,7 +1844,14 @@ const ResultVerificationConsole: React.FC = () => {
               continue;
             }
             const roundedValue = String(Math.round(Number(computed) * 100) / 100);
-            updates.push({ id: calcRow.id, value: roundedValue, inputs: { ...scope } });
+            const recalculatedFlag = calculateFlag(roundedValue, calcRow.reference_range || '') || 'normal';
+            updates.push({
+              id: calcRow.id,
+              value: roundedValue,
+              inputs: { ...scope },
+              flag: recalculatedFlag,
+              flagSource: 'auto_numeric',
+            });
             console.info(`${recalcLogPrefix} Calculated successfully`, {
               ...calcLogBase,
               value: roundedValue,
@@ -1849,6 +1886,8 @@ const ResultVerificationConsole: React.FC = () => {
       const patchResults = await Promise.all(updates.map(upd =>
         supabase.from('result_values').update({
           value: upd.value,
+          flag: upd.flag,
+          flag_source: upd.flagSource,
           calculation_inputs: upd.inputs,
           calculated_at: new Date().toISOString(),
           is_auto_calculated: true,
@@ -1856,7 +1895,7 @@ const ResultVerificationConsole: React.FC = () => {
           verify_note: 'Recalculated by verifier',
           verified_at: null,
           verified_by: null,
-        }).eq('id', upd.id).select('id, value')
+        }).eq('id', upd.id).select('id, value, flag')
       ));
 
       const firstError = patchResults.find(r => r.error);
@@ -1883,6 +1922,7 @@ const ResultVerificationConsole: React.FC = () => {
           return {
             ...a,
             value: upd.value,
+            flag: upd.flag,
             calculation_inputs: upd.inputs,
             calculated_at: new Date().toISOString(),
             is_auto_calculated: true,

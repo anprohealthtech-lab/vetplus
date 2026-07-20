@@ -163,21 +163,45 @@ Deno.serve(async (req: Request) => {
         email: email || admin_email,
         gstin: gstin || null,
         is_active: true,
-        plan_status: 'trial', // New labs start with 5-day trial
+        plan_status: 'trial', // New labs start with 7-day trial
         plan_started_at: new Date().toISOString(),
-        active_upto: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(), // 5 days from now
+        active_upto: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days from now
         // Default PDF settings
-        pdf_layout_settings: {
-          headerTextColor: 'white',
-          resultColors: {
-            high: '#dc2626',
-            low: '#2563eb',
-            critical: '#7c2d12',
-            abnormal: '#ea580c',
-            normal: '#16a34a'
-          }
-        }
-      })
+	        pdf_layout_settings: {
+	          headerTextColor: 'white',
+	          printOptions: {
+	            baseFontSize: 14,
+	            flagSymbol: 'before',
+	            showFlagLegend: false,
+	            flagAsterisk: false,
+	            flagAsteriskCritical: false,
+	            testNameBold: false,
+	            testNameAlignment: 'left',
+	            boldAllValues: false,
+	            boldAbnormalValues: true,
+		            calcMarker: 'cal',
+		            sectionHeaderInline: true,
+		            testGroupTitlePosition: 'above_headers_center',
+		            qrHorizontalOffset: 0,
+		            qrPosition: 'bottom_left',
+		            basicColumnWidths: {
+		              standard: [36, 24, 12, 28],
+		              sibling: [30, 14, 8, 16, 16, 16],
+		            },
+		          },
+	          resultColors: {
+	            enabled: true,
+	            high: '#dc2626',
+	            low: '#000000',
+	            critical: '#7c2d12',
+	            abnormal: '#ea580c',
+	            normal: '#16a34a'
+	          }
+	        },
+	        default_template_style: 'basic',
+	        show_methodology: true,
+	        show_interpretation: false,
+	      })
       .select()
       .single();
 
@@ -366,7 +390,7 @@ Deno.serve(async (req: Request) => {
         id: labId,
         name: lab_name,
         status: 'trial',
-        trial_ends_at: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(),
+        trial_ends_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
       },
       admin: {
         id: adminUserId,
@@ -374,7 +398,7 @@ Deno.serve(async (req: Request) => {
         name: admin_name,
         temporary_password: admin_password ? undefined : finalPassword,
       },
-      message: "Lab created successfully with a 5-day free trial. Subscribe to continue after trial ends.",
+      message: "Lab created successfully with a 7-day free trial. Subscribe to continue after trial ends.",
     });
 
   } catch (e) {

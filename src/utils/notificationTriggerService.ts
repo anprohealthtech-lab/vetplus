@@ -14,6 +14,7 @@ export interface NotificationSettings {
   send_report_on_status: 'Approved' | 'Completed' | 'Delivered';
   auto_send_invoice_to_patient: boolean;
   auto_send_registration_confirmation: boolean;
+  auto_send_registration_to_doctor: boolean;
   auto_send_loyalty_points: boolean;
   auto_send_loyalty_redemption: boolean;
   include_test_details_in_registration: boolean;
@@ -108,6 +109,10 @@ function formatPhoneNumber(phone: string): string {
     cleaned = '91' + cleaned;
   }
   return cleaned;
+}
+
+function isDuplicateQueueError(error: any): boolean {
+  return error?.code === '23505' || String(error?.message || '').toLowerCase().includes('duplicate');
 }
 
 /** Apply lab name_case_format to a name string */
@@ -454,6 +459,7 @@ export const notificationTriggerService = {
         total,
         patient_name,
         order_id,
+        whatsapp_sent_at,
         patients!inner (id, name, phone)
       `)
       .eq('id', invoiceId)
@@ -461,6 +467,10 @@ export const notificationTriggerService = {
 
     if (error || !invoice) {
       return { sent: false, reason: 'invoice_not_found' };
+    }
+
+    if (invoice.whatsapp_sent_at) {
+      return { sent: false, reason: 'already_sent' };
     }
 
     // Get lab details
@@ -490,14 +500,53 @@ export const notificationTriggerService = {
       templateData
     );
 
-    const sendResult = shouldAttemptNow
-      ? await notificationTriggerService.sendWithFallback(
-        invoice.patients.phone,
-        message,
-        pdfUrl,
-        invoice.patient_name
-      )
-      : { success: false, error: 'Outside send window' };
+    const queued = await notificationTriggerService.queueNotification({
+      lab_id: labId,
+      recipient_type: 'patient',
+      recipient_phone: invoice.patients.phone,
+      recipient_name: invoice.patient_name,
+      recipient_id: invoice.patients.id,
+      trigger_type: 'invoice_generated',
+      invoice_id: invoiceId,
+      message_content: message,
+      attachment_url: pdfUrl,
+      attachment_type: 'invoice',
+      scheduled_for: scheduledFor,
+      last_error: shouldAttemptNow ? null : 'Outside send window',
+    });
+
+    if (queued.error) {
+      if (isDuplicateQueueError(queued.error)) {
+        return { sent: false, queued: false, skipped: true, reason: 'duplicate_invoice_notification' };
+      }
+      return { sent: false, queued: false, error: queued.error.message || String(queued.error) };
+    }
+
+    if (!shouldAttemptNow) {
+      if (settings.queue_outside_window !== false) {
+        return { sent: false, queued: true, error: 'Outside send window' };
+      }
+      await supabase
+        .from('notification_queue')
+        .update({ status: 'skipped', last_error: 'Outside send window and queue disabled' })
+        .eq('id', queued.data.id);
+      return { sent: false, queued: false, skipped: true, reason: 'Outside send window' };
+    }
+
+    await supabase
+      .from('notification_queue')
+      .update({
+        status: 'sending',
+        attempts: 1,
+      })
+      .eq('id', queued.data.id);
+
+    const sendResult = await notificationTriggerService.sendWithFallback(
+      invoice.patients.phone,
+      message,
+      pdfUrl,
+      invoice.patient_name
+    );
 
     if (sendResult.success) {
       await supabase
@@ -508,28 +557,28 @@ export const notificationTriggerService = {
           whatsapp_sent_via: 'api',
         })
         .eq('id', invoiceId);
+
+      await supabase
+        .from('notification_queue')
+        .update({
+          status: 'sent',
+          sent_at: new Date().toISOString(),
+          whatsapp_message_id: sendResult.messageId,
+        })
+        .eq('id', queued.data.id);
       
       return { sent: true, messageId: sendResult.messageId };
-    } else {
-      if (settings.queue_outside_window !== false) {
-        await notificationTriggerService.queueNotification({
-          lab_id: labId,
-          recipient_type: 'patient',
-          recipient_phone: invoice.patients.phone,
-          recipient_name: invoice.patient_name,
-          recipient_id: invoice.patients.id,
-          trigger_type: 'invoice_generated',
-          invoice_id: invoiceId,
-          message_content: message,
-          attachment_url: pdfUrl,
-          attachment_type: 'invoice',
-          scheduled_for: scheduledFor,
-          last_error: sendResult.error,
-        });
-        return { sent: false, queued: true, error: sendResult.error };
-      }
-      return { sent: false, queued: false, skipped: true, reason: sendResult.error };
     }
+
+    await supabase
+      .from('notification_queue')
+      .update({
+        status: 'pending',
+        last_error: sendResult.error,
+      })
+      .eq('id', queued.data.id);
+
+    return { sent: false, queued: true, error: sendResult.error };
   },
 
   // Triggered when order is registered
@@ -537,7 +586,7 @@ export const notificationTriggerService = {
     console.log(`[NotificationTrigger] Order registered: order=${orderId}`);
 
     const settings = await notificationTriggerService.getSettings(labId);
-    if (!settings?.auto_send_registration_confirmation) {
+    if (!settings?.auto_send_registration_confirmation && !settings?.auto_send_registration_to_doctor) {
       return { sent: false, reason: 'disabled' };
     }
 
@@ -552,8 +601,10 @@ export const notificationTriggerService = {
         id,
         order_display,
         patient_name,
+        doctor,
         expected_date,
-        patients!inner (id, name, phone)
+        patients!inner (id, name, phone),
+        doctors (id, name, phone)
       `)
       .eq('id', orderId)
       .single();
@@ -583,6 +634,7 @@ export const notificationTriggerService = {
       TestName: testNames,
       ExpectedDate: order.expected_date ? new Date(order.expected_date).toLocaleDateString('en-IN') : 'To be determined',
       LabName: lab?.name || 'Lab',
+      DoctorName: order.doctors?.name || order.doctor || 'Doctor',
     };
 
     // Try to use the lab's customized template from DB, fallback to hardcoded default
@@ -601,17 +653,19 @@ export const notificationTriggerService = {
       templateData
     );
 
-    const sendResult = shouldAttemptNow
-      ? await notificationTriggerService.sendWithFallback(
-        order.patients.phone,
-        message
-      )
-      : { success: false, error: 'Outside send window' };
+    const results: { patient?: any; doctor?: any } = {};
 
-    if (sendResult.success) {
-      return { sent: true, messageId: sendResult.messageId };
-    } else {
-      if (settings.queue_outside_window !== false) {
+    if (settings.auto_send_registration_confirmation && order.patients?.phone) {
+      const sendResult = shouldAttemptNow
+        ? await notificationTriggerService.sendWithFallback(
+          order.patients.phone,
+          message
+        )
+        : { success: false, error: 'Outside send window' };
+
+      if (sendResult.success) {
+        results.patient = { sent: true, messageId: sendResult.messageId };
+      } else if (settings.queue_outside_window !== false) {
         await notificationTriggerService.queueNotification({
           lab_id: labId,
           recipient_type: 'patient',
@@ -624,10 +678,53 @@ export const notificationTriggerService = {
           scheduled_for: scheduledFor,
           last_error: sendResult.error,
         });
-        return { sent: false, queued: true, error: sendResult.error };
+        results.patient = { sent: false, queued: true, error: sendResult.error };
+      } else {
+        results.patient = { sent: false, queued: false, skipped: true, reason: sendResult.error };
       }
-      return { sent: false, queued: false, skipped: true, reason: sendResult.error };
     }
+
+    if (settings.auto_send_registration_to_doctor && order.doctors?.phone) {
+      let doctorTemplateMessage = DEFAULT_TEMPLATES.doctor_registration_confirmation.message;
+      try {
+        const { data: dbTemplate } = await database.whatsappTemplates.getDefault('doctor_registration_confirmation', labId);
+        if (dbTemplate?.message_content) {
+          doctorTemplateMessage = dbTemplate.message_content;
+        }
+      } catch (e) {
+        console.warn('[NotificationTrigger] Failed to fetch doctor DB template, using default:', e);
+      }
+
+      const doctorMessage = replacePlaceholders(doctorTemplateMessage, templateData);
+      const sendResult = shouldAttemptNow
+        ? await notificationTriggerService.sendWithFallback(
+          order.doctors.phone,
+          doctorMessage
+        )
+        : { success: false, error: 'Outside send window' };
+
+      if (sendResult.success) {
+        results.doctor = { sent: true, messageId: sendResult.messageId };
+      } else if (settings.queue_outside_window !== false) {
+        await notificationTriggerService.queueNotification({
+          lab_id: labId,
+          recipient_type: 'doctor',
+          recipient_phone: order.doctors.phone,
+          recipient_name: order.doctors.name,
+          recipient_id: order.doctors.id,
+          trigger_type: 'order_registered',
+          order_id: orderId,
+          message_content: doctorMessage,
+          scheduled_for: scheduledFor,
+          last_error: sendResult.error,
+        });
+        results.doctor = { sent: false, queued: true, error: sendResult.error };
+      } else {
+        results.doctor = { sent: false, queued: false, skipped: true, reason: sendResult.error };
+      }
+    }
+
+    return { sent: true, results };
   },
 
   // Triggered when loyalty points are earned or redeemed
@@ -807,14 +904,40 @@ export const notificationTriggerService = {
         }
       }
 
+      if (item.trigger_type === 'invoice_generated' && item.invoice_id) {
+        const { data: invoiceStatus } = await supabase
+          .from('invoices')
+          .select('whatsapp_sent_at')
+          .eq('id', item.invoice_id)
+          .maybeSingle();
+
+        if (invoiceStatus?.whatsapp_sent_at) {
+          await supabase
+            .from('notification_queue')
+            .update({
+              status: 'skipped',
+              last_error: 'Invoice already sent via WhatsApp',
+            })
+            .eq('id', item.id);
+          continue;
+        }
+      }
+
       // Mark as sending
-      await supabase
+      const { data: claimedItem, error: claimError } = await supabase
         .from('notification_queue')
         .update({ 
           status: 'sending',
           attempts: item.attempts + 1,
         })
-        .eq('id', item.id);
+        .eq('id', item.id)
+        .eq('status', 'pending')
+        .select('id')
+        .maybeSingle();
+
+      if (claimError || !claimedItem) {
+        continue;
+      }
 
       const sendResult = await notificationTriggerService.sendWithFallback(
         item.recipient_phone,

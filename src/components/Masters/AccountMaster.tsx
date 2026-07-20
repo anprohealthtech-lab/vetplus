@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Edit, Trash2, X, DollarSign, Lock, Package } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, X, DollarSign, Lock, Package, Eye, EyeOff } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
 import { createB2BAccountUser } from '../../utils/b2bAuth';
 import HeaderFooterUpload from '../Settings/HeaderFooterUpload';
@@ -102,6 +102,11 @@ const AccountMaster: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [labId, setLabId] = useState<string | null>(null);
 
+    // Stored portal credential (admin-only view; readable only by lab admins via RLS)
+    const [storedCredential, setStoredCredential] = useState<{ email: string; password_text: string; updated_at: string } | null>(null);
+    const [storedCredentialLoading, setStoredCredentialLoading] = useState(false);
+    const [storedCredentialVisible, setStoredCredentialVisible] = useState(false);
+
     // Price Management State
     const [showPriceModal, setShowPriceModal] = useState(false);
     const [selectedAccountForPrices, setSelectedAccountForPrices] = useState<Account | null>(null);
@@ -172,8 +177,33 @@ const AccountMaster: React.FC = () => {
         setEditingAccount(null);
         setFormData(initialFormData);
         setPortalData(initialPortalData);
+        setStoredCredential(null);
+        setStoredCredentialVisible(false);
         setShowForm(true);
         setError(null);
+    };
+
+    const loadStoredCredential = async (accountId: string) => {
+        setStoredCredentialLoading(true);
+        setStoredCredential(null);
+        setStoredCredentialVisible(false);
+        try {
+            // Readable only by lab admins (portal_credentials RLS); others simply get no rows
+            const { data } = await supabase
+                .from('portal_credentials')
+                .select('email, password_text, updated_at')
+                .eq('account_id', accountId)
+                .eq('credential_type', 'b2b_portal')
+                .order('updated_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            setStoredCredential(data || null);
+        } catch (err) {
+            console.warn('Could not load stored portal credential:', err);
+            setStoredCredential(null);
+        } finally {
+            setStoredCredentialLoading(false);
+        }
     };
 
     const handleEdit = (account: Account) => {
@@ -185,6 +215,7 @@ const AccountMaster: React.FC = () => {
         });
         setShowForm(true);
         setError(null);
+        loadStoredCredential(account.id);
     };
 
     const handleCreatePortalUser = async () => {
@@ -219,7 +250,8 @@ const AccountMaster: React.FC = () => {
 
             if (result.success) {
                 setPortalData(prev => ({ ...prev, portalPassword: '' }));
-                alert(`B2B Portal Access Enabled\nLogin URL: ${window.location.origin}/b2b\nEmail: ${portalData.portalEmail}`);
+                loadStoredCredential(editingAccount.id);
+                alert(`Partner Portal Access Enabled\nLogin URL: ${window.location.origin}/b2b\nEmail: ${portalData.portalEmail}`);
             } else {
                 alert(`Portal access failed: ${result.error}\n\nPlease contact support to enable portal access.`);
             }
@@ -269,7 +301,7 @@ const AccountMaster: React.FC = () => {
                 const createdAccount = data[0];
                 setAccounts(prev => [createdAccount, ...prev]);
 
-                // Create B2B portal user if enabled
+                // Create partner portal user if enabled
                 if (portalData.enablePortal && createdAccount) {
                     const result = await createB2BAccountUser({
                         email: portalData.portalEmail,
@@ -280,7 +312,7 @@ const AccountMaster: React.FC = () => {
                     });
 
                     if (result.success) {
-                        alert(`Account created successfully!\n\nB2B Portal Access Enabled\nLogin URL: ${window.location.origin}/b2b\nEmail: ${portalData.portalEmail}`);
+                        alert(`Account created successfully!\n\nPartner Portal Access Enabled\nLogin URL: ${window.location.origin}/b2b\nEmail: ${portalData.portalEmail}`);
                     } else {
                         alert(`Account created, but portal access failed: ${result.error}\n\nPlease contact support to enable portal access.`);
                     }
@@ -699,18 +731,57 @@ const AccountMaster: React.FC = () => {
                                                 />
                                                 <label htmlFor="enablePortal" className="flex items-center text-sm font-medium text-gray-700 cursor-pointer">
                                                     <Lock className="w-4 h-4 mr-2 text-blue-600" />
-                                                    Enable B2B Portal Access
+                                                    Enable Partner Portal Access
                                                 </label>
                                             </div>
                                         ) : (
                                             <div className="flex items-center mb-4">
                                                 <Lock className="w-4 h-4 mr-2 text-blue-600" />
-                                                <span className="text-sm font-medium text-gray-700">B2B Portal Access</span>
+                                                <span className="text-sm font-medium text-gray-700">Partner Portal Access</span>
                                             </div>
                                         )}
                                         <p className="text-xs text-gray-500 mb-4">
-                                            Allow this account to access the B2B portal to view their orders and download reports.
+                                            Allow this account to access the partner portal to view their orders and download reports.
                                         </p>
+
+                                        {editingAccount && (storedCredentialLoading || storedCredential) && (
+                                            <div className="mb-4 bg-purple-50 border border-purple-200 rounded-lg p-4">
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <span className="text-sm font-medium text-purple-900">Current Portal Login (admin view)</span>
+                                                    {storedCredential && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setStoredCredentialVisible(v => !v)}
+                                                            className="p-1 text-purple-600 hover:text-purple-800 rounded"
+                                                            title={storedCredentialVisible ? 'Hide password' : 'Show password'}
+                                                        >
+                                                            {storedCredentialVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                {storedCredentialLoading ? (
+                                                    <p className="text-xs text-purple-700">Loading stored credential…</p>
+                                                ) : storedCredential ? (
+                                                    <div className="text-sm text-purple-900 space-y-1">
+                                                        <div><span className="text-purple-600">Email:</span> {storedCredential.email}</div>
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-purple-600">Password:</span>
+                                                            <span className="font-mono">{storedCredentialVisible ? storedCredential.password_text : '••••••••••'}</span>
+                                                            {storedCredentialVisible && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => navigator.clipboard.writeText(storedCredential.password_text)}
+                                                                    className="text-xs text-purple-600 hover:text-purple-800 underline"
+                                                                >
+                                                                    Copy
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                        <p className="text-xs text-purple-600">Last set: {new Date(storedCredential.updated_at).toLocaleString()}</p>
+                                                    </div>
+                                                ) : null}
+                                            </div>
+                                        )}
 
                                         {(editingAccount || portalData.enablePortal) && (
                                             <div className="grid grid-cols-2 gap-4 bg-blue-50 p-4 rounded-lg">
@@ -724,7 +795,7 @@ const AccountMaster: React.FC = () => {
                                                         className="w-full border rounded p-2"
                                                         placeholder="portal@hospital.com"
                                                     />
-                                                    <p className="text-xs text-gray-500 mt-1">This email will be used to login to the B2B portal</p>
+                                                    <p className="text-xs text-gray-500 mt-1">This email will be used to login to the partner portal</p>
                                                 </div>
                                                 <div className="col-span-2">
                                                     <label className="block text-sm font-medium mb-1 text-gray-700">Portal Password *</label>

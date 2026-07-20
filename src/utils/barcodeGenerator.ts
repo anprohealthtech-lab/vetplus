@@ -1,6 +1,16 @@
 // utils/barcodeGenerator.ts
 // Barcode generation for sample tubes using Code 128 format
 
+import { jsPDF } from 'jspdf';
+import {
+  getActiveLabelLayout,
+  getLabelContentMetrics,
+  normalizeLabelLayout,
+  resolveLabelPage,
+  type LabelContentMetrics,
+  type LabelLayout,
+} from './labelLayout';
+
 /**
  * Generate Code 128 barcode as data URL
  * Uses canvas-based rendering for maximum compatibility
@@ -113,69 +123,154 @@ export function isValidBarcodeData(data: string): boolean {
   return true;
 }
 
-/**
- * Generate printable barcode label HTML
- * Can be used with window.print() or react-to-print
- */
-export function generateBarcodeLabelHTML(
-  sampleId: string,
-  barcodeDataUrl: string,
-  metadata?: {
-    sampleType?: string;
-    patientName?: string;
-    collectionDate?: string;
+interface BarcodeLabelMetadata {
+  sampleType?: string;
+  patientName?: string;
+  collectionDate?: string;
+  collectionTime?: string;
+  gender?: string;
+  age?: string | number;
+  referredBy?: string;
+}
+
+export interface PrintableBarcodeLabel {
+  sampleId: string;
+  barcodeDataUrl: string;
+  metadata?: BarcodeLabelMetadata;
+}
+
+function cleanPdfText(value: unknown): string {
+  return String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
+}
+
+function fitPdfText(doc: jsPDF, value: unknown, maxWidthMm: number): string {
+  const text = cleanPdfText(value);
+  if (doc.getTextWidth(text) <= maxWidthMm) return text;
+
+  let fitted = text;
+  while (fitted.length > 0 && doc.getTextWidth(`${fitted}..`) > maxWidthMm) {
+    fitted = fitted.slice(0, -1);
   }
-): string {
-  return `
-    <html>
-      <head>
-        <title>Sample Label - ${sampleId}</title>
-        <style>
-          @page { 
-            size: 3in 2in; 
-            margin: 0; 
-          }
-          body { 
-            font-family: 'Courier New', monospace; 
-            text-align: center; 
-            padding: 8px;
-            margin: 0;
-          }
-          .sample-id { 
-            font-size: 14px; 
-            font-weight: bold; 
-            margin-bottom: 4px;
-            letter-spacing: 1px;
-          }
-          .barcode { 
-            margin: 6px 0; 
-          }
-          .barcode img {
-            max-width: 100%;
-            height: auto;
-          }
-          .metadata { 
-            font-size: 9px; 
-            color: #333; 
-            margin-top: 4px;
-            line-height: 1.3;
-          }
-          .timestamp {
-            font-size: 7px;
-            color: #666;
-            margin-top: 2px;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="sample-id">${sampleId}</div>
-        <div class="barcode">
-          <img src="${barcodeDataUrl}" alt="Barcode" />
-        </div>
-        ${metadata?.sampleType ? `<div class="metadata">Type: ${metadata.sampleType}</div>` : ''}
-        ${metadata?.patientName ? `<div class="metadata">Patient: ${metadata.patientName}</div>` : ''}
-        ${metadata?.collectionDate ? `<div class="timestamp">Collected: ${metadata.collectionDate}</div>` : ''}
-      </body>
-    </html>
-  `;
+
+  return fitted ? `${fitted}..` : '';
+}
+
+/**
+ * Draw one label into the cell whose top-left corner is at (originX, originY).
+ * All coordinates come from the layout so a single geometry definition drives
+ * every label size, orientation and N-up grid.
+ */
+function drawBarcodeLabelCell(
+  doc: jsPDF,
+  label: PrintableBarcodeLabel,
+  metrics: LabelContentMetrics,
+  cellWidth: number,
+  cellHeight: number,
+  originX: number,
+  originY: number
+): void {
+  const metadata = label.metadata || {};
+  const genderAgeStr = [metadata.gender, metadata.age ? `${metadata.age} Y` : ''].filter(Boolean).join(' ');
+  const dateTimeStr = [metadata.collectionDate, metadata.collectionTime].filter(Boolean).join(' ');
+
+  doc.setFillColor(255, 255, 255);
+  doc.rect(originX, originY, cellWidth, cellHeight, 'F');
+  doc.setTextColor(0, 0, 0);
+
+  const left = originX + metrics.left;
+  const right = originX + metrics.right;
+  const innerWidth = right - left;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(metrics.typeFontPt);
+  doc.text(
+    fitPdfText(doc, `${metadata.sampleType || 'Sample'}.`, innerWidth),
+    left,
+    originY + metrics.typeBaseline
+  );
+
+  doc.setFontSize(metrics.nameFontPt);
+  const genderAgeWidth = genderAgeStr
+    ? Math.min(doc.getTextWidth(genderAgeStr), metrics.genderAgeMaxWidth)
+    : 0;
+  const nameGap = genderAgeStr ? metrics.nameGap : 0;
+  const nameMaxWidth = innerWidth - genderAgeWidth - nameGap;
+  doc.text(
+    fitPdfText(doc, metadata.patientName || 'Patient', nameMaxWidth),
+    left,
+    originY + metrics.nameBaseline
+  );
+
+  if (genderAgeStr) {
+    doc.text(
+      fitPdfText(doc, genderAgeStr, metrics.genderAgeMaxWidth),
+      right,
+      originY + metrics.nameBaseline,
+      { align: 'right' }
+    );
+  }
+
+  doc.addImage(
+    label.barcodeDataUrl,
+    'PNG',
+    originX + metrics.barcodeX,
+    originY + metrics.barcodeY,
+    metrics.barcodeWidth,
+    metrics.barcodeHeight
+  );
+
+  doc.setFontSize(metrics.infoFontPt);
+  doc.text(fitPdfText(doc, label.sampleId, metrics.sampleIdMaxWidth), left, originY + metrics.infoBaseline);
+  doc.text(
+    fitPdfText(doc, dateTimeStr, metrics.dateTimeMaxWidth),
+    right,
+    originY + metrics.infoBaseline,
+    { align: 'right' }
+  );
+
+  if (metadata.referredBy) {
+    doc.setFontSize(metrics.referredByFontPt);
+    doc.text(fitPdfText(doc, metadata.referredBy, innerWidth), left, originY + metrics.referredByBaseline);
+  }
+}
+
+/**
+ * Build a print-ready PDF for the given labels.
+ *
+ * The page box is the label itself for 1-up roll layouts, or the configured
+ * sheet for N-up layouts, so the browser prints at 100% scale without the user
+ * touching orientation or scaling in the print dialog. Short final rows simply
+ * leave their remaining cells blank — no placeholder markup needed.
+ */
+export function generateBarcodeLabelsPDFBlob(
+  labels: PrintableBarcodeLabel[],
+  options?: { title?: string; layout?: LabelLayout }
+): Blob {
+  const layout = options?.layout ? normalizeLabelLayout(options.layout) : getActiveLabelLayout();
+  const page = resolveLabelPage(layout);
+  const metrics = getLabelContentMetrics(layout);
+  const format: [number, number] = [page.pageWidth, page.pageHeight];
+  const orientation = page.pageWidth >= page.pageHeight ? 'landscape' : 'portrait';
+
+  const doc = new jsPDF({
+    unit: 'mm',
+    format,
+    orientation,
+    compress: true,
+    putOnlyUsedFonts: true,
+  });
+
+  if (options?.title) {
+    doc.setProperties({ title: options.title });
+  }
+
+  labels.forEach((label, index) => {
+    if (index > 0 && index % page.perPage === 0) {
+      doc.addPage(format, orientation);
+    }
+    const { x, y } = page.cellOrigin(index % page.perPage);
+    drawBarcodeLabelCell(doc, label, metrics, page.cellWidth, page.cellHeight, x, y);
+  });
+
+  return doc.output('blob');
 }

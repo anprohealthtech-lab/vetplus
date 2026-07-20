@@ -229,8 +229,11 @@ async function detectProcessingType(
 interface VisionRequest {
   attachmentId?: string;
   base64Image?: string;
+  imageUrl?: string;
+  mimeType?: string;
   documentType?: string;
   testType?: string;
+  extractType?: string;
   aiProcessingType?: string;
   analysisType?: 'text' | 'objects' | 'colors' | 'all';
   orderId?: string;
@@ -247,6 +250,7 @@ interface VisionRequest {
 
 interface VisionResponse {
   fullText?: string;
+  text?: string;
   objects?: any[];
   colors?: any[];
   confidence?: number;
@@ -303,6 +307,74 @@ function uint8ArrayToBase64(array: Uint8Array): string {
   return btoa(binary);
 }
 
+async function fetchFileAsBase64FromUrl(fileUrl: string): Promise<{ base64: string; mimeType: string | null }> {
+  const response = await fetch(fileUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch file from URL: ${response.status} ${response.statusText}`);
+  }
+
+  const contentType = response.headers.get('content-type');
+  const arrayBuffer = await response.arrayBuffer();
+  if (arrayBuffer.byteLength === 0) {
+    throw new Error('Fetched file is empty');
+  }
+
+  return {
+    base64: uint8ArrayToBase64(new Uint8Array(arrayBuffer)),
+    mimeType: contentType,
+  };
+}
+
+async function getGeminiDocumentText(
+  fileBase64: string,
+  mimeType: string,
+  apiKey: string,
+  extractType?: string,
+): Promise<{ fullText: string; confidence: number }> {
+  const prompt = extractType === 'invoice'
+    ? 'Extract all readable text from this invoice or estimate PDF exactly as it appears. Return plain text only, preserving line breaks where useful. Do not summarize.'
+    : 'Extract all readable text from this document exactly as it appears. Return plain text only, preserving line breaks where useful. Do not summarize.';
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { inlineData: { mimeType, data: fileBase64 } },
+              { text: prompt },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0,
+          topP: 0.8,
+          maxOutputTokens: 8192,
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini OCR error: ${response.status} ${response.statusText} - ${errorText}`);
+  }
+
+  const result = await response.json();
+  const fullText = result?.candidates?.[0]?.content?.parts?.map((part: any) => part?.text || '').join('\n').trim() || '';
+  if (!fullText) {
+    throw new Error('Gemini returned empty OCR text');
+  }
+
+  return { fullText, confidence: 1 };
+}
+
 async function getTestContext(orderId?: string, testGroupId?: string, analyteIds?: string[]): Promise<TestContext> {
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
   const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -349,7 +421,7 @@ async function getTestContext(orderId?: string, testGroupId?: string, analyteIds
     }
 
     if (testGroupId) {
-      const select = 'id,name,code,lab_id,default_ai_processing_type,test_group_analytes(analyte_id,analytes(id,name,unit,reference_range))';
+      const select = 'id,name,code,lab_id,default_ai_processing_type,test_group_analytes(analyte_id,lab_analyte_id,analytes(id,name,unit,reference_range),lab_analytes(id,name,unit,reference_range,lab_specific_reference_range))';
       const tgParams = new URLSearchParams({
         id: `eq.${testGroupId}`,
         select,
@@ -373,12 +445,16 @@ async function getTestContext(orderId?: string, testGroupId?: string, analyteIds
           };
 
           const analytesFromGroup = Array.isArray(group.test_group_analytes)
-            ? group.test_group_analytes.map((tga: any) => ({
-                id: tga.analytes?.id || tga.analyte_id,
-                name: tga.analytes?.name,
-                unit: tga.analytes?.unit,
-                reference_range: tga.analytes?.reference_range,
-              }))
+            ? group.test_group_analytes.map((tga: any) => {
+                const a = tga.analytes;
+                const la = tga.lab_analyte_id ? tga.lab_analytes : null;
+                return {
+                  id: a?.id || tga.analyte_id,
+                  name: la?.name || a?.name,
+                  unit: la?.unit || a?.unit,
+                  reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a?.reference_range,
+                };
+              })
             : [];
 
           if (analytesFromGroup.length) {
@@ -873,14 +949,14 @@ Deno.serve(async (req) => {
       );
     }
     
-    // Check for API key first - try ALLGOOGLE_KEY first, then fallback to GOOGLE_CLOUD_API_KEY
-    const visionApiKey = Deno.env.get('ALLGOOGLE_KEY') || Deno.env.get('GOOGLE_CLOUD_API_KEY');
+    // Check for API key first - try ALLGOOGLE_KEY2 first (Vision-enabled), then fallbacks
+    const visionApiKey = Deno.env.get('ALLGOOGLE_KEY2') || Deno.env.get('ALLGOOGLE_KEY') || Deno.env.get('GOOGLE_CLOUD_API_KEY');
     if (!visionApiKey) {
       console.error('Google API key not configured');
       return new Response(
         JSON.stringify({ 
           error: 'Google API key not configured',
-          details: 'Please set ALLGOOGLE_KEY or GOOGLE_CLOUD_API_KEY in Supabase secrets'
+          details: 'Please set ALLGOOGLE_KEY2, ALLGOOGLE_KEY, or GOOGLE_CLOUD_API_KEY in Supabase secrets'
         }),
         { 
           status: 500, 
@@ -893,8 +969,11 @@ Deno.serve(async (req) => {
     const {
       attachmentId,
       base64Image,
+      imageUrl,
+      mimeType,
       documentType,
       testType,
+      extractType,
       analysisType = 'all',
       aiProcessingType,
       orderId,
@@ -915,13 +994,15 @@ Deno.serve(async (req) => {
     console.log(`    - orderId: ${orderId || 'NOT PROVIDED'}`);
     console.log(`    - testGroupId: ${testGroupId || 'NOT PROVIDED'}`);
     console.log(`    - attachmentId: ${attachmentId || 'NOT PROVIDED'}`);
+    console.log(`    - imageUrl: ${imageUrl || 'NOT PROVIDED'}`);
 
     // Check if we have any image source
     const hasReferenceImages = Array.isArray(referenceImages) && referenceImages.length > 0;
+    const hasImageUrl = typeof imageUrl === 'string' && imageUrl.trim().length > 0;
     
-    if (!attachmentId && !base64Image && !hasReferenceImages) {
+    if (!attachmentId && !base64Image && !hasReferenceImages && !hasImageUrl) {
       return new Response(
-        JSON.stringify({ error: 'Missing attachmentId, base64Image, or referenceImages' }),
+        JSON.stringify({ error: 'Missing attachmentId, base64Image, imageUrl, or referenceImages' }),
         { 
           status: 400, 
           headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
@@ -934,6 +1015,15 @@ Deno.serve(async (req) => {
 
     // Get image data
     let imageData = base64Image;
+    let detectedMimeType = mimeType || null;
+
+    if (!imageData && hasImageUrl) {
+      console.log(`  Fetching source file from imageUrl: ${imageUrl}`);
+      const fetchedFile = await fetchFileAsBase64FromUrl(imageUrl!.trim());
+      imageData = fetchedFile.base64;
+      detectedMimeType = detectedMimeType || fetchedFile.mimeType;
+      console.log(`  Source file fetched successfully. MIME type: ${detectedMimeType || 'unknown'}`);
+    }
     
     // If we have reference images but no attachmentId/base64Image, use the first reference image
     if (!imageData && hasReferenceImages) {
@@ -970,6 +1060,7 @@ Deno.serve(async (req) => {
     } else if (attachmentId && !imageData) {
       // Original behavior: fetch from storage if we have attachmentId
       imageData = await getImageFromStorage(attachmentId);
+      detectedMimeType = detectedMimeType || 'image/png';
     }
 
     if (!imageData) {
@@ -1065,11 +1156,15 @@ Deno.serve(async (req) => {
     }
 
     const visionResults: VisionResponse = {};
+    const normalizedMimeType = (detectedMimeType || '').toLowerCase();
+    const isPdfDocument = normalizedMimeType.includes('application/pdf') || (!!imageUrl && imageUrl.toLowerCase().includes('.pdf'));
 
     // Determine which Vision AI features to use based on document/test type
     const needsText = analysisType === 'all' || analysisType === 'text' ||
                      effectiveProcessingType === 'ocr_report' ||
-                     ['instrument-screen', 'printed-report', 'handwritten', 'test-request-form'].includes(documentType || '');
+                     ['instrument-screen', 'printed-report', 'handwritten', 'test-request-form'].includes(documentType || '') ||
+                     extractType === 'invoice' ||
+                     isPdfDocument;
     
     const needsObjects = analysisType === 'all' || analysisType === 'objects' ||
                         effectiveProcessingType === 'vision_card' ||
@@ -1078,13 +1173,17 @@ Deno.serve(async (req) => {
     const needsColors = analysisType === 'all' || analysisType === 'colors' ||
                        effectiveProcessingType === 'vision_color' ||
                        ['urine-strip', 'blood-group', 'pipette-validation'].includes(testType || documentType || '');
+    const canRunImageOnlyFeatures = !isPdfDocument;
 
     // Execute Vision AI calls based on requirements
     if (needsText) {
       try {
-        console.log('Performing text extraction with Vision AI...');
-        const textResult = await getVisionText(imageData, visionApiKey);
+        console.log(isPdfDocument ? 'Performing document text extraction with Gemini...' : 'Performing text extraction with Vision AI...');
+        const textResult = isPdfDocument
+          ? await getGeminiDocumentText(imageData, normalizedMimeType || 'application/pdf', visionApiKey, extractType)
+          : await getVisionText(imageData, visionApiKey);
         visionResults.fullText = textResult.fullText;
+        visionResults.text = textResult.fullText;
         visionResults.confidence = textResult.confidence;
         console.log(`Text extraction completed. Extracted ${textResult.fullText.length} characters`);
       } catch (error) {
@@ -1093,7 +1192,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    if (needsObjects) {
+    if (needsObjects && canRunImageOnlyFeatures) {
       try {
         console.log('Performing object detection with Vision AI...');
         const objectResult = await getVisionObjects(imageData, visionApiKey);
@@ -1105,7 +1204,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    if (needsColors) {
+    if (needsColors && canRunImageOnlyFeatures) {
       try {
         console.log('Performing color analysis with Vision AI...');
         const colorResult = await getVisionColors(imageData, visionApiKey);
@@ -1130,11 +1229,13 @@ Deno.serve(async (req) => {
         documentType: documentType || testType || effectiveProcessingType,
         aiProcessingType: effectiveProcessingType || null, // Use detected type, not original param
         customPromptAvailable: !!databasePrompt, // Indicate if custom prompt was found
+        extractType: extractType || null,
+        sourceMimeType: normalizedMimeType || null,
         analysisType,
         featuresUsed: {
           text: needsText,
-          objects: needsObjects,
-          colors: needsColors
+          objects: needsObjects && canRunImageOnlyFeatures,
+          colors: needsColors && canRunImageOnlyFeatures
         },
         processingTimestamp: new Date().toISOString(),
         attachmentId: attachmentId || null,
@@ -1172,8 +1273,8 @@ Deno.serve(async (req) => {
                 ai_metadata: {
                   vision_features_used: {
                     text: needsText,
-                    objects: needsObjects,
-                    colors: needsColors
+                    objects: needsObjects && canRunImageOnlyFeatures,
+                    colors: needsColors && canRunImageOnlyFeatures
                   },
                   text_length: visionResults.fullText?.length || 0,
                   objects_count: visionResults.objects?.length || 0,

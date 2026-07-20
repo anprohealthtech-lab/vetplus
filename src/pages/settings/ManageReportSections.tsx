@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { database } from '../../utils/supabase';
 import { generateSectionContent, getQuickPromptsForSection } from '../../utils/aiSectionService';
+import SearchableSelect from '../../components/ui/SearchableSelect';
 
 // Types
 interface TemplateSection {
@@ -98,6 +99,7 @@ interface MatrixConfig {
   rows: string[];
   columns: string[];
   cellOptions?: string[]; // if set, cells render as dropdowns (e.g. ["S","I","R"])
+  reportStyle?: 'color' | 'bold' | 'plain';
 }
 
 interface SectionConfig {
@@ -458,6 +460,22 @@ const MatrixBuilder: React.FC<MatrixBuilderProps> = ({ config, onChange }) => {
             First option = green (sensitive), last = red (resistant), middle = orange.
           </p>
         )}
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">Report Cell Style</label>
+        <select
+          value={config.reportStyle || 'color'}
+          onChange={(e) => onChange({ ...config, reportStyle: e.target.value as MatrixConfig['reportStyle'] })}
+          className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+        >
+          <option value="color">Color backgrounds + bold values</option>
+          <option value="bold">Bold values only</option>
+          <option value="plain">Plain values</option>
+        </select>
+        <p className="text-xs text-gray-500 mt-1">
+          Use Bold or Plain for black-and-white/physical-letterhead PDF output.
+        </p>
       </div>
     </div>
   );
@@ -913,16 +931,15 @@ const ManageReportSections: React.FC = () => {
       {/* Filter */}
       <div className="mb-6">
         <label className="block text-sm font-medium text-gray-700 mb-1">Filter by Test Group</label>
-        <select
+        <SearchableSelect
+          className="w-64"
+          options={testGroups.map(tg => ({ id: tg.id, label: tg.name, badge: tg.category }))}
           value={filterTestGroup}
-          onChange={(e) => setFilterTestGroup(e.target.value)}
-          className="w-64 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">All Test Groups</option>
-          {testGroups.map(tg => (
-            <option key={tg.id} value={tg.id}>{tg.name}</option>
-          ))}
-        </select>
+          onChange={(id) => setFilterTestGroup(id)}
+          placeholder="All Test Groups"
+          searchPlaceholder="Search test groups..."
+          allowClear
+        />
       </div>
 
       {/* Sections List */}
@@ -1113,17 +1130,13 @@ const ManageReportSections: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Test Group <span className="text-red-500">*</span>
                 </label>
-                <select
+                <SearchableSelect
+                  options={testGroups.map(tg => ({ id: tg.id, label: tg.name, badge: tg.category }))}
                   value={formData.test_group_id}
-                  onChange={(e) => setFormData(prev => ({ ...prev, test_group_id: e.target.value }))}
-                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-                  required
-                >
-                  <option value="">Select test group...</option>
-                  {testGroups.map(tg => (
-                    <option key={tg.id} value={tg.id}>{tg.name} ({tg.category})</option>
-                  ))}
-                </select>
+                  onChange={(id) => setFormData(prev => ({ ...prev, test_group_id: id }))}
+                  placeholder="Select test group..."
+                  searchPlaceholder="Search test groups (e.g. usg abd)..."
+                />
               </div>
 
               {/* AI Assistant Toggle - only show when test group is selected */}

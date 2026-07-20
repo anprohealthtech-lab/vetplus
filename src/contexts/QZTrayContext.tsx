@@ -6,10 +6,12 @@
  * Utility printing without broad import churn.
  *
  * Settings resolution (location overrides lab):
- *   barcodePrinterName      = non-empty location.barcode_printer_name || non-empty lab.barcode_printer_name
- *   reportPrinterName       = non-empty location.report_printer_name || non-empty lab.report_printer_name
+ *   barcodePrinterName      = non-empty location.barcode_printer_name ?? non-empty lab.barcode_printer_name
+ *   reportPrinterName       = non-empty location.report_printer_name ?? non-empty lab.report_printer_name
+ *   barcodeBrowserPrintEnabled = location.barcode_browser_print_enabled ?? lab.barcode_browser_print_enabled
  *   autoPrintBarcodeOnOrder = location.auto_print_barcode_on_order ?? lab.auto_print_barcode_on_order
  *   autoPrintReportOnApproval = location.auto_print_report_on_approval ?? lab.auto_print_report_on_approval
+ *   barcodeLabelLayout      = location.barcode_label_layout ?? lab.barcode_label_layout ?? app default
  */
 
 import React, {
@@ -23,12 +25,20 @@ import React, {
 import { database, supabase } from '../utils/supabase';
 import * as printService from '../utils/qzTrayService';
 import type { BarcodeLabelData, QZConnectionStatus } from '../utils/qzTrayService';
+import {
+  DEFAULT_LABEL_LAYOUT,
+  normalizeLabelLayout,
+  setActiveLabelLayout,
+  type LabelLayout,
+} from '../utils/labelLayout';
 
 interface QZPrintSettings {
   barcodePrinterName: string | null;
   reportPrinterName: string | null;
+  barcodeBrowserPrintEnabled: boolean;
   autoPrintBarcodeOnOrder: boolean;
   autoPrintReportOnApproval: boolean;
+  barcodeLabelLayout: LabelLayout;
 }
 
 interface QZTrayContextValue {
@@ -38,14 +48,17 @@ interface QZTrayContextValue {
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   autoPrintBarcode: (data: BarcodeLabelData) => Promise<void>;
+  autoPrintBarcodes: (labels: BarcodeLabelData[]) => Promise<void>;
   autoPrintReport: (pdfUrl: string) => Promise<void>;
 }
 
 const defaultSettings: QZPrintSettings = {
   barcodePrinterName: null,
   reportPrinterName: null,
+  barcodeBrowserPrintEnabled: false,
   autoPrintBarcodeOnOrder: false,
   autoPrintReportOnApproval: false,
+  barcodeLabelLayout: DEFAULT_LABEL_LAYOUT,
 };
 
 export const QZTrayContext = createContext<QZTrayContextValue>({
@@ -55,60 +68,35 @@ export const QZTrayContext = createContext<QZTrayContextValue>({
   connect: async () => {},
   disconnect: async () => {},
   autoPrintBarcode: async () => {},
+  autoPrintBarcodes: async () => {},
   autoPrintReport: async () => {},
 });
 
 export const useQZTray = () => useContext(QZTrayContext);
-
-const cleanPrinterName = (value: string | null | undefined): string | null => {
-  const trimmed = value?.trim();
-  return trimmed || null;
-};
-
-const PRINT_SETTINGS_CACHE_KEY = 'lims_print_bridge_settings';
-
-const getCachedPrinterSettings = (): Pick<QZPrintSettings, 'barcodePrinterName' | 'reportPrinterName'> => {
-  try {
-    const raw = window.localStorage.getItem(PRINT_SETTINGS_CACHE_KEY);
-    const parsed = raw ? JSON.parse(raw) : null;
-
-    return {
-      barcodePrinterName: cleanPrinterName(parsed?.barcodePrinterName),
-      reportPrinterName: cleanPrinterName(parsed?.reportPrinterName),
-    };
-  } catch {
-    return {
-      barcodePrinterName: null,
-      reportPrinterName: null,
-    };
-  }
-};
-
-export const cachePrinterSettings = (input: {
-  barcodePrinterName?: string | null;
-  reportPrinterName?: string | null;
-}) => {
-  try {
-    window.localStorage.setItem(
-      PRINT_SETTINGS_CACHE_KEY,
-      JSON.stringify({
-        barcodePrinterName: cleanPrinterName(input.barcodePrinterName),
-        reportPrinterName: cleanPrinterName(input.reportPrinterName),
-        updatedAt: new Date().toISOString(),
-      })
-    );
-  } catch {
-    // Browser storage is optional; DB settings remain the source of truth.
-  }
-};
 
 export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [status, setStatus] = useState<QZConnectionStatus>('connected');
   const [settings, setSettings] = useState<QZPrintSettings>(defaultSettings);
   const settingsLoadedRef = useRef(false);
 
+  const normalizePrinterName = (value: unknown): string | null => {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+
   useEffect(() => {
     return printService.onConnectionStatusChange(setStatus);
+  }, []);
+
+  /**
+   * Publish the resolved layout to the label renderers as well as to React
+   * state. The PDF and ZPL builders read it from there, which keeps every
+   * existing print call site unchanged.
+   */
+  const applySettings = useCallback((next: QZPrintSettings) => {
+    setSettings(next);
+    setActiveLabelLayout(next.barcodeLabelLayout);
   }, []);
 
   const refreshSettings = useCallback(async (): Promise<QZPrintSettings> => {
@@ -118,29 +106,24 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         database.getCurrentUserPrimaryLocation(),
       ]);
 
-      console.warn('[PrintBridge][Settings] resolving printer settings', {
-        labId,
-        locationId,
-      });
-
       if (!labId) {
-        console.warn('[PrintBridge][Settings] no lab id found; printer settings unavailable');
-        setSettings(defaultSettings);
+        applySettings(defaultSettings);
         return defaultSettings;
       }
 
       const [labResult, locationResult] = await Promise.all([
         supabase
           .from('labs')
-          .select('barcode_printer_name, report_printer_name, auto_print_barcode_on_order, auto_print_report_on_approval')
+          .select('barcode_printer_name, report_printer_name, barcode_browser_print_enabled, barcode_label_layout, auto_print_barcode_on_order, auto_print_report_on_approval')
           .eq('id', labId)
           .single(),
         locationId
           ? supabase
               .from('locations')
-              .select('barcode_printer_name, report_printer_name, auto_print_barcode_on_order, auto_print_report_on_approval')
+              .select('barcode_printer_name, report_printer_name, barcode_browser_print_enabled, barcode_label_layout, auto_print_barcode_on_order, auto_print_report_on_approval')
               .eq('id', locationId)
-              .single()
+              .eq('lab_id', labId)
+              .maybeSingle()
           : Promise.resolve({ data: null }),
       ]);
 
@@ -148,61 +131,41 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const loc = locationResult.data;
 
       if (!lab) {
-        console.warn('[PrintBridge][Settings] lab settings not found', {
-          labId,
-          labError: labResult.error?.message,
-        });
-        setSettings(defaultSettings);
+        applySettings(defaultSettings);
         return defaultSettings;
       }
 
-      const cachedPrinterSettings = getCachedPrinterSettings();
-      const resolvedBarcodePrinterName =
-        cleanPrinterName(loc?.barcode_printer_name) ||
-        cleanPrinterName(lab.barcode_printer_name) ||
-        cachedPrinterSettings.barcodePrinterName;
-      const resolvedReportPrinterName =
-        cleanPrinterName(loc?.report_printer_name) ||
-        cleanPrinterName(lab.report_printer_name) ||
-        cachedPrinterSettings.reportPrinterName;
-
       const nextSettings = {
-        barcodePrinterName: resolvedBarcodePrinterName,
-        reportPrinterName: resolvedReportPrinterName,
+        barcodePrinterName:
+          normalizePrinterName(loc?.barcode_printer_name) ??
+          normalizePrinterName(lab.barcode_printer_name),
+        reportPrinterName:
+          normalizePrinterName(loc?.report_printer_name) ??
+          normalizePrinterName(lab.report_printer_name),
+        barcodeBrowserPrintEnabled:
+          loc?.barcode_browser_print_enabled ?? lab.barcode_browser_print_enabled ?? false,
         autoPrintBarcodeOnOrder:
           loc?.auto_print_barcode_on_order ?? lab.auto_print_barcode_on_order ?? false,
         autoPrintReportOnApproval:
           loc?.auto_print_report_on_approval ?? lab.auto_print_report_on_approval ?? false,
+        barcodeLabelLayout: normalizeLabelLayout(
+          loc?.barcode_label_layout ?? lab.barcode_label_layout
+        ),
       };
 
-      console.warn('[PrintBridge][Settings] resolved printer settings', {
-        labId,
-        locationId,
-        rawLabBarcodePrinterName: lab.barcode_printer_name,
-        rawLocationBarcodePrinterName: loc?.barcode_printer_name,
-        barcodePrinterName: nextSettings.barcodePrinterName,
-        cachedBarcodePrinterName: cachedPrinterSettings.barcodePrinterName,
-        rawLabReportPrinterName: lab.report_printer_name,
-        rawLocationReportPrinterName: loc?.report_printer_name,
-        reportPrinterName: nextSettings.reportPrinterName,
-        cachedReportPrinterName: cachedPrinterSettings.reportPrinterName,
-        locationError: locationResult.error?.message,
-      });
-
-      setSettings(nextSettings);
+      applySettings(nextSettings);
       return nextSettings;
-    } catch (err) {
-      // Non-critical; printing remains optional.
-      console.error('[PrintBridge][Settings] failed to resolve printer settings', err);
-      return settings;
+    } catch {
+      applySettings(defaultSettings);
+      return defaultSettings;
     }
-  }, [settings]);
+  }, [applySettings]);
 
   useEffect(() => {
     if (settingsLoadedRef.current) return;
     settingsLoadedRef.current = true;
     refreshSettings();
-  }, []);
+  }, [refreshSettings]);
 
   const connect = useCallback(async () => {
     await printService.connect();
@@ -212,27 +175,39 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     await printService.disconnect();
   }, []);
 
-  const autoPrintBarcode = useCallback(async (data: BarcodeLabelData) => {
-    console.debug('[PrintBridge][Context] autoPrintBarcode invoked', {
+  const autoPrintBarcodes = useCallback(async (labels: BarcodeLabelData[]) => {
+    console.debug('[PrintBridge][Context] autoPrintBarcodes invoked', {
       enabled: settings.autoPrintBarcodeOnOrder,
       printerName: settings.barcodePrinterName,
-      sampleId: data.sampleId,
-      labelId: data.labelId,
+      browserPrint: settings.barcodeBrowserPrintEnabled,
+      count: labels.length,
     });
 
     if (!settings.autoPrintBarcodeOnOrder) return;
+    if (labels.length === 0) return;
     if (!settings.barcodePrinterName) {
       console.warn('[PrintBridge] Auto-print barcode skipped: no barcode printer configured for this location.');
       return;
     }
 
+    if (settings.barcodeBrowserPrintEnabled) {
+      printService.printBarcodeLabelsInBrowser(labels, settings.barcodePrinterName);
+      return;
+    }
+
     try {
-      await printService.printBarcodeLabel(settings.barcodePrinterName, data);
-      console.log('[PrintBridge] Barcode label print job queued for', data.sampleId);
+      for (const label of labels) {
+        await printService.printBarcodeLabel(settings.barcodePrinterName, label);
+      }
+      console.log('[PrintBridge] Barcode label print jobs queued:', labels.length);
     } catch (err) {
       console.error('[PrintBridge] Barcode print queue failed:', err);
     }
   }, [settings]);
+
+  const autoPrintBarcode = useCallback(async (data: BarcodeLabelData) => {
+    await autoPrintBarcodes([data]);
+  }, [autoPrintBarcodes]);
 
   const autoPrintReport = useCallback(async (pdfUrl: string) => {
     console.debug('[PrintBridge][Context] autoPrintReport invoked', {
@@ -256,7 +231,7 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [settings]);
 
   return (
-    <QZTrayContext.Provider value={{ status, settings, refreshSettings, connect, disconnect, autoPrintBarcode, autoPrintReport }}>
+    <QZTrayContext.Provider value={{ status, settings, refreshSettings, connect, disconnect, autoPrintBarcode, autoPrintBarcodes, autoPrintReport }}>
       {children}
     </QZTrayContext.Provider>
   );

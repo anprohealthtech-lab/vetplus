@@ -14,7 +14,7 @@ serve(async (req) => {
 
   try {
     // 1. Parse Input
-    const { lab_id, mode, test_group_name } = await req.json();
+    const { lab_id, mode, test_group_name, test_group_code } = await req.json();
     if (!lab_id) {
       throw new Error('lab_id is required');
     }
@@ -31,65 +31,170 @@ serve(async (req) => {
 
     console.log(`🚀 Starting ${isReset ? 'RESET' : isSync ? 'SYNC' : isSingle ? 'SINGLE' : 'ONBOARD'} for Lab: ${lab_id}`);
 
-    const sampleKey = (sampleType?: string | null) => (sampleType || '').trim() || '__generic__';
-    const labAnalyteKey = (analyteId: string, sampleType?: string | null) => `${analyteId}::${sampleKey(sampleType)}`;
-    const buildLabAnalyteMap = async (analyteIds: string[]) => {
-      const map = new Map<string, string>();
-      const uniqueIds = [...new Set(analyteIds.filter(Boolean))];
-      if (uniqueIds.length === 0) return map;
-      for (let i = 0; i < uniqueIds.length; i += 1000) {
-        const { data: rows } = await supabaseClient
-          .from('lab_analytes')
-          .select('id, analyte_id, sample_type')
-          .eq('lab_id', lab_id)
-          .in('analyte_id', uniqueIds.slice(i, i + 1000));
-        for (const row of (rows || [])) {
-          map.set(labAnalyteKey(row.analyte_id, row.sample_type), row.id);
-          if (!row.sample_type && !map.has(row.analyte_id)) map.set(row.analyte_id, row.id);
-        }
-      }
-      return map;
+    const normalizeTestGroupSampleType = (value: unknown) => {
+      const raw = String(value || '').trim();
+      const aliases: Record<string, string> = {
+        'Citrated Blood': 'Citrated Plasma',
+        'Whole Blood': 'EDTA Blood',
+        'Urine (Random)': 'Urine',
+        'Urine (24hr)': 'Urine',
+        'Aspirate': 'Other',
+        'Biopsy': 'Tissue',
+      };
+      return aliases[raw] || raw || 'EDTA Blood';
     };
-    const pickLabAnalyteId = (map: Map<string, string>, analyteId: string, sampleType?: string | null) =>
-      map.get(labAnalyteKey(analyteId, sampleType)) || map.get(analyteId) || null;
+
+    // --- Shared helper: build hydrated lab_analytes payload from global analytes ---
+    const buildHydratedLabAnalytePayload = async (analyteIds: string[]) => {
+      if (analyteIds.length === 0) return [] as Record<string, any>[];
+
+      const analyteMap = new Map<string, any>();
+      for (let i = 0; i < analyteIds.length; i += 1000) {
+        const { data: analyteRows, error: analyteErr } = await supabaseClient
+          .from('analytes')
+          .select(`
+            id,
+            name,
+            unit,
+            category,
+            reference_range,
+            low_critical,
+            high_critical,
+            interpretation_low,
+            interpretation_normal,
+            interpretation_high,
+            description,
+            ref_range_knowledge,
+            ai_processing_type,
+            ai_prompt_override,
+            group_ai_mode,
+            is_calculated,
+            formula,
+            formula_variables,
+            formula_description,
+            value_type,
+            expected_normal_values,
+            expected_value_flag_map,
+            code,
+            sample_type
+          `)
+          .in('id', analyteIds.slice(i, i + 1000));
+
+        if (analyteErr) {
+          console.error('Error loading analytes for lab_analytes hydration:', analyteErr);
+          continue;
+        }
+
+        for (const row of (analyteRows || [])) analyteMap.set(row.id, row);
+      }
+
+      return analyteIds
+        .map((analyteId) => {
+          const analyte = analyteMap.get(analyteId);
+          if (!analyte) return null;
+
+          return {
+            lab_id,
+            analyte_id: analyteId,
+            is_active: true,
+            visible: true,
+            name: analyte.name,
+            unit: analyte.unit,
+            category: analyte.category,
+            reference_range: analyte.reference_range,
+            low_critical: analyte.low_critical,
+            high_critical: analyte.high_critical,
+            interpretation_low: analyte.interpretation_low,
+            interpretation_normal: analyte.interpretation_normal,
+            interpretation_high: analyte.interpretation_high,
+            description: analyte.description ?? null,
+            ref_range_knowledge: analyte.ref_range_knowledge ?? {},
+            ai_processing_type: analyte.ai_processing_type ?? null,
+            ai_prompt_override: analyte.ai_prompt_override ?? null,
+            group_ai_mode: analyte.group_ai_mode ?? 'individual',
+            is_calculated: analyte.is_calculated ?? false,
+            formula: analyte.formula ?? null,
+            formula_variables: analyte.formula_variables ?? [],
+            formula_description: analyte.formula_description ?? null,
+            value_type: analyte.value_type ?? 'numeric',
+            expected_normal_values: analyte.expected_normal_values ?? [],
+            expected_value_flag_map: analyte.expected_value_flag_map ?? {},
+            code: analyte.code ?? null,
+            sample_type: analyte.sample_type ?? null,
+            display_name: null,
+            default_value: null,
+          };
+        })
+        .filter(Boolean) as Record<string, any>[];
+    };
 
     // --- SINGLE MODE: non-destructive sync of one test group by name ---
     if (isSingle) {
-      if (!test_group_name) throw new Error('test_group_name is required for single mode');
+      if (!test_group_name && !test_group_code) throw new Error('test_group_name or test_group_code is required for single mode');
 
-      // Find entry in global catalog (case-insensitive)
-      const { data: catalogEntry } = await supabaseClient
+      console.log(`🔍 SINGLE mode: lab_id="${lab_id}", test_group_name="${test_group_name}", test_group_code="${test_group_code}"`);
+
+      const catalogFilterParts = [];
+      if (test_group_code) catalogFilterParts.push(`code.ilike.${test_group_code}`);
+      if (test_group_name) catalogFilterParts.push(`name.ilike.${test_group_name}`);
+
+      // Find entry in global catalog (prefer code, then name; both case-insensitive)
+      const { data: catalogMatches, error: catalogError } = await supabaseClient
         .from('global_test_catalog')
-        .select('id, name, code, group_interpretation, default_ai_processing_type, group_level_prompt, ai_config')
-        .ilike('name', test_group_name)
-        .maybeSingle();
+        .select('id, name, code, category, description, default_price, specimen_type_default, department_default, group_interpretation, default_ai_processing_type, group_level_prompt, ai_config')
+        .or(catalogFilterParts.join(','))
+        .limit(5);
+
+      const catalogEntry = (catalogMatches || []).find((row: any) =>
+        test_group_code && row.code?.toLowerCase() === String(test_group_code).toLowerCase()
+      ) || (catalogMatches || [])[0];
+
+      console.log(`📚 Global catalog lookup: found=${!!catalogEntry}, name="${catalogEntry?.name}", error=${catalogError?.message}`);
 
       if (!catalogEntry) {
         return new Response(JSON.stringify({
           success: false,
-          error: `'${test_group_name}' not found in global catalog`,
+          error: `'${test_group_code || test_group_name}' not found in global catalog`,
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
-      // Find lab's test group by name
-      const { data: labGroup } = await supabaseClient
+      const labFilterParts = [];
+      if (test_group_code) labFilterParts.push(`code.ilike.${test_group_code}`);
+      if (test_group_name) labFilterParts.push(`name.ilike.${test_group_name}`);
+
+      // Find lab's test group by code or name (limit guards against duplicate names in the same lab)
+      const { data: labMatches, error: labGroupError } = await supabaseClient
         .from('test_groups')
-        .select('id, name, group_interpretation')
+        .select('id, name, code, lab_id, group_interpretation, global_test_catalog_id')
         .eq('lab_id', lab_id)
-        .ilike('name', test_group_name)
-        .maybeSingle();
+        .or(labFilterParts.join(','))
+        .limit(5);
+
+      const labGroup = (labMatches || []).find((row: any) =>
+        test_group_code && row.code?.toLowerCase() === String(test_group_code).toLowerCase()
+      ) || (labMatches || [])[0];
+
+      console.log(`🏥 Lab group lookup: found=${!!labGroup}, name="${labGroup?.name}", lab_id_match="${labGroup?.lab_id}", error=${labGroupError?.message}`);
 
       if (!labGroup) {
+        // Also check if group exists under a different lab_id (to help diagnose mismatches)
+        const { data: anyMatch } = await supabaseClient
+          .from('test_groups')
+          .select('id, name, code, lab_id')
+          .or(labFilterParts.join(','))
+          .limit(3);
+        console.log(`🔎 Same-name groups in ANY lab: ${JSON.stringify(anyMatch)}`);
         return new Response(JSON.stringify({
           success: false,
-          error: `'${test_group_name}' not found in this lab's test groups`,
+          error: `'${test_group_code || test_group_name}' not found in this lab's test groups`,
+          debug: { lab_id_used: lab_id, any_matches: anyMatch },
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
       // Load analyte metadata from catalog junction table
       const { data: catalogMeta } = await supabaseClient
         .from('global_test_catalog_analytes')
-        .select('analyte_id, sample_type, section_heading, sort_order, display_order, is_visible, is_header, header_name, custom_reference_range')
+        .select('analyte_id, section_heading, sort_order, display_order, is_visible, is_header, header_name, custom_reference_range, custom_name, custom_unit, custom_interpretation_low, custom_interpretation_normal, custom_interpretation_high, custom_method, custom_expected_normal_values, custom_expected_value_codes, default_value, display_name, custom_value_type')
         .eq('catalog_id', catalogEntry.id)
         .order('sort_order', { ascending: true });
 
@@ -108,16 +213,59 @@ serve(async (req) => {
       let analytesHydrated = 0;
 
       if (toAdd.length > 0) {
-        // Ensure analytes exist in lab_analytes (FK guard)
-        const labAnalytePayload = toAdd.map((m: any) => ({ lab_id, analyte_id: m.analyte_id, sample_type: m.sample_type ?? null, is_active: true, visible: true }));
+        // Ensure new analytes exist in lab_analytes (FK guard), hydrated from global analytes first
+        const hydratedPayload = await buildHydratedLabAnalytePayload(
+          [...new Set(toAdd.map((m: any) => m.analyte_id))],
+        );
+        const hydratedMap = new Map<string, Record<string, any>>();
+        for (const row of hydratedPayload) hydratedMap.set(row.analyte_id, row);
+
+        const labAnalytePayload = toAdd.map((m: any) => {
+          const entry: Record<string, any> = hydratedMap.get(m.analyte_id) || {
+            lab_id,
+            analyte_id: m.analyte_id,
+            is_active: true,
+            visible: true,
+          };
+          if (m.custom_name != null) entry.lab_specific_name = m.custom_name;
+          if (m.custom_unit != null) entry.lab_specific_unit = m.custom_unit;
+          if (m.custom_interpretation_low != null) entry.lab_specific_interpretation_low = m.custom_interpretation_low;
+          if (m.custom_interpretation_normal != null) entry.lab_specific_interpretation_normal = m.custom_interpretation_normal;
+          if (m.custom_interpretation_high != null) entry.lab_specific_interpretation_high = m.custom_interpretation_high;
+          if (m.custom_method != null) entry.lab_specific_method = m.custom_method;
+          if (m.custom_reference_range != null) entry.lab_specific_reference_range = m.custom_reference_range;
+          if (m.custom_value_type != null) entry.value_type = m.custom_value_type;
+          if (m.default_value != null) entry.default_value = m.default_value;
+          if (m.display_name != null) entry.display_name = m.display_name;
+          if (m.custom_expected_normal_values != null && m.custom_expected_normal_values !== '[]') entry.expected_normal_values = m.custom_expected_normal_values;
+          if (m.custom_expected_value_codes != null && m.custom_expected_value_codes !== '{}') entry.expected_value_flag_map = m.custom_expected_value_codes;
+          return entry;
+        });
         await supabaseClient.from('lab_analytes').upsert(labAnalytePayload, { onConflict: 'lab_id,analyte_id,sample_type_key', ignoreDuplicates: true });
         analytesHydrated = toAdd.length;
-        const singleLabAnalyteMap = await buildLabAnalyteMap(toAdd.map((m: any) => m.analyte_id));
+      }
 
+      // Build analyte_id → lab_analytes.id map for ALL analytes in this group (toAdd + toUpdate).
+      // Run after the above upsert so any newly added lab_analytes rows are present.
+      const allGroupAnalyteIds = [...new Set([
+        ...toAdd.map((m: any) => m.analyte_id),
+        ...toUpdate.map((m: any) => m.analyte_id),
+      ])];
+      const singleLabAnalyteIdMap = new Map<string, string>();
+      if (allGroupAnalyteIds.length > 0) {
+        const { data: singleLabAnalyteRows } = await supabaseClient
+          .from('lab_analytes')
+          .select('id, analyte_id')
+          .eq('lab_id', lab_id)
+          .in('analyte_id', allGroupAnalyteIds);
+        for (const row of (singleLabAnalyteRows || [])) singleLabAnalyteIdMap.set(row.analyte_id, row.id);
+      }
+
+      if (toAdd.length > 0) {
         const linkPayload = toAdd.map((m: any) => ({
           test_group_id: labGroup.id,
           analyte_id: m.analyte_id,
-          lab_analyte_id: pickLabAnalyteId(singleLabAnalyteMap, m.analyte_id, m.sample_type),
+          lab_analyte_id: singleLabAnalyteIdMap.get(m.analyte_id) ?? null,
           is_visible: m.is_visible ?? true,
           sort_order: m.sort_order,
           display_order: m.display_order ?? m.sort_order,
@@ -135,7 +283,7 @@ serve(async (req) => {
         else console.error('Single mode link error:', linkErr);
       }
 
-      // Update sort_order and section_heading for already-linked analytes
+      // Update sort_order, section_heading, and lab_analyte_id for already-linked analytes
       if (toUpdate.length > 0) {
         for (const m of toUpdate) {
           await supabaseClient
@@ -144,6 +292,10 @@ serve(async (req) => {
               sort_order: m.sort_order,
               display_order: m.display_order ?? m.sort_order,
               section_heading: m.section_heading ?? null,
+              // Backfill lab_analyte_id if it was missing (e.g. rows created before this fix)
+              ...(singleLabAnalyteIdMap.get(m.analyte_id)
+                ? { lab_analyte_id: singleLabAnalyteIdMap.get(m.analyte_id) }
+                : {}),
             })
             .eq('test_group_id', labGroup.id)
             .eq('analyte_id', m.analyte_id);
@@ -151,14 +303,100 @@ serve(async (req) => {
         analytesUpdated = toUpdate.length;
       }
 
-      // Sync group_interpretation only if global has one and lab doesn't yet
+      // --- Clone global analyte_dependencies for calculated analytes in SINGLE mode ---
+      const allAnalyteIdsForDeps = [...new Set([
+        ...toAdd.map((m: any) => m.analyte_id),
+        ...toUpdate.map((m: any) => m.analyte_id),
+      ])];
+      // Find which analytes in this group are calculated
+      const { data: calcRows } = await supabaseClient
+        .from('analytes')
+        .select('id')
+        .in('id', allAnalyteIdsForDeps)
+        .eq('is_calculated', true);
+      const calcIds = (calcRows || []).map((r: any) => r.id);
+
+      if (calcIds.length > 0) {
+        const globalDeps: any[] = [];
+        for (let i = 0; i < calcIds.length; i += 500) {
+          const { data: depRows } = await supabaseClient
+            .from('analyte_dependencies')
+            .select('calculated_analyte_id, source_analyte_id, variable_name')
+            .in('calculated_analyte_id', calcIds.slice(i, i + 500))
+            .is('lab_id', null);
+          if (depRows) globalDeps.push(...depRows);
+        }
+        if (globalDeps.length > 0) {
+          const { data: existingLabDeps } = await supabaseClient
+            .from('analyte_dependencies')
+            .select('calculated_analyte_id, source_analyte_id')
+            .eq('lab_id', lab_id)
+            .in('calculated_analyte_id', calcIds);
+          const existingSet = new Set(
+            (existingLabDeps || []).map((d: any) => `${d.calculated_analyte_id}:${d.source_analyte_id}`)
+          );
+          const depsToInsert = globalDeps
+            .filter((d: any) => !existingSet.has(`${d.calculated_analyte_id}:${d.source_analyte_id}`))
+            .map((d: any) => ({
+              calculated_analyte_id: d.calculated_analyte_id,
+              source_analyte_id: d.source_analyte_id,
+              variable_name: d.variable_name,
+              lab_id: lab_id,
+            }));
+          // Ensure source analytes exist in lab_analytes before inserting deps
+          const sourceAnalyteIds = [...new Set(globalDeps.map((d: any) => d.source_analyte_id))];
+          const { data: existingSourceLa } = await supabaseClient
+            .from('lab_analytes')
+            .select('analyte_id')
+            .eq('lab_id', lab_id)
+            .in('analyte_id', sourceAnalyteIds);
+          const existingSourceSet = new Set((existingSourceLa || []).map((r: any) => r.analyte_id));
+          const missingSourceIds = sourceAnalyteIds.filter((id: string) => !existingSourceSet.has(id));
+          if (missingSourceIds.length > 0) {
+            const sourcePayload = await buildHydratedLabAnalytePayload(missingSourceIds);
+            if (sourcePayload.length > 0) {
+              const { error: srcErr } = await supabaseClient.from('lab_analytes').upsert(sourcePayload, { onConflict: 'lab_id,analyte_id,sample_type_key' });
+              if (srcErr) console.error('Error creating source lab_analytes:', srcErr);
+              else console.log(`   📋 Created ${sourcePayload.length} missing source lab_analytes for dependency resolution`);
+            }
+          }
+
+          if (depsToInsert.length > 0) {
+            const { error: depErr } = await supabaseClient
+              .from('analyte_dependencies')
+              .insert(depsToInsert);
+            if (depErr) console.error('Single mode dependency clone error:', depErr);
+            else console.log(`   🔗 Cloned ${depsToInsert.length} analyte_dependencies for ${calcIds.length} calculated params`);
+          }
+        }
+      }
+
+      // Sync the global catalog link and group_interpretation when missing.
       let interpretationSynced = false;
+      let groupDetailsSynced = false;
+      const singleGroupPatch: Record<string, unknown> = {
+        code: catalogEntry.code,
+        category: catalogEntry.department_default || catalogEntry.category || 'General',
+        default_ai_processing_type: catalogEntry.default_ai_processing_type || 'ocr_report',
+        group_level_prompt: catalogEntry.group_level_prompt || null,
+        ai_config: catalogEntry.ai_config || {},
+        sample_type: normalizeTestGroupSampleType(catalogEntry.specimen_type_default),
+      };
+      if (labGroup.global_test_catalog_id !== catalogEntry.id) {
+        singleGroupPatch.global_test_catalog_id = catalogEntry.id;
+      }
       if (catalogEntry.group_interpretation && !labGroup.group_interpretation) {
-        const { error: interpErr } = await supabaseClient
+        singleGroupPatch.group_interpretation = catalogEntry.group_interpretation;
+      }
+      if (Object.keys(singleGroupPatch).length > 0) {
+        const { error: groupSyncErr } = await supabaseClient
           .from('test_groups')
-          .update({ group_interpretation: catalogEntry.group_interpretation })
+          .update(singleGroupPatch)
           .eq('id', labGroup.id);
-        if (!interpErr) interpretationSynced = true;
+        if (!groupSyncErr) {
+          interpretationSynced = 'group_interpretation' in singleGroupPatch;
+          groupDetailsSynced = true;
+        }
       }
 
       // Seed report sections for this test group (non-destructive)
@@ -202,6 +440,18 @@ serve(async (req) => {
         }
       }
 
+      let repairSummary: any = null;
+      const { data: singleRepairData, error: singleRepairError } = await supabaseClient.rpc(
+        'repair_lab_catalog_metadata',
+        { target_lab_id: lab_id },
+      );
+      if (singleRepairError) {
+        console.error('Single mode repair_lab_catalog_metadata error:', singleRepairError);
+      } else {
+        repairSummary = singleRepairData;
+        console.log('✅ Single mode repair summary:', singleRepairData);
+      }
+
       console.log(`✅ Single sync: ${labGroup.name} — added ${analytesAdded}, updated ${analytesUpdated} analytes, ${sectionsAdded} sections, interpretation synced: ${interpretationSynced}`);
 
       return new Response(JSON.stringify({
@@ -214,7 +464,19 @@ serve(async (req) => {
         analytesUpdated,
         analytesHydrated,
         interpretationSynced,
+        groupDetailsSynced,
+        syncedTestGroup: {
+          id: labGroup.id,
+          name: labGroup.name,
+          code: singleGroupPatch.code,
+          category: singleGroupPatch.category,
+          sample_type: singleGroupPatch.sample_type,
+          default_ai_processing_type: singleGroupPatch.default_ai_processing_type,
+          group_level_prompt: singleGroupPatch.group_level_prompt,
+          global_test_catalog_id: catalogEntry.id,
+        },
         sectionsAdded,
+        repairSummary,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
@@ -233,33 +495,19 @@ serve(async (req) => {
       orphanLabAnalytesDeleted: 0,
       orphanLabTemplatesDeleted: 0
     };
-
-    // --- A. Hydrate Analytes (Safe Upsert) ---
-    console.log('...Hydrating Analytes');
-    const { data: globalAnalytes } = await supabaseClient.from('analytes').select('id, sample_type').eq('is_global', true);
-
-    if (globalAnalytes && globalAnalytes.length > 0) {
-      stats.analytesHydrated = globalAnalytes.length;
-      console.log(`   Found ${globalAnalytes.length} global analytes to sync.`);
-      
-      const labAnalytesPayload = globalAnalytes.map(ga => ({
-        lab_id: lab_id,
-        analyte_id: ga.id,
-        sample_type: ga.sample_type ?? null,
-        is_active: true,
-        visible: true
-      }));
-
-      // Chunk into 500 rows to stay well under Supabase's 1000-row limit
-      const ANALYTE_CHUNK = 500;
-      for (let i = 0; i < labAnalytesPayload.length; i += ANALYTE_CHUNK) {
-        const { error: laError } = await supabaseClient
-          .from('lab_analytes')
-          .upsert(labAnalytesPayload.slice(i, i + ANALYTE_CHUNK), { onConflict: 'lab_id,analyte_id,sample_type_key', ignoreDuplicates: true });
-        if (laError) console.error(`Error hydrating analytes (chunk ${i}):`, laError);
-      }
-      console.log(`   ✅ Upserted ${labAnalytesPayload.length} is_global analytes into lab_analytes`);
-    }
+    const syncDiagnostics: {
+      createCandidates: Array<Record<string, unknown>>;
+      existingMatches: Array<Record<string, unknown>>;
+      skippedTests: Array<Record<string, unknown>>;
+      createFailures: Array<Record<string, unknown>>;
+      createdTests: Array<Record<string, unknown>>;
+    } = {
+      createCandidates: [],
+      existingMatches: [],
+      skippedTests: [],
+      createFailures: [],
+      createdTests: [],
+    };
 
     // --- B. Handle RESET Mode - Delete ALL test groups first ---
     if (isReset) {
@@ -316,21 +564,46 @@ serve(async (req) => {
 
     // --- C. Hydrate Test Groups (BULK approach to avoid timeouts) ---
     console.log('...Hydrating Test Groups');
-    const { data: globalTestGroups } = await supabaseClient.from('global_test_catalog').select('*');
+    // Paginate global_test_catalog in case the catalog grows beyond 1000 entries
+    const allGlobalTestGroups: any[] = [];
+    { let offset = 0; const PAGE = 1000;
+      while (true) {
+        const { data: page } = await supabaseClient.from('global_test_catalog').select('*').range(offset, offset + PAGE - 1);
+        if (page && page.length > 0) allGlobalTestGroups.push(...page);
+        if (!page || page.length < PAGE) break;
+        offset += PAGE;
+      }
+    }
+    const globalTestGroups = allGlobalTestGroups.length > 0 ? allGlobalTestGroups : null;
+    const toCreate: any[] = [];
+    const toUpdate: { gtg: any; existingId: string }[] = [];
+    const toSkip: any[] = [];
+    const createdMap = new Map<string, string>(); // global code -> new lab test_group_id
 
     // Bulk-fetch analyte metadata (section_heading, sort_order) from junction table
     const allCatalogIds = (globalTestGroups || []).map((g: any) => g.id);
-    const catalogAnalyteMeta = new Map<string, { analyte_id: string; sample_type: string | null; section_heading: string | null; sort_order: number; display_order: number | null; is_visible: boolean; is_header: boolean; header_name: string | null; custom_reference_range: string | null }[]>();
+    const catalogAnalyteMeta = new Map<string, { analyte_id: string; section_heading: string | null; sort_order: number; display_order: number | null; is_visible: boolean; is_header: boolean; header_name: string | null; custom_reference_range: string | null; custom_name: string | null; custom_unit: string | null; custom_interpretation_low: string | null; custom_interpretation_normal: string | null; custom_interpretation_high: string | null; custom_method: string | null; custom_expected_normal_values: any; custom_expected_value_codes: any; default_value: string | null; display_name: string | null; custom_value_type: string | null }[]>();
     if (allCatalogIds.length > 0) {
+      // Paginate junction table in batches of catalog IDs, then page through rows within each batch
+      // to avoid Supabase's default 1000-row response limit silently dropping analytes.
+      const GTCA_PAGE = 1000;
       for (let i = 0; i < allCatalogIds.length; i += 500) {
-        const { data: metaRows } = await supabaseClient
-          .from('global_test_catalog_analytes')
-          .select('catalog_id, analyte_id, sample_type, section_heading, sort_order, display_order, is_visible, is_header, header_name, custom_reference_range')
-          .in('catalog_id', allCatalogIds.slice(i, i + 500))
-          .order('sort_order', { ascending: true });
-        for (const row of (metaRows || [])) {
-          if (!catalogAnalyteMeta.has(row.catalog_id)) catalogAnalyteMeta.set(row.catalog_id, []);
-          catalogAnalyteMeta.get(row.catalog_id)!.push(row);
+        const batchIds = allCatalogIds.slice(i, i + 500);
+        let offset = 0;
+        while (true) {
+          const { data: metaRows } = await supabaseClient
+            .from('global_test_catalog_analytes')
+            .select('catalog_id, analyte_id, section_heading, sort_order, display_order, is_visible, is_header, header_name, custom_reference_range, custom_name, custom_unit, custom_interpretation_low, custom_interpretation_normal, custom_interpretation_high, custom_method, custom_expected_normal_values, custom_expected_value_codes, default_value, display_name, custom_value_type')
+            .in('catalog_id', batchIds)
+            .order('catalog_id', { ascending: true })
+            .order('sort_order', { ascending: true })
+            .range(offset, offset + GTCA_PAGE - 1);
+          for (const row of (metaRows || [])) {
+            if (!catalogAnalyteMeta.has(row.catalog_id)) catalogAnalyteMeta.set(row.catalog_id, []);
+            catalogAnalyteMeta.get(row.catalog_id)!.push(row);
+          }
+          if (!metaRows || metaRows.length < GTCA_PAGE) break;
+          offset += GTCA_PAGE;
         }
       }
       console.log(`   📋 Loaded analyte metadata for ${catalogAnalyteMeta.size} catalog entries`);
@@ -342,7 +615,7 @@ serve(async (req) => {
       // --- BULK PRE-FETCH: Load all existing test groups for this lab in ONE query ---
       const { data: existingLabGroups } = await supabaseClient
         .from('test_groups')
-        .select('id, code, name, default_ai_processing_type')
+        .select('id, code, name, default_ai_processing_type, global_test_catalog_id')
         .eq('lab_id', lab_id);
 
       // Build lookup Maps for O(1) access
@@ -389,19 +662,43 @@ serve(async (req) => {
       }
 
       // --- Separate globals into: needs create vs needs update vs skip ---
-      const toCreate: typeof globalTestGroups = [];
-      const toUpdate: { gtg: typeof globalTestGroups[0]; existingId: string }[] = [];
-      const toSkip: typeof globalTestGroups = [];
-
       for (const gtg of globalTestGroups) {
-        const existing = existingByCode.get(gtg.code) || existingByName.get(gtg.name);
+        const existingByCodeMatch = existingByCode.get(gtg.code);
+        const existingByNameMatch = existingByName.get(gtg.name);
+        const existing = existingByCodeMatch || existingByNameMatch;
         if (!existing) {
           toCreate.push(gtg);
+          syncDiagnostics.createCandidates.push({
+            global_id: gtg.id,
+            code: gtg.code,
+            name: gtg.name,
+            reason: 'missing_in_lab',
+          });
         } else if (isSync || isReset) {
           toUpdate.push({ gtg, existingId: existing.id });
+          syncDiagnostics.existingMatches.push({
+            global_id: gtg.id,
+            code: gtg.code,
+            name: gtg.name,
+            existing_id: existing.id,
+            existing_code: existing.code,
+            existing_name: existing.name,
+            match_type: existingByCodeMatch ? 'code' : 'name',
+            action: 'update_existing',
+          });
         } else {
           toSkip.push(gtg);
           stats.testsSkipped++;
+          syncDiagnostics.skippedTests.push({
+            global_id: gtg.id,
+            code: gtg.code,
+            name: gtg.name,
+            existing_id: existing.id,
+            existing_code: existing.code,
+            existing_name: existing.name,
+            match_type: existingByCodeMatch ? 'code' : 'name',
+            reason: 'existing_group_non_sync_mode',
+          });
         }
       }
 
@@ -409,7 +706,6 @@ serve(async (req) => {
 
       // --- BATCH CREATE new test groups in chunks of 50 ---
       const CHUNK = 50;
-      const createdMap = new Map<string, string>(); // global code → new lab test_group_id
 
       for (let i = 0; i < toCreate.length; i += CHUNK) {
         const chunk = toCreate.slice(i, i + CHUNK);
@@ -419,11 +715,12 @@ serve(async (req) => {
             lab_id: lab_id,
             name: gtg.name,
             code: gtg.code,
+            global_test_catalog_id: gtg.id,
             category: gtg.department_default || gtg.category || 'General',
             clinical_purpose: gtg.description || gtg.name,
             price: gtg.default_price || 0,
             turnaround_time: '24 Hours',
-            sample_type: gtg.specimen_type_default || 'EDTA Blood',
+            sample_type: normalizeTestGroupSampleType(gtg.specimen_type_default),
             is_active: true,
             to_be_copied: false,
             default_ai_processing_type: gtg.default_ai_processing_type || 'ocr_report',
@@ -435,10 +732,24 @@ serve(async (req) => {
 
         if (batchErr) {
           console.error(`Batch insert error (chunk ${i}):`, batchErr);
+          syncDiagnostics.createFailures.push({
+            chunk_start: i,
+            chunk_size: chunk.length,
+            codes: chunk.map((gtg: any) => gtg.code),
+            names: chunk.map((gtg: any) => gtg.name),
+            error: batchErr.message,
+          });
           continue;
         }
         for (const ng of (newGroups || [])) {
           createdMap.set(ng.code, ng.id);
+          const source = chunk.find((gtg: any) => gtg.code === ng.code);
+          syncDiagnostics.createdTests.push({
+            id: ng.id,
+            code: ng.code,
+            name: source?.name || null,
+            global_id: source?.id || null,
+          });
         }
         stats.testsCreated += (newGroups || []).length;
         console.log(`   ✅ Created batch ${Math.floor(i/CHUNK)+1}: ${(newGroups||[]).length} test groups`);
@@ -470,7 +781,8 @@ serve(async (req) => {
       }
       // validAnalyteIdsSet: only IDs that actually exist in the analytes table (safe to FK-reference)
       let validAnalyteIdsSet = new Set<string>();
-      const validAnalyteSampleTypes = new Map<string, string | null>();
+      // analyte_id → lab_analytes.id map — populated inside the if block below once lab_analytes are hydrated
+      const labAnalyteIdMap = new Map<string, string>();
       if (allCatalogAnalyteIds.size > 0) {
         // Verify these analyte IDs actually exist in the analytes table
         const catalogIds = [...allCatalogAnalyteIds];
@@ -479,12 +791,9 @@ serve(async (req) => {
         for (let i = 0; i < catalogIds.length; i += 1000) {
           const { data: existingAnalytes } = await supabaseClient
             .from('analytes')
-            .select('id, sample_type')
+            .select('id')
             .in('id', catalogIds.slice(i, i + 1000));
-          for (const analyte of (existingAnalytes || [])) {
-            existingIds.push(analyte.id);
-            validAnalyteSampleTypes.set(analyte.id, analyte.sample_type ?? null);
-          }
+          existingIds = existingIds.concat((existingAnalytes || []).map((a: any) => a.id));
         }
         validAnalyteIdsSet = new Set(existingIds);
         const missing = catalogIds.length - existingIds.length;
@@ -542,31 +851,31 @@ serve(async (req) => {
         }
 
         const allValidIds = [...validAnalyteIdsSet];
-        const catalogLabPayloadByKey = new Map<string, { lab_id: string; analyte_id: string; sample_type: string | null; is_active: boolean; visible: boolean }>();
-        for (const rows of catalogAnalyteMeta.values()) {
-          for (const row of rows) {
-            if (!validAnalyteIdsSet.has(row.analyte_id)) continue;
-            const sample_type = row.sample_type ?? validAnalyteSampleTypes.get(row.analyte_id) ?? null;
-            catalogLabPayloadByKey.set(labAnalyteKey(row.analyte_id, sample_type), {
-              lab_id,
-              analyte_id: row.analyte_id,
-              sample_type,
-              is_active: true,
-              visible: true,
-            });
+        // Build analyte_id → first-seen catalog custom fields map so lab_analytes gets populated
+        const analyteCustomFieldsMap = new Map<string, Record<string, any>>();
+        for (const metaList of catalogAnalyteMeta.values()) {
+          for (const m of metaList) {
+            if (!analyteCustomFieldsMap.has(m.analyte_id)) {
+              const custom: Record<string, any> = {};
+              if (m.custom_name != null) custom.lab_specific_name = m.custom_name;
+              if (m.custom_unit != null) custom.lab_specific_unit = m.custom_unit;
+              if (m.custom_interpretation_low != null) custom.lab_specific_interpretation_low = m.custom_interpretation_low;
+              if (m.custom_interpretation_normal != null) custom.lab_specific_interpretation_normal = m.custom_interpretation_normal;
+              if (m.custom_interpretation_high != null) custom.lab_specific_interpretation_high = m.custom_interpretation_high;
+              if (m.custom_method != null) custom.lab_specific_method = m.custom_method;
+              if (m.custom_reference_range != null) custom.lab_specific_reference_range = m.custom_reference_range;
+              if (m.custom_value_type != null) custom.value_type = m.custom_value_type;
+              if (m.default_value != null) custom.default_value = m.default_value;
+              if (m.display_name != null) custom.display_name = m.display_name;
+              if (m.custom_expected_normal_values != null && m.custom_expected_normal_values !== '[]') custom.expected_normal_values = m.custom_expected_normal_values;
+              if (m.custom_expected_value_codes != null && m.custom_expected_value_codes !== '{}') custom.expected_value_flag_map = m.custom_expected_value_codes;
+              if (Object.keys(custom).length > 0) analyteCustomFieldsMap.set(m.analyte_id, custom);
+            }
           }
         }
-        for (const aid of allValidIds) {
-          const sample_type = validAnalyteSampleTypes.get(aid) ?? null;
-          catalogLabPayloadByKey.set(labAnalyteKey(aid, sample_type), {
-            lab_id,
-            analyte_id: aid,
-            sample_type,
-            is_active: true,
-            visible: true,
-          });
-        }
-        const catalogLabPayload = [...catalogLabPayloadByKey.values()];
+
+        // Pass 1: ensure all analyte rows exist (ignoreDuplicates — never clobbers existing rows)
+        const catalogLabPayload = await buildHydratedLabAnalytePayload(allValidIds);
         for (let i = 0; i < catalogLabPayload.length; i += 500) {
           const { error: cErr } = await supabaseClient
             .from('lab_analytes')
@@ -574,11 +883,110 @@ serve(async (req) => {
           if (cErr) console.error(`Error hydrating catalog analytes (chunk ${i}):`, cErr);
         }
         console.log(`   ✅ Ensured ${allValidIds.length} catalog analytes in lab_analytes`);
+
+        // Pass 2: apply catalog custom fields (section A created rows without them; this fills them in)
+        // Upsert WITHOUT ignoreDuplicates so ON CONFLICT only updates the custom columns in the payload,
+        // leaving is_active / visible and other lab-admin settings untouched.
+        const customFieldsPayload = [...analyteCustomFieldsMap.entries()]
+          .filter(([aid]) => validAnalyteIdsSet.has(aid))
+          .map(([aid, custom]) => ({ lab_id: lab_id, analyte_id: aid, ...custom }));
+        if (customFieldsPayload.length > 0) {
+          for (let i = 0; i < customFieldsPayload.length; i += 500) {
+            const { error: cfErr } = await supabaseClient
+              .from('lab_analytes')
+              .upsert(customFieldsPayload.slice(i, i + 500), { onConflict: 'lab_id,analyte_id,sample_type_key' });
+            if (cfErr) console.error(`Error applying catalog custom fields (chunk ${i}):`, cfErr);
+          }
+          console.log(`   📝 Applied catalog custom fields to ${customFieldsPayload.length} analytes`);
+        }
         stats.analytesHydrated += allValidIds.length;
+
+        // Populate analyte_id → lab_analytes.id map to set lab_analyte_id in test_group_analytes
+        for (let i = 0; i < allValidIds.length; i += 1000) {
+          const { data: laRows } = await supabaseClient
+            .from('lab_analytes')
+            .select('id, analyte_id')
+            .eq('lab_id', lab_id)
+            .in('analyte_id', allValidIds.slice(i, i + 1000));
+          for (const row of (laRows || [])) labAnalyteIdMap.set(row.analyte_id, row.id);
+        }
+        console.log(`   📍 lab_analyte_id map: ${labAnalyteIdMap.size} entries`);
+
+        // --- Clone global analyte_dependencies for calculated analytes ---
+        // The trigger trg_sync_analyte_dependency_lab_links will auto-resolve
+        // calculated_lab_analyte_id and source_lab_analyte_id from lab_id + analyte_id.
+        const calculatedAnalyteIds = catalogLabPayload
+          .filter((row: any) => row.is_calculated && row.formula)
+          .map((row: any) => row.analyte_id);
+
+        if (calculatedAnalyteIds.length > 0) {
+          // Fetch global dependency rows (lab_id IS NULL) for all calculated analytes
+          const globalDeps: any[] = [];
+          for (let i = 0; i < calculatedAnalyteIds.length; i += 500) {
+            const { data: depRows } = await supabaseClient
+              .from('analyte_dependencies')
+              .select('calculated_analyte_id, source_analyte_id, variable_name')
+              .in('calculated_analyte_id', calculatedAnalyteIds.slice(i, i + 500))
+              .is('lab_id', null);
+            if (depRows) globalDeps.push(...depRows);
+          }
+
+          if (globalDeps.length > 0) {
+            // Check which lab-scoped deps already exist to avoid duplicates
+            const { data: existingLabDeps } = await supabaseClient
+              .from('analyte_dependencies')
+              .select('calculated_analyte_id, source_analyte_id')
+              .eq('lab_id', lab_id)
+              .in('calculated_analyte_id', calculatedAnalyteIds);
+            const existingSet = new Set(
+              (existingLabDeps || []).map((d: any) => `${d.calculated_analyte_id}:${d.source_analyte_id}`)
+            );
+
+            const depsToInsert = globalDeps
+              .filter((d: any) => !existingSet.has(`${d.calculated_analyte_id}:${d.source_analyte_id}`))
+              .map((d: any) => ({
+                calculated_analyte_id: d.calculated_analyte_id,
+                source_analyte_id: d.source_analyte_id,
+                variable_name: d.variable_name,
+                lab_id: lab_id,
+              }));
+
+            // Ensure all source analytes exist in lab_analytes so trigger can resolve source_lab_analyte_id
+            const bulkSourceIds = [...new Set(globalDeps.map((d: any) => d.source_analyte_id))];
+            const { data: existingBulkSourceLa } = await supabaseClient
+              .from('lab_analytes')
+              .select('analyte_id')
+              .eq('lab_id', lab_id)
+              .in('analyte_id', bulkSourceIds);
+            const existingBulkSourceSet = new Set((existingBulkSourceLa || []).map((r: any) => r.analyte_id));
+            const missingBulkSourceIds = bulkSourceIds.filter((id: string) => !existingBulkSourceSet.has(id));
+            if (missingBulkSourceIds.length > 0) {
+              const sourcePayload = await buildHydratedLabAnalytePayload(missingBulkSourceIds);
+              if (sourcePayload.length > 0) {
+                const { error: srcErr } = await supabaseClient.from('lab_analytes').upsert(sourcePayload, { onConflict: 'lab_id,analyte_id,sample_type_key' });
+                if (srcErr) console.error('Error creating source lab_analytes:', srcErr);
+                else console.log(`   📋 Created ${sourcePayload.length} missing source lab_analytes for dependency resolution`);
+              }
+            }
+
+            if (depsToInsert.length > 0) {
+              for (let i = 0; i < depsToInsert.length; i += 500) {
+                const { error: depErr } = await supabaseClient
+                  .from('analyte_dependencies')
+                  .insert(depsToInsert.slice(i, i + 500));
+                if (depErr) console.error(`Error cloning analyte_dependencies (chunk ${i}):`, depErr);
+              }
+              console.log(`   🔗 Cloned ${depsToInsert.length} analyte_dependencies from global for ${calculatedAnalyteIds.length} calculated params`);
+            } else {
+              console.log(`   ✅ All ${globalDeps.length} analyte_dependencies already exist for this lab`);
+            }
+          } else {
+            console.log(`   ⚠️ ${calculatedAnalyteIds.length} calculated analytes found but no global dependencies to clone`);
+          }
+        }
       }
 
       // --- BATCH INSERT analyte links for newly created groups ---
-      const catalogLabAnalyteMap = await buildLabAnalyteMap([...validAnalyteIdsSet]);
       const analyteLinksPayload: {
         test_group_id: string; analyte_id: string; lab_analyte_id?: string | null; is_visible: boolean;
         sort_order?: number; display_order?: number | null;
@@ -596,7 +1004,7 @@ serve(async (req) => {
             analyteLinksPayload.push({
               test_group_id: newId,
               analyte_id: m.analyte_id,
-              lab_analyte_id: pickLabAnalyteId(catalogLabAnalyteMap, m.analyte_id, m.sample_type ?? validAnalyteSampleTypes.get(m.analyte_id) ?? null),
+              lab_analyte_id: labAnalyteIdMap.get(m.analyte_id) ?? null,
               is_visible: m.is_visible,
               sort_order: m.sort_order,
               display_order: m.display_order,
@@ -611,13 +1019,7 @@ serve(async (req) => {
           const analyteIds: string[] = (gtg as any)._resolvedAnalyteIds
             || parseAnalyteIds(gtg.analytes).filter((id: string) => UUID_RE.test(id) && validAnalyteIdsSet.has(id));
           for (let idx = 0; idx < analyteIds.length; idx++) {
-            analyteLinksPayload.push({
-              test_group_id: newId,
-              analyte_id: analyteIds[idx],
-              lab_analyte_id: pickLabAnalyteId(catalogLabAnalyteMap, analyteIds[idx], validAnalyteSampleTypes.get(analyteIds[idx]) ?? null),
-              is_visible: true,
-              sort_order: idx
-            });
+            analyteLinksPayload.push({ test_group_id: newId, analyte_id: analyteIds[idx], lab_analyte_id: labAnalyteIdMap.get(analyteIds[idx]) ?? null, is_visible: true, sort_order: idx });
           }
         }
       }
@@ -639,10 +1041,11 @@ serve(async (req) => {
               .from('test_groups')
               .update({
                 code: gtg.code,
+                global_test_catalog_id: gtg.id,
                 default_ai_processing_type: gtg.default_ai_processing_type,
                 group_level_prompt: gtg.group_level_prompt || null,
                 ai_config: gtg.ai_config || {},
-                sample_type: gtg.specimen_type_default || 'EDTA Blood',
+                sample_type: normalizeTestGroupSampleType(gtg.specimen_type_default),
                 category: gtg.department_default || 'General',
                 // Only propagate group_interpretation if global catalog has one set
                 ...(gtg.group_interpretation ? { group_interpretation: gtg.group_interpretation } : {})
@@ -675,7 +1078,7 @@ serve(async (req) => {
               resyncPayload.push({
                 test_group_id: existingId,
                 analyte_id: m.analyte_id,
-                lab_analyte_id: pickLabAnalyteId(catalogLabAnalyteMap, m.analyte_id, m.sample_type ?? validAnalyteSampleTypes.get(m.analyte_id) ?? null),
+                lab_analyte_id: labAnalyteIdMap.get(m.analyte_id) ?? null,
                 is_visible: m.is_visible,
                 sort_order: m.sort_order,
                 display_order: m.display_order,
@@ -689,13 +1092,7 @@ serve(async (req) => {
             const analyteIds: string[] = (gtg as any)._resolvedAnalyteIds
               || parseAnalyteIds(gtg.analytes).filter((id: string) => UUID_RE.test(id) && validAnalyteIdsSet.has(id));
             for (let idx = 0; idx < analyteIds.length; idx++) {
-              resyncPayload.push({
-                test_group_id: existingId,
-                analyte_id: analyteIds[idx],
-                lab_analyte_id: pickLabAnalyteId(catalogLabAnalyteMap, analyteIds[idx], validAnalyteSampleTypes.get(analyteIds[idx]) ?? null),
-                is_visible: true,
-                sort_order: idx
-              });
+              resyncPayload.push({ test_group_id: existingId, analyte_id: analyteIds[idx], lab_analyte_id: labAnalyteIdMap.get(analyteIds[idx]) ?? null, is_visible: true, sort_order: idx });
             }
           }
         }
@@ -838,6 +1235,102 @@ serve(async (req) => {
     if (!invTmplErr && (!existingInvoiceTemplates || existingInvoiceTemplates.length === 0)) {
       console.log('   📄 Creating default invoice templates for lab...');
       
+      const compactInvoiceHtml = `<div class="inv-wrap">
+  <div class="inv-header-band">
+    <div class="inv-meta-col">
+      <div class="inv-title">INVOICE / RECEIPT</div>
+      <table class="inv-meta-table">
+        <tr><td class="meta-label">Invoice No</td><td class="meta-value">{{invoice_number}}</td></tr>
+        <tr><td class="meta-label">Date &amp; Time</td><td class="meta-value">{{invoice_datetime}}</td></tr>
+        <tr><td class="meta-label">Due Date</td><td class="meta-value">{{due_date}}</td></tr>
+        <tr><td class="meta-label">Payment</td><td class="meta-value">{{payment_type}}</td></tr>
+      </table>
+    </div>
+    <div class="inv-divider-v"></div>
+    <div class="inv-bill-col">
+      <div class="inv-section-label">BILL TO</div>
+      <table class="inv-bill-table">
+        <tr><td class="field-label">Patient</td><td class="field-value">{{patient_name}}</td><td class="field-label">ID No</td><td class="field-value">{{custom.id_no}}</td></tr>
+        <tr><td class="field-label">Age / Gender</td><td class="field-value">{{patient_age_gender}}</td><td class="field-label">Phone</td><td class="field-value">{{patient_phone}}</td></tr>
+        <tr><td class="field-label">Ref. Doctor</td><td class="field-value">{{doctor}}</td><td class="field-label">Address</td><td class="field-value">{{custom.address}}</td></tr>
+      </table>
+    </div>
+  </div>
+  <hr class="inv-divider" />
+  <table class="inv-items-table">
+    <thead><tr><th class="col-test">Test / Service</th><th class="col-qty">Qty</th><th class="col-rate">Rate</th><th class="col-amt">Amount</th></tr></thead>
+    <tbody>{{invoice_items}}</tbody>
+  </table>
+  <div class="inv-notes">{{notes}}</div>
+  {{upi_qr_code}}
+  <div class="inv-totals-wrap">
+    <table class="inv-totals-table">
+      <tr><td>Subtotal</td><td>{{subtotal}}</td></tr>
+      <tr><td>Discount</td><td>{{discount}}</td></tr>
+      <tr><td>Tax</td><td>{{tax}}</td></tr>
+      <tr class="totals-grand"><td><strong>Total</strong></td><td><strong>{{total}}</strong></td></tr>
+      <tr><td>Paid</td><td>{{amount_paid}}</td></tr>
+      <tr class="totals-balance"><td><strong>Balance Due</strong></td><td><strong>{{balance_due}}</strong></td></tr>
+    </table>
+  </div>
+  {{payment_status_badge}}
+  <div class="inv-footer">Thank you for visiting {{lab_name}}. For queries call <strong>{{lab_phone}}</strong>.</div>
+</div>`;
+
+      const compactInvoiceCss = `* { box-sizing: border-box; margin: 0; padding: 0; }
+body { margin: 0; padding: 0; background: #fff; }
+.inv-wrap { font-family: Arial, Helvetica, sans-serif; font-size: 10.5px; color: #1a1a1a; line-height: 1.35; background: transparent; width: 100%; max-width: 100%; page-break-inside: avoid; }
+.inv-header-band { display: flex; align-items: flex-start; gap: 0; margin-bottom: 5px; }
+.inv-meta-col { flex: 0 0 38%; padding-right: 9px; }
+.inv-bill-col { flex: 1; padding-left: 9px; min-width: 0; }
+.inv-divider-v { width: 1px; background: #ccc; align-self: stretch; margin: 2px 0; }
+.inv-title { font-size: 14px; font-weight: 700; letter-spacing: 1.2px; color: #111; margin-bottom: 4px; }
+.inv-meta-table, .inv-bill-table, .inv-items-table, .inv-totals-table { border-collapse: collapse; width: 100%; }
+.inv-meta-table { font-size: 10px; }
+.inv-meta-table td { padding: 1px 4px; border: none; }
+.meta-label { color: #555; white-space: nowrap; width: 68px; }
+.meta-value { font-weight: 600; padding-left: 7px !important; white-space: nowrap; }
+.inv-section-label { font-size: 8.5px; font-weight: 700; letter-spacing: 0.8px; color: #777; margin-bottom: 2px; text-transform: uppercase; }
+.inv-bill-table { font-size: 10px; table-layout: fixed; }
+.inv-bill-table td { padding: 1.5px 5px 1.5px 0; vertical-align: top; border: none; overflow-wrap: anywhere; }
+.inv-bill-table .field-label { color: #666; white-space: nowrap; width: 70px; font-size: 9.5px; }
+.inv-bill-table .field-label::after { content: ':'; }
+.inv-bill-table .field-value { font-weight: 600; color: #111; width: 35%; }
+.inv-divider { border: none; border-top: 1px solid #bbb; margin: 5px 0; }
+.inv-items-table { margin-bottom: 4px; font-size: 10px; table-layout: fixed; }
+.inv-items-table thead tr { background-color: #222; color: #fff; }
+.inv-items-table th { padding: 4px 5px; font-weight: 600; font-size: 9.5px; letter-spacing: 0.3px; }
+.inv-items-table td { padding: 3px 5px; border-bottom: 1px solid #e8e8e8; background: transparent; overflow-wrap: anywhere; }
+.inv-items-table tbody tr:nth-child(even) td { background-color: rgba(0,0,0,0.025); }
+.col-test { text-align: left; width: 55%; }
+.col-qty { text-align: center; width: 10%; }
+.col-rate { text-align: right; width: 17%; }
+.col-amt { text-align: right; width: 18%; }
+.inv-items-table td:nth-child(2) { text-align: center; }
+.inv-items-table td:nth-child(3), .inv-items-table td:nth-child(4) { text-align: right; }
+.inv-items-table td:nth-child(4) { font-weight: 600; }
+.inv-notes { font-size: 9.5px; color: #555; margin: 3px 0 5px; min-height: 0; }
+.inv-totals-wrap { display: flex; justify-content: flex-end; margin-top: 3px; page-break-inside: avoid; }
+.inv-totals-table { font-size: 10px; width: 155px; }
+.inv-totals-table td { padding: 2.5px 5px; border: none; background: transparent; }
+.inv-totals-table td:first-child { color: #555; }
+.inv-totals-table td:last-child { text-align: right; font-weight: 500; }
+.totals-grand td { border-top: 1px solid #999; border-bottom: 1px solid #999; padding-top: 3px; padding-bottom: 3px; font-size: 11.5px; color: #111; }
+.totals-balance td { font-size: 11.5px; color: #c0392b; padding-top: 3px; }
+.payment-status-badge { display: inline-block; margin-top: 5px; padding: 2px 8px; border-radius: 3px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.4px; }
+.payment-status-badge.paid { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+.payment-status-badge.pending { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+.upi-payment-block { margin: 5px 0; padding: 6px; border: 1px dashed #999; text-align: center; page-break-inside: avoid; }
+.upi-payment-block img { max-width: 72px; height: auto; }
+.upi-payment-block h3, .upi-payment-block .upi-apps { display: none; }
+.upi-payment-block .upi-id, .upi-payment-block .balance-amount { font-size: 9px; margin: 2px 0; }
+.inv-footer { margin-top: 8px; text-align: center; font-size: 9.5px; color: #666; border-top: 1px solid #ddd; padding-top: 5px; page-break-inside: avoid; }
+@media print {
+  @page { margin: 5mm; }
+  body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .inv-wrap { font-size: 10px; }
+}`;
+
       // Default invoice templates
       const defaultInvoiceTemplates = [
         {
@@ -1202,10 +1695,17 @@ serve(async (req) => {
         }
       ];
       
+      const compactDefaultInvoiceTemplates = defaultInvoiceTemplates.map((template) => ({
+        ...template,
+        gjs_html: compactInvoiceHtml,
+        gjs_css: compactInvoiceCss,
+        page_size: 'A4',
+      }));
+
       // Insert all invoice templates
       const { error: insertInvTmplErr } = await supabaseClient
         .from('invoice_templates')
-        .insert(defaultInvoiceTemplates);
+        .insert(compactDefaultInvoiceTemplates);
       
       if (!insertInvTmplErr) {
         stats.invoiceTemplatesCreated = defaultInvoiceTemplates.length;
@@ -1401,16 +1901,35 @@ serve(async (req) => {
     
     const currentSettings = labData?.pdf_layout_settings || {};
     
-    // Only update if missing key fields (headerTextColor or resultColors)
-    if (!currentSettings.headerTextColor || !currentSettings.resultColors) {
+    // Only update if missing key fields.
+    if (!currentSettings.headerTextColor || !currentSettings.resultColors || !currentSettings.printOptions) {
       const defaultPdfSettings = {
         ...currentSettings, // Keep existing settings
         // Add defaults only if missing
         headerTextColor: currentSettings.headerTextColor || 'white',
+        printOptions: currentSettings.printOptions || {
+          baseFontSize: 14,
+          flagSymbol: 'before',
+          showFlagLegend: false,
+          flagAsterisk: false,
+          flagAsteriskCritical: false,
+          testNameBold: false,
+          testNameAlignment: 'left',
+          boldAllValues: false,
+          boldAbnormalValues: true,
+          calcMarker: 'cal',
+          sectionHeaderInline: true,
+          testGroupTitlePosition: 'above_headers_center',
+          qrHorizontalOffset: 0,
+          basicColumnWidths: {
+            standard: [36, 24, 12, 28],
+            sibling: [30, 14, 8, 16, 16, 16],
+          },
+        },
         resultColors: currentSettings.resultColors || {
           enabled: true,
           high: '#dc2626',
-          low: '#ea580c',
+          low: '#000000',
           normal: '#16a34a'
         },
         // Ensure other defaults are set
@@ -1444,6 +1963,18 @@ serve(async (req) => {
       console.log('   ✅ PDF layout settings already configured');
     }
     
+    let repairSummary: any = null;
+    const { data: repairData, error: repairError } = await supabaseClient.rpc(
+      'repair_lab_catalog_metadata',
+      { target_lab_id: lab_id },
+    );
+    if (repairError) {
+      console.error('repair_lab_catalog_metadata error:', repairError);
+    } else {
+      repairSummary = repairData;
+      console.log('✅ repair_lab_catalog_metadata summary:', repairData);
+    }
+
     console.log(`✅ ${isReset ? 'Reset' : isSync ? 'Sync' : 'Onboarding'} Complete. Stats:`, stats);
 
     return new Response(
@@ -1460,15 +1991,18 @@ serve(async (req) => {
         invoiceTemplatesCreated: stats.invoiceTemplatesCreated,
         sectionsCreated: stats.sectionsCreated,
         orphanLabAnalytesDeleted: stats.orphanLabAnalytesDeleted,
-        orphanLabTemplatesDeleted: stats.orphanLabTemplatesDeleted
+        orphanLabTemplatesDeleted: stats.orphanLabTemplatesDeleted,
+        syncDiagnostics,
+        repairSummary
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error) {
     console.error('Onboarding error:', error);
+    const message = error instanceof Error ? error.message : String(error);
     return new Response(
-      JSON.stringify({ error: error.message }),
+      JSON.stringify({ error: message }),
       { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }

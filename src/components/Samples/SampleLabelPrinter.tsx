@@ -13,12 +13,18 @@ import JsBarcode from 'jsbarcode';
 interface SampleLabelPrinterProps {
   sample: Sample;
   patientName?: string;
+  patientGender?: string;
+  patientAge?: string | number;
+  referredBy?: string;
   showDownload?: boolean;
 }
 
 export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
   sample,
   patientName,
+  patientGender,
+  patientAge,
+  referredBy,
   showDownload = false
 }) => {
   const [barcodeDataUrl, setBarcodeDataUrl] = useState<string>('');
@@ -26,15 +32,7 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { settings, connect, refreshSettings } = useQZTray();
-
-  const escapeHtml = (value: string | null | undefined) =>
-    String(value || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+  const { settings, refreshSettings, connect } = useQZTray();
 
   useEffect(() => {
     generateCodes();
@@ -45,9 +43,12 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       setLoading(true);
       setError(null);
 
-      // Generate barcode
-      // Generate barcode using the numeric barcode if available
-      const barcodeValue = sample.barcode || sample.id;
+      // Generate barcode using the numeric tube barcode. Do not encode the
+      // human-readable sample ID here; analyzers scan samples.barcode.
+      const barcodeValue = String(sample.barcode || '').trim();
+      if (!barcodeValue) {
+        throw new Error('Sample barcode is missing');
+      }
       const barcode = generateBarcodeSync(JsBarcode, barcodeValue, {
         width: 2,
         height: 50,
@@ -67,54 +68,29 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       }
     } catch (err) {
       console.error('Error generating codes:', err);
-      setError('Failed to generate barcode/QR code');
+      setError(err instanceof Error ? err.message : 'Failed to generate barcode/QR code');
     } finally {
       setLoading(false);
     }
   };
 
-  const printInBrowser = () => {
-    const printWindow = window.open('', '_blank', 'width=420,height=520');
+  const getLabelPrintData = () => {
+    const collectionDate = new Date(sample.created_at);
+    return {
+      sampleId: String(sample.barcode || '').trim(),
+      labelId: sample.id,
+      patientName: patientName || 'Sample',
+      sampleType: sample.sample_type,
+      date: collectionDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }).replace(/ /g, '-'),
+      gender: patientGender,
+      age: patientAge ? String(patientAge) : undefined,
+      collectionTime: collectionDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      referredBy: referredBy,
+    };
+  };
 
-    if (!printWindow) {
-      setError('Unable to open browser print window. Please allow pop-ups and try again.');
-      return;
-    }
-
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>Sample Label - ${escapeHtml(sample.id)}</title>
-          <style>
-            @page { size: 50mm 25mm; margin: 3mm; }
-            body { font-family: Arial, sans-serif; margin: 0; text-align: center; color: #111827; }
-            .label { width: 100%; box-sizing: border-box; padding: 4px; }
-            .sample-id { font-family: monospace; font-size: 11px; font-weight: 700; margin-bottom: 3px; }
-            .barcode { max-width: 46mm; height: auto; margin: 0 auto 3px; display: block; }
-            .meta { font-size: 8px; line-height: 1.25; margin-top: 3px; }
-          </style>
-        </head>
-        <body>
-          <div class="label">
-            <div class="sample-id">${escapeHtml(sample.id)}</div>
-            ${barcodeDataUrl ? `<img class="barcode" src="${barcodeDataUrl}" alt="Barcode" />` : ''}
-            <div class="meta">
-              <div><strong>Type:</strong> ${escapeHtml(sample.sample_type)}</div>
-              <div><strong>Container:</strong> ${escapeHtml(sample.container_type)}</div>
-              ${patientName ? `<div><strong>Patient:</strong> ${escapeHtml(patientName)}</div>` : ''}
-              <div>${escapeHtml(new Date(sample.created_at).toLocaleDateString('en-GB'))}</div>
-            </div>
-          </div>
-          <script>
-            window.onload = function() {
-              window.focus();
-              setTimeout(function() { window.print(); }, 100);
-            };
-          </script>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
+  const handleBrowserPrint = (preferredPrinterName?: string | null) => {
+    qzTrayService.printBarcodeLabelsInBrowser([getLabelPrintData()], preferredPrinterName);
   };
 
   const handlePrint = async () => {
@@ -124,34 +100,32 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       sampleType: sample.sample_type,
       configuredPrinter: settings.barcodePrinterName,
       queueReady: qzTrayService.isConnected(),
+      browserPrint: settings.barcodeBrowserPrintEnabled,
     });
 
     let barcodePrinterName = settings.barcodePrinterName;
-
+    let barcodeBrowserPrintEnabled = settings.barcodeBrowserPrintEnabled;
     if (!barcodePrinterName) {
-      console.warn('[PrintBridge][BarcodeLabel] no printer in current context; refreshing settings');
+      console.debug('[PrintBridge][BarcodeLabel] no printer in context, refreshing settings once');
       const refreshedSettings = await refreshSettings();
       barcodePrinterName = refreshedSettings.barcodePrinterName;
-      console.warn('[PrintBridge][BarcodeLabel] refreshed print settings', {
-        configuredPrinterBeforeRefresh: settings.barcodePrinterName,
-        configuredPrinterAfterRefresh: refreshedSettings.barcodePrinterName,
-        reportPrinterAfterRefresh: refreshedSettings.reportPrinterName,
-      });
+      barcodeBrowserPrintEnabled = refreshedSettings.barcodeBrowserPrintEnabled;
     }
 
     if (!barcodePrinterName) {
-      console.warn('[PrintBridge][BarcodeLabel] barcode printer is not configured after refresh; opening browser print', {
-        sampleId: sample.id,
-        barcode: sample.barcode,
-        configuredPrinter: barcodePrinterName,
-      });
-      printInBrowser();
+      console.warn('[PrintBridge][BarcodeLabel] barcode printer is still not configured after refresh, falling back to browser print');
+      handleBrowserPrint();
       return;
     }
 
     try {
       setPrinting(true);
       setError(null);
+
+      if (barcodeBrowserPrintEnabled) {
+        handleBrowserPrint(barcodePrinterName);
+        return;
+      }
 
       if (!qzTrayService.isConnected()) {
         console.debug('[PrintBridge][BarcodeLabel] queue paused, resuming');
@@ -160,16 +134,10 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
 
       console.debug('[PrintBridge][BarcodeLabel] queueing label print job', {
         printerName: barcodePrinterName,
-        sampleIdForBarcode: sample.barcode || sample.id,
+        sampleIdForBarcode: sample.barcode,
         labelId: sample.id,
       });
-      await qzTrayService.printBarcodeLabel(barcodePrinterName, {
-        sampleId: sample.barcode || sample.id,
-        labelId: sample.id,
-        patientName: patientName || 'Sample',
-        sampleType: sample.sample_type,
-        date: new Date(sample.created_at).toLocaleDateString('en-GB'),
-      });
+      await qzTrayService.printBarcodeLabel(barcodePrinterName, getLabelPrintData());
       console.debug('[PrintBridge][BarcodeLabel] print job queued', {
         printerName: barcodePrinterName,
         sampleId: sample.id,
@@ -177,8 +145,7 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       return;
     } catch (err: any) {
       console.error('Print bridge label queue failed:', err);
-      console.warn('[PrintBridge][BarcodeLabel] falling back to browser print');
-      printInBrowser();
+      setError('Failed to queue print job. Please try again.');
     } finally {
       setPrinting(false);
     }

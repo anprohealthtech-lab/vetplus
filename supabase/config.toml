@@ -376,3 +376,57 @@ entrypoint = "./functions/onboarding-lab/index.ts"
 enabled = true
 verify_jwt = false
 entrypoint = "./functions/analyzer-ingest/index.ts"
+
+# Print bridge polling - authenticated via x-lab-api-key header (no user JWT)
+[functions.print-bridge]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/print-bridge/index.ts"
+
+[functions.dispatch-order-to-analyzer]
+verify_jwt = false
+
+[functions.auto-dispatch-analyzer]
+verify_jwt = false
+
+# Called internally with the service-role key and validates that key in the function.
+[functions.resolve-reference-ranges]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/resolve-reference-ranges/index.ts"
+
+# Payment gateway callbacks (browser redirects) - no JWT, CCAvenue/Razorpay POST directly
+[functions.payment-callback]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/payment-callback/index.ts"
+
+# Payment gateway webhooks (server-to-server) - no JWT, called by payment providers
+[functions.payment-webhook]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/payment-webhook/index.ts"
+
+# Check B2B account credit availability
+[functions.check-b2b-credit]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/check-b2b-credit/index.ts"
+
+# Initiate payment with gateway
+[functions.initiate-payment]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/initiate-payment/index.ts"
+
+# Create auth user - admin creates users for their lab
+[functions.create-auth-user]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/create-auth-user/index.ts"
+
+# Patient portal self-service PIN reset - public, PIN delivered only via lab WhatsApp
+[functions.patient-forgot-pin]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/patient-forgot-pin/index.ts"

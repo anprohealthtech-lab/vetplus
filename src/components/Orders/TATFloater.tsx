@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 interface TATAlertOrder {
   order_id: string;
   order_number: number | null;
+  sample_id: string | null;
   patient_name: string;
   test_group_name: string;
   hours_until_tat_breach: number;
@@ -43,20 +44,17 @@ export const TATFloater: React.FC<TATFloaterProps> = ({ className = '' }) => {
         .from('v_order_test_progress_enhanced')
         .select(`
           order_id,
+          order_number,
+          sample_id,
+          patient_name,
           test_group_name,
           hours_until_tat_breach,
           is_tat_breached,
           tat_hours,
-          sample_received_at,
-          orders!inner(
-            order_number,
-            lab_id,
-            status,
-            patients!inner(name)
-          )
+          sample_received_at
         `)
-        .eq('orders.lab_id', lab_id)
-        .in('orders.status', ['Order Created', 'Sample Collection', 'In Progress', 'Pending Approval'])
+        .eq('lab_id', lab_id)
+        .in('order_status', ['Order Created', 'Sample Collection', 'In Progress', 'Pending Approval'])
         .or('is_tat_breached.eq.true,hours_until_tat_breach.lt.2')
         .not('hours_until_tat_breach', 'is', null)
         .order('hours_until_tat_breach', { ascending: true })
@@ -69,8 +67,9 @@ export const TATFloater: React.FC<TATFloaterProps> = ({ className = '' }) => {
 
       const formatted: TATAlertOrder[] = (data || []).map((row: any) => ({
         order_id: row.order_id,
-        order_number: row.orders?.order_number,
-        patient_name: row.orders?.patients?.name || 'Unknown',
+        order_number: typeof row.order_number === 'number' ? row.order_number : null,
+        sample_id: row.sample_id || null,
+        patient_name: row.patient_name || 'Unknown',
         test_group_name: row.test_group_name || 'Unknown Test',
         hours_until_tat_breach: row.hours_until_tat_breach,
         is_tat_breached: row.is_tat_breached,
@@ -92,8 +91,17 @@ export const TATFloater: React.FC<TATFloaterProps> = ({ className = '' }) => {
     return `${Math.round(hours * 10) / 10}h left`;
   };
 
+  const getOrderLabel = (alert: TATAlertOrder): string => {
+    if (typeof alert.order_number === 'number' && Number.isFinite(alert.order_number)) {
+      return String(alert.order_number);
+    }
+
+    const sampleTail = alert.sample_id?.match(/(?:^|[/-])(\d+)\s*$/)?.[1];
+    return sampleTail || alert.sample_id || alert.order_id.slice(0, 8);
+  };
+
   const handleOrderClick = (orderId: string) => {
-    navigate(`/results/${orderId}`);
+    navigate(`/orders/${orderId}`);
   };
 
   // Don't show if dismissed or no alerts
@@ -157,7 +165,7 @@ export const TATFloater: React.FC<TATFloaterProps> = ({ className = '' }) => {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className="font-medium text-sm text-gray-900 truncate">
-                          #{alert.order_number || 'N/A'}
+                          #{getOrderLabel(alert)}
                         </span>
                         <span className="text-xs text-gray-500 truncate">
                           {alert.patient_name}

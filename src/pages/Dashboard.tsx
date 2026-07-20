@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { endOfDay, format, isValid, parseISO, startOfDay, subDays } from "date-fns";
 import {
   Plus,
@@ -76,13 +77,18 @@ type ProgressRow = {
   total_values: number;
   has_results: boolean;
   is_verified: boolean;
-  panel_status: "Not started" | "In progress" | "Partial" | "Complete" | "Verified";
+  panel_status: "Not started" | "In progress" | "Partial" | "Complete" | "Verified" | "not_started" | "in_progress" | "completed" | "pending_approval" | "verified";
   sample_type?: string;
   sample_color?: string;
   color_code?: string;
   color_name?: string;
   tat_hours?: number | null;
   tat_start_time?: string | null;
+  // Section-only fields
+  is_section_only?: boolean;
+  has_section_content?: boolean;
+  section_verification_status?: string | null;
+  section_verified_at?: string | null;
 };
 
 type OrderRow = {
@@ -104,6 +110,7 @@ type OrderRow = {
   color_name: string | null;
   sample_collected_at: string | null;
   sample_collected_by: string | null;
+  samples?: { id: string; barcode: string | null; sample_type?: string | null; created_at?: string | null }[] | null;
 
   // Billing fields
   billing_status?: "pending" | "partial" | "billed" | null;
@@ -135,6 +142,10 @@ type Panel = {
   sample_type?: string;
   sample_color?: string;
   order_color?: string;
+  // Section-only fields
+  is_section_only?: boolean;
+  has_section_content?: boolean;
+  section_verification_status?: string | null;
 };
 
 // Update CardOrder type
@@ -157,6 +168,8 @@ type CardOrder = {
   order_number?: number | null;
 
   sample_id: string | null;
+  sample_barcode?: string | null;
+  samples?: { id: string; barcode: string | null; sample_type?: string | null; created_at?: string | null }[];
   color_code: string | null;
   color_name: string | null;
   sample_collected_at: string | null;
@@ -260,6 +273,20 @@ const Dashboard: React.FC = () => {
   const [doctorFilter, setDoctorFilter] = useState<string>("All");
   const [dashboardTab, setDashboardTab] = useState<"standard" | "patient-visits">("standard");
   const [bookingQueueOpen, setBookingQueueOpen] = useState(false);
+  const [pendingBookingsCount, setPendingBookingsCount] = useState(0);
+
+  useEffect(() => {
+    database.bookings
+      .list({ status: "pending" })
+      .then(({ data }) => {
+        if (data) {
+          setPendingBookingsCount(
+            (data as any[]).filter((b) => !["converted", "cancelled"].includes(b.status)).length
+          );
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Date range state - default to last 5 calendar days
   const [dateFrom, setDateFrom] = useState<string>(() => {
@@ -271,6 +298,19 @@ const Dashboard: React.FC = () => {
   const [showOrderForm, setShowOrderForm] = useState(false);
   const [processingBooking, setProcessingBooking] = useState<any>(null); // State for booking being processed
   const [selectedOrder, setSelectedOrder] = useState<CardOrder | null>(null);
+
+  // Booking routed in from another page (e.g. Phlebo Collections "Process Order")
+  const routerLocation = useLocation();
+  const routerNavigate = useNavigate();
+  useEffect(() => {
+    const routedBooking = (routerLocation.state as any)?.processBooking;
+    if (routedBooking) {
+      setProcessingBooking(routedBooking);
+      setShowOrderForm(true);
+      // Clear the state so refresh/back doesn't reopen the form
+      routerNavigate(routerLocation.pathname, { replace: true, state: null });
+    }
+  }, [routerLocation.state]);
 
   // Auto-open collection modal after order creation
   const [pendingAutoCollectOrderId, setPendingAutoCollectOrderId] = useState<string | null>(null);
@@ -289,6 +329,7 @@ const Dashboard: React.FC = () => {
   const [isSendingReport, setIsSendingReport] = useState<string | null>(null);
   const [isSendingInvoice, setIsSendingInvoice] = useState<string | null>(null);
   const [printingReportId, setPrintingReportId] = useState<string | null>(null);
+  const [printingLabelId, setPrintingLabelId] = useState<string | null>(null);
 
   // dashboard counters
   const [summary, setSummary] = useState({
@@ -365,6 +406,7 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
   billing_status, is_billed, referring_doctor_id,
   location_id, transit_status, collected_at_location_id,
   patients(name, age, age_unit, gender, phone, email),
+  samples(id, barcode, sample_type, created_at),
   order_tests(id, test_group_id, test_name, outsourced_lab_id, package_id, is_billed, invoice_id, is_canceled, outsourced_labs(name), test_groups(sample_type, sample_color)),
   doctors(phone, email),
   locations!orders_location_id_fkey(id, name, type),
@@ -372,7 +414,8 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       `
       )
       .eq("lab_id", lab_id)
-      .order("order_date", { ascending: false });
+      .order("order_date", { ascending: false })
+      .order("id", { ascending: false });
 
     // Apply location filtering if required
     const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
@@ -389,27 +432,64 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       q = q.gte("order_date", queryStart).lte("order_date", queryEnd);
     }
 
-    const { data: rows, error } = await q;
-
-    if (error) {
-      console.error("orders load error", error);
-      return;
+    // PostgREST caps every response at 1000 rows, so page through with
+    // range() until a short page signals the end.
+    const PAGE_SIZE = 1000;
+    const orderRows: OrderRow[] = [];
+    for (let from = 0; ; from += PAGE_SIZE) {
+      const { data: page, error } = await q.range(from, from + PAGE_SIZE - 1);
+      if (error) {
+        console.error("orders load error", error);
+        return;
+      }
+      orderRows.push(...((page || []) as OrderRow[]));
+      if (!page || page.length < PAGE_SIZE) break;
     }
 
-    const orderRows = (rows || []) as OrderRow[];
     const orderIds = orderRows.map((o) => o.id);
     if (orderIds.length === 0) {
       setOrders([]);
       return;
     }
 
-    // 2) view-based progress
-    const { data: prog, error: pErr } = await supabase
-      .from("v_order_test_progress_enhanced")
-      .select("*")
-      .in("order_id", orderIds);
+    // Run .in() lookups in id chunks so large order sets neither exceed URL
+    // limits nor get truncated by the 1000-row response cap, paging each
+    // chunk in case its result set alone exceeds the cap.
+    const fetchAllChunked = async (
+      ids: string[],
+      buildQuery: (chunkIds: string[]) => any,
+      label: string,
+    ): Promise<any[]> => {
+      const CHUNK = 100;
+      const chunks: string[][] = [];
+      for (let i = 0; i < ids.length; i += CHUNK) chunks.push(ids.slice(i, i + CHUNK));
+      const results = await Promise.all(chunks.map(async (chunkIds) => {
+        const rows: any[] = [];
+        const query = buildQuery(chunkIds);
+        for (let from = 0; ; from += PAGE_SIZE) {
+          const { data, error } = await query.range(from, from + PAGE_SIZE - 1);
+          if (error) {
+            console.error(`${label} load error`, error);
+            break;
+          }
+          rows.push(...(data || []));
+          if (!data || data.length < PAGE_SIZE) break;
+        }
+        return rows;
+      }));
+      return results.flat();
+    };
 
-    if (pErr) console.error("progress view error", pErr);
+    // 2) view-based progress
+    const prog = await fetchAllChunked(
+      orderIds,
+      (ids) =>
+        supabase
+          .from("v_order_test_progress_enhanced")
+          .select("*")
+          .in("order_id", ids),
+      "progress view",
+    );
 
     const byOrder = new Map<string, ProgressRow[]>();
     (prog || []).forEach((r) => {
@@ -420,27 +500,31 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
 
     // 3) Fetch billing data in two batched requests. The previous per-order,
     // per-invoice fan-out produced dozens of duplicate requests on every refresh.
-    const { data: allInvoices, error: invoicesError } = await supabase
-      .from("invoices")
-      .select(`
-        id, order_id, invoice_date, subtotal, total, total_after_discount,
-        total_refunded_amount, whatsapp_sent_at, whatsapp_sent_via,
-        email_sent_at, email_sent_via, payment_reminder_count, last_reminder_at
-      `)
-      .in("order_id", orderIds)
-      .order("invoice_date", { ascending: false });
-
-    if (invoicesError) console.error("invoice batch load error", invoicesError);
+    const allInvoices = await fetchAllChunked(
+      orderIds,
+      (ids) =>
+        supabase
+          .from("invoices")
+          .select(`
+            id, order_id, invoice_date, subtotal, total, total_after_discount,
+            total_refunded_amount, whatsapp_sent_at, whatsapp_sent_via,
+            email_sent_at, email_sent_via, payment_reminder_count, last_reminder_at
+          `)
+          .in("order_id", ids)
+          .order("invoice_date", { ascending: false }),
+      "invoice batch",
+    );
 
     const invoiceIds = (allInvoices || []).map((invoice: any) => invoice.id);
-    const { data: allPayments, error: paymentsError } = invoiceIds.length > 0
-      ? await supabase
-        .from("payments")
-        .select("invoice_id, amount")
-        .in("invoice_id", invoiceIds)
-      : { data: [], error: null };
-
-    if (paymentsError) console.error("payment batch load error", paymentsError);
+    const allPayments = await fetchAllChunked(
+      invoiceIds,
+      (ids) =>
+        supabase
+          .from("payments")
+          .select("invoice_id, amount")
+          .in("invoice_id", ids),
+      "payment batch",
+    );
 
     const paidByInvoice = new Map<string, number>();
     (allPayments || []).forEach((payment: any) => {
@@ -495,11 +579,16 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
     // These are charges added via the order modal but not yet on any invoice.
     // They must be added to orderAmount so due_amount is correct.
     const uninvoicedChargesMap = new Map<string, number>();
-    const { data: billingItemsRows } = await supabase
-      .from('order_billing_items')
-      .select('order_id, amount')
-      .in('order_id', orderIds)
-      .eq('is_invoiced', false);
+    const billingItemsRows = await fetchAllChunked(
+      orderIds,
+      (ids) =>
+        supabase
+          .from('order_billing_items')
+          .select('order_id, amount')
+          .in('order_id', ids)
+          .eq('is_invoiced', false),
+      'billing items',
+    );
     (billingItemsRows || []).forEach((row: any) => {
       uninvoicedChargesMap.set(row.order_id, (uninvoicedChargesMap.get(row.order_id) || 0) + (row.amount || 0));
     });
@@ -520,11 +609,16 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       }
     >();
 
-    const { data: reportsData } = await supabase
-      .from("reports")
-      .select("order_id, pdf_url, print_pdf_url, status, report_type, whatsapp_sent_at, whatsapp_sent_via, email_sent_at, email_sent_via, doctor_informed_at, doctor_sent_via")
-      .in("order_id", orderIds)
-      .eq("report_type", "final");
+    const reportsData = await fetchAllChunked(
+      orderIds,
+      (ids) =>
+        supabase
+          .from("reports")
+          .select("order_id, pdf_url, print_pdf_url, status, report_type, whatsapp_sent_at, whatsapp_sent_via, email_sent_at, email_sent_via, doctor_informed_at, doctor_sent_via")
+          .in("order_id", ids)
+          .eq("report_type", "final"),
+      "reports",
+    );
 
     (reportsData || []).forEach((r: any) => {
       reportMap.set(r.order_id, {
@@ -573,6 +667,10 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         sample_type: r.sample_type,
         sample_color: r.sample_color,
         order_color: r.color_code,
+        // Section-only fields
+        is_section_only: r.is_section_only,
+        has_section_content: r.has_section_content,
+        section_verification_status: r.section_verification_status,
       }));
 
       const expectedTotal = panels.reduce((sum, p) => sum + p.expected, 0);
@@ -589,6 +687,12 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       const doctorData = (o as any).doctors;
       const doctor_phone = doctorData?.phone || null;
       const doctor_email = doctorData?.email || null;
+      const orderSamples = Array.isArray((o as any).samples)
+        ? [...((o as any).samples || [])].sort((a: any, b: any) =>
+            new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+          )
+        : [];
+      const primarySample = orderSamples[0] || null;
 
       // Extra uninvoiced charges for this order (not yet on any invoice)
       const uninvoicedCharges = uninvoicedChargesMap.get(o.id) || 0;
@@ -615,6 +719,8 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
 
         order_number: o.order_number ?? null,
         sample_id: o.sample_id,
+        sample_barcode: primarySample?.barcode || null,
+        samples: orderSamples,
         color_code: o.color_code,
         color_name: o.color_name,
         sample_collected_at: o.sample_collected_at,
@@ -839,7 +945,11 @@ id,
             };
           });
 
-          await createSamplesForOrder(order.id, testGroupsWithInfo, labId || order.lab_id, orderData.patient_id);
+          await createSamplesForOrder(order.id, testGroupsWithInfo, labId || order.lab_id, orderData.patient_id, {
+            preBarcodedBarcode: orderData.__preBarcoded ? orderData.__preBarcodedBarcode : null,
+            collectedAt: order.sample_collected_at || orderData.sample_collected_at || null,
+            collectedBy: order.sample_collector_id || orderData.sample_collector_id || null,
+          });
         }
       } catch (sampleCheckErr) {
         console.error("Error auto-creating samples from Dashboard:", sampleCheckErr);
@@ -1345,6 +1455,23 @@ id,
         return;
       }
 
+      const sentInvoices = invoices.filter((invoice: any) => invoice.whatsapp_sent_at);
+      if (sentInvoices.length > 0) {
+        const latestSentAt = sentInvoices
+          .map((invoice: any) => invoice.whatsapp_sent_at)
+          .filter(Boolean)
+          .sort()
+          .pop();
+        const sentDate = latestSentAt ? new Date(latestSentAt).toLocaleString() : "an earlier time";
+        const confirmResend = window.confirm(
+          `Invoice already sent via WhatsApp on ${sentDate}.\n\nSend again?`
+        );
+        if (!confirmResend) {
+          setIsSendingInvoice(null);
+          return;
+        }
+      }
+
       // Calculate totals across all invoices
       const totalInvoiced = invoices.reduce((sum, inv) => sum + (inv.total_after_discount || inv.total || 0), 0);
       const totalPaid = invoices.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0);
@@ -1365,7 +1492,7 @@ id,
       for (const invoice of invoices) {
         let pdfUrl = invoice.pdf_url;
         if (!pdfUrl) {
-          pdfUrl = await generateInvoicePDF(invoice.id, defaultTemplate.id);
+          pdfUrl = await generateInvoicePDF(invoice.id, defaultTemplate.id, { triggerNotification: false });
           if (!pdfUrl) {
             alert(`Failed to generate PDF for invoice ${invoice.invoice_number || invoice.id.slice(0, 8)}`);
             setIsSendingInvoice(null);
@@ -1531,7 +1658,7 @@ id,
           alert("No invoice template found. Please configure templates in Settings.");
           return;
         }
-        pdfUrl = await generateInvoicePDF(primaryInvoice.id, defaultTemplate.id);
+        pdfUrl = await generateInvoicePDF(primaryInvoice.id, defaultTemplate.id, { triggerNotification: false });
       }
 
       if (pdfUrl) {
@@ -1591,6 +1718,70 @@ id,
       alert(error?.message || "Failed to queue report for LIMS Utility.");
     } finally {
       setPrintingReportId(null);
+    }
+  };
+
+  const getDashboardLabelData = (order: CardOrder): qzTrayService.BarcodeLabelData[] => {
+    const labelDate = new Date(order.order_date);
+    const primaryPanel = order.panels.find((panel) => panel.sample_type || panel.name) || order.panels[0];
+    const sourceSamples = order.samples?.length
+      ? order.samples
+      : order.sample_barcode
+        ? [{ id: order.sample_id || order.sample_barcode, barcode: order.sample_barcode, sample_type: primaryPanel?.sample_type || order.color_name || "Sample" }]
+        : [];
+
+    return sourceSamples
+      .map((sample) => ({
+        sample,
+        barcodeValue: String(sample.barcode || '').trim(),
+      }))
+      .filter(({ barcodeValue }) => !!barcodeValue)
+      .map(({ sample, barcodeValue }) => ({
+        sampleId: barcodeValue,
+        labelId: sample.id || barcodeValue,
+        patientName: order.patient_name || "Sample",
+        sampleType: sample.sample_type || primaryPanel?.sample_type || order.color_name || "Sample",
+        date: isValid(labelDate)
+          ? labelDate.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit" }).replace(/ /g, "-")
+          : undefined,
+        collectionTime: isValid(labelDate)
+          ? labelDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+          : undefined,
+        gender: order.patient?.gender || undefined,
+        age: order.patient?.age ? String(order.patient.age) : undefined,
+        referredBy: order.doctor || undefined,
+      }));
+  };
+
+  const handlePrintBarcodeLabel = async (order: CardOrder) => {
+    const labelData = getDashboardLabelData(order);
+    if (labelData.length === 0) {
+      alert("No sample barcode is available for this order.");
+      return;
+    }
+
+    const barcodePrinterName = qzSettings.barcodePrinterName;
+
+    try {
+      setPrintingLabelId(order.id);
+
+      if (!barcodePrinterName || qzSettings.barcodeBrowserPrintEnabled) {
+        qzTrayService.printBarcodeLabelsInBrowser(labelData, barcodePrinterName);
+        return;
+      }
+
+      if (!qzTrayService.isConnected()) {
+        await qzConnect();
+      }
+
+      for (const label of labelData) {
+        await qzTrayService.printBarcodeLabel(barcodePrinterName, label);
+      }
+    } catch (error: any) {
+      console.error("Print bridge label queue failed:", error);
+      alert(error?.message || "Failed to print barcode label.");
+    } finally {
+      setPrintingLabelId(null);
     }
   };
 
@@ -1698,20 +1889,37 @@ id,
                 </button>
               </h1>
               {/* Center: Create Order — prominent CTA */}
-              <div className="flex justify-center">
+              <div className="flex justify-center items-center gap-3">
                 <button
                   onClick={() => setShowOrderForm(true)}
-                  className="inline-flex items-center gap-2 px-8 py-3 bg-blue-600 text-white text-lg font-bold rounded-xl hover:bg-blue-700 active:bg-blue-800 shadow-lg hover:shadow-xl transition-all"
+                  className="inline-flex items-center gap-2 px-8 py-3 bg-primary-600 text-white text-lg font-bold rounded-xl hover:bg-primary-700 active:bg-primary-800 shadow-lg hover:shadow-xl transition-all"
                 >
                   <Plus className="h-6 w-6" />
                   Create Order
+                </button>
+                <button
+                  onClick={() => setBookingQueueOpen((o) => !o)}
+                  className={`relative inline-flex items-center gap-2 px-4 py-3 rounded-xl font-semibold shadow-sm border transition-all ${
+                    bookingQueueOpen
+                      ? "bg-blue-50 text-blue-700 border-blue-300"
+                      : "bg-white text-gray-700 border-gray-200 hover:bg-blue-50 hover:border-blue-200"
+                  }`}
+                  title="View pending bookings"
+                >
+                  <Calendar className="h-5 w-5 text-blue-600" />
+                  Booking Queue
+                  {pendingBookingsCount > 0 && (
+                    <span className="absolute -top-2 -right-2 min-w-[22px] h-[22px] px-1.5 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-bold shadow">
+                      {pendingBookingsCount > 99 ? "99+" : pendingBookingsCount}
+                    </span>
+                  )}
                 </button>
               </div>
               {/* Right: secondary controls */}
               <div className="flex justify-end">
                 <button
                   onClick={() => setIsCollapsedView(!isCollapsedView)}
-                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${isCollapsedView ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
+                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${isCollapsedView ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
                 >
                   {isCollapsedView ? "Expand Cards" : "Collapse Cards"}
                 </button>
@@ -1735,7 +1943,7 @@ id,
           {mobile.isMobile && (
             <button
               onClick={() => setShowOrderForm(true)}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 text-white px-4 py-3 text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors"
+              className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-primary-600 text-white px-4 py-3 text-sm font-semibold shadow-sm hover:bg-primary-700 transition-colors"
             >
               <Plus className="h-5 w-5" />
               Create Order
@@ -1817,31 +2025,35 @@ id,
           </div>
         )}
 
-        {/* Booking Queue — only in Patient Visits tab */}
-        {dashboardTab === "patient-visits" && (
-          <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden mb-2">
-            <button
-              onClick={() => setBookingQueueOpen((o) => !o)}
-              className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                <Calendar className="h-4 w-4 text-blue-600" />
-                <span className="font-semibold text-gray-800">Booking Queue</span>
-              </div>
-              {bookingQueueOpen ? <ChevronUp className="h-4 w-4 text-gray-500" /> : <ChevronDown className="h-4 w-4 text-gray-500" />}
-            </button>
-            {bookingQueueOpen && (
-              <div className="border-t border-gray-100 p-4">
-                <BookingQueue
-                  onProcessBooking={(booking) => {
-                    setProcessingBooking(booking);
-                    setShowOrderForm(true);
-                  }}
-                />
-              </div>
-            )}
-          </div>
-        )}
+        {/* Booking Queue - available in all views */}
+        <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden mb-2">
+          <button
+            onClick={() => setBookingQueueOpen((o) => !o)}
+            className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-blue-600" />
+              <span className="font-semibold text-gray-800">Booking Queue</span>
+              {pendingBookingsCount > 0 && (
+                <span className="min-w-[20px] h-5 px-1.5 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-bold">
+                  {pendingBookingsCount > 99 ? "99+" : pendingBookingsCount}
+                </span>
+              )}
+            </div>
+            {bookingQueueOpen ? <ChevronUp className="h-4 w-4 text-gray-500" /> : <ChevronDown className="h-4 w-4 text-gray-500" />}
+          </button>
+          {bookingQueueOpen && (
+            <div className="border-t border-gray-100 p-4">
+              <BookingQueue
+                onCountChange={setPendingBookingsCount}
+                onProcessBooking={(booking) => {
+                  setProcessingBooking(booking);
+                  setShowOrderForm(true);
+                }}
+              />
+            </div>
+          )}
+        </div>
 
         <SampleTransitWidget />
 
@@ -1945,7 +2157,7 @@ id,
                     )}
 
                     <div className="grid grid-cols-2 gap-2">
-                      <button onClick={setToday} className="px-3 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm">
+                      <button onClick={setToday} className="px-3 py-2.5 text-sm bg-primary-600 text-white rounded-lg hover:bg-primary-700 font-medium shadow-sm">
                         Today
                       </button>
                       <button onClick={() => setDateRange(5)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
@@ -2230,20 +2442,33 @@ id,
                               <div className="flex flex-wrap gap-1.5 pl-10 pb-0.5">
                                 {o.panels.length > 0
                                   ? o.panels.map((p, i) => {
-                                    const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
-                                    const chipColor = p.verified
-                                      ? "border-green-200 bg-green-50 text-green-800"
-                                      : p.entered > 0
-                                        ? "border-amber-200 bg-amber-50 text-amber-800"
-                                        : "border-gray-200 bg-gray-50 text-gray-600";
+                                    // Section-only: show section status instead of analyte counts
+                                    const isSectionVerified = p.section_verification_status === 'verified';
+                                    const chipColor = p.is_section_only
+                                      ? (isSectionVerified
+                                          ? "border-green-200 bg-green-50 text-green-800"
+                                          : p.has_section_content
+                                            ? "border-amber-200 bg-amber-50 text-amber-800"
+                                            : "border-gray-200 bg-gray-50 text-gray-600")
+                                      : (p.verified
+                                          ? "border-green-200 bg-green-50 text-green-800"
+                                          : p.entered > 0
+                                            ? "border-amber-200 bg-amber-50 text-amber-800"
+                                            : "border-gray-200 bg-gray-50 text-gray-600");
+                                    const statusText = p.is_section_only
+                                      ? (isSectionVerified ? "✓" : p.has_section_content ? "Saved" : "Pending")
+                                      : `${p.entered}/${p.expected}${p.verified ? " ✓" : ""}`;
+                                    const titleText = p.is_section_only
+                                      ? `${p.name}: ${isSectionVerified ? "Verified" : p.has_section_content ? "Saved, pending approval" : "Section pending"}`
+                                      : `${p.name}: ${p.entered}/${p.expected}`;
                                     return (
                                       <span
                                         key={`chip-${i}`}
                                         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-semibold ${chipColor}`}
-                                        title={`${p.name}: ${p.entered}/${p.expected}`}
+                                        title={titleText}
                                       >
                                         {p.name}
-                                        <span className="opacity-70">{p.entered}/{p.expected}{p.verified ? " ✓" : ""}</span>
+                                        <span className="opacity-70">{statusText}</span>
                                       </span>
                                     );
                                   })
@@ -2467,17 +2692,30 @@ id,
                                           <div className="flex flex-wrap gap-2">
                                             {o.panels.length > 0
                                               ? visiblePanels.map((p, i) => {
-                                                const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
+                                                // Section-only: check section status instead of analyte progress
+                                                const isSectionVerified = p.section_verification_status === 'verified';
+                                                const progress = p.is_section_only
+                                                  ? (p.has_section_content ? 100 : 0)
+                                                  : (p.expected > 0 ? (p.entered / p.expected) * 100 : 0);
+                                                const panelColor = p.is_section_only
+                                                  ? (isSectionVerified
+                                                      ? "border-green-200 bg-green-50"
+                                                      : p.has_section_content
+                                                        ? "border-amber-200 bg-amber-50"
+                                                        : "border-gray-200 bg-white")
+                                                  : (p.verified
+                                                      ? "border-green-200 bg-green-50"
+                                                      : p.entered > 0
+                                                        ? "border-amber-200 bg-amber-50"
+                                                        : "border-gray-200 bg-white");
+                                                const statusText = p.is_section_only
+                                                  ? (isSectionVerified ? "✓ Verified" : p.has_section_content ? "Saved" : "Pending")
+                                                  : `${p.entered}/${p.expected}${progress === 100 ? " ✓" : ""}`;
 
                                                 return (
                                                   <div
                                                     key={`${p.name}-${i}`}
-                                                    className={`flex items-center gap-2 border rounded-lg px-3 py-1.5 shadow-sm transition-all duration-300 max-w-[170px] ${p.verified
-                                                      ? "border-green-200 bg-green-50"
-                                                      : p.entered > 0
-                                                        ? "border-amber-200 bg-amber-50"
-                                                        : "border-gray-200 bg-white"
-                                                      }`}
+                                                    className={`flex items-center gap-2 border rounded-lg px-3 py-1.5 shadow-sm transition-all duration-300 max-w-[170px] ${panelColor}`}
                                                   >
                                                     <SampleTypeIndicator
                                                       sampleType={p.sample_type || "Blood"}
@@ -2487,7 +2725,7 @@ id,
                                                     <div className="min-w-0">
                                                       <div className="font-bold text-gray-900 text-xs truncate" title={p.name}>{p.name}</div>
                                                       <div className="text-[10px] text-gray-500 font-medium">
-                                                        {p.entered}/{p.expected} {progress === 100 && "✓"}
+                                                        {statusText}
                                                       </div>
                                                     </div>
                                                   </div>
@@ -2603,10 +2841,23 @@ id,
                                     e.stopPropagation();
                                     openDetails(o);
                                   }}
-                                  className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                                  className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
                                 >
                                   <Eye className="h-4 w-4 mr-1.5" />
                                   View
+                                </button>
+
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    await handlePrintBarcodeLabel(o);
+                                  }}
+                                  disabled={printingLabelId === o.id}
+                                  className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed transition-colors"
+                                  title="Print barcode label"
+                                >
+                                  {printingLabelId === o.id ? "..." : <Printer className="h-4 w-4 mr-1.5" />}
+                                  Label
                                 </button>
 
                                 <button
@@ -3030,7 +3281,7 @@ id,
                   <button onClick={() => setShowCollectionModal(false)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
                     Close
                   </button>
-                  <button onClick={handleSaveCollection} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 shadow-sm">
+                  <button onClick={handleSaveCollection} className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 shadow-sm">
                     Save & Finish
                   </button>
                 </div>

@@ -63,8 +63,15 @@ export async function fetchLetterheadBackgroundForOrder(
       }
     }
 
-    // 4. Priority 3: Fall back to lab-level (using lab_branding_assets)
-    console.log('[LETTERHEAD] Falling back to lab-level header');
+    // 4. Priority 3: Try lab-level header from attachments table (set via HeaderFooterUpload)
+    const labAttachmentHeader = await getAttachmentImageUrl(supabase, 'lab', labId);
+    if (labAttachmentHeader) {
+      console.log('[LETTERHEAD] Using lab attachment header');
+      return labAttachmentHeader;
+    }
+
+    // 5. Priority 4: Fall back to lab_branding_assets table
+    console.log('[LETTERHEAD] Falling back to lab-level branding assets');
     return fetchLetterheadBackground(supabase, labId);
 
   } catch (error) {
@@ -203,39 +210,28 @@ export async function fetchFrontBackPages(
 }
 
 /**
- * Helper to wrap full page image in HTML
+ * Helper to wrap full page image in HTML content (NOT a full document)
+ * This generates just the content div that can be injected into an existing HTML document
  */
 function wrapImageInFullPageHTML(url: string): string {
-    return `
-<!DOCTYPE html>
-<html>
-<head>
-  <style>
-    body, html {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-    }
-    .full-page-bg {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background-image: url('${url}');
-      background-size: cover;
-      background-position: center;
-      background-repeat: no-repeat;
-      z-index: -1;
-    }
-  </style>
-</head>
-<body>
-  <div class="full-page-bg"></div>
-</body>
-</html>`;
+  return `
+<style>
+  .full-page-branding {
+    width: 210mm;
+    height: 297mm;
+    margin: 0;
+    padding: 0;
+    position: relative;
+    overflow: hidden;
+    background-image: url('${url}');
+    background-size: 210mm 297mm;
+    background-position: top left;
+    background-repeat: no-repeat;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+</style>
+<div class="full-page-branding"></div>`;
 }
 
 /**
@@ -378,13 +374,47 @@ export async function imageUrlToBase64(
 }
 
 /**
+ * Prefer an optimized direct ImageKit URL for PDF.co header/footer images.
+ * Native PDF.co header/footer rendering is happier with normal URLs than very large data URIs.
+ */
+export function optimizeHeaderFooterImageUrl(
+  url: string,
+  type: 'header' | 'footer',
+  heightPx: number
+): string {
+  if (!url || !url.includes('ik.imagekit.io')) {
+    return url;
+  }
+
+  try {
+    const safeHeight = Math.max(120, Math.min(480, Math.round(heightPx * 3)));
+    const width = type === 'header' ? 2480 : 2200;
+    const transform = `tr:w-${width},h-${safeHeight},c-at_max,f-png`;
+
+    if (url.includes('/tr:')) {
+      return url.replace(/\/tr:[^/]+/, `/${transform}`);
+    }
+
+    return url.replace(/(ik\.imagekit\.io\/[^/]+)/, `$1/${transform}`);
+  } catch (error) {
+    console.warn(`[HEADER_FOOTER] Failed to optimize ${type} image URL:`, error);
+    return url;
+  }
+}
+
+/**
  * Build header HTML for PDF.co native header section
  * Uses base64 data URI or falls back to direct URL
  */
-export function buildHeaderHtml(imageUrl: string, height: number = 90): string {
+export function buildHeaderHtml(
+  imageUrl: string,
+  height: number = 90,
+  sideMargins: { left: number; right: number } = { left: 20, right: 20 }
+): string {
   if (!imageUrl) return '';
-  return `<div style="width: 100%; height: ${height}px; margin: 0; padding: 0; text-align: center;">
-    <img src="${imageUrl}" style="width: 100%; height: ${height}px; object-fit: contain; margin: 0; padding: 0;" />
+  const bleedWidth = sideMargins.left + sideMargins.right;
+  return `<div style="width: calc(100% + ${bleedWidth}px); height: ${height}px; margin: 0 0 0 -${sideMargins.left}px; padding: 0; overflow: hidden; background: #ffffff;">
+    <img src="${imageUrl}" style="display: block; width: 100%; height: ${height}px; object-fit: cover; object-position: center top; margin: 0; padding: 0; border: 0;" />
   </div>`;
 }
 
@@ -392,10 +422,15 @@ export function buildHeaderHtml(imageUrl: string, height: number = 90): string {
  * Build footer HTML for PDF.co native footer section
  * Uses base64 data URI or falls back to direct URL
  */
-export function buildFooterHtml(imageUrl: string, height: number = 80): string {
+export function buildFooterHtml(
+  imageUrl: string,
+  height: number = 80,
+  sideMargins: { left: number; right: number } = { left: 20, right: 20 }
+): string {
   if (!imageUrl) return '';
-  return `<div style="width: 100%; height: ${height}px; margin: 0; padding: 0; text-align: center;">
-    <img src="${imageUrl}" style="width: 100%; height: ${height}px; object-fit: contain; margin: 0; padding: 0;" />
+  const bleedWidth = sideMargins.left + sideMargins.right;
+  return `<div style="width: calc(100% + ${bleedWidth}px); height: ${height}px; margin: 0 0 0 -${sideMargins.left}px; padding: 0; overflow: hidden; background: #ffffff;">
+    <img src="${imageUrl}" style="display: block; width: 100%; height: ${height}px; object-fit: cover; object-position: center bottom; margin: 0; padding: 0; border: 0;" />
   </div>`;
 }
 

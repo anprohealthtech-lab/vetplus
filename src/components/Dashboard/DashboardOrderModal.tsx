@@ -33,7 +33,6 @@ import {
   Lock,
   Tag,
   Camera,
-  Package as PackageIcon,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { database, supabase, formatAge } from "../../utils/supabase";
@@ -52,8 +51,6 @@ import SampleCollectionTracker from "../Samples/SampleCollectionTracker";
 import ReportDesignStudio from "../ReportStudio/ReportDesignStudio";
 import { ThermalPrintButton } from "../Invoices/ThermalPrintButton";
 import { SendReportModal } from "./SendReportModal";
-import { useQZTray } from "../../contexts/QZTrayContext";
-import * as qzTrayService from "../../utils/qzTrayService";
 import {
   processTRFImage,
   trfToOrderFormData,
@@ -100,7 +97,6 @@ export interface DashboardOrder {
   tests: {
     id: string;
     test_name: string;
-    package_id?: string | null;
     outsourced_lab_id?: string | null;
     outsourced_labs?: { name?: string | null } | null;
     is_canceled?: boolean;
@@ -135,19 +131,6 @@ export interface DashboardOrder {
   // account_name is already defined above
 }
 
-const cleanTestDisplayName = (name: string): string =>
-  name
-    .replace(/^\s*(?:📦|≡ƒôª|ðŸ“¦)\s*/u, '')
-    .trim();
-
-const escapePrintHtml = (value: string | null | undefined): string =>
-  String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-
 interface DashboardOrderModalProps {
   order: DashboardOrder;
   onClose: () => void;
@@ -160,7 +143,6 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   onUpdateStatus,
 }) => {
   const { user } = useAuth();
-  const { settings: qzSettings, refreshSettings: refreshQzSettings, connect: qzConnect } = useQZTray();
   const [qrCodeUrl, setQrCodeUrl] = useState<string | null>(null);
   const [labId, setLabId] = useState<string | null>(null);
 
@@ -536,7 +518,6 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         setTests(prev => [...prev, {
           id: headerTest.id,
           test_name: headerTest.test_name,
-          package_id: headerTest.package_id,
           outsourced_lab_id: null
         }]);
         console.log(`Added package ${item.name}`);
@@ -571,7 +552,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       // never be written back to orders.total_amount.
       const { data: freshOrder, error: freshOrderError } = await supabase
         .from('orders')
-        .select('total_amount, collection_charge, billing_status, paid_amount, patient_id')
+        .select('total_amount, collection_charge, billing_status, patient_id')
         .eq('id', order.id)
         .single();
       if (freshOrderError) throw freshOrderError;
@@ -665,7 +646,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         0,
         newCurrentTotal
           - (invoiceDiscount?.total_discount || 0)
-          - (Number(freshOrder.paid_amount) || order.paid_amount || 0)
+          - (order.paid_amount || 0)
       ));
       await onUpdateStatus(order.id, order.status);
 
@@ -1016,7 +997,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         }
 
         // Generate PDF using the proper invoice PDF service
-        pdfUrl = await generateInvoicePDF(invoice.id, templateId);
+        pdfUrl = await generateInvoicePDF(invoice.id, templateId, { triggerNotification: false });
 
         if (!pdfUrl) {
           throw new Error('Failed to generate invoice PDF');
@@ -1039,28 +1020,37 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     const discountAmt = parseFloat(discountInput) || 0;
     setSavingDiscount(true);
     try {
-      // Fetch all invoices for this order to get combined totals
+      // Fetch all invoices for this order to get combined totals.
+      // Completed refunds reduce the money the lab actually keeps, so they
+      // raise the discount ceiling (net paid = amount_paid - total_refunded_amount).
       const { data: allInvoices } = await supabase
         .from('invoices')
-        .select('id, subtotal, discount, total, amount_paid')
+        .select('id, subtotal, discount, total, amount_paid, total_refunded_amount')
         .eq('order_id', order.id);
 
       const combinedSubtotal  = (allInvoices || []).reduce((s: number, inv: any) => s + (parseFloat(inv.subtotal) || 0), 0);
-      const combinedPaid      = (allInvoices || []).reduce((s: number, inv: any) => s + (parseFloat(inv.amount_paid) || 0), 0);
+      const combinedRefunded  = (allInvoices || []).reduce((s: number, inv: any) => s + (parseFloat(inv.total_refunded_amount) || 0), 0);
+      const combinedNetPaid   = (allInvoices || []).reduce(
+        (s: number, inv: any) => s + Math.max(0, (parseFloat(inv.amount_paid) || 0) - (parseFloat(inv.total_refunded_amount) || 0)),
+        0
+      );
       const newTotal          = combinedSubtotal - discountAmt;
 
-      if (newTotal < combinedPaid) {
-        alert(`Discount of ₹${discountAmt} would make total ₹${newTotal} less than already paid ₹${combinedPaid}.\nMaximum discount allowed: ₹${combinedSubtotal - combinedPaid}`);
+      if (newTotal < combinedNetPaid) {
+        const refundNote = combinedRefunded > 0 ? ` (₹${combinedNetPaid} = paid minus ₹${combinedRefunded} refunded)` : '';
+        alert(`Discount of ₹${discountAmt} would make total ₹${newTotal} less than the amount already collected ₹${combinedNetPaid}${refundNote}.\nMaximum discount allowed: ₹${combinedSubtotal - combinedNetPaid}`);
         return;
       }
 
       const primaryInvoice = (allInvoices || []).find((inv: any) => inv.id === order.invoice_id);
       const primarySubtotal = parseFloat(primaryInvoice?.subtotal || '0') || 0;
-      const primaryPaid = parseFloat(primaryInvoice?.amount_paid || '0') || 0;
+      const primaryNetPaid = Math.max(0,
+        (parseFloat(primaryInvoice?.amount_paid || '0') || 0) - (parseFloat(primaryInvoice?.total_refunded_amount || '0') || 0)
+      );
       const primaryTotalAfterDiscount = Math.max(0, primarySubtotal - discountAmt);
 
-      if (primaryTotalAfterDiscount < primaryPaid) {
-        alert(`Discount of ₹${discountAmt} would make this invoice total ₹${primaryTotalAfterDiscount} less than invoice paid amount ₹${primaryPaid}.`);
+      if (primaryTotalAfterDiscount < primaryNetPaid) {
+        alert(`Discount of ₹${discountAmt} would make this invoice total ₹${primaryTotalAfterDiscount} less than the amount collected on it ₹${primaryNetPaid} (net of refunds).`);
         return;
       }
 
@@ -1085,7 +1075,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       setDiscountInput('');
       setDiscountReason('');
       setInvoiceRefreshTrigger(t => t + 1);
-      setCurrentDue(Math.max(0, newTotal - combinedPaid));
+      setCurrentDue(Math.max(0, newTotal - (combinedNetPaid + combinedRefunded)));
       await onUpdateStatus(order.id, order.status);
       alert('Discount saved. Please regenerate the PDF to reflect the change.');
     } catch (err: any) {
@@ -1283,14 +1273,14 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     }
   };
 
-  const printBarcodeInBrowser = () => {
+  const handlePrintBarcode = () => {
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
 
     printWindow.document.write(`
       <html>
         <head>
-          <title>Sample Label - ${escapePrintHtml(order.sample_id)}</title>
+          <title>Sample Label - ${order.sample_id}</title>
           <style>
             body { font-family: sans-serif; text-align: center; padding: 10px; }
             .label { border: 1px dashed #ccc; padding: 10px; display: inline-block; }
@@ -1300,73 +1290,17 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         </head>
         <body>
           <div class="label">
-            ${qrCodeUrl ? `<img src="${qrCodeUrl}" width="100" height="100" />` : ''}
-            <div class="sid">${escapePrintHtml(order.sample_id || 'NO ID')}</div>
-            <div class="meta">${escapePrintHtml(order.patient_name)}</div>
-            <div class="meta">${escapePrintHtml(new Date(order.order_date).toLocaleDateString())}</div>
-            <div class="meta">${escapePrintHtml(order.color_name || 'Tube')}</div>
+            <img src="${qrCodeUrl}" width="100" height="100" />
+            <div class="sid">${order.sample_id || 'NO ID'}</div>
+            <div class="meta">${order.patient_name}</div>
+            <div class="meta">${new Date(order.order_date).toLocaleDateString()}</div>
+            <div class="meta">${order.color_name || 'Tube'}</div>
           </div>
-          <script>
-            window.onload = function() {
-              window.focus();
-              setTimeout(function() { window.print(); }, 100);
-            };
-          </script>
+          <script>window.print();</script>
         </body>
       </html>
     `);
     printWindow.document.close();
-  };
-
-  const handlePrintBarcode = async () => {
-    const sampleId = order.sample_id || order.id;
-
-    console.debug('[PrintBridge][DashboardBarcodeLabel] print button clicked', {
-      orderId: order.id,
-      sampleId,
-      configuredPrinter: qzSettings.barcodePrinterName,
-      queueReady: qzTrayService.isConnected(),
-    });
-
-    let barcodePrinterName = qzSettings.barcodePrinterName;
-
-    if (!barcodePrinterName) {
-      console.warn('[PrintBridge][DashboardBarcodeLabel] no printer in current context; refreshing settings');
-      const refreshedSettings = await refreshQzSettings();
-      barcodePrinterName = refreshedSettings.barcodePrinterName;
-      console.warn('[PrintBridge][DashboardBarcodeLabel] refreshed print settings', {
-        configuredPrinterBeforeRefresh: qzSettings.barcodePrinterName,
-        configuredPrinterAfterRefresh: refreshedSettings.barcodePrinterName,
-        reportPrinterAfterRefresh: refreshedSettings.reportPrinterName,
-      });
-    }
-
-    if (!barcodePrinterName) {
-      console.warn('[PrintBridge][DashboardBarcodeLabel] barcode printer is not configured after refresh; opening browser print', {
-        orderId: order.id,
-        sampleId,
-        configuredPrinter: barcodePrinterName,
-      });
-      printBarcodeInBrowser();
-      return;
-    }
-
-    try {
-      if (!qzTrayService.isConnected()) {
-        await qzConnect();
-      }
-
-      await qzTrayService.printBarcodeLabel(barcodePrinterName, {
-        sampleId,
-        labelId: order.sample_id || order.id,
-        patientName: order.patient_name || 'Sample',
-        sampleType: order.color_name || 'Tube',
-        date: new Date(order.order_date).toLocaleDateString('en-GB'),
-      });
-    } catch (err) {
-      console.error('[PrintBridge][DashboardBarcodeLabel] queue failed; opening browser print', err);
-      printBarcodeInBrowser();
-    }
   };
 
   const handlePrintTRF = () => {
@@ -1853,14 +1787,11 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                       : 'hover:bg-gray-50'
                     }`}>
                     <div className="flex-1">
-                      <span className={`text-sm font-semibold flex items-center gap-1.5 mb-0.5 transition-colors ${test.is_canceled
+                      <span className={`text-sm font-semibold block mb-0.5 transition-colors ${test.is_canceled
                           ? 'text-gray-500 line-through'
                           : 'text-gray-900 group-hover:text-blue-700'
                         }`}>
-                        {test.package_id && (
-                          <PackageIcon className="h-4 w-4 flex-shrink-0 text-purple-600" />
-                        )}
-                        <span>{cleanTestDisplayName(test.test_name)}</span>
+                        {test.test_name}
                         {test.is_canceled && (
                           <span className="ml-2 text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-medium no-underline inline-block">
                             CANCELED
@@ -2455,13 +2386,12 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
             // Refresh tests state to reflect billed status
             const { data: updatedTests } = await supabase
               .from('order_tests')
-              .select('id, test_name, package_id, outsourced_lab_id, is_canceled, is_billed, invoice_id, outsourced_labs(name)')
+              .select('id, test_name, outsourced_lab_id, is_canceled, is_billed, invoice_id, outsourced_labs(name)')
               .eq('order_id', order.id);
             if (updatedTests) {
               setTests(updatedTests.map((t: any) => ({
                 id: t.id,
                 test_name: t.test_name,
-                package_id: t.package_id,
                 outsourced_lab_id: t.outsourced_lab_id,
                 outsourced_labs: t.outsourced_labs,
                 is_canceled: t.is_canceled,

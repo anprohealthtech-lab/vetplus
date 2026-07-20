@@ -37,7 +37,6 @@ interface Analyte {
   id: string;
   lab_analyte_id?: string; // lab_analytes primary key (used for per-row deactivation)
   sampleType?: string | null;
-  sample_type?: string | null;
   testGroupCount?: number;
   name: string;
   unit: string;
@@ -57,6 +56,7 @@ interface Analyte {
   formula?: string;
   formulaVariables?: string[];
   formulaDescription?: string;
+  calculationResultType?: 'numeric' | 'text';
   // Extended fields for editor
   normalRangeMin?: number;
   normalRangeMax?: number;
@@ -76,6 +76,35 @@ interface Analyte {
   expected_value_flag_map?: Record<string, string>;
 }
 
+const normalizeSampleType = (value: unknown): string =>
+  String(value || '').trim().toLowerCase();
+
+const buildSampleAwareLabAnalyteMap = (
+  rows: Array<{ id: string; analyte_id: string; sample_type?: string | null }> | null | undefined,
+  sampleType?: unknown,
+): Record<string, string> => {
+  const wanted = normalizeSampleType(sampleType);
+  const map: Record<string, string> = {};
+  const generic: Record<string, string> = {};
+
+  for (const row of rows || []) {
+    const rowSampleType = normalizeSampleType(row.sample_type);
+    if (wanted && rowSampleType === wanted && !map[row.analyte_id]) {
+      map[row.analyte_id] = row.id;
+    } else if (!rowSampleType && !generic[row.analyte_id]) {
+      generic[row.analyte_id] = row.id;
+    }
+  }
+
+  if (!wanted) {
+    for (const [analyteId, labAnalyteId] of Object.entries(generic)) {
+      if (!map[analyteId]) map[analyteId] = labAnalyteId;
+    }
+  }
+
+  return map;
+};
+
 interface TestGroup {
   id: string;
   name: string;
@@ -87,6 +116,8 @@ interface TestGroup {
   turnaroundTime?: string;
   tat_hours?: number;
   sampleType?: string;
+  sampleConditionOptions?: string[];
+  defaultSampleCondition?: string | null;
   requiresFasting?: boolean;
   isActive?: boolean;
   createdDate?: string;
@@ -118,6 +149,7 @@ interface TestGroup {
   }>;
   ref_range_ai_config?: any;
   required_patient_inputs?: string[];
+  group_interpretation?: string | null;
   is_outsourced?: boolean;
   default_outsourced_lab_id?: string;
   is_section_only?: boolean;
@@ -227,6 +259,52 @@ const Tests: React.FC = () => {
 
   console.log('✅ Tests component state initialized');
 
+  const transformTestGroupRow = (group: any): TestGroup => ({
+    id: group.id,
+    name: group.name,
+    code: group.code,
+    category: group.category,
+    clinicalPurpose: group.clinical_purpose,
+    methodology: group.methodology,
+    price: group.price,
+    turnaroundTime: group.turnaround_time,
+    tat_hours: group.tat_hours,
+    sampleType: group.sample_type,
+    sampleConditionOptions: Array.isArray(group.sample_condition_options) ? group.sample_condition_options : [],
+    defaultSampleCondition: group.default_sample_condition || null,
+    requiresFasting: group.requires_fasting,
+    isActive: group.is_active,
+    createdDate: group.created_at,
+    default_ai_processing_type: group.default_ai_processing_type,
+    group_level_prompt: group.group_level_prompt,
+    testType: group.test_type || 'Default',
+    gender: group.gender || 'Both',
+    sampleColor: group.sample_color || 'Red',
+    barcodeSuffix: group.barcode_suffix,
+    lmpRequired: group.lmp_required || false,
+    idRequired: group.id_required || false,
+    consentForm: group.consent_form || false,
+    preCollectionGuidelines: group.pre_collection_guidelines,
+    flabsId: group.flabs_id,
+    onlyFemale: group.only_female || false,
+    onlyMale: group.only_male || false,
+    onlyBilling: group.only_billing || false,
+    startFromNextPage: group.start_from_next_page || false,
+    report_priority: group.report_priority ?? null,
+    default_template_style: group.default_template_style || null,
+    print_options: group.print_options ?? null,
+    is_outsourced: group.is_outsourced || false,
+    default_outsourced_lab_id: group.default_outsourced_lab_id,
+    ref_range_ai_config: group.ref_range_ai_config,
+    required_patient_inputs: group.required_patient_inputs || [],
+    group_interpretation: group.group_interpretation || null,
+    global_test_catalog_id: group.global_test_catalog_id || null,
+    analyzer_connection_id: group.analyzer_connection_id || null,
+    is_section_only: group.is_section_only || false,
+    analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : [],
+    analyteDisplay: group.test_group_analytes || []
+  });
+
   const handleAIConfigurationGenerated = async (config: TestConfigurationResponse) => {
     try {
       const toBoolean = (value: unknown): boolean => {
@@ -314,6 +392,7 @@ const Tests: React.FC = () => {
 	        const isCalculated = toBoolean((analyteData as any).is_calculated);
 	        const formula = typeof (analyteData as any).formula === 'string' ? (analyteData as any).formula.trim() : '';
 	        const formulaVariables = parseFormulaVariables((analyteData as any).formula_variables);
+	        const calculationResultType = (analyteData as any).calculation_result_type === 'text' ? 'text' : 'numeric';
 	        const expectedNormalValues = Array.isArray((analyteData as any).expected_normal_values)
 	          ? (analyteData as any).expected_normal_values.map((value: unknown) => String(value).trim()).filter(Boolean)
 	          : [];
@@ -346,6 +425,7 @@ const Tests: React.FC = () => {
             interpretation_normal: analyteData.interpretation_normal,
             interpretation_high: analyteData.interpretation_high,
             category: analyteData.category,
+            sample_type: config.test_group.sample_type || null,
             is_active: true,
             is_global: false, // Lab specific
             ai_processing_type: normalizeAIProcessingType(analyteData.ai_processing_type || config.test_group.default_ai_processing_type),
@@ -354,9 +434,9 @@ const Tests: React.FC = () => {
 	            formula: formula || null,
 	            formula_variables: formulaVariables,
 	            formula_description: (analyteData as any).formula_description || null,
+	            calculation_result_type: calculationResultType,
 	            value_type: normalizedValueType,
-	            expected_normal_values: expectedNormalValues,
-            sample_type: config.test_group.sample_type || null
+	            expected_normal_values: expectedNormalValues
 	          };
 
           const { data: newAnalyte, error: analyteError } = await supabase
@@ -391,6 +471,7 @@ const Tests: React.FC = () => {
 	                formula,
 	                formula_variables: formulaVariables,
 	                formula_description: (analyteData as any).formula_description || null,
+	                calculation_result_type: calculationResultType,
 	                reference_range: analyteData.reference_range || null,
 	                interpretation_low: analyteData.interpretation_low || null,
 	                interpretation_normal: analyteData.interpretation_normal || null,
@@ -415,20 +496,17 @@ const Tests: React.FC = () => {
 
       // 3. Link Analytes to Test Group
       if (newTestGroup && finalAnalyteIds.length > 0) {
-        // Resolve lab_analyte_id for each analyte
+        // Resolve lab_analyte_id for each analyte. Prefer this test group's
+        // sample type, then fall back to the generic lab analyte row.
         let labAnalyteMap: Record<string, string> = {};
         if (newTestGroup.lab_id) {
           const { data: laRows } = await supabase
             .from('lab_analytes')
-            .select('id, analyte_id')
+            .select('id, analyte_id, sample_type')
             .eq('lab_id', newTestGroup.lab_id)
             .in('analyte_id', finalAnalyteIds.map(a => a.id))
             .order('created_at', { ascending: true });
-          if (laRows) {
-            for (const la of laRows) {
-              if (!labAnalyteMap[la.analyte_id]) labAnalyteMap[la.analyte_id] = la.id;
-            }
-          }
+          labAnalyteMap = buildSampleAwareLabAnalyteMap(laRows, newTestGroup.sample_type || config.test_group.sample_type);
         }
 
         const relationships = finalAnalyteIds.map((a, index) => ({
@@ -489,50 +567,6 @@ const Tests: React.FC = () => {
     setDangerTypeInput('');
   };
 
-  const transformTestGroup = (group: any): TestGroup => ({
-    id: group.id,
-    name: group.name,
-    code: group.code,
-    category: group.category,
-    clinicalPurpose: group.clinical_purpose,
-    methodology: group.methodology,
-    price: group.price,
-    turnaroundTime: group.turnaround_time,
-    tat_hours: group.tat_hours,
-    sampleType: group.sample_type,
-    requiresFasting: group.requires_fasting,
-    isActive: group.is_active,
-    createdDate: group.created_at,
-    default_ai_processing_type: group.default_ai_processing_type,
-    group_level_prompt: group.group_level_prompt,
-    testType: group.test_type || 'Default',
-    gender: group.gender || 'Both',
-    sampleColor: group.sample_color || 'Red',
-    barcodeSuffix: group.barcode_suffix,
-    lmpRequired: group.lmp_required || false,
-    idRequired: group.id_required || false,
-    consentForm: group.consent_form || false,
-    preCollectionGuidelines: group.pre_collection_guidelines,
-    flabsId: group.flabs_id,
-    onlyFemale: group.only_female || false,
-    onlyMale: group.only_male || false,
-    onlyBilling: group.only_billing || false,
-    startFromNextPage: group.start_from_next_page || false,
-    report_priority: group.report_priority ?? null,
-    default_template_style: group.default_template_style || null,
-    print_options: group.print_options ?? null,
-    is_outsourced: group.is_outsourced || false,
-    default_outsourced_lab_id: group.default_outsourced_lab_id,
-    ref_range_ai_config: group.ref_range_ai_config,
-    required_patient_inputs: group.required_patient_inputs || [],
-    group_interpretation: group.group_interpretation || null,
-    global_test_catalog_id: group.global_test_catalog_id || null,
-    analyzer_connection_id: group.analyzer_connection_id || null,
-    is_section_only: group.is_section_only || false,
-    analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : [],
-    analyteDisplay: group.test_group_analytes || []
-  });
-
   const loadData = React.useCallback(async () => {
       try {
         console.log('🔄 Starting parallel data load');
@@ -553,8 +587,6 @@ const Tests: React.FC = () => {
           const transformedAnalytes = (dbAnalytesData || []).map(analyte => ({
             id: analyte.id,
             lab_analyte_id: analyte.lab_analyte_id,
-            sampleType: analyte.sampleType || analyte.sample_type || null,
-            sample_type: analyte.sample_type || analyte.sampleType || null,
             testGroupCount: analyte.test_group_count ?? 0,
             name: analyte.name,
             unit: analyte.unit,
@@ -611,6 +643,8 @@ const Tests: React.FC = () => {
             turnaroundTime: group.turnaround_time,
             tat_hours: group.tat_hours,
             sampleType: group.sample_type,
+            sampleConditionOptions: Array.isArray(group.sample_condition_options) ? group.sample_condition_options : [],
+            defaultSampleCondition: group.default_sample_condition || null,
             requiresFasting: group.requires_fasting,
             isActive: group.is_active,
             createdDate: group.created_at,
@@ -796,6 +830,7 @@ const Tests: React.FC = () => {
         interpretation_normal: formData.interpretation?.normal,
         interpretation_high: formData.interpretation?.high,
         category: formData.category,
+        sample_type: formData.sampleType || formData.sample_type || null,
         is_active: formData.isActive ?? true,
         // AI processing fields
         ai_processing_type: formData.aiProcessingType || undefined,
@@ -807,6 +842,7 @@ const Tests: React.FC = () => {
         formula: formData.formula || null,
         formula_variables: formData.formulaVariables || [],
         formula_description: formData.formulaDescription || null,
+        calculation_result_type: formData.calculation_result_type || formData.calculationResultType || 'numeric',
         // Flag determination fields
         value_type: formData.value_type || 'numeric',
         code: formData.code || undefined,
@@ -815,7 +851,6 @@ const Tests: React.FC = () => {
         expected_normal_values: formData.expected_normal_values || [],
         // Dropdown value → flag mapping
         expected_value_flag_map: formData.expected_value_flag_map || {},
-        sample_type: formData.sampleType || formData.sample_type || null,
       });
 
       if (error) {
@@ -829,7 +864,6 @@ const Tests: React.FC = () => {
 	          id: newAnalyte.id,
 	          lab_analyte_id: (newAnalyte as any).lab_analyte_id || null,
 	          sampleType: (newAnalyte as any).sample_type || null,
-	          sample_type: (newAnalyte as any).sample_type || null,
 	          name: newAnalyte.name,
           unit: newAnalyte.unit,
           referenceRange: newAnalyte.reference_range,
@@ -848,6 +882,7 @@ const Tests: React.FC = () => {
           formula: newAnalyte.formula || '',
           formulaVariables: newAnalyte.formula_variables || [],
           formulaDescription: newAnalyte.formula_description || '',
+          calculationResultType: newAnalyte.calculation_result_type || 'numeric',
           // Extended fields
           normalRangeMin: newAnalyte.normal_range_min ?? undefined,
           normalRangeMax: newAnalyte.normal_range_max ?? undefined,
@@ -1070,6 +1105,7 @@ const Tests: React.FC = () => {
             formula: labAnalyte.formula ?? analyteSource?.formula ?? analyte.formula ?? '',
             formulaVariables: labAnalyte.formula_variables ?? analyteSource?.formula_variables ?? analyte.formulaVariables ?? [],
             formulaDescription: labAnalyte.formula_description ?? analyteSource?.formula_description ?? analyte.formulaDescription ?? '',
+            calculationResultType: labAnalyte.calculation_result_type ?? analyteSource?.calculation_result_type ?? analyte.calculationResultType ?? 'numeric',
             // Lab-level display name override
             display_name: labAnalyte.display_name || null,
             lab_analyte_id: labAnalyte.id || analyte.lab_analyte_id,
@@ -1180,6 +1216,8 @@ const Tests: React.FC = () => {
           turnaroundTime: updatedTestGroup.turnaround_time,
           tat_hours: updatedTestGroup.tat_hours,
           sampleType: updatedTestGroup.sample_type,
+          sampleConditionOptions: Array.isArray(updatedTestGroup.sample_condition_options) ? updatedTestGroup.sample_condition_options : [],
+          defaultSampleCondition: updatedTestGroup.default_sample_condition || null,
           requiresFasting: updatedTestGroup.requires_fasting,
           isActive: updatedTestGroup.is_active,
           createdDate: updatedTestGroup.created_at,
@@ -1283,6 +1321,11 @@ const Tests: React.FC = () => {
           expected_normal_values: formData.expected_normal_values || [],
           // Dropdown value → flag mapping
           expected_value_flag_map: formData.expected_value_flag_map || {},
+          is_calculated: formData.is_calculated ?? formData.isCalculated ?? false,
+          formula: formData.formula || null,
+          formula_variables: formData.formula_variables ?? formData.formulaVariables ?? [],
+          formula_description: formData.formula_description ?? formData.formulaDescription ?? null,
+          calculation_result_type: formData.calculation_result_type ?? formData.calculationResultType ?? 'numeric',
         };
 
       const { data: updatedAnalyte, error } = editingAnalyte.lab_analyte_id
@@ -1337,7 +1380,8 @@ const Tests: React.FC = () => {
           isCalculated: formData.is_calculated ?? formData.isCalculated ?? editingAnalyte.isCalculated ?? false,
           formula: formData.formula ?? editingAnalyte.formula ?? '',
           formulaVariables: formData.formula_variables ?? formData.formulaVariables ?? editingAnalyte.formulaVariables ?? [],
-          formulaDescription: formData.formula_description ?? formData.formulaDescription ?? editingAnalyte.formulaDescription ?? ''
+          formulaDescription: formData.formula_description ?? formData.formulaDescription ?? editingAnalyte.formulaDescription ?? '',
+          calculationResultType: formData.calculation_result_type ?? formData.calculationResultType ?? editingAnalyte.calculationResultType ?? 'numeric'
         };
 
         setAnalytes(prev => prev.map(a => a.id === editingAnalyte.id ? transformedAnalyte : a));
@@ -1407,6 +1451,7 @@ const Tests: React.FC = () => {
       formula: formData.formula ?? editingAnalyte.formula ?? '',
       formulaVariables: formData.formula_variables ?? editingAnalyte.formulaVariables ?? [],
       formulaDescription: formData.formula_description ?? editingAnalyte.formulaDescription ?? '',
+      calculationResultType: formData.calculation_result_type ?? editingAnalyte.calculationResultType ?? 'numeric',
     };
 
     setAnalytes(prev => prev.map(a => a.id === editingAnalyte.id ? transformedAnalyte : a));
@@ -1502,6 +1547,32 @@ const Tests: React.FC = () => {
       }
 
       console.log('✅ Sync response:', data);
+      const syncDiagnostics = data?.syncDiagnostics;
+      if (syncDiagnostics) {
+        console.group('[Test Sync] Global catalog sync diagnostics');
+        console.log('[Test Sync] Stats:', data?.stats || {});
+        if (syncDiagnostics.skippedTests?.length) {
+          console.warn(`[Test Sync] Skipped ${syncDiagnostics.skippedTests.length} global test(s)`);
+          console.table(syncDiagnostics.skippedTests);
+        }
+        if (syncDiagnostics.createFailures?.length) {
+          console.error(`[Test Sync] Failed to create ${syncDiagnostics.createFailures.length} chunk(s)`);
+          console.table(syncDiagnostics.createFailures);
+        }
+        if (syncDiagnostics.createCandidates?.length) {
+          console.log(`[Test Sync] Create candidates: ${syncDiagnostics.createCandidates.length}`);
+          console.table(syncDiagnostics.createCandidates);
+        }
+        if (syncDiagnostics.createdTests?.length) {
+          console.log(`[Test Sync] Created tests: ${syncDiagnostics.createdTests.length}`);
+          console.table(syncDiagnostics.createdTests);
+        }
+        if (syncDiagnostics.existingMatches?.length) {
+          console.log(`[Test Sync] Existing matches updated/not created: ${syncDiagnostics.existingMatches.length}`);
+          console.table(syncDiagnostics.existingMatches);
+        }
+        console.groupEnd();
+      }
       setSyncStatus('Reloading test groups...');
 
       // Reload test groups to reflect changes
@@ -1516,6 +1587,8 @@ const Tests: React.FC = () => {
           price: group.price,
           turnaroundTime: group.turnaround_time,
           sampleType: group.sample_type,
+          sampleConditionOptions: Array.isArray(group.sample_condition_options) ? group.sample_condition_options : [],
+          defaultSampleCondition: group.default_sample_condition || null,
           requiresFasting: group.requires_fasting,
           isActive: group.is_active,
           createdDate: group.created_at,
@@ -1553,8 +1626,6 @@ const Tests: React.FC = () => {
         const transformedAnalytes = (dbAnalytesData || []).map(analyte => ({
           id: analyte.id,
           lab_analyte_id: analyte.lab_analyte_id,
-          sampleType: analyte.sampleType || analyte.sample_type || null,
-          sample_type: analyte.sample_type || analyte.sampleType || null,
           testGroupCount: analyte.test_group_count ?? 0,
           name: analyte.name,
           unit: analyte.unit,
@@ -1658,6 +1729,8 @@ const Tests: React.FC = () => {
           price: group.price,
           turnaroundTime: group.turnaround_time,
           sampleType: group.sample_type,
+          sampleConditionOptions: Array.isArray(group.sample_condition_options) ? group.sample_condition_options : [],
+          defaultSampleCondition: group.default_sample_condition || null,
           requiresFasting: group.requires_fasting,
           isActive: group.is_active,
           createdDate: group.created_at,
@@ -1711,15 +1784,14 @@ const Tests: React.FC = () => {
     } catch (e: any) {
       console.warn("Hard delete failed, trying soft hide (is_active=false):", e);
       try {
-        const { error: hideError } = await supabase
-          .from('test_groups')
-          .update({ is_active: false, updated_at: new Date().toISOString() })
-          .eq('id', group.id);
+        const { error: hideError } = await database.testGroups.update(group.id, {
+          isActive: false,
+        });
         if (hideError) throw hideError;
 
         setTestGroups(prev => prev.filter(g => g.id !== group.id));
         if (showInactiveTestGroups) {
-          setInactiveTestGroups(prev => [{ ...group, isActive: false }, ...prev.filter(g => g.id !== group.id)]);
+          setInactiveTestGroups(prev => [{ ...group, isActive: false }, ...prev]);
         }
         alert('Test group is used in existing orders. It was hidden by setting Is Active = false.');
       } catch (hideErr: any) {
@@ -1729,38 +1801,16 @@ const Tests: React.FC = () => {
     }
   };
 
-  const handleDeactivateTestGroup = async (group: TestGroup) => {
-    if (!window.confirm(`Deactivate test group "${group.name}"? It will be hidden from active lists and can be reactivated later.`)) return;
-
-    try {
-      const { error } = await supabase
-        .from('test_groups')
-        .update({ is_active: false, updated_at: new Date().toISOString() })
-        .eq('id', group.id);
-
-      if (error) throw error;
-
-      setTestGroups(prev => prev.filter(g => g.id !== group.id));
-      if (showInactiveTestGroups) {
-        setInactiveTestGroups(prev => [{ ...group, isActive: false }, ...prev.filter(g => g.id !== group.id)]);
-      }
-    } catch (e: any) {
-      console.error("Deactivate test group failed", e);
-      alert("Failed to deactivate test group.");
-    }
-  };
-
   const handleReactivateTestGroup = async (group: TestGroup) => {
     try {
       const { error } = await supabase
         .from('test_groups')
         .update({ is_active: true, updated_at: new Date().toISOString() })
         .eq('id', group.id);
-
       if (error) throw error;
 
       setInactiveTestGroups(prev => prev.filter(g => g.id !== group.id));
-      setTestGroups(prev => [{ ...group, isActive: true }, ...prev.filter(g => g.id !== group.id)]);
+      setTestGroups(prev => [{ ...group, isActive: true }, ...prev]);
     } catch (e: any) {
       console.error("Reactivate test group failed", e);
       alert("Failed to reactivate test group.");
@@ -1787,11 +1837,17 @@ const Tests: React.FC = () => {
           turnaround_time,
           tat_hours,
           sample_type,
+          sample_condition_options,
+          default_sample_condition,
           requires_fasting,
           is_active,
           created_at,
+          updated_at,
           default_ai_processing_type,
           group_level_prompt,
+          lab_id,
+          description,
+          department,
           test_type,
           gender,
           sample_color,
@@ -1816,18 +1872,14 @@ const Tests: React.FC = () => {
           global_test_catalog_id,
           analyzer_connection_id,
           is_section_only,
-          test_group_analytes(
-            analyte_id,
-            sort_order,
-            section_heading
-          )
+          test_group_analytes(analyte_id, sort_order, section_heading, is_visible, report_display_options)
         `)
         .eq('lab_id', labId)
         .eq('is_active', false)
-        .order('name', { ascending: true });
+        .order('name');
 
       if (error) throw error;
-      setInactiveTestGroups((data || []).map(transformTestGroup));
+      setInactiveTestGroups((data || []).map(transformTestGroupRow));
     } catch (e: any) {
       console.error("Load inactive test groups failed", e);
     } finally {
@@ -2298,13 +2350,6 @@ const Tests: React.FC = () => {
                                 <Edit className="h-4 w-4" />
                               </button>
                               <button
-                                onClick={() => handleDeactivateTestGroup(group)}
-                                className="text-amber-500 hover:text-amber-700 p-1 rounded"
-                                title="Deactivate (hide from lists, can reactivate)"
-                              >
-                                <EyeOff className="h-4 w-4" />
-                              </button>
-                              <button
                                 onClick={() => handleDeleteTestGroup(group)}
                                 className="text-red-500 hover:text-red-700 p-1 rounded"
                                 title="Delete Test Group"
@@ -2326,7 +2371,7 @@ const Tests: React.FC = () => {
                   <div className="px-3 py-2 border-b border-amber-200 flex items-center justify-between">
                     <h4 className="text-xs font-semibold text-amber-800">
                       Inactive Test Groups ({inactiveTestGroups.length})
-                      <span className="ml-1 font-normal text-amber-600">- click Reactivate to restore</span>
+                      <span className="ml-1 font-normal text-amber-600">-- click Reactivate to restore</span>
                     </h4>
                     {loadingInactiveTestGroups && <span className="text-xs text-amber-600">Loading...</span>}
                   </div>
@@ -2339,15 +2384,15 @@ const Tests: React.FC = () => {
                           <tr key={group.id} className="opacity-60 hover:opacity-80">
                             <td className="px-3 py-2 w-2/5">
                               <span className="font-medium text-gray-700">{group.name}</span>
-                              <div className="text-gray-400">Code: {group.code || 'N/A'} - {group.turnaroundTime || 'N/A'}</div>
+                              <div className="text-gray-400">Code: {group.code || 'N/A'}</div>
                             </td>
                             <td className="px-3 py-2 w-1/5">
-                              <span className={`px-1.5 py-0.5 rounded-full text-xs ${getCategoryColor(group.category)}`}>{group.category}</span>
+                              <span className="px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 text-xs">{group.category}</span>
                             </td>
                             <td className="px-3 py-2 w-1/5 text-gray-500">
-                              {group.is_section_only ? 'Section only' : `${group.analytes?.length || 0} analyte${(group.analytes?.length || 0) === 1 ? '' : 's'}`}
+                              {group.is_section_only ? 'Section only' : `${group.analytes?.length || 0} analytes`}
                             </td>
-                            <td className="px-3 py-2 w-1/6 text-gray-500">{group.sampleType || 'N/A'}</td>
+                            <td className="px-3 py-2 w-1/5 text-gray-500">{group.sampleType || 'N/A'}</td>
                             <td className="px-3 py-2 text-right">
                               <button
                                 onClick={() => handleReactivateTestGroup(group)}
